@@ -169,11 +169,14 @@ public final class ProviderContracts {
         }
         String scheme = value.getScheme().toLowerCase(Locale.ROOT);
         String host = value.getHost();
+        boolean loopback = isLoopbackHost(host);
         if (kind == ProviderKind.LOCAL) {
-            boolean loopback = "localhost".equalsIgnoreCase(host) || "127.0.0.1".equals(host)
-                    || "::1".equals(host) || "0:0:0:0:0:0:0:1".equals(host);
             if (!loopback || !("http".equals(scheme) || "https".equals(scheme))) {
                 throw new IllegalArgumentException("LOCAL endpoint must use loopback HTTP(S)");
+            }
+        } else if (loopback) {
+            if (!("http".equals(scheme) || "https".equals(scheme))) {
+                throw new IllegalArgumentException("loopback provider endpoint must use HTTP(S)");
             }
         } else {
             if (!"https".equals(scheme)) {
@@ -184,6 +187,11 @@ public final class ProviderContracts {
             }
         }
         return value.normalize();
+    }
+
+    private static boolean isLoopbackHost(String host) {
+        return "localhost".equalsIgnoreCase(host) || "127.0.0.1".equals(host)
+                || "::1".equals(host) || "0:0:0:0:0:0:0:1".equals(host);
     }
 
     private static boolean forbiddenRemoteHost(String host) {

@@ -213,10 +213,12 @@ public final class ProviderModelInventoryAcceptanceTest {
                         1, "local", "provider-a", "Provider A", ProviderKind.OPENAI_CHAT,
                         URI.create("https://user@api.openai.invalid"), true, true, NOW, NOW),
                 "production provider DTO rejects endpoint user info");
-        expect(IllegalArgumentException.class, () -> new ProviderDefinition(
-                        1, "local", "provider-a", "Provider A", ProviderKind.OPENAI_CHAT,
-                        URI.create("https://127.0.0.1"), true, true, NOW, NOW),
-                "production remote provider rejects loopback SSRF target");
+        ProviderDefinition loopbackNative = new ProviderDefinition(
+                1, "local", "provider-loopback", "Loopback Anthropic",
+                ProviderKind.ANTHROPIC_MESSAGES, URI.create("http://127.0.0.1:3000"),
+                true, true, NOW, NOW);
+        check("http".equals(loopbackNative.endpoint().getScheme()),
+                "explicit native protocols allow plaintext only on loopback");
         expect(IllegalArgumentException.class, () -> new ProviderDefinition(
                         1, "local", "provider-a", "Provider A", ProviderKind.ANTHROPIC_MESSAGES,
                         URI.create("https://169.254.169.254"), true, true, NOW, NOW),

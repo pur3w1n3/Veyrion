@@ -48,6 +48,18 @@ public final class ManagementConfigurationAcceptanceTest {
             providerId = text(provider, "providerId");
             check(Boolean.TRUE.equals(provider.get("hasCredential")), "credential configured flag is returned");
 
+            HttpResponse<String> loopbackAnthropic = send(client, uri(server, "/providers"), "POST",
+                    "{\"name\":\"Loopback Anthropic\",\"kind\":\"ANTHROPIC_MESSAGES\","
+                            + "\"baseUrl\":\"http://127.0.0.1:3000\",\"model\":\"local-claude\","
+                            + "\"apiKey\":\"loopback-secret\"}", bootstrap);
+            check(loopbackAnthropic.statusCode() == 201
+                            && !loopbackAnthropic.body().contains("loopback-secret"),
+                    "native Anthropic permits plaintext loopback without echoing its credential");
+            String loopbackProviderId = text(ok(loopbackAnthropic), "providerId");
+            check(send(client, uri(server, "/providers/" + loopbackProviderId),
+                    "DELETE", "", bootstrap).statusCode() == 204,
+                    "loopback provider cleanup");
+
             String endpointSecret = "userinfo-secret-must-not-echo";
             HttpResponse<String> invalidEndpoint = send(client, uri(server, "/providers"), "POST",
                     "{\"name\":\"bad\",\"kind\":\"OPENAI_COMPATIBLE\","

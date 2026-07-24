@@ -56,12 +56,18 @@ public final class PreAnalysisService {
             if (className == null || className.isBlank()) {
                 continue;
             }
+            // Class-name rules are a last-resort fallback for malformed or otherwise
+            // unreadable classfiles. Applying them to valid framework classes (for
+            // example Spring Boot's File/Launcher infrastructure) produces noisy,
+            // unbound pseudo-findings that are not evidence of application behavior.
+            if (classesWithValidAnnotationMetadata.contains(className)) {
+                continue;
+            }
             String lower = className.toLowerCase(Locale.ROOT);
             String evidenceId = "inf-" + (++index);
             evidence.add(new Evidence(evidenceId, ProvenanceKind.INFERENCE, "class-name:" + limit(className),
                     0.72, "rule-based pre-analysis; runtime registration not observed"));
-            if (!classesWithValidAnnotationMetadata.contains(className)
-                    && (lower.contains("controller") || lower.contains("resource") || lower.contains("endpoint"))) {
+            if (lower.contains("controller") || lower.contains("resource") || lower.contains("endpoint")) {
                 String inferredName = simpleName(className).toLowerCase(Locale.ROOT).replace("controller", "").trim();
                 if (inferredName.isEmpty()) inferredName = "unknown";
                 String route = "/inferred/" + safeRoutePart(inferredName);

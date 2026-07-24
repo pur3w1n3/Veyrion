@@ -249,3 +249,10 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 根 Agent 补强 OpenAI strict schema、未完成工具结果顺序、未知/越权调用预算、迭代 JSON 深度、运行任务删除竞态、创建字段 allowlist、Provider/角色绑定/scan 配置漂移复核和响应临时字节清零。
 - mock 传输验收覆盖 OpenAI/Anthropic 各一次工具循环、无授权/绑定、429/500/超时、取消、重启恢复、配置漂移、提示注入、越权、预算、截断、畸形响应与敏感内容不落 AI job/审计；9 个相关 Java main-style 验收及 GUI 生产构建通过。
 - 审计结论只接受为“本地有界 AI Job 首版”。尚无真实供应商互操作、生产 egress/DNS rebinding 防护、流式协议、成本计量或多租户调度，不得标记为生产可用；模型输出始终只能是 `INFERENCE`。
+
+## 23. 静态结果与 loopback Provider 修正（2026-07-25）
+
+- 修复 Spring Boot loader 类名误报：有效 classfile 不再仅因类名包含 `File`、`Path`、`Exec` 等词生成 sink；class-name sink/dependency 规则只保留给元数据无法解析时的显式降级。
+- 修复静态推断 severity 误导：`UNBOUND` 信号固定为 `info`；已绑定入口的静态 file/command 信号最高为 `low`/`medium`，不再把无路径、无动态证据的名称命中显示为 `high/critical`。
+- Provider endpoint 允许 OpenAI Chat/Anthropic Messages 使用 loopback HTTP，满足本机代理场景；非 loopback 地址仍强制 HTTPS，并继续拒绝 userinfo/query/fragment 和重定向。
+- 旧 scan 是不可变历史快照，不会被后台改写；用户需要重新扫描才能看到修正后的结果。

@@ -1412,10 +1412,13 @@ public final class ControlPlaneServer implements AutoCloseable {
                     .findFirst().orElse(null);
             String entryId = linkedEntry == null ? "entry-unbound" : linkedEntry.id();
             String route = linkedEntry == null ? "UNBOUND" : linkedEntry.route();
-            String severity = "COMMAND".equalsIgnoreCase(sink.category()) ? "critical"
-                    : "FILE".equalsIgnoreCase(sink.category()) ? "high" : "medium";
+            // A class-name/static signal is not an exploitability verdict. In
+            // particular, an unbound sink has no demonstrated path from an entrypoint.
+            String severity = linkedEntry == null ? "info"
+                    : "COMMAND".equalsIgnoreCase(sink.category()) ? "medium"
+                    : "FILE".equalsIgnoreCase(sink.category()) ? "low" : "info";
             String title = "Potential " + sink.category().toLowerCase(Locale.ROOT)
-                    + " sink (static inference)";
+                    + " signal (static inference)";
             List<String> refs = sink.evidenceRefs();
             findings.add(new ApiDtos.FindingDto(ApiDtos.SCHEMA_VERSION, projectId, descriptor.sha256(), scanId,
                     "finding-" + scanId + "-" + (++index), title, severity, ApiDtos.STATIC_INFERRED,

@@ -105,6 +105,10 @@ SSE 客户端通过 `Last-Event-ID` 请求头断线续接。事件包含 `id`、
 
 当前限制：默认启动器只绑定 loopback；项目、制品元数据、扫描结果、Provider、角色、AI job 和审计已进入 SQLite，但幂等窗口、SSE 历史、Worker 任务和动态 trace 仍是进程内状态。操作员是本地 PAT/RBAC，尚无 SSO、HttpOnly session 或多租户隔离。字节码调用边是无 classpath 展开的保守事实，不是完整数据流。OpenAI Chat/Anthropic Messages 已支持 inventory 与有界工具循环，但仍是本地单节点首版，未做真实供应商互操作和生产出站网关验收；模型结论只允许 `INFERENCE`。动态闭环目前仅为受控 Spring fixture，结论固定为 `DYNAMIC_SUSPECTED`；外部制品动态执行保持禁用。
 
+静态 class-name 规则只在 classfile 无法正常解析时作为降级信号；有效 Spring Boot loader/framework 类不会再因名称包含 `File`、`Path`、`Exec` 等词生成 sink。静态信号不等于漏洞：未绑定入口的信号为 `info`，绑定入口的 file/command 信号最高分别为 `low`/`medium`，只有后续动态证据才能提高判断等级。
+
+远端 OpenAI/Anthropic Provider 必须使用 HTTPS；为支持本机代理和兼容网关，显式协议也允许 `http://localhost`、`http://127.0.0.1` 或 IPv6 loopback。明文 HTTP 绝不允许指向非 loopback 地址。
+
 GUI 采用 React/TypeScript，默认亮色并支持持久化暗色主题，已接通项目选择/创建/删除、文件选择与分块制品上传、兼容路径登记、扫描策略、执行时间线、结果、Provider、模型 inventory、AI 四角色和有界 AI job；真实模式失败不会伪造成功或回退 Demo。
 
 前端原型位于 `frontend/`：

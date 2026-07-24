@@ -26,7 +26,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Production HTTPS-only, no-redirect transport for bounded provider chat calls. */
+/** Remote-HTTPS/loopback-HTTP, no-redirect transport for bounded provider chat calls. */
 public final class ProviderChatTransport implements ChatTransport {
     private static final int MAX_KEY_BYTES = 4_096;
     private final HttpClient client;
@@ -58,9 +58,6 @@ public final class ProviderChatTransport implements ChatTransport {
             throw failure("PROVIDER_PROTOCOL_UNSUPPORTED");
         }
         URI base = ProviderContracts.validatedEndpoint(provider.endpoint(), provider.kind());
-        if (!"https".equalsIgnoreCase(base.getScheme())) {
-            throw failure("HTTPS_REQUIRED");
-        }
         ProviderProtocol protocol = provider.kind().protocol();
         URI target = endpoint(base, protocol);
         byte[] key = Objects.requireNonNull(credential, "credential").clone();
@@ -129,7 +126,7 @@ public final class ProviderChatTransport implements ChatTransport {
         String path = protocol == ProviderProtocol.OPENAI_CHAT
                 ? "/v1/chat/completions" : "/v1/messages";
         try {
-            return new URI("https", null, base.getHost(), base.getPort(), path, null, null);
+            return new URI(base.getScheme(), null, base.getHost(), base.getPort(), path, null, null);
         } catch (Exception impossible) {
             throw failure("INVALID_ENDPOINT");
         }

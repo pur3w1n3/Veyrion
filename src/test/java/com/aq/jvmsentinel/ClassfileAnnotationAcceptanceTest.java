@@ -79,8 +79,8 @@ public final class ClassfileAnnotationAcceptanceTest {
                 "permission matrix");
         check(result.dependencyMap().accesses().stream().anyMatch(value -> value.kind().equals("DATABASE")),
                 "class-name/config dependency inference regression");
-        check(result.sinkCatalog().sinks().stream().anyMatch(value -> value.category().equals("FILE")),
-                "class-name sink inference regression");
+        check(result.sinkCatalog().sinks().isEmpty(),
+                "valid classfiles must not become sinks from framework/application class names alone");
         check(result.entryCatalog().evidence().stream().noneMatch(
                 item -> item.summary().contains("fixture-secret")), "configuration redaction regression");
 

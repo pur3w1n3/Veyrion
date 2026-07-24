@@ -359,3 +359,9 @@ Agent 使用 startup-only Byte Buddy 插桩，不修改 bootstrap class：Spring
 - 生产传输仅允许经过 Provider 边界验证的 HTTPS endpoint，禁止重定向，并限制连接、请求、响应和读取时间。凭据只在最短解密作用域内进入 header；响应原始字节在解析后清零。
 - 当前工具只读取已持久化扫描的入口、依赖、sink 和证据摘要，不能执行制品、联网、调用 shell、反编译或创建动态任务。持久化只保留状态、停止原因、请求 ID、耗时、轮次、工具决策摘要和脱敏截断的 `INFERENCE`。
 - 当前仍是本地单节点、进程内执行器，未完成真实供应商互操作、生产 egress/DNS rebinding 防护、流式协议、成本计量或多租户调度；Azure/LOCAL 聊天保持 disabled。
+
+## 19. 静态信号与本地 Provider 兼容边界
+
+- 类名包含 `File`、`Path`、`Exec` 等词不是 sink 事实。class-name 规则只对无法解析有效 classfile 元数据的对象降级启用；可正常解析的 Spring Boot loader、框架类和应用类不会仅凭名称生成 sink。
+- 静态发现的 severity 表示排查优先级，不表示漏洞严重度。没有入口绑定的信号固定为 `info`；静态绑定的 file/command 信号最高为 `low`/`medium`，不得显示为 `high/critical`。
+- OpenAI Chat 与 Anthropic Messages 的非 loopback endpoint 仍强制 HTTPS。为支持用户本机的协议代理，HTTP 只允许精确 loopback host，仍拒绝 userinfo、query、fragment、重定向和所有非 loopback 明文地址。
