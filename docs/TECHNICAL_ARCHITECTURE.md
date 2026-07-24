@@ -325,3 +325,19 @@ Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约�
 2. **Sandbox Pack（可选）**：以 digest-pinned Docker Compose 提供 Linux Worker/OpenSandbox。Desktop Core 通过版本化 Worker 合约连接；健康或 attestation 不通过时动态能力关闭。
 
 该拆分满足无 Docker 的静态开箱使用，也保留强化动态隔离。Compose 只提供部署一致性，不自动成为恶意制品安全边界；普通 runc 仍只能运行受控 fixture。多平台产物必须在对应 OS/架构 CI 构建、签名并生成 SBOM。GraalVM Native Image 待反射、JNI 与插件契约稳定后另行评估。
+
+## 17. 外部 Spring Boot JAR 动态分析首版
+
+外部制品采用“原始事实—派生理解—原始制品重放”的三层结构：
+
+1. classfile/事实索引定位入口、调用点和依赖；
+2. Vineflower/CFR 派生视图与 AI `HarnessPlan` 只用于输入和状态规划，不能编译为替代目标；
+3. harness 只能链接 digest-verified 原始 JAR，最终观察来自强化沙箱中的原始字节码。
+
+`ExternalArtifactTaskExecutor` 只消费内部 task scope 和 artifact catalog。执行前复核文件身份、大小、ZIP signature 和 SHA-256；OpenSandbox 请求只携带内容摘要引用，不泄露宿主路径。命令、Agent 路径、runtime image、UID/GID、tmpfs、网络和预算由部署策略固定。外部任务必须使用 `HARDENED_GVISOR` 或 `HARDENED_KATA`，并与 P0 release decision 的镜像/capability 一致。
+
+Agent 使用 startup-only Byte Buddy 插桩，不修改 bootstrap class：Spring mapping/Servlet 与 JDBC implementation 采用方法 Advice，JDK HTTP/文件/进程采用应用调用点插桩。事件区分 `RUNTIME_OBSERVED`、`AGENT_INSTRUMENTED`、`APPLICATION_REPORTED`，并回指 caller class、method descriptor、target 与 invocation ordinal。Agent 与目标同 JVM，恶意目标理论上可以干扰或伪造进程内状态，因此 Agent 永远不是安全或不可篡改边界；Worker 负责 trace 预算、摘要链、完整性和双次重放。
+
+替身层仅提供 loopback 固定 HTTP route、精确 SQL 规则结果、授权 tmpfs 文件和默认拒绝的进程模拟。每个结果绑定项目/制品/扫描/任务、policy digest、sequence、provenance、executed、预算与 stop reason；完整 transcript 有稳定摘要。替身不允许外部转发、真实 JDBC URL、宿主路径或任意进程。
+
+外部能力发布前必须具备最近 30 天内、由受信 verifier 验证的完整 P0 证据：网络、DNS、metadata、宿主挂载、Docker socket、非 root、只读根、capability、资源耗尽、trace 篡改、Agent 缺失与沙箱逃逸套件。当前仓库只实现门禁和 mock 验收，未执行真实 gVisor/Kata 逃逸测试，故公共 health/API 仍应保持外部动态执行 disabled。

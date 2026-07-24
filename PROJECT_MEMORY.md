@@ -219,3 +219,15 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 幂等窗口、SSE 历史、Worker 任务、租约和动态 trace 仍为内存状态；SQLite 是本地单节点，不是生产多租户数据库。
 - 审计事件已持久化且脱敏，但尚无独立签名 checkpoint、禁止 UPDATE/DELETE 的数据库门禁或远端不可变归档。
 - 真实 LLM、反编译隔离 Worker、完整调用图/污点、内容寻址对象存储、生产 SSO/session、真实 OpenSandbox 部署和用户制品强化沙箱仍未完成；这些能力不得在 UI 或文档中标记为已验证。
+
+## 20. 外部 Spring Boot JAR 动态分析契约（2026-07-24，根 Agent 审计通过）
+
+- 决策不是“Agent 或反编译”二选一：原始 classfile 是事实源，隔离反编译与 AI 只生成结构化输入/harness，最终裁决必须在强化沙箱中调用原始 digest-verified JAR。
+- 新增外部制品执行器：只接受内部 task scope 与 artifact catalog，执行前复核文件身份/大小/ZIP signature/SHA-256；固定 Agent/JAR 路径、非 root UID/GID、deny-all 网络、只读制品、受控 tmpfs 和资源预算，无宿主执行 fallback。Sandbox 请求只发送 `sha256:` 内容引用，不发送宿主 `file://` 路径。
+- 外部任务只允许 `HARDENED_GVISOR`/`HARDENED_KATA`，并要求与 P0 release decision 的 runtime image/capability 一致。release gate 必须覆盖网络、DNS、metadata、宿主挂载、Docker socket、root/文件系统/capability、资源耗尽、trace 篡改、Agent 缺失和 escape suite，证据超过 30 天或未验证即拒绝。
+- Agent 模块引入并 relocation Byte Buddy 1.18.11，采用 startup-only 插桩：Spring mapping/Servlet、JDBC implementation 与应用侧 JDK HTTP/文件/进程调用点。事件新增 `AGENT_INSTRUMENTED` 并回指 caller method descriptor、target 和 invocation ordinal；bootstrap/JNI/反射等盲区明确上报。Agent 与目标同 JVM，来源仍可被恶意目标干扰，只能是 `DYNAMIC_SUSPECTED`。
+- 新增固定 HTTP、精确 SQL、tmpfs 文件和默认拒绝进程的依赖替身；每个结果绑定 scope/policy/sequence/provenance/executed/budget/stop reason，并生成脱敏稳定 transcript 摘要。SQL 归一化保留引号内字面量，避免跨语义规则误匹配。
+- 新增 Vineflower 主/CFR 校验的隔离 Worker 契约以及只链接原始 JAR 的 `HarnessPlan`/javac 边界；本轮未捆绑或实际运行反编译器，也未启用真实模型。
+- 外部 trace 已接入严格 Agent JSONL converter、Worker trace 提交和公共路径/证据投影；双次重放绑定原始 JAR、Agent、runtime image、harness、替身 transcript 和 outcome。即使匹配也只形成 `DYNAMIC_SUSPECTED` 候选，不生成 `VERIFIED`。
+- 根 Maven 编译、11 个相关 main-style 验收、Agent Maven clean/test/package 和重定位后 packaged `-javaagent` 验收通过；IDE lint 无错误。真实 OpenSandbox/gVisor/Kata、协议级数据库替身、公开外部执行 API 和真实恶意样本仍未验收，外部动态能力不得对用户标记为 enabled。
+- 分阶段 Git 备份：`a17755f`（自动 Agent 插桩）、`fc69d5d`（外部执行、替身、反编译/harness、重放与发布门禁）。

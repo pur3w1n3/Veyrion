@@ -132,9 +132,19 @@ VITE_API_TOKEN=local-demo
 - Sandbox Pack 使用 Docker Compose 提供可选 Linux Worker/OpenSandbox；缺少 Docker 时静态审计仍可用，动态能力保持 disabled。
 - GraalVM Native Image 待 DTO、反射和插件边界稳定后再评估，不作为首发唯一产物。
 
+## 外部 Spring Boot JAR 动态分析边界
+
+仓库已实现首版内部执行与证据契约，但尚未通过公共 API 开放：
+
+- `ExternalArtifactTaskExecutor` 只接受内部登记、执行前重新校验 SHA-256 的 Spring Boot JAR；运行时镜像、Agent、命令、挂载和 capability 不能由浏览器提供。
+- 外部制品只允许 `HARDENED_GVISOR`/`HARDENED_KATA`，且必须先通过版本化 P0 release evidence gate；普通 Docker/runc 仍只允许可信 fixture。
+- 独立 Agent 使用启动期 Byte Buddy 插桩观测 Spring/Servlet、JDBC、HTTP client、文件和进程调用；事件回指 caller method descriptor 与调用序号，仍统一为 `DYNAMIC_SUSPECTED`。
+- HTTP/JDBC/文件/进程替身具有固定规则、来源、预算、脱敏 transcript 和完整摘要；进程默认拒绝。Vineflower/CFR 和 AI harness 当前只有安全 Worker/命令/结果契约，未捆绑真实反编译器或启用模型调用。
+- 双次重放必须绑定原始 JAR、Agent、运行时镜像、harness、替身 transcript 和 trace 摘要；匹配结果也只形成候选动态证据，不自动升级为 `VERIFIED`。
+
 ## 明确未实现
 
-- 没有用户导入制品的动态执行、强化运行时发布认证、数据库/HTTP 真实替身或真实漏洞利用；
+- 没有真实 OpenSandbox/gVisor/Kata 部署验收、公开外部执行入队 API、真实反编译器镜像、协议级数据库替身或真实漏洞利用；
 - 没有真实 LLM 调用；当前 AI job 只展示受证据约束的数据流并明确阻断；
 - 没有生产级 SSO/session、多租户隔离、Worker/trace 持久化或完整审计防篡改链；
 - 注解入口和类名推断的入口/sink 均为 `STATIC_INFERRED`；权限只作为前置条件保留，不能据此声称匿名可达、权限绕过或漏洞已验证。
