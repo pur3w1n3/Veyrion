@@ -159,3 +159,12 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 新增 `ClassfileAnnotationAcceptanceTest`，用 `JavaCompiler` 构建同名注解 fixture 后只读取产物；以 5 个预期 Spring MVC method/route 做精确集合基准，并覆盖参数、权限、无注解类不误报、畸形/超限 class、配置脱敏和辅助规则回归。
 - 根 Agent 已逐文件审阅解析器、读取边界、服务接入、测试和文档，并使用 IntelliJ JBR 21 复验 `mvn -Dmaven.repo.local=.m2 test`、`AcceptanceTest`、`ClassfileAnnotationAcceptanceTest`、`ControlPlaneAcceptanceTest`，全部通过；IDE lint 无错误。
 - 审计结论仅接受为“受限静态注解切片”。5/5 合成 fixture 不代表真实制品召回率，仍需按 Spring 版本、组合注解和授权样本扩大基准；不能标记为完整 M1 或生产可用。
+
+## 13. OpenSandbox Worker 决策（2026-07-24）
+
+- 动态执行采用 OpenSandbox 协议作为可插拔后端；Veyrion 控制任务授权、租约、资源预算、证据状态和不可变 trace，OpenSandbox 只提供生命周期与隔离执行面。
+- 后端能力分为 `STATIC_ONLY`、`FIXTURE_RUNC`、`HARDENED_GVISOR`、`HARDENED_KATA`。普通 runc 只允许仓库内可信 fixture，不能运行用户导入的闭源制品。
+- Windows 只作为 Control Plane/开发宿主，动态任务运行在 Linux Worker。强化运行时未通过 P0 网络/DNS、宿主路径、非 root、只读根、资源耗尽和逃逸测试前，health 必须保持 `DYNAMIC_DISABLED` 并 fail-closed。
+- Worker 合约必须版本化并绑定项目、制品摘要、扫描和任务四元组；trace 采用带前序 SHA-256 的追加链。GUI token、Worker token 和 OpenSandbox API key 相互隔离。
+- JVM Agent 是观测层而不是安全边界。首个动态切片只在受控 fixture 上产出 `DYNAMIC_SUSPECTED`；在强化沙箱和可重放证据完成前不得生成 `VERIFIED`。
+- OpenSandbox 本地开发仍依赖 Docker；后续可替换为其他兼容后端，但不得静默降级到宿主 Java 子进程执行外部制品。

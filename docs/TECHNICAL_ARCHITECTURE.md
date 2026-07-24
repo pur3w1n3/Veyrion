@@ -279,3 +279,18 @@ Control Plane 与 Worker 之间应使用版本化事件，而不是共享内部�
 ## 12. AI 治理与提示注入防护
 
 Agent Gateway 对模型、工具和提示模板做版本登记；模型输出必须经过 JSON Schema 校验、权限检查和事实引用校验。代码中的注释、字符串、接口返回内容全部标为“不可信上下文”，不得覆盖系统策略。模型不可用或输出不合规时，系统应回退到静态规则和人工待审队列，而不是阻塞或自动扩大权限。
+
+## 13. OpenSandbox Worker 决策
+
+动态执行后端采用可替换的 OpenSandbox 协议适配器，使用其 `/v1` 生命周期 API 和 execd 执行面。Veyrion 自身持有任务授权、租约、资源预算、证据和验证状态；OpenSandbox 只负责隔离环境生命周期，不能反向扩大扫描策略。
+
+后端能力必须显式分级：
+
+- `STATIC_ONLY`：没有可用 Worker，拒绝动态执行；
+- `FIXTURE_RUNC`：普通 runc，仅可运行仓库内受控测试 fixture；
+- `HARDENED_GVISOR`：通过 gVisor 运行时自检和安全门槛；
+- `HARDENED_KATA`：通过 Kata/微虚拟机运行时自检和安全门槛。
+
+Windows 可作为 Control Plane 和开发宿主，动态任务运行在 OpenSandbox 管理的 Linux Worker。普通 Docker/runc 不能作为恶意闭源制品的安全边界；只有强化运行时完成网络/DNS、宿主路径、非 root、只读根、资源耗尽和逃逸测试后，才允许外部制品执行。在此之前 health 必须报告 `DYNAMIC_DISABLED`，失败时退回静态分析而不是降级到不安全执行。
+
+Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约、checkpoint 和 trace chunk 都绑定 `projectId`、`artifactDigest`、`scanId`、`taskId`，运行时轨迹以 SHA-256 前序摘要链追加提交。GUI token、Worker token、OpenSandbox API key 和沙箱内凭据相互隔离；任何来自制品、模型或前端的字段都不能修改运行时能力等级、网络策略或挂载范围。
