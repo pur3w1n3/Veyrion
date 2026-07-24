@@ -46,11 +46,22 @@ final class EventWriter implements AutoCloseable {
         maxEvents = config.maxEvents;
     }
 
-    synchronized boolean write(String eventType, String className, String methodName, Map<String, String> detail) {
+    boolean writeObserved(String eventType, String className, String methodName, Map<String, String> detail) {
+        return write(eventType, "RUNTIME_OBSERVED", className, methodName, detail);
+    }
+
+    boolean writeInstrumented(String eventType, String className, String methodName, Map<String, String> detail) {
+        return write(eventType, "AGENT_INSTRUMENTED", className, methodName, detail);
+    }
+
+    boolean writeApplication(String eventType, String className, String methodName, Map<String, String> detail) {
+        return write(eventType, "APPLICATION_REPORTED", className, methodName, detail);
+    }
+
+    private synchronized boolean write(String eventType, String provenanceKind, String className,
+                                       String methodName, Map<String, String> detail) {
         if (stopped.get()) return false;
         Map<String, String> sanitizedDetail = sanitizeDetail(detail);
-        String provenanceKind = "AGENT_STARTED".equals(eventType) || "CLASS_LOAD".equals(eventType)
-                ? "RUNTIME_OBSERVED" : "APPLICATION_REPORTED";
         String line = "{"
                 + "\"schemaVersion\":1,"
                 + "\"sequence\":" + sequence + ","

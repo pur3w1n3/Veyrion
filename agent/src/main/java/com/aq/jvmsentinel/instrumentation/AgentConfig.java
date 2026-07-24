@@ -4,6 +4,7 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
@@ -17,17 +18,24 @@ final class AgentConfig {
     private static final long MAX_MAX_BYTES = 64L * 1024 * 1024;
     private static final int DEFAULT_MAX_EVENTS = 10_000;
     private static final int MAX_MAX_EVENTS = 100_000;
+    private static final List<String> BUILT_IN_EXCLUDES = List.of(
+            "com/aq/jvmsentinel/instrumentation/",
+            "net/bytebuddy/",
+            "java/", "javax/", "jdk/", "sun/", "com/sun/");
 
     final Path traceFile;
     final long maxBytes;
     final int maxEvents;
     final String classPrefix;
+    final List<String> excludedPrefixes;
 
-    private AgentConfig(Path traceFile, long maxBytes, int maxEvents, String classPrefix) {
+    private AgentConfig(Path traceFile, long maxBytes, int maxEvents, String classPrefix,
+                        List<String> excludedPrefixes) {
         this.traceFile = traceFile;
         this.maxBytes = maxBytes;
         this.maxEvents = maxEvents;
         this.classPrefix = classPrefix;
+        this.excludedPrefixes = excludedPrefixes;
     }
 
     static AgentConfig parse(String arguments) {
@@ -57,13 +65,35 @@ final class AgentConfig {
             throw new IllegalArgumentException("invalid classPrefix");
         }
         if (!classPrefix.isEmpty() && !classPrefix.endsWith("/")) classPrefix += "/";
+        List<String> excludedPrefixes = new java.util.ArrayList<>(BUILT_IN_EXCLUDES);
+        String configuredExcludes = values.get("excludePrefixes");
+        if (configuredExcludes != null) {
+            for (String prefix : configuredExcludes.split(";", -1)) {
+                String normalized = prefix.replace('.', '/');
+                if (normalized.isEmpty() || normalized.length() > 200
+                        || !CLASS_PREFIX.matcher(normalized).matches()) {
+                    throw new IllegalArgumentException("invalid excludePrefixes");
+                }
+                if (!normalized.endsWith("/")) normalized += "/";
+                excludedPrefixes.add(normalized);
+            }
+        }
 
         Path traceFile = directory.resolve(TRACE_FILE_NAME);
         if (Files.exists(traceFile, LinkOption.NOFOLLOW_LINKS)
                 && (!Files.isRegularFile(traceFile, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(traceFile))) {
             throw new IllegalArgumentException("trace output must be a regular non-link file");
         }
-        return new AgentConfig(traceFile, maxBytes, maxEvents, classPrefix);
+        return new AgentConfig(traceFile, maxBytes, maxEvents, classPrefix, List.copyOf(excludedPrefixes));
+    }
+
+    boolean includes(String binaryName) {
+        String internalName = binaryName.replace('.', '/');
+        if (!classPrefix.isEmpty() && !internalName.startsWith(classPrefix)) return false;
+        for (String prefix : excludedPrefixes) {
+            if (internalName.startsWith(prefix)) return false;
+        }
+        return true;
     }
 
     private static Map<String, String> parseArguments(String arguments) {
@@ -77,7 +107,8 @@ final class AgentConfig {
             }
             String key = entry.substring(0, separator);
             String value = entry.substring(separator + 1);
-            if (!key.equals("maxBytes") && !key.equals("maxEvents") && !key.equals("classPrefix")) {
+            if (!key.equals("maxBytes") && !key.equals("maxEvents") && !key.equals("classPrefix")
+                    && !key.equals("excludePrefixes")) {
                 throw new IllegalArgumentException("unsupported agent argument: " + key);
             }
             if (values.putIfAbsent(key, value) != null) {

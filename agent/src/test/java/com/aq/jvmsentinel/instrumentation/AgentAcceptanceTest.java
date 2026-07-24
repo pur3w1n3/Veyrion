@@ -1,5 +1,7 @@
 package com.aq.jvmsentinel.instrumentation;
 
+import com.aq.fixture.AutomaticFixture;
+
 import java.io.InputStream;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
@@ -25,14 +27,17 @@ public final class AgentAcceptanceTest {
     }
 
     public static void main(String[] args) throws Exception {
-        Path work = Files.createTempDirectory("veyrion-agent-acceptance-");
+        Path work = Path.of("target", "agent-acceptance-work").toAbsolutePath().normalize();
+        deleteRecursively(work);
+        Files.createDirectories(work);
         if (args.length > 1) throw new IllegalArgumentException("expected at most one packaged agent path");
         Path agentJar = args.length == 1
                 ? Path.of(args[0]).toAbsolutePath()
                 : createAgentJar(work.resolve("veyrion-agent-test.jar"));
         check(Files.isRegularFile(agentJar), "agent jar does not exist: " + agentJar);
 
-        verifyObservation(agentJar, work.resolve("normal"));
+        verifyAutomaticObservation(agentJar, work.resolve("automatic"));
+        verifyExplicitProbeProvenance(agentJar, work.resolve("explicit"));
         verifyBudgetStop(agentJar, work.resolve("budget"));
         verifyMalformedArgumentsFailClosed(agentJar, work.resolve("malformed"));
         verifyMissingAuthorizationFailsClosed(agentJar, work.resolve("unauthorized"));
@@ -40,22 +45,22 @@ public final class AgentAcceptanceTest {
         System.out.println("AgentAcceptanceTest: PASS");
     }
 
-    private static void verifyObservation(Path agentJar, Path traceDirectory) throws Exception {
+    private static void verifyAutomaticObservation(Path agentJar, Path traceDirectory) throws Exception {
         Files.createDirectory(traceDirectory);
-        ProcessResult result = runFixture(agentJar, traceDirectory,
-                "maxEvents=100,maxBytes=65536,classPrefix=com.aq.jvmsentinel.instrumentation", true);
+        ProcessResult result = runFixture(agentJar, traceDirectory, AutomaticFixture.class,
+                "maxEvents=100,maxBytes=65536,classPrefix=com.aq.fixture", true);
         check(result.exitCode == 0, "instrumented fixture failed: " + result.output);
-        check(result.output.contains("Fixture: PASS"), "fixture did not complete");
+        check(result.output.contains("AutomaticFixture: PASS"), "automatic fixture did not complete");
 
         Path trace = traceDirectory.resolve(AgentConfig.TRACE_FILE_NAME);
         List<String> lines = Files.readAllLines(trace, StandardCharsets.UTF_8);
         check(!lines.isEmpty(), "trace must not be empty");
         check(lines.get(0).contains("\"eventType\":\"AGENT_STARTED\""), "premain startup event is missing");
         check(any(lines, "\"eventType\":\"CLASS_LOAD\"")
-                        && any(lines, "AgentAcceptanceTest$Fixture"),
+                        && any(lines, "com.aq.fixture.AutomaticFixture"),
                 "fixture class load was not observed");
-        for (String type : List.of("HTTP", "FILE", "JDBC", "PROCESS")) {
-            check(any(lines, "\"eventType\":\"" + type + "\""), type + " probe is missing");
+        for (String type : List.of("HTTP", "HTTP_CLIENT", "FILE", "JDBC", "PROCESS")) {
+            check(any(lines, "\"eventType\":\"" + type + "\""), type + " automatic event is missing");
         }
         for (int index = 0; index < lines.size(); index++) {
             String line = lines.get(index);
@@ -71,9 +76,27 @@ public final class AgentAcceptanceTest {
         String all = String.join("\n", lines);
         check(lines.get(0).contains("\"provenanceKind\":\"RUNTIME_OBSERVED\""),
                 "agent-owned event provenance is missing");
+        check(lines.stream().filter(line -> List.of("HTTP", "HTTP_CLIENT", "FILE", "JDBC", "PROCESS")
+                                .stream().anyMatch(type -> line.contains("\"eventType\":\"" + type + "\"")))
+                        .allMatch(line -> line.contains("\"provenanceKind\":\"AGENT_INSTRUMENTED\"")),
+                "automatic events must be agent-instrumented");
+        check(!any(lines, "\"provenanceKind\":\"APPLICATION_REPORTED\""),
+                "automatic fixture must not rely on explicit probes");
+        check(any(lines, "\"bootstrapClasses\":\"UNSUPPORTED_FAIL_EXPLICIT\""),
+                "bootstrap limitation must be explicit");
+    }
+
+    private static void verifyExplicitProbeProvenance(Path agentJar, Path traceDirectory) throws Exception {
+        Files.createDirectory(traceDirectory);
+        ProcessResult result = runFixture(agentJar, traceDirectory, Fixture.class,
+                "maxEvents=100,maxBytes=65536", true);
+        check(result.exitCode == 0, "explicit fixture failed: " + result.output);
+        List<String> lines = Files.readAllLines(
+                traceDirectory.resolve(AgentConfig.TRACE_FILE_NAME), StandardCharsets.UTF_8);
         check(lines.stream().filter(line -> line.contains("\"eventType\":\"HTTP\""))
                         .allMatch(line -> line.contains("\"provenanceKind\":\"APPLICATION_REPORTED\"")),
                 "explicit probes must remain application-reported");
+        String all = String.join("\n", lines);
         check(!all.contains("Bearer raw-token"), "authorization value leaked");
         check(!all.contains("database-password"), "password value leaked");
         check(all.contains("[REDACTED]"), "redaction marker is missing");
@@ -84,8 +107,8 @@ public final class AgentAcceptanceTest {
 
     private static void verifyBudgetStop(Path agentJar, Path traceDirectory) throws Exception {
         Files.createDirectory(traceDirectory);
-        ProcessResult result = runFixture(agentJar, traceDirectory,
-                "maxEvents=2,maxBytes=4096,classPrefix=com.aq.jvmsentinel.instrumentation", true);
+        ProcessResult result = runFixture(agentJar, traceDirectory, Fixture.class,
+                "maxEvents=2,maxBytes=4096", true);
         check(result.exitCode == 0, "budget exhaustion must not crash fixture: " + result.output);
         Path trace = traceDirectory.resolve(AgentConfig.TRACE_FILE_NAME);
         List<String> lines = Files.readAllLines(trace, StandardCharsets.UTF_8);
@@ -96,7 +119,7 @@ public final class AgentAcceptanceTest {
 
     private static void verifyMalformedArgumentsFailClosed(Path agentJar, Path traceDirectory) throws Exception {
         Files.createDirectory(traceDirectory);
-        ProcessResult result = runFixture(agentJar, traceDirectory,
+        ProcessResult result = runFixture(agentJar, traceDirectory, Fixture.class,
                 "traceDir=C:/host-controlled,maxEvents=10", true);
         check(result.exitCode != 0, "path-bearing agent parameter must be rejected");
         check(!Files.exists(traceDirectory.resolve(AgentConfig.TRACE_FILE_NAME)),
@@ -105,26 +128,29 @@ public final class AgentAcceptanceTest {
 
     private static void verifyMissingAuthorizationFailsClosed(Path agentJar, Path traceDirectory) throws Exception {
         Files.createDirectory(traceDirectory);
-        ProcessResult result = runFixture(agentJar, traceDirectory, "maxEvents=10", false);
+        ProcessResult result = runFixture(agentJar, traceDirectory, Fixture.class, "maxEvents=10", false);
         check(result.exitCode != 0, "missing host authorization must reject agent startup");
         check(!Files.exists(traceDirectory.resolve(AgentConfig.TRACE_FILE_NAME)),
                 "unauthorized configuration must not create trace output");
     }
 
-    private static ProcessResult runFixture(Path agentJar, Path traceDirectory,
+    private static ProcessResult runFixture(Path agentJar, Path traceDirectory, Class<?> fixtureClass,
                                             String agentArguments, boolean authorize) throws Exception {
         Path java = Path.of(System.getProperty("java.home"), "bin",
                 System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java");
         Path mainClasses = codeSource(VeyrionAgent.class);
         Path testClasses = codeSource(AgentAcceptanceTest.class);
+        Path byteBuddyClasses = codeSource(net.bytebuddy.agent.builder.AgentBuilder.class);
         List<String> command = new ArrayList<>();
         command.add(java.toString());
         command.add("-D" + AgentConfig.TRACE_DIR_PROPERTY + "=" + traceDirectory);
+        command.add("-Dveyrion.fixture.output=" + traceDirectory.resolve("fixture-output.txt"));
         if (authorize) command.add("-D" + AgentConfig.TRACE_DIR_AUTHORIZED_PROPERTY + "=true");
         command.add("-javaagent:" + agentJar + "=" + agentArguments);
         command.add("-cp");
-        command.add(testClasses + System.getProperty("path.separator") + mainClasses);
-        command.add(Fixture.class.getName());
+        command.add(testClasses + System.getProperty("path.separator") + mainClasses
+                + System.getProperty("path.separator") + byteBuddyClasses);
+        command.add(fixtureClass.getName());
 
         Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
         boolean exited = process.waitFor(CHILD_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
@@ -169,6 +195,15 @@ public final class AgentAcceptanceTest {
         return lines.stream().anyMatch(line -> line.contains(fragment));
     }
 
+    private static void deleteRecursively(Path path) throws Exception {
+        if (!Files.exists(path)) return;
+        try (Stream<Path> paths = Files.walk(path)) {
+            for (Path entry : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                Files.delete(entry);
+            }
+        }
+    }
+
     private static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
     }
@@ -177,8 +212,7 @@ public final class AgentAcceptanceTest {
     }
 
     /**
-     * This fixture records process intent only. It never invokes ProcessBuilder, Runtime.exec, a network client,
-     * JDBC driver, or a filesystem mutation beyond the acceptance harness's trace directory.
+     * Explicit-probe fixture kept solely to prove that application calls remain APPLICATION_REPORTED.
      */
     public static final class Fixture {
         private Fixture() {

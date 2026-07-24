@@ -26,13 +26,21 @@ public final class VeyrionAgent {
         try {
             AgentRuntime.install(writer);
             installed = true;
-            if (!writer.write("AGENT_STARTED", VeyrionAgent.class.getName(), entryPoint,
-                    Map.of("captureMode", "CLASS_LOAD_AND_EXPLICIT_PROBES",
-                            "automaticMethodCapture", "false",
-                            "automaticDependencyCapture", "false"))) {
+            if (!writer.writeObserved("AGENT_STARTED", VeyrionAgent.class.getName(), entryPoint,
+                    Map.of("captureMode", "BYTE_BUDDY_STARTUP_INSTRUMENTATION",
+                            "securityBoundary", "false",
+                            "bootstrapTransform", "false"))) {
                 throw new IllegalStateException("agent output budget cannot hold startup event");
             }
-            instrumentation.addTransformer(new ObservationTransformer(config.classPrefix), false);
+            writer.writeObserved("INSTRUMENTATION_CAPABILITY", VeyrionAgent.class.getName(), entryPoint,
+                    Map.of("springServlet", "CONDITIONAL_NON_BOOTSTRAP_METHOD",
+                            "jdbc", "NON_BOOTSTRAP_IMPLEMENTATION_METHOD",
+                            "jdkHttpClient", "APPLICATION_CALL_SITE",
+                            "fileWrite", "APPLICATION_CALL_SITE",
+                            "process", "APPLICATION_CALL_SITE",
+                            "bootstrapClasses", "UNSUPPORTED_FAIL_EXPLICIT"));
+            instrumentation.addTransformer(new ObservationTransformer(config), false);
+            AutomaticInstrumentation.install(instrumentation, config, writer);
         } catch (RuntimeException | Error failure) {
             if (installed) AgentRuntime.uninstall(writer);
             try {

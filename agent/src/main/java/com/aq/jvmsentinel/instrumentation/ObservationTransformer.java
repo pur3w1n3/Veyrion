@@ -4,13 +4,11 @@ import java.lang.instrument.ClassFileTransformer;
 import java.security.ProtectionDomain;
 
 final class ObservationTransformer implements ClassFileTransformer {
-    private static final String AGENT_PACKAGE = "com/aq/jvmsentinel/instrumentation/";
-
-    private final String classPrefix;
+    private final AgentConfig config;
     private final ThreadLocal<Boolean> recording = ThreadLocal.withInitial(() -> false);
 
-    ObservationTransformer(String classPrefix) {
-        this.classPrefix = classPrefix;
+    ObservationTransformer(AgentConfig config) {
+        this.config = config;
     }
 
     @Override
@@ -29,11 +27,6 @@ final class ObservationTransformer implements ClassFileTransformer {
     }
 
     private boolean observed(String className) {
-        if (!classPrefix.isEmpty()) return className.startsWith(classPrefix);
-        return !className.startsWith("java/")
-                && !className.startsWith("javax/")
-                && !className.startsWith("jdk/")
-                && !className.startsWith("sun/")
-                && !className.startsWith(AGENT_PACKAGE);
+        return config.includes(className);
     }
 }
