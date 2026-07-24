@@ -3,8 +3,11 @@ package com.aq.jvmsentinel.analysis;
 import com.aq.jvmsentinel.analysis.ClassMetadata.AnnotationMetadata;
 import com.aq.jvmsentinel.analysis.ClassMetadata.MethodMetadata;
 import com.aq.jvmsentinel.analysis.ClassMetadata.ParameterMetadata;
+import com.aq.jvmsentinel.model.BytecodeFactIndex;
 
-import java.nio.charset.StandardCharsets;
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -28,6 +31,8 @@ final class ClassFileMetadataParser {
     private static final int MAX_TOTAL_ATTRIBUTES = 16_384;
     private static final int MAX_TOTAL_PARAMETERS = 20_000;
     private static final int MAX_VALUE_LENGTH = 512;
+    private static final int MAX_CODE_BYTES = 65_535;
+    private static final int MAX_FACTS = 100_000;
 
     private ClassFileMetadataParser() { }
 
@@ -51,6 +56,13 @@ final class ClassFileMetadataParser {
         private int totalAnnotations;
         private int totalAttributes;
         private int totalParameters;
+        private int totalFacts;
+        private String currentClassName;
+        private final List<BytecodeFactIndex.FieldFact> fieldFacts = new ArrayList<>();
+        private final List<BytecodeFactIndex.MethodFact> methodFacts = new ArrayList<>();
+        private final List<BytecodeFactIndex.MemberAccessFact> memberAccessFacts = new ArrayList<>();
+        private final List<BytecodeFactIndex.CallEdge> callEdges = new ArrayList<>();
+        private final List<BytecodeFactIndex.UnresolvedDynamicFact> unresolvedDynamics = new ArrayList<>();
 
         private Parser(byte[] bytes) {
             input = new Cursor(bytes, 0, bytes.length);
@@ -62,13 +74,15 @@ final class ClassFileMetadataParser {
             int major = input.u2();
             if (major < 45 || major > 100) fail();
             parseConstantPool();
-            input.u2(); // access_flags
+            int accessFlags = input.u2();
             int thisClass = input.u2();
-            input.u2(); // super_class
+            int superClass = input.u2();
             String className = className(thisClass);
+            currentClassName = className;
             int interfaces = bounded(input.u2(), MAX_MEMBERS);
-            input.skip((long) interfaces * 2);
-            skipMembers(input);
+            List<String> interfaceNames = new ArrayList<>(interfaces);
+            for (int i = 0; i < interfaces; i++) interfaceNames.add(className(input.u2()));
+            parseFields(input);
             List<MutableMethod> methods = parseMethods();
             List<AnnotationMetadata> classAnnotations = new ArrayList<>();
             parseAttributes(input, (name, body) -> {
@@ -77,7 +91,11 @@ final class ClassFileMetadataParser {
             if (input.remaining() != 0) fail();
             List<MethodMetadata> resultMethods = new ArrayList<>(methods.size());
             for (MutableMethod method : methods) resultMethods.add(method.freeze());
-            return new ClassMetadata(className, true, classAnnotations, resultMethods);
+            String superName = superClass == 0 ? null : className(superClass);
+            BytecodeFactIndex.ClassFact classFact = new BytecodeFactIndex.ClassFact(
+                    className, superName, interfaceNames, accessFlags, "classfile:" + className);
+            return new ClassMetadata(className, true, classAnnotations, resultMethods, classFact,
+                    fieldFacts, methodFacts, memberAccessFacts, callEdges, unresolvedDynamics);
         }
 
         private void parseConstantPool() {
@@ -92,7 +110,7 @@ final class ClassFileMetadataParser {
                     case 1 -> {
                         int length = input.u2();
                         if (length > MAX_UTF8_BYTES) fail();
-                        constantPool[i] = new String(input.bytes(length), StandardCharsets.UTF_8);
+                        constantPool[i] = decodeModifiedUtf8(input.bytes(length));
                     }
                     case 3, 4 -> {
                         constantPool[i] = input.u4();
@@ -102,24 +120,24 @@ final class ClassFileMetadataParser {
                         if (++i >= count) fail();
                     }
                     case 7, 8, 16, 19, 20 -> constantPool[i] = input.u2();
-                    case 9, 10, 11, 12, 17, 18 -> {
-                        input.u2();
-                        input.u2();
-                    }
-                    case 15 -> {
-                        input.u1();
-                        input.u2();
-                    }
+                    case 9, 10, 11, 12, 17, 18 ->
+                            constantPool[i] = new CpPair(input.u2(), input.u2());
+                    case 15 -> constantPool[i] = new CpPair(input.u1(), input.u2());
                     default -> fail();
                 }
             }
         }
 
-        private void skipMembers(Cursor cursor) {
+        private void parseFields(Cursor cursor) {
             int count = bounded(cursor.u2(), MAX_MEMBERS);
             for (int i = 0; i < count; i++) {
-                cursor.skip(6);
-                parseAttributes(cursor, (name, body) -> { });
+                int access = cursor.u2();
+                String name = utf(cursor.u2());
+                String descriptor = utf(cursor.u2());
+                addFact();
+                fieldFacts.add(new BytecodeFactIndex.FieldFact(currentClassName, name, descriptor, access,
+                        "classfile:" + currentClassName + "#" + name + ":" + descriptor));
+                parseAttributes(cursor, (attributeName, body) -> { });
             }
         }
 
@@ -127,8 +145,11 @@ final class ClassFileMetadataParser {
             int count = bounded(input.u2(), MAX_MEMBERS);
             List<MutableMethod> methods = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
-                input.u2(); // access_flags
-                MutableMethod method = new MutableMethod(utf(input.u2()), utf(input.u2()));
+                int accessFlags = input.u2();
+                MutableMethod method = new MutableMethod(utf(input.u2()), utf(input.u2()), accessFlags, i);
+                addFact();
+                methodFacts.add(new BytecodeFactIndex.MethodFact(currentClassName, method.name, method.descriptor,
+                        accessFlags, "classfile:" + currentClassName + "#" + method.name + method.descriptor));
                 int parameters = parameterCount(method.descriptor);
                 if ((long) totalParameters + parameters > MAX_TOTAL_PARAMETERS) fail();
                 totalParameters += parameters;
@@ -141,11 +162,207 @@ final class ClassFileMetadataParser {
                         parseParameterAnnotations(body, method);
                     } else if (name.equals("MethodParameters")) {
                         parseMethodParameters(body, method);
+                    } else if (name.equals("Code")) {
+                        parseCode(body, method);
                     }
                 });
+                if ((accessFlags & 0x0100) != 0) {
+                    BytecodeFactIndex.InstructionEvidence location = new BytecodeFactIndex.InstructionEvidence(
+                            currentClassName, method.name, method.descriptor, -1, method.methodOrdinal);
+                    addFact();
+                    unresolvedDynamics.add(new BytecodeFactIndex.UnresolvedDynamicFact(
+                            "JNI", "native method implementation is outside the classfile", location));
+                }
                 methods.add(method);
             }
             return methods;
+        }
+
+        private void parseCode(Cursor body, MutableMethod method) {
+            body.u2(); // max_stack
+            body.u2(); // max_locals
+            long declaredLength = body.u4();
+            if (declaredLength > MAX_CODE_BYTES) fail();
+            Cursor code = body.slice(declaredLength);
+            scanInstructions(code, method);
+            int exceptionHandlers = bounded(body.u2(), MAX_MEMBERS);
+            body.skip((long) exceptionHandlers * 8);
+            parseAttributes(body, (attributeName, nested) -> { });
+            if (body.remaining() != 0) fail();
+        }
+
+        private void scanInstructions(Cursor code, MutableMethod method) {
+            int ordinal = 0;
+            while (code.remaining() > 0) {
+                int offset = code.position();
+                int opcode = code.u1();
+                BytecodeFactIndex.InstructionEvidence location = new BytecodeFactIndex.InstructionEvidence(
+                        currentClassName, method.name, method.descriptor, offset, ordinal++);
+                switch (opcode) {
+                    case 178, 179, 180, 181 -> {
+                        int reference = code.u2();
+                        addMemberAccess(opcode == 178 || opcode == 180
+                                        ? BytecodeFactIndex.AccessKind.FIELD_READ
+                                        : BytecodeFactIndex.AccessKind.FIELD_WRITE,
+                                reference, location, false);
+                    }
+                    case 182, 183, 184 -> {
+                        int reference = code.u2();
+                        BytecodeFactIndex.AccessKind kind = opcode == 182
+                                ? BytecodeFactIndex.AccessKind.INVOKE_VIRTUAL
+                                : opcode == 183 ? BytecodeFactIndex.AccessKind.INVOKE_SPECIAL
+                                : BytecodeFactIndex.AccessKind.INVOKE_STATIC;
+                        addMemberAccess(kind, reference, location, true);
+                    }
+                    case 185 -> {
+                        int reference = code.u2();
+                        code.u1(); // argument count
+                        if (code.u1() != 0) fail();
+                        addMemberAccess(BytecodeFactIndex.AccessKind.INVOKE_INTERFACE,
+                                reference, location, true);
+                    }
+                    case 186 -> {
+                        int reference = code.u2();
+                        if (code.u2() != 0) fail();
+                        addInvokeDynamic(reference, location);
+                    }
+                    case 170 -> skipTableSwitch(code);
+                    case 171 -> skipLookupSwitch(code);
+                    case 196 -> skipWide(code);
+                    default -> code.skip(fixedOperandLength(opcode));
+                }
+            }
+        }
+
+        private void addMemberAccess(BytecodeFactIndex.AccessKind kind, int reference,
+                                     BytecodeFactIndex.InstructionEvidence location, boolean invocation) {
+            MemberReference target = memberReference(reference);
+            addFact();
+            memberAccessFacts.add(new BytecodeFactIndex.MemberAccessFact(
+                    kind, target.owner, target.name, target.descriptor, location));
+            if (!invocation) return;
+            BytecodeFactIndex.EdgeKind edgeKind =
+                    kind == BytecodeFactIndex.AccessKind.INVOKE_STATIC
+                            || kind == BytecodeFactIndex.AccessKind.INVOKE_SPECIAL
+                            ? BytecodeFactIndex.EdgeKind.DIRECT
+                            : BytecodeFactIndex.EdgeKind.CONSERVATIVE_CHA;
+            String limitation = edgeKind == BytecodeFactIndex.EdgeKind.DIRECT
+                    ? "symbolic direct target; class-path resolution not performed"
+                    : "declared receiver target only; overrides and runtime receiver types are not resolved";
+            addFact();
+            callEdges.add(new BytecodeFactIndex.CallEdge(
+                    currentClassName, location.methodName(), location.methodDescriptor(),
+                    target.owner, target.name, target.descriptor, edgeKind, limitation, location));
+            String mechanism = dynamicMechanism(target);
+            if (mechanism != null) {
+                addFact();
+                unresolvedDynamics.add(new BytecodeFactIndex.UnresolvedDynamicFact(
+                        mechanism, "runtime target introduced through " + target.owner + "#" + target.name, location));
+            }
+        }
+
+        private void addInvokeDynamic(int reference, BytecodeFactIndex.InstructionEvidence location) {
+            requireTag(reference, 18);
+            CpPair dynamic = (CpPair) constantPool[reference];
+            NameAndType target = nameAndType(dynamic.second);
+            addFact();
+            memberAccessFacts.add(new BytecodeFactIndex.MemberAccessFact(
+                    BytecodeFactIndex.AccessKind.INVOKE_DYNAMIC, "<dynamic>",
+                    target.name, target.descriptor, location));
+            addFact();
+            callEdges.add(new BytecodeFactIndex.CallEdge(
+                    currentClassName, location.methodName(), location.methodDescriptor(),
+                    "<dynamic>", target.name, target.descriptor, BytecodeFactIndex.EdgeKind.UNRESOLVED,
+                    "invokedynamic bootstrap and runtime target are not executed or resolved", location));
+            addFact();
+            unresolvedDynamics.add(new BytecodeFactIndex.UnresolvedDynamicFact(
+                    "INVOKEDYNAMIC", "bootstrap method index=" + dynamic.first, location));
+        }
+
+        private MemberReference memberReference(int index) {
+            if (index <= 0 || index >= constantTags.length
+                    || (constantTags[index] != 9 && constantTags[index] != 10 && constantTags[index] != 11)) fail();
+            CpPair reference = (CpPair) constantPool[index];
+            NameAndType nameAndType = nameAndType(reference.second);
+            return new MemberReference(className(reference.first), nameAndType.name, nameAndType.descriptor);
+        }
+
+        private NameAndType nameAndType(int index) {
+            requireTag(index, 12);
+            CpPair pair = (CpPair) constantPool[index];
+            return new NameAndType(utf(pair.first), utf(pair.second));
+        }
+
+        private static String dynamicMechanism(MemberReference target) {
+            if (target.owner.equals("java.lang.reflect.Proxy") && target.name.equals("newProxyInstance")) {
+                return "DYNAMIC_PROXY";
+            }
+            if (target.owner.startsWith("java.lang.reflect.")
+                    || target.owner.equals("java.lang.Class") && (target.name.equals("forName")
+                    || target.name.equals("newInstance") || target.name.startsWith("getDeclared")
+                    || target.name.startsWith("getMethod") || target.name.startsWith("getConstructor"))
+                    || target.owner.startsWith("java.lang.invoke.MethodHandle")
+                    || target.owner.equals("java.lang.invoke.MethodHandles$Lookup")) {
+                return "REFLECTION";
+            }
+            if (target.owner.equals("java.lang.System")
+                    && (target.name.equals("load") || target.name.equals("loadLibrary"))) {
+                return "JNI";
+            }
+            return null;
+        }
+
+        private static void skipWide(Cursor code) {
+            int modified = code.u1();
+            if (modified == 132) {
+                code.skip(4);
+            } else if (modified >= 21 && modified <= 25
+                    || modified >= 54 && modified <= 58 || modified == 169) {
+                code.skip(2);
+            } else {
+                fail();
+            }
+        }
+
+        private static void skipTableSwitch(Cursor code) {
+            skipSwitchPadding(code);
+            code.s4(); // default
+            long low = code.s4();
+            long high = code.s4();
+            if (high < low || high - low + 1 > Integer.MAX_VALUE) fail();
+            code.skip((high - low + 1) * 4);
+        }
+
+        private static void skipLookupSwitch(Cursor code) {
+            skipSwitchPadding(code);
+            code.s4(); // default
+            long pairs = code.s4();
+            if (pairs < 0) fail();
+            if (pairs > Integer.MAX_VALUE / 8) fail();
+            code.skip(pairs * 8);
+        }
+
+        private static void skipSwitchPadding(Cursor code) {
+            while (code.position() % 4 != 0) code.u1();
+        }
+
+        private static int fixedOperandLength(int opcode) {
+            return switch (opcode) {
+                case 16, 18, 21, 22, 23, 24, 25, 54, 55, 56, 57, 58, 169, 188 -> 1;
+                case 17, 19, 20, 132,
+                        153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164,
+                        165, 166, 167, 168, 187, 189, 192, 193, 198, 199 -> 2;
+                case 197 -> 3;
+                case 200, 201 -> 4;
+                default -> {
+                    if (opcode < 0 || opcode > 201) fail();
+                    yield 0;
+                }
+            };
+        }
+
+        private void addFact() {
+            if (++totalFacts > MAX_FACTS) fail();
         }
 
         private void parseAttributes(Cursor cursor, AttributeConsumer consumer) {
@@ -284,6 +501,19 @@ final class ClassFileMetadataParser {
             return value;
         }
 
+        private static String decodeModifiedUtf8(byte[] value) {
+            byte[] encoded = new byte[value.length + 2];
+            encoded[0] = (byte) (value.length >>> 8);
+            encoded[1] = (byte) value.length;
+            System.arraycopy(value, 0, encoded, 2, value.length);
+            try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(encoded))) {
+                return input.readUTF();
+            } catch (IOException malformed) {
+                fail();
+                return "";
+            }
+        }
+
         private static String limit(String value) {
             if (value == null) return "";
             StringBuilder safe = new StringBuilder(Math.min(value.length(), MAX_VALUE_LENGTH));
@@ -303,13 +533,17 @@ final class ClassFileMetadataParser {
     private static final class MutableMethod {
         private final String name;
         private final String descriptor;
+        private final int accessFlags;
+        private final int methodOrdinal;
         private final List<AnnotationMetadata> annotations = new ArrayList<>();
         private final List<List<AnnotationMetadata>> parameterAnnotations = new ArrayList<>();
         private final List<String> parameterNames = new ArrayList<>();
 
-        private MutableMethod(String name, String descriptor) {
+        private MutableMethod(String name, String descriptor, int accessFlags, int methodOrdinal) {
             this.name = name;
             this.descriptor = descriptor;
+            this.accessFlags = accessFlags;
+            this.methodOrdinal = methodOrdinal;
         }
 
         private void ensureParameters(int count) {
@@ -322,17 +556,19 @@ final class ClassFileMetadataParser {
             for (int i = 0; i < parameterAnnotations.size(); i++) {
                 parameters.add(new ParameterMetadata(i, parameterNames.get(i), parameterAnnotations.get(i)));
             }
-            return new MethodMetadata(name, descriptor, annotations, parameters);
+            return new MethodMetadata(name, descriptor, accessFlags, annotations, parameters);
         }
     }
 
     private static final class Cursor {
         private final byte[] bytes;
+        private final int start;
         private final int end;
         private int position;
 
         private Cursor(byte[] bytes, int start, int end) {
             this.bytes = bytes;
+            this.start = start;
             this.position = start;
             this.end = end;
             if (start < 0 || end < start || end > bytes.length) fail();
@@ -349,6 +585,10 @@ final class ClassFileMetadataParser {
 
         private long u4() {
             return ((long) u1() << 24) | ((long) u1() << 16) | ((long) u1() << 8) | u1();
+        }
+
+        private int s4() {
+            return (int) u4();
         }
 
         private byte[] bytes(int count) {
@@ -376,10 +616,18 @@ final class ClassFileMetadataParser {
             return end - position;
         }
 
+        private int position() {
+            return position - start;
+        }
+
         private void require(int count) {
             if (count < 0 || count > end - position) fail();
         }
     }
+
+    private record CpPair(int first, int second) { }
+    private record NameAndType(String name, String descriptor) { }
+    private record MemberReference(String owner, String name, String descriptor) { }
 
     private static void fail() {
         throw new MalformedClassFile();

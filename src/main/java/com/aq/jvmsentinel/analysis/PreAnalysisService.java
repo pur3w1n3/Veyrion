@@ -30,9 +30,21 @@ public final class PreAnalysisService {
         List<DependencyAccess> dependencies = new ArrayList<>();
         List<Sink> sinks = new ArrayList<>();
         List<PermissionRequirement> permissions = new ArrayList<>();
+        List<BytecodeFactIndex.ClassFact> classFacts = new ArrayList<>();
+        List<BytecodeFactIndex.FieldFact> fieldFacts = new ArrayList<>();
+        List<BytecodeFactIndex.MethodFact> methodFacts = new ArrayList<>();
+        List<BytecodeFactIndex.MemberAccessFact> memberAccessFacts = new ArrayList<>();
+        List<BytecodeFactIndex.CallEdge> callEdges = new ArrayList<>();
+        List<BytecodeFactIndex.UnresolvedDynamicFact> unresolvedDynamics = new ArrayList<>();
         int index = 0;
         Set<String> classesWithValidAnnotationMetadata = new LinkedHashSet<>();
         for (ClassMetadata metadata : input.classMetadata()) {
+            if (metadata.classFact() != null) classFacts.add(metadata.classFact());
+            fieldFacts.addAll(metadata.fieldFacts());
+            methodFacts.addAll(metadata.methodFacts());
+            memberAccessFacts.addAll(metadata.memberAccessFacts());
+            callEdges.addAll(metadata.callEdges());
+            unresolvedDynamics.addAll(metadata.unresolvedDynamics());
             if (!metadata.annotationMetadataValid()) continue;
             classesWithValidAnnotationMetadata.add(metadata.className());
             index = discoverAnnotatedEntries(metadata, evidence, entries, permissions, index);
@@ -85,8 +97,10 @@ public final class PreAnalysisService {
                         List.of(), List.of(id), 1.0, VerificationStatus.STATIC_INFERRED));
             }
         }
+        BytecodeFactIndex factIndex = new BytecodeFactIndex(classFacts, fieldFacts, methodFacts,
+                memberAccessFacts, callEdges, unresolvedDynamics);
         return new PreAnalysisResult(new EntryCatalog(entries, evidence), new DependencyMap(dependencies),
-                new SinkCatalog(sinks), new PermissionMatrix(permissions));
+                new SinkCatalog(sinks), new PermissionMatrix(permissions), factIndex);
     }
 
     private int discoverAnnotatedEntries(ClassMetadata metadata, List<Evidence> evidence,

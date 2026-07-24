@@ -27,6 +27,7 @@ public final class ArtifactMetadataReader {
     private static final long MAX_TOTAL_CLASS_BYTES = 64L * 1024 * 1024;
     private static final int MAX_TOTAL_METHODS = 100_000;
     private static final int MAX_TOTAL_PARAMETERS = 100_000;
+    private static final int MAX_TOTAL_BYTECODE_FACTS = 1_000_000;
     private static final int MAX_CONFIG_FILES = 256;
     private static final int MAX_CONFIG_LINES = 2_000;
     private static final int MAX_CONFIG_BYTES = 1 * 1024 * 1024;
@@ -61,6 +62,7 @@ public final class ArtifactMetadataReader {
         long totalClassBytes = 0;
         long totalMethods = 0;
         long totalParameters = 0;
+        long totalBytecodeFacts = 0;
         try (ZipFile zip = new ZipFile(descriptor.normalizedPath().toFile())) {
             Enumeration<? extends ZipEntry> entries = zip.entries();
             int entryCount = 0;
@@ -94,8 +96,12 @@ public final class ArtifactMetadataReader {
                     for (ClassMetadata.MethodMetadata method : parsed.methods()) {
                         totalParameters += method.parameters().size();
                     }
+                    totalBytecodeFacts += bytecodeFactCount(parsed);
                     if (totalMethods > MAX_TOTAL_METHODS || totalParameters > MAX_TOTAL_PARAMETERS) {
                         throw new ArtifactValidationException("classfile metadata contains too many members");
+                    }
+                    if (totalBytecodeFacts > MAX_TOTAL_BYTECODE_FACTS) {
+                        throw new ArtifactValidationException("classfile metadata contains too many bytecode facts");
                     }
                     classMetadata.add(parsed);
                     classNames.add(parsed.className());
@@ -136,6 +142,15 @@ public final class ArtifactMetadataReader {
             normalized = normalized.substring("WEB-INF/classes/".length());
         }
         return normalized.substring(0, normalized.length() - 6).replace('/', '.');
+    }
+
+    private static long bytecodeFactCount(ClassMetadata metadata) {
+        return (metadata.classFact() == null ? 0 : 1L)
+                + metadata.fieldFacts().size()
+                + metadata.methodFacts().size()
+                + metadata.memberAccessFacts().size()
+                + metadata.callEdges().size()
+                + metadata.unresolvedDynamics().size();
     }
 
     private static String redactConfiguration(String line) {
