@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/schemas/trace-v1.schema.json",
+  "title": "TraceChunk or TraceManifest v1",
+  "oneOf": [{ "$ref": "#/$defs/chunk" }, { "$ref": "#/$defs/manifest" }],
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["projectId", "artifactDigest", "scanId", "taskId"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/id" }, "artifactDigest": { "$ref": "#/$defs/sha256" },
+        "scanId": { "$ref": "#/$defs/id" }, "taskId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "chunk": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "scope", "sequence", "emittedAt", "payload", "digest"],
+      "properties": {
+        "schemaVersion": { "const": 1 }, "scope": { "$ref": "#/$defs/scope" },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "previousDigest": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "emittedAt": { "type": "string", "format": "date-time" },
+        "payload": { "type": "string", "contentEncoding": "base64", "maxLength": 1398104 },
+        "digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "chunkRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sequence", "digest", "payloadBytes", "emittedAt"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 0 }, "digest": { "$ref": "#/$defs/sha256" },
+        "payloadBytes": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+        "emittedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "manifest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "scope", "chunks", "totalPayloadBytes", "createdAt"],
+      "properties": {
+        "schemaVersion": { "const": 1 }, "scope": { "$ref": "#/$defs/scope" },
+        "chunks": { "type": "array", "maxItems": 10000, "items": { "$ref": "#/$defs/chunkRef" } },
+        "totalPayloadBytes": { "type": "integer", "minimum": 0 },
+        "headDigest": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

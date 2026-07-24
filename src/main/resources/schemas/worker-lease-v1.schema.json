@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/schemas/worker-lease-v1.schema.json",
+  "title": "WorkerLease v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "scope", "leaseId", "workerId", "capability", "issuedAt", "heartbeatAt", "expiresAt"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "scope": { "$ref": "#/$defs/scope" },
+    "leaseId": { "$ref": "#/$defs/id" },
+    "workerId": { "$ref": "#/$defs/id" },
+    "capability": { "enum": ["STATIC_ONLY", "FIXTURE_RUNC", "HARDENED_GVISOR", "HARDENED_KATA"] },
+    "issuedAt": { "type": "string", "format": "date-time" },
+    "heartbeatAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["projectId", "artifactDigest", "scanId", "taskId"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/id" }, "artifactDigest": { "$ref": "#/$defs/sha256" },
+        "scanId": { "$ref": "#/$defs/id" }, "taskId": { "$ref": "#/$defs/id" }
+      }
+    }
+  }
+}

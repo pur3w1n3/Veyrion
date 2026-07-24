@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/schemas/worker-task-v1.schema.json",
+  "title": "WorkerTaskSpec v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "projectId", "artifactDigest", "scanId", "taskId", "targetEntryId", "authorized", "fixtureOnly", "resourceBudget", "networkPolicy", "requiredCapability"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "projectId": { "$ref": "#/$defs/id" },
+    "artifactDigest": { "$ref": "#/$defs/sha256" },
+    "scanId": { "$ref": "#/$defs/id" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "targetEntryId": { "$ref": "#/$defs/id" },
+    "authorized": { "type": "boolean" },
+    "fixtureOnly": { "type": "boolean" },
+    "requiredCapability": { "enum": ["STATIC_ONLY", "FIXTURE_RUNC", "HARDENED_GVISOR", "HARDENED_KATA"] },
+    "resourceBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxWallClockSeconds", "maxCpuMillis", "maxMemoryBytes", "maxDiskBytes", "maxTraceBytes"],
+      "properties": {
+        "maxWallClockSeconds": { "type": "integer", "minimum": 1 },
+        "maxCpuMillis": { "type": "integer", "minimum": 1 },
+        "maxMemoryBytes": { "type": "integer", "minimum": 1 },
+        "maxDiskBytes": { "type": "integer", "minimum": 1 },
+        "maxTraceBytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "allowlist"],
+      "properties": {
+        "mode": { "enum": ["DENY", "ALLOWLIST"] },
+        "allowlist": { "type": "array", "maxItems": 128, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 253, "pattern": "^\\S+$" } }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}
