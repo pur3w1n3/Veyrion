@@ -67,6 +67,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
     private final InMemoryTaskCoordinator coordinator;
     private final TraceProjectionService projectionService;
     private final Map<TaskScope, Boolean> scopes = new ConcurrentHashMap<>();
+    private final Map<TaskScope, String> failureDiagnostics = new ConcurrentHashMap<>();
     private final Map<String, Boolean> publishedEvents = new ConcurrentHashMap<>();
 
     WorkerControlPlaneApi(String token, Clock clock, ControlPlaneStore store, SseHub sseHub) {
@@ -178,6 +179,10 @@ final class WorkerControlPlaneApi implements HttpHandler {
         return List.copyOf(snapshots);
     }
 
+    String failureDiagnostic(TaskScope scope) {
+        return failureDiagnostics.get(scope);
+    }
+
     private void list(HttpExchange exchange) throws IOException {
         String projectId = query(exchange.getRequestURI(), "projectId");
         String scanId = query(exchange.getRequestURI(), "scanId");
@@ -228,9 +233,13 @@ final class WorkerControlPlaneApi implements HttpHandler {
                     optionalText(body, "workerId", null), stopReason(body, "reason", StopReason.USER_CANCELLED), key);
             case "complete" -> snapshot = coordinator.complete(scope, requiredText(body, "leaseId"),
                     requiredText(body, "workerId"), key);
-            case "fail" -> snapshot = coordinator.fail(scope, requiredText(body, "leaseId"),
-                    requiredText(body, "workerId"), stopReason(body, "reason", StopReason.WORKER_FAILURE),
-                    requiredText(body, "failureCode"), key);
+            case "fail" -> {
+                snapshot = coordinator.fail(scope, requiredText(body, "leaseId"),
+                        requiredText(body, "workerId"), stopReason(body, "reason", StopReason.WORKER_FAILURE),
+                        requiredText(body, "failureCode"), key);
+                String diagnostic = optionalText(body, "failureDiagnostic", null);
+                if (diagnostic != null) failureDiagnostics.putIfAbsent(scope, diagnostic);
+            }
             default -> throw new WorkerApiException(405, "METHOD_NOT_ALLOWED", "worker action is not allowed");
         }
         if (snapshot.lifecycle() == TaskLifecycle.COMPLETED) {

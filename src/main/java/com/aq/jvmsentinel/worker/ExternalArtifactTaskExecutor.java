@@ -157,7 +157,8 @@ public final class ExternalArtifactTaskExecutor {
             if (lease != null) {
                 try {
                     control.fail(request.scope(), lease.leaseId(), workerId,
-                            StopReason.WORKER_FAILURE, failureCode(failure));
+                            StopReason.WORKER_FAILURE, failureCode(failure),
+                            failureDiagnostic(failure));
                 } catch (RuntimeException failFailure) {
                     failure.addSuppressed(failFailure);
                 }
@@ -344,6 +345,17 @@ public final class ExternalArtifactTaskExecutor {
             return "EXTERNAL_ARTIFACT_REJECTED";
         }
         return "EXTERNAL_ARTIFACT_EXECUTION_FAILED";
+    }
+
+    private static String failureDiagnostic(RuntimeException failure) {
+        String value = failure.getMessage();
+        if (value == null || value.isBlank()) return failureCode(failure);
+        value = value.replaceAll("(?i)(password|passwd|secret|token|api[_-]?key)(\\s*[:=]\\s*)\\S+",
+                        "$1$2[REDACTED]")
+                .replaceAll("(?i)bearer\\s+[A-Za-z0-9._~+/-]{4,}", "Bearer [REDACTED]")
+                .replaceAll("\\bsk-[A-Za-z0-9_-]{4,}\\b", "[REDACTED]")
+                .replaceAll("[\\p{Cntrl}&&[^\\n\\t]]", " ").strip();
+        return value.length() <= 2048 ? value : value.substring(0, 2048);
     }
 
     private static String diagnostic(String stdout, String stderr) {

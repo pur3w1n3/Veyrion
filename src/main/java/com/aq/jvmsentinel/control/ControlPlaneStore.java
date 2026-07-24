@@ -232,6 +232,12 @@ public class ControlPlaneStore {
 
     public SQLiteControlPlanePersistence.AiJobData createAiJob(
             String projectId, AgentRole requestedRole, boolean authorized, String actorId, String now) {
+        return createAiJob(projectId, requestedRole, null, authorized, actorId, now);
+    }
+
+    public SQLiteControlPlanePersistence.AiJobData createAiJob(
+            String projectId, AgentRole requestedRole, String requestedScanId,
+            boolean authorized, String actorId, String now) {
         requireProject(projectId);
         requirePersistentManagement();
         if (!authorized) throw new SecurityException("explicit AI job authorization is required");
@@ -239,7 +245,12 @@ public class ControlPlaneStore {
         var binding = persistence.findRoleBinding(projectId, requestedRole).orElse(null);
         var provider = binding == null ? null : persistence.findProvider(binding.providerId()).orElse(null);
         ProjectRecord project = requireProject(projectId);
-        ScanRecord scan = project.latestScanId() == null ? null : scan(project.latestScanId());
+        ScanRecord scan = requestedScanId == null
+                ? project.latestScanId() == null ? null : scan(project.latestScanId())
+                : scan(requestedScanId);
+        if (scan != null && !projectId.equals(scan.dto().projectId())) {
+            throw new SecurityException("AI job scan does not belong to project");
+        }
         String reason = null;
         if (binding == null) reason = "ROLE_BINDING_REQUIRED";
         else if (provider == null) reason = "PROVIDER_NOT_FOUND";

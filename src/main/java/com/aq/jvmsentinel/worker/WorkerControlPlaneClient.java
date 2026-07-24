@@ -156,10 +156,25 @@ public final class WorkerControlPlaneClient {
 
     public TaskDescriptor fail(TaskScope scope, String leaseId, String workerId,
                                StopReason reason, String failureCode) {
+        return fail(scope, leaseId, workerId, reason, failureCode, null);
+    }
+
+    public TaskDescriptor fail(TaskScope scope, String leaseId, String workerId,
+                               StopReason reason, String failureCode, String failureDiagnostic) {
         Objects.requireNonNull(reason, "reason");
         WorkerContracts.id(failureCode, "failureCode");
-        return parseTask(sendLeaseMutation(scope, "fail", leaseId, workerId,
-                Map.of("reason", reason.name(), "failureCode", failureCode)));
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("reason", reason.name());
+        fields.put("failureCode", failureCode);
+        if (failureDiagnostic != null && !failureDiagnostic.isBlank()) {
+            String value = failureDiagnostic.strip();
+            if (value.length() > 2048 || value.chars().anyMatch(character ->
+                    Character.isISOControl(character) && character != '\n' && character != '\t')) {
+                throw new IllegalArgumentException("failureDiagnostic is invalid");
+            }
+            fields.put("failureDiagnostic", value);
+        }
+        return parseTask(sendLeaseMutation(scope, "fail", leaseId, workerId, fields));
     }
 
     private Map<String, Object> sendLeaseMutation(TaskScope scope, String action, String leaseId,

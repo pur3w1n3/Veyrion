@@ -186,6 +186,7 @@ export type DynamicTaskDto = {
   dynamicExecutionMode: string
   stopReason?: string
   failureCode?: string
+  failureDiagnostic?: string
   updatedAt: string
 }
 
@@ -752,6 +753,7 @@ export const parseDynamicTask = (value: unknown): DynamicTaskDto => {
     dynamicExecutionMode: asText(value.dynamicExecutionMode, 'dynamicTask.dynamicExecutionMode'),
     stopReason: optionalText(value.stopReason),
     failureCode: optionalText(value.failureCode),
+    failureDiagnostic: optionalText(value.failureDiagnostic),
     updatedAt: asText(value.updatedAt, 'dynamicTask.updatedAt')
   }
 }

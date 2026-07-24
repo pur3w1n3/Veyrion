@@ -93,7 +93,7 @@ export function AuditPage({ projectId, snapshot, onRefresh }: { projectId: strin
     : dynamicStatus === 'FAILED' || dynamicStatus === 'CANCELLED' ? 'unavailable'
       : dynamicStatus === 'QUEUED' || dynamicStatus === 'RUNNING' ? 'active' : 'waiting'
   const dynamicDetail = dynamicTask
-    ? `${dynamicTask.taskId} · ${dynamicStatus}${dynamicTask.failureCode ? ` · ${dynamicTask.failureCode}` : ''}${dynamicTask.stopReason ? ` · ${dynamicTask.stopReason}` : ''}`
+    ? `${dynamicTask.taskId} · ${dynamicStatus}${dynamicTask.failureCode ? ` · ${dynamicTask.failureCode}` : ''}${dynamicTask.stopReason ? ` · ${dynamicTask.stopReason}` : ''}${dynamicTask.failureDiagnostic ? ` · ${dynamicTask.failureDiagnostic}` : ''}`
     : activeScanId ? '尚未创建动态任务；点击下方按钮后由后端 Worker 校验运行能力' : '请先创建静态扫描'
   const steps = [
     ['目标摘要复核', snapshot?.artifactDigest ? 'completed' : 'waiting', snapshot?.artifactDigest ?? '等待后端摘要'],
@@ -128,6 +128,6 @@ export function AuditPage({ projectId, snapshot, onRefresh }: { projectId: strin
         <p className="form-help">SSE 仅作增量通知；最终状态始终以 GET scan/dashboard 为准。</p>
       </article>
     </div>
-    <AiAuditPanel projectId={projectId} />
+    <AiAuditPanel projectId={projectId} scanId={activeScanId} />
   </section>
 }

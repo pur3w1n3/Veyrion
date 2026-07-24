@@ -743,18 +743,19 @@ public final class ControlPlaneServer implements AutoCloseable {
     private void createAiJob(HttpExchange exchange, String projectId) throws IOException {
         Map<String, Object> body = readObject(exchange);
         for (String field : body.keySet()) {
-            if (!Set.of("role", "authorized").contains(field)) {
+            if (!Set.of("role", "scanId", "authorized").contains(field)) {
                 throw new ApiException(400, "AI_JOB_FIELD_REJECTED",
-                        "AI job body only accepts role and authorized");
+                        "AI job body only accepts role, scanId and authorized");
             }
         }
         AgentRole role = role(optionalText(body, "role", null));
+        String scanId = optionalText(body, "scanId", null);
         if (!requiredBoolean(body, "authorized")) {
             throw new ApiException(403, "AUTHORIZATION_REQUIRED",
                     "explicit AI job authorization is required");
         }
         String operatorId = actor(exchange).operatorId();
-        var job = store.createAiJob(projectId, role, true, operatorId,
+        var job = store.createAiJob(projectId, role, scanId, true, operatorId,
                 Instant.now(clock).toString());
         aiJobOrchestrator.submit(job, operatorId);
         sendJson(exchange, 202, aiJobMap(job));
@@ -1102,8 +1103,15 @@ public final class ControlPlaneServer implements AutoCloseable {
     private void listDynamicTasks(HttpExchange exchange, String scanId) throws IOException {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         List<Object> tasks = workerApi.snapshots(scan.dto().projectId(), scanId).stream()
-                .map(ControlPlaneServer::dynamicTaskMap).map(value -> (Object) value).toList();
+                .map(this::dynamicTaskWithDiagnostic).map(value -> (Object) value).toList();
         sendJson(exchange, 200, stringEnvelope("dynamicTasks", tasks));
+    }
+
+    private Map<String, Object> dynamicTaskWithDiagnostic(TaskSnapshot snapshot) {
+        Map<String, Object> result = dynamicTaskMap(snapshot);
+        String diagnostic = workerApi.failureDiagnostic(snapshot.scope());
+        if (diagnostic != null) result.put("failureDiagnostic", diagnostic);
+        return result;
     }
 
     /**
