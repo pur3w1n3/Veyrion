@@ -27,6 +27,7 @@ import com.aq.jvmsentinel.worker.InMemoryTraceStore;
 import com.aq.jvmsentinel.worker.NetworkPolicy;
 import com.aq.jvmsentinel.worker.ResourceBudget;
 import com.aq.jvmsentinel.worker.TaskSnapshot;
+import com.aq.jvmsentinel.worker.TraceProjectionService;
 import com.aq.jvmsentinel.worker.WorkerCapability;
 import com.aq.jvmsentinel.worker.WorkerTaskSpec;
 import com.sun.net.httpserver.Headers;
@@ -92,6 +93,7 @@ public final class ControlPlaneServer implements AutoCloseable {
     private final TrustedFixtureCatalog fixtureCatalog;
     private final InMemoryTraceStore traceStore;
     private final InMemoryTaskCoordinator taskCoordinator;
+    private final TraceProjectionService traceProjectionService;
     private final WorkerControlPlaneApi workerApi;
     private final Clock clock;
     private volatile HttpServer server;
@@ -145,8 +147,9 @@ public final class ControlPlaneServer implements AutoCloseable {
         this.fixtureCatalog = new TrustedFixtureCatalog();
         this.traceStore = new InMemoryTraceStore(this.clock);
         this.taskCoordinator = new InMemoryTaskCoordinator(this.clock, this.traceStore);
+        this.traceProjectionService = new TraceProjectionService(this.traceStore);
         this.workerApi = new WorkerControlPlaneApi(this.workerToken, this.clock, this.store, this.sseHub,
-                this.traceStore, this.taskCoordinator);
+                this.traceStore, this.taskCoordinator, this.traceProjectionService);
     }
 
     /** Starts listening; calling start more than once is idempotent. */
@@ -593,12 +596,16 @@ public final class ControlPlaneServer implements AutoCloseable {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         List<Object> paths = new ArrayList<>();
         for (ApiDtos.PathDto path : scan.dto().paths()) paths.add(pathMap(path));
+        for (ApiDtos.PathDto path : dynamicPaths(scan)) paths.add(pathMap(path));
         sendJson(exchange, 200, envelope(scan, "paths", paths));
     }
 
     private void sendPath(HttpExchange exchange, String scanId, String pathId) throws IOException {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         for (ApiDtos.PathDto path : scan.dto().paths()) {
+            if (path.pathId().equals(pathId)) { sendJson(exchange, 200, pathMap(path)); return; }
+        }
+        for (ApiDtos.PathDto path : dynamicPaths(scan)) {
             if (path.pathId().equals(pathId)) { sendJson(exchange, 200, pathMap(path)); return; }
         }
         throw new ApiException(404, "PATH_NOT_FOUND", "path not found");
@@ -608,6 +615,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         List<Object> items = new ArrayList<>();
         for (ApiDtos.EvidenceDto item : scan.evidence().values()) items.add(evidenceMap(item));
+        for (ApiDtos.EvidenceDto item : dynamicEvidence(scan)) items.add(evidenceMap(item));
         sendJson(exchange, 200, envelope(scan, "evidence", items));
     }
 
@@ -634,6 +642,7 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private void sendEvidence(HttpExchange exchange, String evidenceId) throws IOException {
         ApiDtos.EvidenceDto item = store.evidence(evidenceId);
+        if (item == null) item = traceProjectionService.evidence(evidenceId);
         if (item == null) throw new ApiException(404, "EVIDENCE_NOT_FOUND", "evidence not found");
         sendJson(exchange, 200, evidenceMap(item));
     }
@@ -653,6 +662,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         }
         List<Object> items = new ArrayList<>();
         for (ApiDtos.EvidenceDto item : scan.evidence().values()) items.add(evidenceMap(item));
+        for (ApiDtos.EvidenceDto item : dynamicEvidence(scan)) items.add(evidenceMap(item));
         sendJson(exchange, 200, envelope(scan, "evidence", items));
     }
 
@@ -697,21 +707,28 @@ public final class ControlPlaneServer implements AutoCloseable {
             return;
         }
         ApiDtos.ScanDto dto = scan.dto();
-        List<ApiDtos.PathStepDto> flattened = dto.paths().isEmpty() ? List.of() : dto.paths().get(0).steps();
+        List<ApiDtos.PathDto> dynamicPaths = dynamicPaths(scan);
+        List<ApiDtos.PathStepDto> flattened = !dynamicPaths.isEmpty()
+                ? dynamicPaths.get(dynamicPaths.size() - 1).steps()
+                : dto.paths().isEmpty() ? List.of() : dto.paths().get(0).steps();
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("schemaVersion", ApiDtos.SCHEMA_VERSION);
         body.put("projectId", dto.projectId());
         body.put("artifactDigest", dto.artifactDigest());
         body.put("scanId", dto.scanId());
-        body.put("verificationStatus", dto.verificationStatus());
+        body.put("verificationStatus", dynamicPaths.isEmpty()
+                ? dto.verificationStatus() : "DYNAMIC_SUSPECTED");
         body.put("dependencyMode", dto.dependencyMode());
-        body.put("evidenceRefs", dto.evidenceRefs());
+        List<String> dashboardEvidence = new ArrayList<>(dto.evidenceRefs());
+        for (ApiDtos.PathDto pathDto : dynamicPaths) dashboardEvidence.addAll(pathDto.evidenceRefs());
+        body.put("evidenceRefs", List.copyOf(dashboardEvidence));
         List<Object> entries = new ArrayList<>();
         for (ApiDtos.EntryDto entry : dto.entries()) entries.add(entryMap(entry));
         List<Object> findings = new ArrayList<>();
         for (ApiDtos.FindingDto finding : dto.findings()) findings.add(findingMap(finding));
         List<Object> paths = new ArrayList<>();
         for (ApiDtos.PathDto path : dto.paths()) paths.add(pathMap(path));
+        for (ApiDtos.PathDto dynamic : dynamicPaths) paths.add(pathMap(dynamic));
         List<Object> path = new ArrayList<>();
         for (ApiDtos.PathStepDto step : flattened) path.add(pathStepMap(step));
         body.put("entries", entries);
@@ -719,6 +736,16 @@ public final class ControlPlaneServer implements AutoCloseable {
         body.put("paths", paths);
         body.put("path", path);
         sendJson(exchange, 200, body);
+    }
+
+    private List<ApiDtos.PathDto> dynamicPaths(ControlPlaneStore.ScanRecord scan) {
+        ApiDtos.ScanDto dto = scan.dto();
+        return traceProjectionService.pathsForScan(dto.projectId(), dto.artifactDigest(), dto.scanId());
+    }
+
+    private List<ApiDtos.EvidenceDto> dynamicEvidence(ControlPlaneStore.ScanRecord scan) {
+        ApiDtos.ScanDto dto = scan.dto();
+        return traceProjectionService.evidenceForScan(dto.projectId(), dto.artifactDigest(), dto.scanId());
     }
 
     private ControlPlaneStore.ScanRecord latestScan(ControlPlaneStore.ProjectRecord project) {
@@ -1031,8 +1058,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         result.put("evidenceId", dto.evidenceId()); result.put("provenanceKind", dto.provenanceKind());
         result.put("kind", dto.provenanceKind()); result.put("source", dto.source());
         result.put("confidence", dto.confidence()); result.put("summary", dto.summary());
-        result.put("verificationStatus", ApiDtos.STATIC_INFERRED);
-        result.put("dependencyMode", ApiDtos.MOCK);
+        result.put("verificationStatus", dto.verificationStatus());
         result.put("evidenceRefs", List.of(dto.evidenceId()));
         result.put("observedAt", dto.observedAt()); result.put("toolVersion", dto.toolVersion());
         result.put("modelVersion", dto.modelVersion()); result.put("snapshotRef", dto.snapshotRef());
@@ -1059,6 +1085,10 @@ public final class ControlPlaneServer implements AutoCloseable {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("label", dto.label()); result.put("detail", dto.detail()); result.put("kind", dto.kind());
         result.put("state", dto.state()); result.put("evidenceRefs", dto.evidenceRefs());
+        result.put("verificationStatus", dto.verificationStatus());
+        result.put("provenanceKind", dto.provenanceKind());
+        result.put("eventType", dto.eventType());
+        if (dto.sequence() != null) result.put("sequence", dto.sequence());
         return result;
     }
 
@@ -1070,6 +1100,12 @@ public final class ControlPlaneServer implements AutoCloseable {
         result.put("verificationStatus", dto.verificationStatus()); result.put("status", dto.verificationStatus());
         result.put("dependencyMode", dto.dependencyMode()); result.put("preconditions", dto.preconditions());
         result.put("stopReason", dto.stopReason()); result.put("evidenceRefs", dto.evidenceRefs());
+        if (dto.taskId() != null) {
+            result.put("taskId", dto.taskId());
+            result.put("fixtureOnly", dto.fixtureOnly());
+            result.put("requiredCapability", dto.requiredCapability());
+            result.put("dynamicExecutionMode", dto.dynamicExecutionMode());
+        }
         List<Object> steps = new ArrayList<>(); for (ApiDtos.PathStepDto step : dto.steps()) steps.add(pathStepMap(step));
         result.put("steps", steps); result.put("path", steps);
         return result;

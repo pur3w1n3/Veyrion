@@ -93,6 +93,7 @@ public final class FixtureDynamicLoopAcceptanceTest {
                             && success.scope().taskId().equals(event.context().taskId())
                             && event.payload().contains("\"verificationStatus\":\"DYNAMIC_SUSPECTED\"")),
                     "terminal SSE remains DYNAMIC_SUSPECTED");
+            assertPublicProjection(http, controlPlane, scan, success.scope());
             openSandbox.assertSuccessfulPolicy();
 
             int createsBeforePolicyRejects = openSandbox.createCount();
@@ -178,6 +179,57 @@ public final class FixtureDynamicLoopAcceptanceTest {
                         && ((List<?>) body.get("networkAllowlist")).isEmpty(),
                 "public task policy");
         return new PublicTask(scope, new FixtureTaskExecutor.ExecutionRequest(scope));
+    }
+
+    private static void assertPublicProjection(HttpClient http, ControlPlaneServer server,
+                                               ScanContext scan, TaskScope scope) throws Exception {
+        Map<String, Object> dashboard = json(http.send(HttpRequest.newBuilder(
+                        URI.create(server.baseUri() + "/projects/" + scan.projectId() + "/dashboard"))
+                .GET().build(), HttpResponse.BodyHandlers.ofString()));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> paths = (List<Map<String, Object>>) (List<?>) dashboard.get("paths");
+        check(paths.size() >= 2, "static and dynamic paths are both retained");
+        Map<String, Object> staticPath = paths.stream()
+                .filter(path -> !path.containsKey("taskId")).findFirst().orElseThrow();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> staticSteps =
+                (List<Map<String, Object>>) (List<?>) staticPath.get("steps");
+        check(staticSteps.stream().allMatch(step -> "INFERENCE".equals(step.get("provenanceKind"))
+                        && !step.containsKey("sequence")),
+                "static path remains compatible with the strict GUI provenance contract");
+        Map<String, Object> dynamic = paths.stream()
+                .filter(path -> scope.taskId().equals(path.get("taskId"))).findFirst().orElseThrow();
+        check("DYNAMIC_SUSPECTED".equals(dynamic.get("verificationStatus"))
+                        && Boolean.TRUE.equals(dynamic.get("fixtureOnly"))
+                        && "FIXTURE_RUNC".equals(dynamic.get("requiredCapability"))
+                        && "FIXTURE_RUNC_COMPLETED".equals(dynamic.get("dynamicExecutionMode"))
+                        && "COMPLETED".equals(dynamic.get("stopReason")),
+                "dynamic public path fields");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> steps = (List<Map<String, Object>>) (List<?>) dynamic.get("steps");
+        check(steps.stream().allMatch(step -> "DYNAMIC_SUSPECTED".equals(step.get("verificationStatus"))
+                        && step.get("eventType") instanceof String
+                        && step.get("sequence") instanceof Number
+                        && step.get("evidenceRefs") instanceof List<?> refs && !refs.isEmpty()),
+                "dynamic step provenance fields");
+        check(steps.stream().anyMatch(step -> "RUNTIME_OBSERVED".equals(step.get("provenanceKind")))
+                        && steps.stream().anyMatch(step -> "APPLICATION_REPORTED".equals(step.get("provenanceKind"))),
+                "both Agent provenance kinds are public");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> flattened = (List<Map<String, Object>>) (List<?>) dashboard.get("path");
+        check(flattened.equals(steps), "flattened dashboard path prefers latest dynamic path");
+        String evidenceId = (String) ((List<?>) steps.get(0).get("evidenceRefs")).get(0);
+        Map<String, Object> evidence = json(http.send(HttpRequest.newBuilder(
+                        URI.create(server.baseUri() + "/evidence/" + evidenceId)).GET().build(),
+                HttpResponse.BodyHandlers.ofString()));
+        check("veyrion-agent".equals(evidence.get("source"))
+                        && "DYNAMIC_SUSPECTED".equals(evidence.get("verificationStatus"))
+                        && ((String) evidence.get("snapshotRef")).contains("task:" + scope.taskId())
+                        && ((String) evidence.get("snapshotRef")).contains("digest:")
+                        && ((String) evidence.get("snapshotRef")).contains("sequence:")
+                        && ((String) evidence.get("summary")).contains("veyrion-agent"),
+                "dynamic evidence endpoint and summary binding");
+        check(!dashboard.toString().contains("VERIFIED"), "dynamic projection never emits VERIFIED");
     }
 
     private static FixtureTaskExecutor isolatedExecutor(MissingRuntimeWorker source,

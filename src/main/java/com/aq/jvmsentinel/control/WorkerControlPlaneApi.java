@@ -16,6 +16,7 @@ import com.aq.jvmsentinel.worker.TaskScope;
 import com.aq.jvmsentinel.worker.TaskSnapshot;
 import com.aq.jvmsentinel.worker.TraceChunk;
 import com.aq.jvmsentinel.worker.TraceManifest;
+import com.aq.jvmsentinel.worker.TraceProjectionService;
 import com.aq.jvmsentinel.worker.WorkerCapability;
 import com.aq.jvmsentinel.worker.WorkerLease;
 import com.aq.jvmsentinel.worker.WorkerTaskSpec;
@@ -64,6 +65,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
     private final SseHub sseHub;
     private final InMemoryTraceStore traceStore;
     private final InMemoryTaskCoordinator coordinator;
+    private final TraceProjectionService projectionService;
     private final Map<TaskScope, Boolean> scopes = new ConcurrentHashMap<>();
     private final Map<String, Boolean> publishedEvents = new ConcurrentHashMap<>();
 
@@ -73,17 +75,25 @@ final class WorkerControlPlaneApi implements HttpHandler {
 
     private WorkerControlPlaneApi(String token, Clock clock, ControlPlaneStore store, SseHub sseHub,
                                   InMemoryTraceStore traceStore) {
-        this(token, clock, store, sseHub, traceStore, new InMemoryTaskCoordinator(clock, traceStore));
+        this(token, clock, store, sseHub, traceStore, new InMemoryTaskCoordinator(clock, traceStore),
+                new TraceProjectionService(traceStore));
     }
 
     WorkerControlPlaneApi(String token, Clock clock, ControlPlaneStore store, SseHub sseHub,
                           InMemoryTraceStore traceStore, InMemoryTaskCoordinator coordinator) {
+        this(token, clock, store, sseHub, traceStore, coordinator, new TraceProjectionService(traceStore));
+    }
+
+    WorkerControlPlaneApi(String token, Clock clock, ControlPlaneStore store, SseHub sseHub,
+                          InMemoryTraceStore traceStore, InMemoryTaskCoordinator coordinator,
+                          TraceProjectionService projectionService) {
         this.token = Objects.requireNonNull(token, "token");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.store = Objects.requireNonNull(store, "store");
         this.sseHub = Objects.requireNonNull(sseHub, "sseHub");
         this.traceStore = Objects.requireNonNull(traceStore, "traceStore");
         this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
+        this.projectionService = Objects.requireNonNull(projectionService, "projectionService");
     }
 
     @Override
@@ -221,6 +231,13 @@ final class WorkerControlPlaneApi implements HttpHandler {
                     requiredText(body, "workerId"), stopReason(body, "reason", StopReason.WORKER_FAILURE),
                     requiredText(body, "failureCode"), key);
             default -> throw new WorkerApiException(405, "METHOD_NOT_ALLOWED", "worker action is not allowed");
+        }
+        if (snapshot.lifecycle() == TaskLifecycle.COMPLETED) {
+            try {
+                projectionService.publishCompleted(snapshot);
+            } catch (IllegalArgumentException | IllegalStateException | SecurityException rejected) {
+                // Execution completion remains authoritative; an invalid or over-budget trace is omitted.
+            }
         }
         if (isTerminal(snapshot.lifecycle())) publishTerminal(snapshot, key);
         sendJson(exchange, 200, snapshotMap(snapshot));

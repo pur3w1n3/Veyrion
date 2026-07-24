@@ -117,14 +117,26 @@ public final class ApiDtos {
                               String scanId, String evidenceId, String provenanceKind,
                               String source, double confidence, String summary,
                               String observedAt, String toolVersion, String modelVersion,
-                              String snapshotRef, String dependencyMode) {
+                              String snapshotRef, String dependencyMode,
+                              String verificationStatus) {
+        public EvidenceDto(int schemaVersion, String projectId, String artifactDigest,
+                           String scanId, String evidenceId, String provenanceKind,
+                           String source, double confidence, String summary,
+                           String observedAt, String toolVersion, String modelVersion,
+                           String snapshotRef, String dependencyMode) {
+            this(schemaVersion, projectId, artifactDigest, scanId, evidenceId, provenanceKind,
+                    source, confidence, summary, observedAt, toolVersion, modelVersion,
+                    snapshotRef, dependencyMode, STATIC_INFERRED);
+        }
+
         public EvidenceDto(int schemaVersion, String projectId, String artifactDigest,
                            String scanId, String evidenceId, String provenanceKind,
                            String source, double confidence, String summary,
                            String observedAt, String toolVersion, String modelVersion,
                            String snapshotRef) {
             this(schemaVersion, projectId, artifactDigest, scanId, evidenceId, provenanceKind,
-                    source, confidence, summary, observedAt, toolVersion, modelVersion, snapshotRef, MOCK);
+                    source, confidence, summary, observedAt, toolVersion, modelVersion,
+                    snapshotRef, MOCK, STATIC_INFERRED);
         }
 
         public EvidenceDto {
@@ -141,6 +153,7 @@ public final class ApiDtos {
             requireText(modelVersion, "modelVersion");
             requireText(snapshotRef, "snapshotRef");
             requireText(dependencyMode, "dependencyMode");
+            requireText(verificationStatus, "verificationStatus");
             requireConfidence(confidence);
         }
     }
@@ -174,12 +187,23 @@ public final class ApiDtos {
     }
 
     public record PathStepDto(String label, String detail, String kind, String state,
-                              List<String> evidenceRefs) {
+                              List<String> evidenceRefs, String verificationStatus,
+                              String provenanceKind, String eventType, Long sequence) {
+        public PathStepDto(String label, String detail, String kind, String state,
+                           List<String> evidenceRefs) {
+            this(label, detail, kind, state, evidenceRefs, STATIC_INFERRED,
+                    "INFERENCE", "STATIC_ANALYSIS", null);
+        }
+
         public PathStepDto {
             requireText(label, "label");
             requireText(detail, "detail");
             requireText(kind, "kind");
             requireText(state, "state");
+            requireText(verificationStatus, "verificationStatus");
+            requireText(provenanceKind, "provenanceKind");
+            requireText(eventType, "eventType");
+            if (sequence != null && sequence < 0) throw new IllegalArgumentException("sequence cannot be negative");
             evidenceRefs = List.copyOf(evidenceRefs == null ? List.of() : evidenceRefs);
         }
     }
@@ -188,7 +212,19 @@ public final class ApiDtos {
                           String scanId, String pathId, String entrypointId,
                           String verificationStatus, String dependencyMode,
                           List<String> preconditions, String stopReason,
-                          List<String> evidenceRefs, List<PathStepDto> steps) {
+                          List<String> evidenceRefs, List<PathStepDto> steps,
+                          String taskId, Boolean fixtureOnly, String requiredCapability,
+                          String dynamicExecutionMode) {
+        public PathDto(int schemaVersion, String projectId, String artifactDigest,
+                       String scanId, String pathId, String entrypointId,
+                       String verificationStatus, String dependencyMode,
+                       List<String> preconditions, String stopReason,
+                       List<String> evidenceRefs, List<PathStepDto> steps) {
+            this(schemaVersion, projectId, artifactDigest, scanId, pathId, entrypointId,
+                    verificationStatus, dependencyMode, preconditions, stopReason,
+                    evidenceRefs, steps, null, null, null, null);
+        }
+
         public PathDto {
             requireSchema(schemaVersion);
             requireText(projectId, "projectId");
@@ -199,6 +235,9 @@ public final class ApiDtos {
             requireText(verificationStatus, "verificationStatus");
             requireText(dependencyMode, "dependencyMode");
             requireText(stopReason, "stopReason");
+            if (taskId != null) requireText(taskId, "taskId");
+            if (requiredCapability != null) requireText(requiredCapability, "requiredCapability");
+            if (dynamicExecutionMode != null) requireText(dynamicExecutionMode, "dynamicExecutionMode");
             preconditions = List.copyOf(preconditions == null ? List.of() : preconditions);
             evidenceRefs = List.copyOf(evidenceRefs == null ? List.of() : evidenceRefs);
             steps = List.copyOf(steps == null ? List.of() : steps);

@@ -76,6 +76,34 @@ public final class InMemoryTraceStore {
         return new TraceManifest(WorkerContracts.SCHEMA_VERSION, scope, refs, total, head, clock.instant());
     }
 
+    /**
+     * Returns an immutable, payload-copying snapshot for exactly one task scope.
+     * Trusted callers must supply both count and byte bounds; oversized traces fail closed.
+     */
+    public synchronized List<TraceChunk> readChunks(TaskScope scope, int maxChunks, long maxPayloadBytes) {
+        Objects.requireNonNull(scope, "scope");
+        if (maxChunks <= 0 || maxChunks > 10_000) {
+            throw new IllegalArgumentException("maxChunks is outside the read limit");
+        }
+        if (maxPayloadBytes <= 0) {
+            throw new IllegalArgumentException("maxPayloadBytes must be positive");
+        }
+        List<TraceChunk> current = traces.getOrDefault(scope, List.of());
+        if (current.size() > maxChunks) throw new IllegalStateException("trace exceeds chunk read limit");
+        long total = 0;
+        List<TraceChunk> copy = new ArrayList<>(current.size());
+        for (TraceChunk chunk : current) {
+            byte[] payload = chunk.payload();
+            if (payload.length > maxPayloadBytes - total) {
+                throw new IllegalStateException("trace exceeds payload read limit");
+            }
+            total += payload.length;
+            copy.add(new TraceChunk(chunk.schemaVersion(), chunk.scope(), chunk.sequence(),
+                    chunk.previousDigest(), chunk.emittedAt(), payload, chunk.digest()));
+        }
+        return List.copyOf(copy);
+    }
+
     public synchronized void requireCommitted(TaskCheckpoint checkpoint) {
         Objects.requireNonNull(checkpoint, "checkpoint");
         List<TraceChunk> chunks = traces.getOrDefault(checkpoint.scope(), List.of());

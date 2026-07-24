@@ -87,7 +87,8 @@ public final class AgentJsonlTraceConverter {
                 int contentLength = rawLine.length;
                 if (rawLine[contentLength - 1] == '\r') contentLength--;
                 if (contentLength == 0) throw new IllegalArgumentException("empty JSONL line");
-                expectedEventSequence = acceptLine(rawLine, contentLength, expectedEventSequence);
+                expectedEventSequence = Math.addExact(
+                        parseAcceptedLine(rawLine, contentLength, expectedEventSequence).sequence(), 1);
                 lineCount = incrementLineCount(lineCount);
                 payloadBytes = addPayloadBytes(payloadBytes, contentLength + 1L, budget.maxTraceBytes());
                 if (contentLength + 1 > limits.maxChunkPayloadBytes()) {
@@ -117,7 +118,8 @@ public final class AgentJsonlTraceConverter {
             if (rawLine[contentLength - 1] == '\r') {
                 throw new IllegalArgumentException("bare CR line ending is not allowed");
             }
-            expectedEventSequence = acceptLine(rawLine, contentLength, expectedEventSequence);
+            expectedEventSequence = Math.addExact(
+                    parseAcceptedLine(rawLine, contentLength, expectedEventSequence).sequence(), 1);
             lineCount = incrementLineCount(lineCount);
             payloadBytes = addPayloadBytes(payloadBytes, contentLength + 1L, budget.maxTraceBytes());
             if (contentLength + 1 > limits.maxChunkPayloadBytes()) {
@@ -162,7 +164,15 @@ public final class AgentJsonlTraceConverter {
         return result;
     }
 
-    private static long acceptLine(byte[] rawLine, int length, long expectedSequence) {
+    /**
+     * Strictly parses one converter-accepted agent-jsonl-v1 line.
+     * The returned event contains immutable values and never retains the input buffer.
+     */
+    public static AgentEvent parseAcceptedLine(byte[] rawLine, int length, long expectedSequence) {
+        Objects.requireNonNull(rawLine, "rawLine");
+        if (length <= 0 || length > rawLine.length) {
+            throw new IllegalArgumentException("invalid JSONL line length");
+        }
         for (int i = 0; i < length; i++) {
             int value = rawLine[i] & 0xff;
             if (value < 0x20 || value == 0x7f) {
@@ -196,7 +206,18 @@ public final class AgentJsonlTraceConverter {
         if (expectedSequence == Long.MAX_VALUE) {
             throw new IllegalArgumentException("agent sequence overflow");
         }
-        return expectedSequence + 1;
+        @SuppressWarnings("unchecked")
+        Map<String, String> details = (Map<String, String>) detail;
+        return new AgentEvent(
+                ((Long) event.get("sequence")),
+                (String) event.get("eventType"),
+                (String) event.get("provenanceKind"),
+                (String) event.get("verificationStatus"),
+                (String) event.get("class"),
+                (String) event.get("method"),
+                (String) event.get("timestamp"),
+                (String) event.get("thread"),
+                Map.copyOf(details));
     }
 
     private static String decodeUtf8(byte[] value, int length) {
@@ -243,6 +264,15 @@ public final class AgentJsonlTraceConverter {
                     || maxChunkPayloadBytes > WorkerContracts.MAX_TRACE_PAYLOAD_BYTES) {
                 throw new IllegalArgumentException("maxChunkPayloadBytes is outside TraceChunk limits");
             }
+        }
+    }
+
+    /** Immutable semantic view of one accepted Agent event. */
+    public record AgentEvent(long sequence, String eventType, String provenanceKind,
+                             String verificationStatus, String className, String method,
+                             String timestamp, String thread, Map<String, String> detail) {
+        public AgentEvent {
+            detail = Map.copyOf(detail);
         }
     }
 
