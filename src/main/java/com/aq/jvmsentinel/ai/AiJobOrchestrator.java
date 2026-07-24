@@ -122,7 +122,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         ? transportFailure.code()
                         : failure instanceof JobFailure jobFailure ? jobFailure.code : "AI_JOB_FAILED";
                 String diagnostic = failure instanceof ProviderChatTransport.TransportException transportFailure
-                        ? transportFailure.diagnostic() : reason;
+                        ? transportFailure.diagnostic()
+                        : failure instanceof JobFailure ? reason : genericDiagnostic(failure);
                 fail(jobId, reason, diagnostic, actorId, started);
             }
         } finally {
@@ -304,6 +305,13 @@ public final class AiJobOrchestrator implements AutoCloseable {
         transition(current, "FAILED", safeReason(reason), current.providerRequestId(),
                 elapsed(started), current.rounds(), current.toolSummaryJson(), null,
                 actorId, "ai-job.fail");
+    }
+
+    private static String genericDiagnostic(Throwable failure) {
+        String message = failure.getMessage();
+        String value = failure.getClass().getSimpleName()
+                + (message == null || message.isBlank() ? "" : ": " + message);
+        return sanitizeDiagnostic(value);
     }
 
     private void persistCancelled(String jobId, String actorId, long started) {

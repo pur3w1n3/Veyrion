@@ -303,6 +303,7 @@ public final class ExternalArtifactTaskExecutor {
                 + (registration.classPrefix().isEmpty()
                 ? "" : ",classPrefix=" + registration.classPrefix())
                 + " -jar " + ARTIFACT_PATH
+                + " --server.address=127.0.0.1 --server.port=8080"
                 + " > " + TRACE_DIRECTORY + "/application.log 2>&1"
                 + " & pid=$!; elapsed=0; probe_status=1"
                 + "; while kill -0 \"$pid\" 2>/dev/null"

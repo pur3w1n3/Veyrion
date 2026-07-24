@@ -11,6 +11,7 @@ export function AiAuditPanel({ projectId, scanId }: { projectId: string; scanId?
   const [loading, setLoading] = useState(false)
   const [loadingEvents, setLoadingEvents] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string>()
   const jobRequestRef = useRef(0)
   const eventRequestRef = useRef(0)
@@ -26,7 +27,9 @@ export function AiAuditPanel({ projectId, scanId }: { projectId: string; scanId?
     }
     void api.listAiJobs(projectId)
       .then((items) => {
-        if (jobRequestRef.current === requestId) setJobs(items)
+        if (jobRequestRef.current === requestId) {
+          setJobs([...items].sort((left, right) => right.createdAt.localeCompare(left.createdAt)))
+        }
       })
       .catch((cause) => {
         if (jobRequestRef.current === requestId) setError(errorMessage(cause))
@@ -48,6 +51,20 @@ export function AiAuditPanel({ projectId, scanId }: { projectId: string; scanId?
     const timer = window.setTimeout(refresh, 1500)
     return () => window.clearTimeout(timer)
   }, [jobs])
+
+  const selectedStatus = jobs.find((job) => job.aiJobId === selectedJobId)?.status
+  useEffect(() => {
+    if (!selectedJobId || (selectedStatus !== 'QUEUED' && selectedStatus !== 'RUNNING')) return
+    const timer = window.setInterval(() => {
+      const requestId = ++eventRequestRef.current
+      void api.listAiJobEvents(selectedJobId).then((items) => {
+        if (eventRequestRef.current === requestId) setEvents(items)
+      }).catch((cause) => {
+        if (eventRequestRef.current === requestId) setError(errorMessage(cause))
+      })
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [selectedJobId, selectedStatus])
 
   const inspect = (aiJobId: string) => {
     const requestId = ++eventRequestRef.current
@@ -80,11 +97,30 @@ export function AiAuditPanel({ projectId, scanId }: { projectId: string; scanId?
       .finally(() => setCreating(false))
   }
 
+  const deleteUnsuccessful = () => {
+    const removable = jobs.filter((job) => ['FAILED', 'BLOCKED', 'CANCELLED'].includes(job.status))
+    if (removable.length === 0 || !window.confirm(`删除 ${removable.length} 条失败、阻断或取消的 AI Job 及其事件？`)) return
+    setDeleting(true)
+    setError(undefined)
+    void Promise.allSettled(removable.map((job) => api.deleteAiJob(job.aiJobId)))
+      .then((results) => {
+        const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+        if (failed) setError(`部分记录删除失败：${errorMessage(failed.reason)}`)
+        if (selectedJobId && removable.some((job) => job.aiJobId === selectedJobId)) {
+          setSelectedJobId(undefined)
+          setEvents([])
+        }
+        refresh()
+      })
+      .finally(() => setDeleting(false))
+  }
+
   return <article className="panel section-gap">
     <div className="panel-head">
       <div><p className="eyebrow">AI AUDIT PROCESS</p><h2>AI 执行与工具过程</h2></div>
       <div className="button-row">
         <button className="secondary-button" type="button" disabled={creating || !projectId || !scanId} onClick={recreateJobs}>{creating ? '创建中…' : '为当前扫描创建四角色任务'}</button>
+        <button className="text-button" type="button" disabled={deleting || !jobs.some((job) => ['FAILED', 'BLOCKED', 'CANCELLED'].includes(job.status))} onClick={deleteUnsuccessful}>{deleting ? '删除中…' : '清理失败记录'}</button>
         <button className="text-button" type="button" disabled={loading || !projectId} onClick={refresh}>{loading ? '刷新中…' : '刷新'}</button>
       </div>
     </div>

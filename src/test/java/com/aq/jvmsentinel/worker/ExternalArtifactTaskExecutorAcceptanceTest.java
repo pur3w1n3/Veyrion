@@ -346,9 +346,9 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
             result.put("authorized", true);
             result.put("fixtureOnly", false);
             result.put("requiredCapability", capability(taskId).name());
-            result.put("dynamicExecutionMode", "DYNAMIC_DISABLED");
-            result.put("imageUri", null);
-            result.put("mainClass", null);
+            result.put("dynamicExecutionMode", capability(taskId) == WorkerCapability.STATIC_ONLY
+                    ? "DYNAMIC_DISABLED" : capability(taskId).name()
+                    + (lifecycle == TaskLifecycle.QUEUED ? "_QUEUED" : "_WORKER_MANAGED"));
             result.put("resourceBudget", Map.of(
                     "maxWallClockSeconds", 120,
                     "maxCpuMillis", 60_000,
