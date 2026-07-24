@@ -34,9 +34,11 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -76,6 +78,8 @@ public final class ControlPlaneServer implements AutoCloseable {
     private final Map<String, String> idempotentArtifacts = new ConcurrentHashMap<>();
     private final Map<String, String> idempotentScans = new ConcurrentHashMap<>();
     private final String mutationToken;
+    private final String workerToken;
+    private final WorkerControlPlaneApi workerApi;
     private final Clock clock;
     private volatile HttpServer server;
     private volatile ExecutorService executor;
@@ -124,6 +128,8 @@ public final class ControlPlaneServer implements AutoCloseable {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.store = Objects.requireNonNull(store, "store");
         this.sseHub = Objects.requireNonNull(sseHub, "sseHub");
+        this.workerToken = newWorkerToken(this.mutationToken);
+        this.workerApi = new WorkerControlPlaneApi(this.workerToken, this.clock, this.store, this.sseHub);
     }
 
     /** Starts listening; calling start more than once is idempotent. */
@@ -131,6 +137,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (server != null) return this;
         HttpServer created = HttpServer.create(bindAddress, 64);
         created.createContext(API_PREFIX, new ApiHandler());
+        created.createContext(WorkerControlPlaneApi.PREFIX, workerApi);
         AtomicInteger threadId = new AtomicInteger();
         ThreadFactory threads = runnable -> {
             Thread thread = new Thread(runnable, "jvm-sentinel-control-" + threadId.incrementAndGet());
@@ -172,6 +179,8 @@ public final class ControlPlaneServer implements AutoCloseable {
     }
 
     public String mutationToken() { return mutationToken; }
+    /** Process-local credential for the internal Worker contract; never accepted by GUI routes. */
+    public String workerToken() { return workerToken; }
     public ControlPlaneStore store() { return store; }
     public SseHub sseHub() { return sseHub; }
     public ArtifactRegistry artifactRegistry() { return artifactRegistry; }
@@ -630,6 +639,8 @@ public final class ControlPlaneServer implements AutoCloseable {
         body.put("service", "jvm-sentinel-control-plane");
         body.put("persistenceMode", "IN_MEMORY_MVP");
         body.put("analysisMode", "STATIC_METADATA_ONLY");
+        body.put("dynamicExecutionMode", "DYNAMIC_DISABLED");
+        body.put("workerContractVersion", WorkerControlPlaneApi.CONTRACT_VERSION);
         body.put("dependencyMode", ApiDtos.MOCK);
         body.put("bindAddress", address().getHostString());
         body.put("port", address().getPort());
@@ -1148,6 +1159,17 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private static String requireToken(String token) {
         if (token == null || token.isBlank() || token.length() > 512) throw new IllegalArgumentException("mutationToken is required");
+        return token;
+    }
+
+    private static String newWorkerToken(String mutationToken) {
+        SecureRandom random = new SecureRandom();
+        byte[] bytes = new byte[32];
+        String token;
+        do {
+            random.nextBytes(bytes);
+            token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        } while (constantTimeEquals(mutationToken, token));
         return token;
     }
 
