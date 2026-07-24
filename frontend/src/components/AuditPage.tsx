@@ -30,6 +30,32 @@ export function AuditPage({ projectId, snapshot, onRefresh }: { projectId: strin
     return () => { active = false }
   }, [projectId])
 
+  const activeScanId = scan?.scanId ?? snapshot?.scanId
+  useEffect(() => {
+    let active = true
+    let timer: number | undefined
+    if (!activeScanId) return () => { active = false }
+    const refreshTask = () => {
+      void api.listDynamicTasks(activeScanId).then((tasks) => {
+        if (!active) return
+        const latest = tasks.at(-1)
+        setDynamicTask(latest)
+        if (latest && (latest.status === 'QUEUED' || latest.status === 'RUNNING')) {
+          timer = window.setTimeout(refreshTask, 1500)
+        } else if (latest?.status === 'COMPLETED') {
+          void onRefresh()
+        }
+      }).catch((cause) => {
+        if (active) setError(errorMessage(cause))
+      })
+    }
+    refreshTask()
+    return () => {
+      active = false
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [activeScanId, dynamicTask?.taskId])
+
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const form = event.currentTarget
@@ -51,7 +77,7 @@ export function AuditPage({ projectId, snapshot, onRefresh }: { projectId: strin
   }
 
   const runArtifactInDocker = () => {
-    const scanId = scan?.scanId ?? snapshot?.scanId
+    const scanId = activeScanId
     if (!scanId) { setError('请先创建静态扫描'); return }
     if (!window.confirm('将当前扫描对应的内部 JAR 在断网 Docker 容器中运行。该模式阻止网络出站，但不构成恶意代码强化隔离。确认排队？')) return
     setDynamicBusy(true); setError(undefined)
@@ -61,11 +87,18 @@ export function AuditPage({ projectId, snapshot, onRefresh }: { projectId: strin
     }).catch((cause) => setError(errorMessage(cause))).finally(() => setDynamicBusy(false))
   }
 
-  const dynamicObserved = dynamicTask !== undefined || snapshot?.verificationStatus === 'DYNAMIC_SUSPECTED'
+  const dynamicStatus = dynamicTask?.status
+  const dynamicObserved = dynamicStatus === 'COMPLETED' || snapshot?.verificationStatus === 'DYNAMIC_SUSPECTED'
+  const dynamicState = dynamicObserved ? 'completed'
+    : dynamicStatus === 'FAILED' || dynamicStatus === 'CANCELLED' ? 'unavailable'
+      : dynamicStatus === 'QUEUED' || dynamicStatus === 'RUNNING' ? 'active' : 'waiting'
+  const dynamicDetail = dynamicTask
+    ? `${dynamicTask.taskId} · ${dynamicStatus}${dynamicTask.failureCode ? ` · ${dynamicTask.failureCode}` : ''}${dynamicTask.stopReason ? ` · ${dynamicTask.stopReason}` : ''}`
+    : activeScanId ? '尚未创建动态任务；点击下方按钮后由后端 Worker 校验运行能力' : '请先创建静态扫描'
   const steps = [
     ['目标摘要复核', snapshot?.artifactDigest ? 'completed' : 'waiting', snapshot?.artifactDigest ?? '等待后端摘要'],
     ['静态入口建模', snapshot?.entries.length ? 'completed' : 'waiting', `${snapshot?.entries.length ?? 0} 个入口`],
-    ['断网 Docker 动态观察', dynamicObserved ? 'active' : 'unavailable', dynamicTask ? `${dynamicTask.taskId} · ${dynamicTask.status}` : '需使用 -WithDockerRuntime 启动'],
+    ['断网 Docker 动态观察', dynamicState, dynamicDetail],
     ['证据复核', snapshot?.findings.some((item) => item.status === 'VERIFIED') ? 'completed' : 'waiting', '不由 AI 单独升级为 VERIFIED']
   ]
 

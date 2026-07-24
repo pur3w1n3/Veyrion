@@ -184,6 +184,9 @@ export type DynamicTaskDto = {
   verificationStatus: 'DYNAMIC_SUSPECTED'
   requiredCapability: 'TRUSTED_DOCKER'
   dynamicExecutionMode: string
+  stopReason?: string
+  failureCode?: string
+  updatedAt: string
 }
 
 export type CreateProjectRequest = {
@@ -392,6 +395,7 @@ export interface SentinelApi {
   listScans(projectId: string): Promise<ScanDto[]>
   createScan(request?: CreateScanRequest | string, projectId?: string): Promise<ScanDto>
   createDynamicTask(scanId: string): Promise<DynamicTaskDto>
+  listDynamicTasks(scanId: string): Promise<DynamicTaskDto[]>
   updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto>
   deleteScan(scanId: string): Promise<void>
   listProviders(): Promise<ProviderDto[]>
@@ -745,7 +749,10 @@ export const parseDynamicTask = (value: unknown): DynamicTaskDto => {
     status: asText(value.status, 'dynamicTask.status'),
     verificationStatus: 'DYNAMIC_SUSPECTED',
     requiredCapability: 'TRUSTED_DOCKER',
-    dynamicExecutionMode: asText(value.dynamicExecutionMode, 'dynamicTask.dynamicExecutionMode')
+    dynamicExecutionMode: asText(value.dynamicExecutionMode, 'dynamicTask.dynamicExecutionMode'),
+    stopReason: optionalText(value.stopReason),
+    failureCode: optionalText(value.failureCode),
+    updatedAt: asText(value.updatedAt, 'dynamicTask.updatedAt')
   }
 }
 
@@ -1320,6 +1327,13 @@ export class HttpSentinelApi implements SentinelApi {
     return parseDynamicTask(response)
   }
 
+  async listDynamicTasks(scanId: string): Promise<DynamicTaskDto[]> {
+    const response = await this.request(`scans/${encodeURIComponent(asText(scanId, 'scanId'))}/dynamic-tasks`, {
+      credentials: 'include', headers: jsonHeaders(this.token)
+    }, 'list dynamic tasks')
+    return parseList(response, 'dynamicTasks', parseDynamicTask)
+  }
+
   async updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto> {
     const response = await this.request(`scans/${encodeURIComponent(asText(scanId, 'scanId'))}`, {
       method: 'PATCH', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(request)
@@ -1573,6 +1587,7 @@ export class MockSentinelApi implements SentinelApi {
   }
 
   async createDynamicTask(): Promise<DynamicTaskDto> { return this.unavailable('create dynamic artifact task') }
+  async listDynamicTasks(): Promise<DynamicTaskDto[]> { return [] }
   async updateScan(): Promise<ScanDto> { return this.unavailable('update scan') }
   async deleteScan(): Promise<void> { return this.unavailable('delete scan') }
   async listProviders(): Promise<ProviderDto[]> { return [] }

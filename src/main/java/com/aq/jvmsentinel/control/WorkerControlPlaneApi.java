@@ -167,9 +167,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
         return result;
     }
 
-    private void list(HttpExchange exchange) throws IOException {
-        String projectId = query(exchange.getRequestURI(), "projectId");
-        String scanId = query(exchange.getRequestURI(), "scanId");
+    synchronized List<TaskSnapshot> snapshots(String projectId, String scanId) {
         List<TaskSnapshot> snapshots = new ArrayList<>();
         for (TaskScope scope : scopes.keySet()) {
             if (projectId != null && !projectId.equals(scope.projectId())) continue;
@@ -177,6 +175,13 @@ final class WorkerControlPlaneApi implements HttpHandler {
             snapshots.add(coordinator.get(scope));
         }
         snapshots.sort(Comparator.comparing(x -> x.scope().taskId()));
+        return List.copyOf(snapshots);
+    }
+
+    private void list(HttpExchange exchange) throws IOException {
+        String projectId = query(exchange.getRequestURI(), "projectId");
+        String scanId = query(exchange.getRequestURI(), "scanId");
+        List<TaskSnapshot> snapshots = snapshots(projectId, scanId);
         List<Object> tasks = snapshots.stream().map(WorkerControlPlaneApi::snapshotMap).map(x -> (Object) x).toList();
         sendJson(exchange, 200, Map.of(
                 "schemaVersion", CONTRACT_VERSION,

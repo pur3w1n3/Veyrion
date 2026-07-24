@@ -274,6 +274,7 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 首轮真实 AI 失败的根因是 Provider 拒绝带点号的函数名；代码侧工具标识统一改为 Provider 可接受的 snake_case：`facts_search`、`evidence_get`、`plan_propose`。这属于协议互操作修正，不扩大工具 allowlist、作用域或权限。
 - SQLite V005 为每个 AI job 保存最多 128 条顺序事件，记录有界 Provider 请求/结果元数据、工具名、参数形状/字节数、工具结果状态、脱敏截断的模型摘要和失败诊断。API 展示的是可审计事件摘要，不保存 Provider 原始响应、秘密、模型隐藏推理或 chain-of-thought；模型结论仍只能是 `INFERENCE`。
 - `LocalDockerDynamicLoopAcceptanceTest` 现要求通过 `VEYRION_TEST_ARTIFACT_JAR` 显式提供后端管理的 executable 测试 JAR；仓库不再携带受控 Fixture 代码、镜像或专用合约测试。回归继续覆盖 public 排队、内容寻址只读挂载、断网容器、容器内 loopback HTTP、不可变 trace commit 与 dashboard `DYNAMIC_SUSPECTED` 投影；这只验证本地受信 JAR 开发路径，不代表恶意制品隔离或真实外部 Provider 互操作已验证。
+- GUI 不再把“当前 scan 尚未创建动态任务”误显示为 Worker `UNAVAILABLE`。`GET /api/v1/scans/{scanId}/dynamic-tasks` 返回当前进程内任务状态、停止原因和失败代码，审计页对 `QUEUED/RUNNING` 自动轮询；进程重启后任务协调状态仍不会持久化。历史 AI `FAILED` 状态保持不可变，审计页可显式重新创建四角色任务并自动刷新新任务，不能把旧任务原地改写为成功。
 
 ## 27. 受控 Fixture 样例退役（2026-07-25）
 

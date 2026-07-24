@@ -410,11 +410,10 @@ public final class ControlPlaneServer implements AutoCloseable {
             streamEvents(exchange, path.get(1));
             return;
         }
-        if (path.size() == 3 && "scans".equals(path.get(0)) && "dynamic-tasks".equals(path.get(2))
-                && "POST".equals(method)) {
-            requirePermission(exchange, Permission.RUN_SCANS);
-            createDynamicTask(exchange, path.get(1));
-            return;
+        if (path.size() == 3 && "scans".equals(path.get(0)) && "dynamic-tasks".equals(path.get(2))) {
+            requirePermission(exchange, "GET".equals(method) ? Permission.READ_AUDIT : Permission.RUN_SCANS);
+            if ("GET".equals(method)) { listDynamicTasks(exchange, path.get(1)); return; }
+            if ("POST".equals(method)) { createDynamicTask(exchange, path.get(1)); return; }
         }
         if (path.size() == 3 && "scans".equals(path.get(0)) && "paths".equals(path.get(2))
                 && "GET".equals(method)) {
@@ -1100,6 +1099,13 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 202, dynamicTaskMap(snapshot));
     }
 
+    private void listDynamicTasks(HttpExchange exchange, String scanId) throws IOException {
+        ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
+        List<Object> tasks = workerApi.snapshots(scan.dto().projectId(), scanId).stream()
+                .map(ControlPlaneServer::dynamicTaskMap).map(value -> (Object) value).toList();
+        sendJson(exchange, 200, stringEnvelope("dynamicTasks", tasks));
+    }
+
     /**
      * Resolves only the immutable backend-managed copy for the process-local Docker worker.
      * This method does not expose the path through HTTP.
@@ -1755,6 +1761,9 @@ public final class ControlPlaneServer implements AutoCloseable {
         result.put("maxMemoryBytes", spec.resourceBudget().maxMemoryBytes());
         result.put("maxDiskBytes", spec.resourceBudget().maxDiskBytes());
         result.put("maxTraceBytes", spec.resourceBudget().maxTraceBytes());
+        result.put("stopReason", snapshot.stopReason() == null ? null : snapshot.stopReason().name());
+        result.put("failureCode", snapshot.failureCode());
+        result.put("updatedAt", snapshot.updatedAt().toString());
         return result;
     }
 
