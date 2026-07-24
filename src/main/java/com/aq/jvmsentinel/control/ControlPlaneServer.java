@@ -9,6 +9,7 @@ import com.aq.jvmsentinel.event.EventContext;
 import com.aq.jvmsentinel.event.EventFactory;
 import com.aq.jvmsentinel.event.IdempotencyKey;
 import com.aq.jvmsentinel.event.VersionedEvent;
+import com.aq.jvmsentinel.fixture.TrustedFixtureCatalog;
 import com.aq.jvmsentinel.model.ArtifactDescriptor;
 import com.aq.jvmsentinel.model.DependencyAccess;
 import com.aq.jvmsentinel.model.Entrypoint;
@@ -21,6 +22,13 @@ import com.aq.jvmsentinel.policy.NetworkMode;
 import com.aq.jvmsentinel.policy.PolicyValidator;
 import com.aq.jvmsentinel.policy.PolicyViolationException;
 import com.aq.jvmsentinel.policy.ScanPolicy;
+import com.aq.jvmsentinel.worker.InMemoryTaskCoordinator;
+import com.aq.jvmsentinel.worker.InMemoryTraceStore;
+import com.aq.jvmsentinel.worker.NetworkPolicy;
+import com.aq.jvmsentinel.worker.ResourceBudget;
+import com.aq.jvmsentinel.worker.TaskSnapshot;
+import com.aq.jvmsentinel.worker.WorkerCapability;
+import com.aq.jvmsentinel.worker.WorkerTaskSpec;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -44,6 +52,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -77,8 +86,12 @@ public final class ControlPlaneServer implements AutoCloseable {
     private final Map<String, String> idempotentProjects = new ConcurrentHashMap<>();
     private final Map<String, String> idempotentArtifacts = new ConcurrentHashMap<>();
     private final Map<String, String> idempotentScans = new ConcurrentHashMap<>();
+    private final Map<String, DynamicTaskReplay> idempotentDynamicTasks = new ConcurrentHashMap<>();
     private final String mutationToken;
     private final String workerToken;
+    private final TrustedFixtureCatalog fixtureCatalog;
+    private final InMemoryTraceStore traceStore;
+    private final InMemoryTaskCoordinator taskCoordinator;
     private final WorkerControlPlaneApi workerApi;
     private final Clock clock;
     private volatile HttpServer server;
@@ -129,7 +142,11 @@ public final class ControlPlaneServer implements AutoCloseable {
         this.store = Objects.requireNonNull(store, "store");
         this.sseHub = Objects.requireNonNull(sseHub, "sseHub");
         this.workerToken = newWorkerToken(this.mutationToken);
-        this.workerApi = new WorkerControlPlaneApi(this.workerToken, this.clock, this.store, this.sseHub);
+        this.fixtureCatalog = new TrustedFixtureCatalog();
+        this.traceStore = new InMemoryTraceStore(this.clock);
+        this.taskCoordinator = new InMemoryTaskCoordinator(this.clock, this.traceStore);
+        this.workerApi = new WorkerControlPlaneApi(this.workerToken, this.clock, this.store, this.sseHub,
+                this.traceStore, this.taskCoordinator);
     }
 
     /** Starts listening; calling start more than once is idempotent. */
@@ -217,6 +234,8 @@ public final class ControlPlaneServer implements AutoCloseable {
                 sendError(exchange, 422, "INVALID_ARTIFACT", invalidArtifact.getMessage(), requestId);
             } catch (PolicyViolationException policyViolation) {
                 sendError(exchange, 403, "POLICY_REJECTED", policyViolation.getMessage(), requestId);
+            } catch (TrustedFixtureCatalog.UnknownFixtureException unknownFixture) {
+                sendError(exchange, 404, "FIXTURE_NOT_FOUND", unknownFixture.getMessage(), requestId);
             } catch (IllegalArgumentException badRequest) {
                 sendError(exchange, 400, "INVALID_REQUEST", safeMessage(badRequest), requestId);
             } catch (Exception unexpected) {
@@ -275,6 +294,12 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (path.size() == 3 && "scans".equals(path.get(0)) && "events".equals(path.get(2))
                 && "GET".equals(method)) {
             streamEvents(exchange, path.get(1));
+            return;
+        }
+        if (path.size() == 3 && "scans".equals(path.get(0)) && "dynamic-tasks".equals(path.get(2))
+                && "POST".equals(method)) {
+            requireMutation(exchange);
+            createDynamicTask(exchange, path.get(1));
             return;
         }
         if (path.size() == 3 && "scans".equals(path.get(0)) && "paths".equals(path.get(2))
@@ -488,6 +513,75 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private void sendScan(HttpExchange exchange, String scanId) throws IOException {
         sendJson(exchange, 200, scanMap(store.requireScan(scanId).dto()));
+    }
+
+    private synchronized void createDynamicTask(HttpExchange exchange, String scanId) throws IOException {
+        String key = requireIdempotencyKey(exchange);
+        String replayKey = scanId + ":" + key;
+        if (!idempotentDynamicTasks.containsKey(replayKey)
+                && idempotentDynamicTasks.size() >= MAX_IDEMPOTENCY_KEYS) {
+            throw new ApiException(429, "IDEMPOTENCY_LIMIT", "idempotency key store is full");
+        }
+
+        Map<String, Object> body = readObject(exchange);
+        for (String field : body.keySet()) {
+            if (!Set.of("authorized", "fixtureId").contains(field)) {
+                throw new ApiException(400, "RUNTIME_FIELD_REJECTED",
+                        "dynamic task body only accepts authorized and fixtureId");
+            }
+        }
+        if (!body.containsKey("authorized") || !requiredBoolean(body, "authorized")) {
+            throw new ApiException(403, "AUTHORIZATION_REQUIRED", "dynamic task authorization is required");
+        }
+        String fixtureId = optionalText(body, "fixtureId", null);
+        if (fixtureId == null) throw new ApiException(400, "FIXTURE_REQUIRED", "fixtureId is required");
+        TrustedFixtureCatalog.TrustedFixture fixture = fixtureCatalog.require(fixtureId);
+
+        ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
+        ControlPlaneStore.ProjectRecord project = store.requireProject(scan.dto().projectId());
+        if (store.artifact(project, scan.dto().artifactDigest()) == null) {
+            throw new ApiException(409, "SCAN_SCOPE_INVALID", "scan artifact is not registered for project");
+        }
+        boolean targetExists = scan.dto().entries().stream()
+                .anyMatch(entry -> fixture.targetEntryId().equals(entry.id()));
+        if (!targetExists) {
+            throw new ApiException(409, "TARGET_ENTRY_NOT_IN_SCAN",
+                    "trusted fixture target entry is not present in scan");
+        }
+
+        DynamicTaskPayload payload = new DynamicTaskPayload(scanId, fixture.fixtureId(), fixture.targetEntryId());
+        DynamicTaskReplay replay = idempotentDynamicTasks.get(replayKey);
+        if (replay != null) {
+            if (!replay.payload().equals(payload)) {
+                throw new ApiException(409, "IDEMPOTENCY_CONFLICT",
+                        "Idempotency-Key was already used with a different payload");
+            }
+            sendJson(exchange, 200, dynamicTaskMap(replay.snapshot()));
+            return;
+        }
+
+        String taskId = "task-dynamic-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        WorkerTaskSpec spec = new WorkerTaskSpec(
+                WorkerControlPlaneApi.CONTRACT_VERSION,
+                scan.dto().projectId(),
+                scan.dto().artifactDigest(),
+                scanId,
+                taskId,
+                fixture.targetEntryId(),
+                true,
+                true,
+                new ResourceBudget(60, 30_000, 128L * 1024 * 1024,
+                        64L * 1024 * 1024, 2L * 1024 * 1024),
+                NetworkPolicy.denyAll(),
+                WorkerCapability.FIXTURE_RUNC,
+                fixture.fixtureId(),
+                fixture.imageUri(),
+                fixture.mainClass(),
+                fixture.fixtureDigest());
+        TaskSnapshot snapshot = workerApi.enqueueFromControlPlane(spec,
+                "public-dynamic-" + UUID.randomUUID().toString().replace("-", ""));
+        idempotentDynamicTasks.put(replayKey, new DynamicTaskReplay(payload, snapshot));
+        sendJson(exchange, 202, dynamicTaskMap(snapshot));
     }
 
     private void streamEvents(HttpExchange exchange, String scanId) throws IOException {
@@ -999,6 +1093,32 @@ public final class ControlPlaneServer implements AutoCloseable {
         return result;
     }
 
+    private static Map<String, Object> dynamicTaskMap(TaskSnapshot snapshot) {
+        WorkerTaskSpec spec = snapshot.spec();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", ApiDtos.SCHEMA_VERSION);
+        result.put("projectId", spec.projectId());
+        result.put("artifactDigest", spec.artifactDigest());
+        result.put("scanId", spec.scanId());
+        result.put("taskId", spec.taskId());
+        result.put("targetEntryId", spec.targetEntryId());
+        result.put("fixtureId", spec.fixtureId());
+        result.put("fixtureDigest", spec.fixtureDigest());
+        result.put("status", snapshot.lifecycle().name());
+        result.put("verificationStatus", "DYNAMIC_SUSPECTED");
+        result.put("requiredCapability", WorkerCapability.FIXTURE_RUNC.name());
+        result.put("fixtureOnly", true);
+        result.put("networkMode", "DENY");
+        result.put("networkAllowlist", List.of());
+        result.put("dynamicExecutionMode", "FIXTURE_RUNC_QUEUED");
+        result.put("maxWallClockSeconds", spec.resourceBudget().maxWallClockSeconds());
+        result.put("maxCpuMillis", spec.resourceBudget().maxCpuMillis());
+        result.put("maxMemoryBytes", spec.resourceBudget().maxMemoryBytes());
+        result.put("maxDiskBytes", spec.resourceBudget().maxDiskBytes());
+        result.put("maxTraceBytes", spec.resourceBudget().maxTraceBytes());
+        return result;
+    }
+
     private static Map<String, Object> chainMap(ApiDtos.AttackChainDto dto) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("schemaVersion", dto.schemaVersion()); result.put("projectId", dto.projectId());
@@ -1110,6 +1230,14 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (value == null) return null;
         if (value.isBlank() || value.length() > 256 || value.chars().anyMatch(Character::isWhitespace)) {
             throw new ApiException(400, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key is invalid");
+        }
+        return value;
+    }
+
+    private static String requireIdempotencyKey(HttpExchange exchange) {
+        String value = requestIdempotencyKey(exchange);
+        if (value == null) {
+            throw new ApiException(400, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key is required");
         }
         return value;
     }
@@ -1230,6 +1358,8 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private record ScanBuild(ApiDtos.ScanDto scan, Map<String, ApiDtos.EvidenceDto> evidence,
                              List<ApiDtos.FindingDto> findings, List<ApiDtos.AttackChainDto> chains) { }
+    private record DynamicTaskPayload(String scanId, String fixtureId, String targetEntryId) { }
+    private record DynamicTaskReplay(DynamicTaskPayload payload, TaskSnapshot snapshot) { }
 
     private static final class ApiException extends RuntimeException {
         private final int status;

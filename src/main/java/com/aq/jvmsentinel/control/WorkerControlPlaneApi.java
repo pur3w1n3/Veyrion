@@ -68,12 +68,22 @@ final class WorkerControlPlaneApi implements HttpHandler {
     private final Map<String, Boolean> publishedEvents = new ConcurrentHashMap<>();
 
     WorkerControlPlaneApi(String token, Clock clock, ControlPlaneStore store, SseHub sseHub) {
+        this(token, clock, store, sseHub, new InMemoryTraceStore(clock));
+    }
+
+    private WorkerControlPlaneApi(String token, Clock clock, ControlPlaneStore store, SseHub sseHub,
+                                  InMemoryTraceStore traceStore) {
+        this(token, clock, store, sseHub, traceStore, new InMemoryTaskCoordinator(clock, traceStore));
+    }
+
+    WorkerControlPlaneApi(String token, Clock clock, ControlPlaneStore store, SseHub sseHub,
+                          InMemoryTraceStore traceStore, InMemoryTaskCoordinator coordinator) {
         this.token = Objects.requireNonNull(token, "token");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.store = Objects.requireNonNull(store, "store");
         this.sseHub = Objects.requireNonNull(sseHub, "sseHub");
-        this.traceStore = new InMemoryTraceStore(clock);
-        this.coordinator = new InMemoryTaskCoordinator(clock, traceStore);
+        this.traceStore = Objects.requireNonNull(traceStore, "traceStore");
+        this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
     }
 
     @Override
@@ -123,15 +133,32 @@ final class WorkerControlPlaneApi implements HttpHandler {
         String key = requireIdempotencyKey(exchange);
         Map<String, Object> body = readObject(exchange);
         WorkerTaskSpec spec = taskSpec(body);
-        validateExternalScope(spec.scope());
-        TaskSnapshot result = coordinator.enqueue(spec, key);
-        scopes.putIfAbsent(result.scope(), Boolean.TRUE);
+        if (spec.requiredCapability() == WorkerCapability.FIXTURE_RUNC) {
+            throw new WorkerApiException(403, "FIXTURE_ENQUEUE_FORBIDDEN",
+                    "fixture tasks must be created by the trusted Control Plane catalog");
+        }
+        TaskSnapshot result = enqueueFromControlPlane(spec, key);
         publish(result.scope(), "ScanCreated", key, Map.of(
                 "status", result.lifecycle().name(),
                 "verificationStatus", "UNREACHED",
                 "dependencyMode", ApiDtos.MOCK,
                 "dynamicExecutionMode", "DYNAMIC_DISABLED"));
         sendJson(exchange, 202, snapshotMap(result));
+    }
+
+    synchronized TaskSnapshot enqueueFromControlPlane(WorkerTaskSpec spec, String key) {
+        validateExternalScope(spec.scope());
+        TaskSnapshot result = coordinator.enqueue(spec, key);
+        scopes.putIfAbsent(result.scope(), Boolean.TRUE);
+        if (spec.requiredCapability() == WorkerCapability.FIXTURE_RUNC) {
+            publish(result.scope(), "DynamicTaskQueued", key, Map.of(
+                    "status", result.lifecycle().name(),
+                    "verificationStatus", "DYNAMIC_SUSPECTED",
+                    "requiredCapability", "FIXTURE_RUNC",
+                    "fixtureOnly", true,
+                    "dynamicExecutionMode", "FIXTURE_RUNC_QUEUED"));
+        }
+        return result;
     }
 
     private void list(HttpExchange exchange) throws IOException {
@@ -246,8 +273,12 @@ final class WorkerControlPlaneApi implements HttpHandler {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("status", snapshot.lifecycle().name());
         payload.put("reason", snapshot.stopReason() == null ? snapshot.lifecycle().name() : snapshot.stopReason().name());
-        payload.put("verificationStatus", "UNREACHED");
+        boolean fixtureTask = snapshot.spec().requiredCapability() == WorkerCapability.FIXTURE_RUNC;
+        payload.put("verificationStatus", fixtureTask ? "DYNAMIC_SUSPECTED" : "UNREACHED");
         payload.put("dependencyMode", ApiDtos.MOCK);
+        payload.put("fixtureOnly", snapshot.spec().fixtureOnly());
+        payload.put("requiredCapability", snapshot.spec().requiredCapability().name());
+        payload.put("dynamicExecutionMode", fixtureTask ? "FIXTURE_RUNC_WORKER_MANAGED" : "DYNAMIC_DISABLED");
         payload.put("evidenceRefs", List.of());
         publish(snapshot.scope(), "TaskStopped", key, payload);
         publish(snapshot.scope(), "ScanCompleted", key, payload);
@@ -291,7 +322,9 @@ final class WorkerControlPlaneApi implements HttpHandler {
         NetworkMode mode = enumValue(NetworkMode.class, optionalText(body, "networkMode", "DENY"), "networkMode");
         NetworkPolicy network = new NetworkPolicy(mode, stringList(body.get("networkAllowlist"), "networkAllowlist"));
         return new WorkerTaskSpec(CONTRACT_VERSION, scope.projectId(), scope.artifactDigest(), scope.scanId(),
-                scope.taskId(), requiredText(body, "targetEntryId"), authorized, fixtureOnly, budget, network, capability);
+                scope.taskId(), requiredText(body, "targetEntryId"), authorized, fixtureOnly, budget, network, capability,
+                optionalText(body, "fixtureId", null), optionalText(body, "imageUri", null),
+                optionalText(body, "mainClass", null), optionalText(body, "fixtureDigest", null));
     }
 
     private TaskCheckpoint checkpoint(TaskScope scope, Map<String, Object> body) {
@@ -382,12 +415,24 @@ final class WorkerControlPlaneApi implements HttpHandler {
         result.put("authorized", value.spec().authorized());
         result.put("fixtureOnly", value.spec().fixtureOnly());
         result.put("requiredCapability", value.spec().requiredCapability().name());
-        result.put("dynamicExecutionMode", "DYNAMIC_DISABLED");
+        result.put("dynamicExecutionMode", dynamicExecutionMode(value));
+        if (value.spec().fixtureId() != null) {
+            result.put("fixtureId", value.spec().fixtureId());
+            result.put("imageUri", value.spec().imageUri());
+            result.put("mainClass", value.spec().mainClass());
+            result.put("fixtureDigest", value.spec().fixtureDigest());
+        }
         result.put("lease", value.lease() == null ? null : leaseMap(value.lease()));
         result.put("checkpoint", value.checkpoint() == null ? null : checkpointMap(value.checkpoint()));
         result.put("stopReason", value.stopReason() == null ? null : value.stopReason().name());
         result.put("failureCode", value.failureCode());
         return result;
+    }
+
+    private static String dynamicExecutionMode(TaskSnapshot snapshot) {
+        if (snapshot.spec().requiredCapability() != WorkerCapability.FIXTURE_RUNC) return "DYNAMIC_DISABLED";
+        return snapshot.lifecycle() == TaskLifecycle.QUEUED
+                ? "FIXTURE_RUNC_QUEUED" : "FIXTURE_RUNC_WORKER_MANAGED";
     }
 
     private static Map<String, Object> leaseMap(WorkerLease value) {

@@ -15,6 +15,18 @@
     "authorized": { "type": "boolean" },
     "fixtureOnly": { "type": "boolean" },
     "requiredCapability": { "enum": ["STATIC_ONLY", "FIXTURE_RUNC", "HARDENED_GVISOR", "HARDENED_KATA"] },
+    "fixtureId": { "$ref": "#/$defs/id" },
+    "imageUri": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^[a-z0-9.-]+(?:/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}$"
+    },
+    "mainClass": {
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^[A-Za-z_$][A-Za-z0-9_$.]{0,254}$"
+    },
+    "fixtureDigest": { "$ref": "#/$defs/sha256" },
     "resourceBudget": {
       "type": "object",
       "additionalProperties": false,
@@ -37,6 +49,25 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "anyOf": [
+          { "required": ["fixtureId"] },
+          { "required": ["imageUri"] },
+          { "required": ["mainClass"] },
+          { "required": ["fixtureDigest"] }
+        ]
+      },
+      "then": {
+        "required": ["fixtureId", "imageUri", "mainClass", "fixtureDigest"],
+        "properties": {
+          "fixtureOnly": { "const": true },
+          "requiredCapability": { "const": "FIXTURE_RUNC" }
+        }
+      }
+    }
+  ],
   "$defs": {
     "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
