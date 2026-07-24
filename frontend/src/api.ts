@@ -10,6 +10,8 @@
 export type VerificationStatus = 'VERIFIED' | 'DYNAMIC_SUSPECTED' | 'STATIC_INFERRED' | 'UNREACHED'
 
 export type DependencyMode = 'MOCK' | 'REPLAY' | 'LIVE_DISABLED' | 'LIVE' | string
+export type ProvenanceKind = 'FACT' | 'INFERENCE' | 'SIMULATION' | 'RUNTIME_OBSERVED' | 'APPLICATION_REPORTED'
+export type WorkerCapability = 'STATIC_ONLY' | 'FIXTURE_RUNC' | 'HARDENED_GVISOR' | 'HARDENED_KATA'
 
 export type EvidenceRef = string | {
   evidenceId: string
@@ -24,7 +26,8 @@ export type EvidenceDto = {
   artifactDigest?: string
   scanId?: string
   kind: string
-  provenanceKind?: string
+  provenanceKind?: ProvenanceKind
+  verificationStatus?: VerificationStatus
   source: string
   confidence: number
   summary: string
@@ -88,6 +91,25 @@ export type PathStep = {
   kind: 'entry' | 'transform' | 'branch' | 'dependency' | 'sink'
   state: 'done' | 'active' | 'blocked'
   evidenceRefs?: EvidenceRef[]
+  verificationStatus?: VerificationStatus
+  provenanceKind?: ProvenanceKind
+  eventType?: string
+  sequence?: number
+}
+
+export type PathTrace = {
+  pathId: string
+  entrypointId: string
+  verificationStatus: VerificationStatus
+  dependencyMode: DependencyMode
+  stopReason: string
+  preconditions: string[]
+  steps: PathStep[]
+  evidenceRefs?: EvidenceRef[]
+  fixtureOnly?: boolean
+  requiredCapability?: WorkerCapability
+  taskId?: string
+  dynamicExecutionMode?: string
 }
 
 export type DashboardSnapshot = {
@@ -101,6 +123,7 @@ export type DashboardSnapshot = {
   entries: Entry[]
   findings: Finding[]
   path: PathStep[]
+  paths: PathTrace[]
 }
 
 export type ProjectDto = {
@@ -228,6 +251,8 @@ export interface SentinelApi {
 }
 
 const statuses = new Set<VerificationStatus>(['VERIFIED', 'DYNAMIC_SUSPECTED', 'STATIC_INFERRED', 'UNREACHED'])
+const provenanceKinds = new Set<ProvenanceKind>(['FACT', 'INFERENCE', 'SIMULATION', 'RUNTIME_OBSERVED', 'APPLICATION_REPORTED'])
+const workerCapabilities = new Set<WorkerCapability>(['STATIC_ONLY', 'FIXTURE_RUNC', 'HARDENED_GVISOR', 'HARDENED_KATA'])
 const supportedSchemaVersion = 1
 const supportedEventSchemaVersions = new Set([1, 2])
 
@@ -239,6 +264,11 @@ const asText = (value: unknown, field: string): string => {
 }
 
 const optionalText = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined
+
+const strictOptionalText = (value: unknown, field: string): string | undefined => {
+  if (value === undefined) return undefined
+  return asText(value, field)
+}
 
 const asFiniteNumber = (value: unknown, field: string, min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY): number => {
   if (typeof value !== 'number') throw new Error(`invalid ${field}`)
@@ -266,6 +296,16 @@ const schemaVersion = (value: unknown, field: string, required = true): number =
 const statusOf = (value: unknown, field: string): VerificationStatus => {
   if (typeof value !== 'string' || !statuses.has(value as VerificationStatus)) throw new Error(`invalid ${field}`)
   return value as VerificationStatus
+}
+
+const provenanceKindOf = (value: unknown, field: string): ProvenanceKind => {
+  if (typeof value !== 'string' || !provenanceKinds.has(value as ProvenanceKind)) throw new Error(`invalid ${field}`)
+  return value as ProvenanceKind
+}
+
+const workerCapabilityOf = (value: unknown, field: string): WorkerCapability => {
+  if (typeof value !== 'string' || !workerCapabilities.has(value as WorkerCapability)) throw new Error(`invalid ${field}`)
+  return value as WorkerCapability
 }
 
 const listOfText = (value: unknown, field: string, optional = false): string[] => {
@@ -381,7 +421,29 @@ export const parsePath = (item: unknown): PathStep => {
     detail: asText(item.detail ?? item.description ?? '', 'path.detail'),
     kind: pathKind(item.kind),
     state: pathState(item.state),
-    evidenceRefs: refs
+    evidenceRefs: refs,
+    verificationStatus: item.verificationStatus === undefined ? undefined : statusOf(item.verificationStatus, 'path.verificationStatus'),
+    provenanceKind: item.provenanceKind === undefined ? undefined : provenanceKindOf(item.provenanceKind, 'path.provenanceKind'),
+    eventType: strictOptionalText(item.eventType, 'path.eventType'),
+    sequence: item.sequence === undefined ? undefined : asSafeInteger(item.sequence, 'path.sequence', 0)
+  }
+}
+
+export const parsePathTrace = (item: unknown): PathTrace => {
+  if (!isRecord(item) || !Array.isArray(item.steps)) throw new Error('invalid dashboard.paths')
+  return {
+    pathId: asText(item.pathId, 'dashboard.paths.pathId'),
+    entrypointId: asText(item.entrypointId, 'dashboard.paths.entrypointId'),
+    verificationStatus: statusOf(item.verificationStatus ?? item.status, 'dashboard.paths.verificationStatus'),
+    dependencyMode: asText(item.dependencyMode, 'dashboard.paths.dependencyMode'),
+    stopReason: asText(item.stopReason, 'dashboard.paths.stopReason'),
+    preconditions: listOfText(item.preconditions, 'dashboard.paths.preconditions'),
+    steps: item.steps.map(parsePath),
+    evidenceRefs: evidenceRefsOf(item.evidenceRefs, 'dashboard.paths.evidenceRefs'),
+    fixtureOnly: item.fixtureOnly === undefined ? undefined : asBoolean(item.fixtureOnly, 'dashboard.paths.fixtureOnly'),
+    requiredCapability: item.requiredCapability === undefined ? undefined : workerCapabilityOf(item.requiredCapability, 'dashboard.paths.requiredCapability'),
+    taskId: strictOptionalText(item.taskId, 'dashboard.paths.taskId'),
+    dynamicExecutionMode: strictOptionalText(item.dynamicExecutionMode, 'dashboard.paths.dynamicExecutionMode')
   }
 }
 
@@ -393,11 +455,16 @@ export const parseDashboard = (value: unknown): DashboardSnapshot => {
   const scanId = optionalText(value.scanId)
   const entriesValue = value.entries
   const findingsValue = value.findings
-  const rawPathValue = value.path ?? value.paths ?? value.trace
-  if (!Array.isArray(entriesValue) || !Array.isArray(findingsValue) || !Array.isArray(rawPathValue)) throw new Error('invalid dashboard response')
-  // DashboardDto has both a compact `path` projection and a richer `paths`
-  // collection. If only the latter is present, flatten its immutable steps.
-  const pathValue = rawPathValue.flatMap((item) => isRecord(item) && Array.isArray(item.steps) ? item.steps : [item])
+  const rawPaths = value.paths
+  const richPaths = rawPaths === undefined
+    ? []
+    : Array.isArray(rawPaths) ? rawPaths.map(parsePathTrace) : (() => { throw new Error('invalid dashboard.paths') })()
+  const rawPathValue = value.path ?? value.trace
+  if (!Array.isArray(entriesValue) || !Array.isArray(findingsValue) || (rawPathValue !== undefined && !Array.isArray(rawPathValue))) throw new Error('invalid dashboard response')
+  // GET dashboard remains authoritative. Prefer its compact projection when
+  // present, while retaining every rich path and using the first path only as
+  // a compatibility projection for views that still consume `path`.
+  const pathValue = rawPathValue === undefined ? richPaths[0]?.steps ?? [] : rawPathValue
   return {
     schemaVersion: version,
     projectId,
@@ -408,7 +475,8 @@ export const parseDashboard = (value: unknown): DashboardSnapshot => {
     evidenceRefs: evidenceRefsOf(value.evidenceRefs, 'dashboard.evidenceRefs'),
     entries: entriesValue.map((item) => parseEntry(item, { schemaVersion: version, projectId, artifactDigest })),
     findings: findingsValue.map((item) => parseFinding(item, { schemaVersion: version, projectId, artifactDigest, scanId })),
-    path: pathValue.map(parsePath)
+    path: pathValue.map(parsePath),
+    paths: richPaths
   }
 }
 
@@ -509,7 +577,8 @@ export const parseEvidence = (value: unknown): EvidenceDto => {
     artifactDigest: optionalText(body.artifactDigest),
     scanId: optionalText(body.scanId),
     kind: asText(body.kind ?? body.provenanceKind, 'evidence.kind'),
-    provenanceKind: optionalText(body.provenanceKind),
+    provenanceKind: body.provenanceKind === undefined ? undefined : provenanceKindOf(body.provenanceKind, 'evidence.provenanceKind'),
+    verificationStatus: body.verificationStatus === undefined ? undefined : statusOf(body.verificationStatus, 'evidence.verificationStatus'),
     source: asText(body.source, 'evidence.source'),
     confidence: asFiniteNumber(body.confidence, 'evidence.confidence', 0, 1),
     summary: asText(body.summary, 'evidence.summary'),
@@ -572,6 +641,7 @@ const demoSnapshot: DashboardSnapshot = {
     { id: 'f-02', title: '服务器路径信息泄露', severity: 'medium', status: 'VERIFIED', entry: '/api/info', sink: 'HTTP response', dependency: 'filesystem', evidence: 7 },
     { id: 'f-03', title: '文件内容进入执行器', severity: 'critical', status: 'DYNAMIC_SUSPECTED', entry: '/api/run', sink: 'ProcessBuilder', dependency: 'ROLE_ADMIN', evidence: 4 }
   ],
+  paths: [],
   path: [
     { label: 'POST /api/upload', detail: 'filename = ${safe-probe}', kind: 'entry', state: 'done' },
     { label: 'UploadService.save', detail: 'URLDecode → path concat', kind: 'transform', state: 'done' },
