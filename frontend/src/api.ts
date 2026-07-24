@@ -11,7 +11,7 @@ export type VerificationStatus = 'VERIFIED' | 'DYNAMIC_SUSPECTED' | 'STATIC_INFE
 
 export type DependencyMode = 'MOCK' | 'REPLAY' | 'LIVE_DISABLED' | 'LIVE' | string
 export type ProvenanceKind = 'FACT' | 'INFERENCE' | 'SIMULATION' | 'RUNTIME_OBSERVED' | 'APPLICATION_REPORTED'
-export type WorkerCapability = 'STATIC_ONLY' | 'FIXTURE_RUNC' | 'HARDENED_GVISOR' | 'HARDENED_KATA'
+export type WorkerCapability = 'STATIC_ONLY' | 'TRUSTED_DOCKER' | 'HARDENED_GVISOR' | 'HARDENED_KATA'
 
 export type EvidenceRef = string | {
   evidenceId: string
@@ -106,7 +106,6 @@ export type PathTrace = {
   preconditions: string[]
   steps: PathStep[]
   evidenceRefs?: EvidenceRef[]
-  fixtureOnly?: boolean
   requiredCapability?: WorkerCapability
   taskId?: string
   dynamicExecutionMode?: string
@@ -174,6 +173,18 @@ export type ScanDto = {
 }
 export type Scan = ScanDto
 export type Evidence = EvidenceDto
+
+export type DynamicTaskDto = {
+  schemaVersion: number
+  projectId: string
+  artifactDigest: string
+  scanId: string
+  taskId: string
+  status: string
+  verificationStatus: 'DYNAMIC_SUSPECTED'
+  requiredCapability: 'TRUSTED_DOCKER'
+  dynamicExecutionMode: string
+}
 
 export type CreateProjectRequest = {
   name: string
@@ -282,6 +293,23 @@ export type AiJobDto = {
   updatedAt?: string
   errorCode?: string
 }
+export type AiJobEventStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'BLOCKED'
+export type AiJobEventDto = {
+  schemaVersion: number
+  aiJobId: string
+  sequence: number
+  projectId: string
+  stage: string
+  status: AiJobEventStatus
+  providerRequestSummary?: string
+  providerResultSummary?: string
+  toolCallName?: string
+  toolArgumentsSummary?: string
+  toolResultStatus?: string
+  modelInferenceSummary?: string
+  failureDiagnostic?: string
+  createdAt: string
+}
 export type CreateAiJobRequest = {
   role: AiRole
   authorized: true
@@ -363,6 +391,7 @@ export interface SentinelApi {
   deleteArtifact(projectId: string, artifactId: string): Promise<void>
   listScans(projectId: string): Promise<ScanDto[]>
   createScan(request?: CreateScanRequest | string, projectId?: string): Promise<ScanDto>
+  createDynamicTask(scanId: string): Promise<DynamicTaskDto>
   updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto>
   deleteScan(scanId: string): Promise<void>
   listProviders(): Promise<ProviderDto[]>
@@ -376,6 +405,7 @@ export interface SentinelApi {
   listAiJobs(projectId: string): Promise<AiJobDto[]>
   createAiJob(projectId: string, request: CreateAiJobRequest): Promise<AiJobDto>
   getAiJob(aiJobId: string): Promise<AiJobDto>
+  listAiJobEvents(aiJobId: string): Promise<AiJobEventDto[]>
   updateAiJob(aiJobId: string, action: 'cancel' | 'retry'): Promise<AiJobDto>
   deleteAiJob(aiJobId: string): Promise<void>
   getEntries(projectId?: string, scanId?: string): Promise<EntryDto[]>
@@ -386,7 +416,7 @@ export interface SentinelApi {
 
 const statuses = new Set<VerificationStatus>(['VERIFIED', 'DYNAMIC_SUSPECTED', 'STATIC_INFERRED', 'UNREACHED'])
 const provenanceKinds = new Set<ProvenanceKind>(['FACT', 'INFERENCE', 'SIMULATION', 'RUNTIME_OBSERVED', 'APPLICATION_REPORTED'])
-const workerCapabilities = new Set<WorkerCapability>(['STATIC_ONLY', 'FIXTURE_RUNC', 'HARDENED_GVISOR', 'HARDENED_KATA'])
+const workerCapabilities = new Set<WorkerCapability>(['STATIC_ONLY', 'TRUSTED_DOCKER', 'HARDENED_GVISOR', 'HARDENED_KATA'])
 const supportedSchemaVersion = 1
 const supportedEventSchemaVersions = new Set([1, 2])
 
@@ -574,7 +604,6 @@ export const parsePathTrace = (item: unknown): PathTrace => {
     preconditions: listOfText(item.preconditions, 'dashboard.paths.preconditions'),
     steps: item.steps.map(parsePath),
     evidenceRefs: evidenceRefsOf(item.evidenceRefs, 'dashboard.paths.evidenceRefs'),
-    fixtureOnly: item.fixtureOnly === undefined ? undefined : asBoolean(item.fixtureOnly, 'dashboard.paths.fixtureOnly'),
     requiredCapability: item.requiredCapability === undefined ? undefined : workerCapabilityOf(item.requiredCapability, 'dashboard.paths.requiredCapability'),
     taskId: strictOptionalText(item.taskId, 'dashboard.paths.taskId'),
     dynamicExecutionMode: strictOptionalText(item.dynamicExecutionMode, 'dashboard.paths.dynamicExecutionMode')
@@ -700,6 +729,26 @@ export const parseScan = (value: unknown): ScanDto => {
   }
 }
 
+export const parseDynamicTask = (value: unknown): DynamicTaskDto => {
+  if (!isRecord(value)) throw new Error('invalid dynamic task response')
+  const capability = workerCapabilityOf(value.requiredCapability, 'dynamicTask.requiredCapability')
+  if (capability !== 'TRUSTED_DOCKER'
+      || value.verificationStatus !== 'DYNAMIC_SUSPECTED') {
+    throw new Error('invalid trusted Docker artifact task')
+  }
+  return {
+    schemaVersion: schemaVersion(value.schemaVersion, 'dynamicTask.schemaVersion'),
+    projectId: asText(value.projectId, 'dynamicTask.projectId'),
+    artifactDigest: asText(value.artifactDigest, 'dynamicTask.artifactDigest'),
+    scanId: asText(value.scanId, 'dynamicTask.scanId'),
+    taskId: asText(value.taskId, 'dynamicTask.taskId'),
+    status: asText(value.status, 'dynamicTask.status'),
+    verificationStatus: 'DYNAMIC_SUSPECTED',
+    requiredCapability: 'TRUSTED_DOCKER',
+    dynamicExecutionMode: asText(value.dynamicExecutionMode, 'dynamicTask.dynamicExecutionMode')
+  }
+}
+
 export const parseEvidence = (value: unknown): EvidenceDto => {
   const body = unwrap(value, 'evidence')
   if (!isRecord(body)) throw new Error('invalid evidence response')
@@ -815,6 +864,78 @@ export const parseAiJob = (value: unknown): AiJobDto => {
     updatedAt: optionalText(body.updatedAt),
     errorCode: optionalText(body.errorCode)
   }
+}
+
+export const parseAiJobEvent = (value: unknown): AiJobEventDto => {
+  if (!isRecord(value)) throw new Error('invalid AI job event response')
+  const sequence = asSafeInteger(value.sequence, 'aiJobEvent.sequence', 1, 128)
+  const stage = asText(value.stage, 'aiJobEvent.stage')
+  const status = asText(value.status, 'aiJobEvent.status') as AiJobEventStatus
+  if (!/^[A-Z0-9_]{1,64}$/.test(stage)
+      || !['QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'BLOCKED'].includes(status)) {
+    throw new Error('invalid AI job event code field')
+  }
+  const boundedOptionalText = (field: string, maxLength: number): string | undefined => {
+    const text = strictOptionalText(value[field], `aiJobEvent.${field}`)
+    if (text !== undefined && (text.length > maxLength || /[\u0000-\u001f\u007f-\u009f]/.test(text))) {
+      throw new Error(`invalid aiJobEvent.${field}`)
+    }
+    return text
+  }
+  const boundedRequiredText = (field: string, maxLength: number): string => {
+    const text = asText(value[field], `aiJobEvent.${field}`)
+    if (text.length > maxLength || /[\u0000-\u001f\u007f-\u009f]/.test(text)) {
+      throw new Error(`invalid aiJobEvent.${field}`)
+    }
+    return text
+  }
+  const aiJobId = boundedRequiredText('aiJobId', 128)
+  const projectId = boundedRequiredText('projectId', 128)
+  const providerRequestSummary = boundedOptionalText('providerRequestSummary', 2048)
+  const providerResultSummary = boundedOptionalText('providerResultSummary', 2048)
+  const toolCallName = boundedOptionalText('toolCallName', 128)
+  const toolArgumentsSummary = boundedOptionalText('toolArgumentsSummary', 1024)
+  const toolResultStatus = boundedOptionalText('toolResultStatus', 64)
+  const modelInferenceSummary = boundedOptionalText('modelInferenceSummary', 16_384)
+  const failureDiagnostic = boundedOptionalText('failureDiagnostic', 1024)
+  if (toolCallName !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(toolCallName)
+      || toolResultStatus !== undefined && !/^[A-Z0-9_]{1,64}$/.test(toolResultStatus)
+      || status === 'FAILED' && failureDiagnostic === undefined) {
+    throw new Error('invalid AI job event detail')
+  }
+  const createdAt = asText(value.createdAt, 'aiJobEvent.createdAt')
+  if (createdAt.length > 64 || Number.isNaN(Date.parse(createdAt))) throw new Error('invalid aiJobEvent.createdAt')
+  return {
+    schemaVersion: schemaVersion(value.schemaVersion, 'aiJobEvent.schemaVersion'),
+    aiJobId,
+    sequence,
+    projectId,
+    stage,
+    status,
+    providerRequestSummary,
+    providerResultSummary,
+    toolCallName,
+    toolArgumentsSummary,
+    toolResultStatus,
+    modelInferenceSummary,
+    failureDiagnostic,
+    createdAt
+  }
+}
+
+export const parseAiJobEvents = (value: unknown): AiJobEventDto[] => {
+  if (!isRecord(value) || !Array.isArray(value.aiJobEvents)) throw new Error('invalid AI job events response')
+  schemaVersion(value.schemaVersion, 'aiJobEvents.schemaVersion')
+  const aiJobId = asText(value.aiJobId, 'aiJobEvents.aiJobId')
+  const projectId = asText(value.projectId, 'aiJobEvents.projectId')
+  if (value.aiJobEvents.length > 128) throw new Error('invalid aiJobEvents bound')
+  return value.aiJobEvents.map((item, index) => {
+    const event = parseAiJobEvent(item)
+    if (event.aiJobId !== aiJobId || event.projectId !== projectId || event.sequence !== index + 1) {
+      throw new Error('invalid AI job event scope or order')
+    }
+    return event
+  })
 }
 
 export const parseScanEvent = (value: unknown, eventName?: string): ScanEvent => {
@@ -1189,6 +1310,16 @@ export class HttpSentinelApi implements SentinelApi {
     return parseScan(response)
   }
 
+  async createDynamicTask(scanId: string): Promise<DynamicTaskDto> {
+    const response = await this.request(`scans/${encodeURIComponent(asText(scanId, 'scanId'))}/dynamic-tasks`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: mutationHeaders(this.token, generatedIdempotencyKey()),
+      body: JSON.stringify({ authorized: true })
+    }, 'create trusted Docker artifact task')
+    return parseDynamicTask(response)
+  }
+
   async updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto> {
     const response = await this.request(`scans/${encodeURIComponent(asText(scanId, 'scanId'))}`, {
       method: 'PATCH', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(request)
@@ -1270,6 +1401,13 @@ export class HttpSentinelApi implements SentinelApi {
   async getAiJob(aiJobId: string): Promise<AiJobDto> {
     const response = await this.request(`ai-jobs/${encodeURIComponent(asText(aiJobId, 'aiJobId'))}`, { credentials: 'include', headers: jsonHeaders(this.token) }, 'get ai job')
     return parseAiJob(response)
+  }
+
+  async listAiJobEvents(aiJobId: string): Promise<AiJobEventDto[]> {
+    const response = await this.request(`ai-jobs/${encodeURIComponent(asText(aiJobId, 'aiJobId'))}/events`, {
+      credentials: 'include', headers: jsonHeaders(this.token)
+    }, 'list AI job events')
+    return parseAiJobEvents(response)
   }
 
   async updateAiJob(aiJobId: string, action: 'cancel' | 'retry'): Promise<AiJobDto> {
@@ -1434,6 +1572,7 @@ export class MockSentinelApi implements SentinelApi {
     return { schemaVersion: 1, scanId: 'scan-07f2', projectId: 'project-01', artifactDigest: '0'.repeat(64), status: 'COMPLETED', verificationStatus: 'STATIC_INFERRED', dependencyMode: 'MOCK', createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), evidenceRefs: [] }
   }
 
+  async createDynamicTask(): Promise<DynamicTaskDto> { return this.unavailable('create dynamic artifact task') }
   async updateScan(): Promise<ScanDto> { return this.unavailable('update scan') }
   async deleteScan(): Promise<void> { return this.unavailable('delete scan') }
   async listProviders(): Promise<ProviderDto[]> { return [] }
@@ -1447,6 +1586,7 @@ export class MockSentinelApi implements SentinelApi {
   async listAiJobs(): Promise<AiJobDto[]> { return [] }
   async createAiJob(): Promise<AiJobDto> { return this.unavailable('create ai job') }
   async getAiJob(): Promise<AiJobDto> { return this.unavailable('get ai job') }
+  async listAiJobEvents(): Promise<AiJobEventDto[]> { return [] }
   async updateAiJob(): Promise<AiJobDto> { return this.unavailable('update ai job') }
   async deleteAiJob(): Promise<void> { return this.unavailable('delete ai job') }
 

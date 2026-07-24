@@ -101,6 +101,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
             SQLiteControlPlanePersistence.ProviderData configured = validateExecutionSnapshot(job);
             job = transition(job, "RUNNING", "RUNNING", null, 0, 0,
                     "[]", null, actorId, "ai-job.start");
+            appendEvent(job, "LIFECYCLE", "RUNNING", null, null, null,
+                    null, null, null, null);
             ProviderDefinition provider = new ProviderDefinition(
                     ProviderContracts.SCHEMA_VERSION, job.workspaceId(), configured.providerId(),
                     configured.name(), configured.kind(), URI.create(configured.baseUrl()),
@@ -119,7 +121,9 @@ public final class AiJobOrchestrator implements AutoCloseable {
                 String reason = failure instanceof ProviderChatTransport.TransportException transportFailure
                         ? transportFailure.code()
                         : failure instanceof JobFailure jobFailure ? jobFailure.code : "AI_JOB_FAILED";
-                fail(jobId, reason, actorId, started);
+                String diagnostic = failure instanceof ProviderChatTransport.TransportException transportFailure
+                        ? transportFailure.diagnostic() : reason;
+                fail(jobId, reason, diagnostic, actorId, started);
             }
         } finally {
             running.remove(jobId, state);
@@ -205,11 +209,22 @@ public final class AiJobOrchestrator implements AutoCloseable {
             if (protocol == ProviderProtocol.OPENAI_CHAT) {
                 request.put("max_completion_tokens", MAX_OUTPUT_TOKENS);
             }
+            appendEvent(initial, "PROVIDER_REQUEST", "RUNNING",
+                    encode(Map.of("protocol", protocol.name(), "round", rounds + 1,
+                            "maxOutputTokens", MAX_OUTPUT_TOKENS,
+                            "toolDefinitionCount", registry.definitionsFor(initial.role()).size())),
+                    null, null, null, null, null, null);
             ProviderChatTransport.Response response = transport.send(provider, credential, request,
                     new ProviderChatTransport.Limits(REQUEST_TIMEOUT,
                             ProviderChatContracts.MAX_REQUEST_BYTES,
                             ProviderChatContracts.MAX_RESPONSE_BYTES));
             requestId = response.requestId() == null ? requestId : response.requestId();
+            Map<String, Object> providerResult = new LinkedHashMap<>();
+            providerResult.put("httpStatus", response.statusCode());
+            providerResult.put("elapsedMillis", response.elapsedMillis());
+            if (response.requestId() != null) providerResult.put("requestId", response.requestId());
+            appendEvent(initial, "PROVIDER_RESPONSE", "RUNNING", null,
+                    encode(providerResult), null, null, null, null, null);
             byte[] responseBody = response.body();
             ProviderChatContracts.ParsedResponse parsed;
             try {
@@ -221,6 +236,10 @@ public final class AiJobOrchestrator implements AutoCloseable {
                 Arrays.fill(responseBody, (byte) 0);
                 response.clear();
             }
+            appendEvent(initial, "PROVIDER_RESULT", "RUNNING", null,
+                    encode(Map.of("stopReason", parsed.stopReason().name(),
+                            "toolCallCount", parsed.executableCalls().size())),
+                    null, null, null, null, null);
             if (parsed.stopReason() == ProviderChatContracts.StopReason.TOOL_USE) {
                 var call = parsed.executableCalls().get(0);
                 ToolResult result = registry.execute(call, context);
@@ -230,6 +249,9 @@ public final class AiJobOrchestrator implements AutoCloseable {
                 if (result.errorCode() != null) summary.put("errorCode", result.errorCode());
                 summary.put("truncated", result.truncated());
                 toolSummary.add(summary);
+                appendEvent(initial, "TOOL_CALL", "RUNNING", null, null,
+                        safeToolName(call.toolName()), argumentSummary(call.arguments()),
+                        result.status().name(), null, null);
                 store.auditChange(initial.projectId(), actorId, "ai-job.tool-decision", "ai-job",
                         initial.aiJobId(), encode(summary), clock.instant().toString());
                 turns.add(parsed.assistant());
@@ -247,6 +269,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
             String conclusion = encode(Map.of(
                     "schemaVersion", 1, "classification", "INFERENCE",
                     "summary", summary, "evidenceRefs", List.of()));
+            appendEvent(initial, "MODEL_INFERENCE", "COMPLETED", null, null,
+                    null, null, null, summary, null);
             SQLiteControlPlanePersistence.AiJobData current = store.requireAiJob(initial.aiJobId());
             if ("CANCELLED".equals(current.status())) return;
             transition(current, "COMPLETED", parsed.stopReason().name(), requestId,
@@ -255,6 +279,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
             return;
         }
         SQLiteControlPlanePersistence.AiJobData current = store.requireAiJob(initial.aiJobId());
+        appendEvent(current, "FAILURE", "FAILED", null, null, null,
+                null, null, null, "ROUND_BUDGET_EXHAUSTED");
         transition(current, "FAILED", "ROUND_BUDGET_EXHAUSTED", requestId,
                 elapsed(started), rounds, encode(toolSummary), null, actorId, "ai-job.fail");
     }
@@ -270,9 +296,11 @@ public final class AiJobOrchestrator implements AutoCloseable {
                 rounds, toolSummary, conclusion, actorId, action, clock.instant().toString());
     }
 
-    private void fail(String jobId, String reason, String actorId, long started) {
+    private void fail(String jobId, String reason, String diagnostic, String actorId, long started) {
         SQLiteControlPlanePersistence.AiJobData current = store.requireAiJob(jobId);
         if ("CANCELLED".equals(current.status()) || "COMPLETED".equals(current.status())) return;
+        appendEvent(current, "FAILURE", "FAILED", null, null, null,
+                null, null, null, sanitizeDiagnostic(diagnostic));
         transition(current, "FAILED", safeReason(reason), current.providerRequestId(),
                 elapsed(started), current.rounds(), current.toolSummaryJson(), null,
                 actorId, "ai-job.fail");
@@ -281,6 +309,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
     private void persistCancelled(String jobId, String actorId, long started) {
         SQLiteControlPlanePersistence.AiJobData current = store.requireAiJob(jobId);
         if ("COMPLETED".equals(current.status()) || "FAILED".equals(current.status())) return;
+        appendEvent(current, "LIFECYCLE", "CANCELLED", null, null, null,
+                null, null, null, "USER_CANCELLED");
         store.updateAiJob(current, "CANCELLED", "USER_CANCELLED", current.stagesJson(),
                 current.providerRequestId(), elapsed(started), current.rounds(),
                 current.toolSummaryJson(), null, actorId, "ai-job.cancelled",
@@ -291,6 +321,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
         try {
             for (SQLiteControlPlanePersistence.AiJobData job : store.aiJobs(null)) {
                 if ("QUEUED".equals(job.status()) || "RUNNING".equals(job.status())) {
+                    appendEvent(job, "RECOVERY", "FAILED", null, null, null,
+                            null, null, null, "PROCESS_RESTARTED");
                     store.updateAiJob(job, "FAILED", "PROCESS_RESTARTED", job.stagesJson(),
                             job.providerRequestId(), job.elapsedMillis(), job.rounds(),
                             job.toolSummaryJson(), null, "local-admin", "ai-job.recovered",
@@ -326,6 +358,41 @@ public final class AiJobOrchestrator implements AutoCloseable {
                 .replaceAll("\\bsk-[A-Za-z0-9_-]{8,}\\b", "[REDACTED]")
                 .replaceAll("(?i)\\bVERIFIED\\b", "UNVERIFIED_MODEL_CLAIM");
         return sanitized.length() <= 16_384 ? sanitized : sanitized.substring(0, 16_384);
+    }
+
+    private static String sanitizeDiagnostic(String value) {
+        String sanitized = sanitizeSummary(value).replaceAll("\\s+", " ").trim();
+        if (sanitized.isBlank()) return "AI_JOB_FAILED";
+        return sanitized.length() <= 1024 ? sanitized : sanitized.substring(0, 1024);
+    }
+
+    private static String safeToolName(String value) {
+        return value != null && value.matches("[A-Za-z0-9_-]{1,128}")
+                ? value : "INVALID_TOOL_NAME";
+    }
+
+    private static String argumentSummary(JsonNode arguments) {
+        int bytes;
+        try {
+            bytes = JSON.writeValueAsBytes(arguments).length;
+        } catch (Exception invalid) {
+            bytes = -1;
+        }
+        int fields = arguments != null && arguments.isObject() ? arguments.size() : 0;
+        return encode(Map.of("shape", arguments != null && arguments.isObject() ? "OBJECT" : "OTHER",
+                "fieldCount", fields, "encodedBytes", bytes));
+    }
+
+    private void appendEvent(SQLiteControlPlanePersistence.AiJobData job, String stage, String status,
+                             String providerRequestSummary, String providerResultSummary,
+                             String toolCallName, String toolArgumentsSummary,
+                             String toolResultStatus, String modelInferenceSummary,
+                             String failureDiagnostic) {
+        store.appendAiJobEvent(new SQLiteControlPlanePersistence.AiJobEventData(
+                job.aiJobId(), 0, job.workspaceId(), job.projectId(), stage, status,
+                providerRequestSummary, providerResultSummary, toolCallName,
+                toolArgumentsSummary, toolResultStatus, modelInferenceSummary,
+                failureDiagnostic, clock.instant().toString()));
     }
 
     private static String safeReason(String reason) {

@@ -32,7 +32,7 @@ public final class ReplayEvidenceGateAcceptanceTest {
                 "divergent outcome was accepted");
 
         reject(() -> gate.compare(first, attempt(
-                "task-runc", WorkerCapability.FIXTURE_RUNC, A, true, 12)), "runc");
+                "task-runc", WorkerCapability.TRUSTED_DOCKER, A, true, 12)), "trusted Docker runc");
         reject(() -> gate.compare(first, attempt(
                 "task-no-agent", WorkerCapability.HARDENED_GVISOR, A, false, 12)), "agent integrity");
         reject(() -> gate.compare(first, attempt(

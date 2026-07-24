@@ -10,7 +10,7 @@
     "scope": { "$ref": "#/$defs/scope" },
     "leaseId": { "$ref": "#/$defs/id" },
     "workerId": { "$ref": "#/$defs/id" },
-    "capability": { "enum": ["STATIC_ONLY", "FIXTURE_RUNC", "HARDENED_GVISOR", "HARDENED_KATA"] },
+    "capability": { "enum": ["STATIC_ONLY", "TRUSTED_DOCKER", "HARDENED_GVISOR", "HARDENED_KATA"] },
     "issuedAt": { "type": "string", "format": "date-time" },
     "heartbeatAt": { "type": "string", "format": "date-time" },
     "expiresAt": { "type": "string", "format": "date-time" }

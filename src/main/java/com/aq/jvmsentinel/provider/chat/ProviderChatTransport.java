@@ -25,10 +25,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-/** Remote-HTTPS/loopback-HTTP, no-redirect transport for bounded provider chat calls. */
+/** Explicit HTTP(S), no-redirect transport for bounded provider chat calls. */
 public final class ProviderChatTransport implements ChatTransport {
     private static final int MAX_KEY_BYTES = 4_096;
+    private static final int MAX_ERROR_BODY_BYTES = 8_192;
+    private static final int MAX_DIAGNOSTIC_CHARS = 512;
     private final HttpClient client;
 
     public ProviderChatTransport() {
@@ -90,8 +94,15 @@ public final class ProviderChatTransport implements ChatTransport {
                 throw failure("REDIRECT_REJECTED");
             }
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                close(response.body());
-                throw failure("HTTP_" + response.statusCode());
+                byte[] errorBody = readPrefixBounded(
+                        response.body(), Math.min(MAX_ERROR_BODY_BYTES, limits.maxResponseBytes()),
+                        limits.requestTimeout());
+                try {
+                    throw failure("HTTP_" + response.statusCode(),
+                            sanitizedDiagnostic(errorBody, headerSecret));
+                } finally {
+                    Arrays.fill(errorBody, (byte) 0);
+                }
             }
             String contentType = response.headers().firstValue("Content-Type").orElse("");
             if (!contentType.toLowerCase(Locale.ROOT).startsWith("application/json")) {
@@ -194,6 +205,105 @@ public final class ProviderChatTransport implements ChatTransport {
         }
     }
 
+    private static byte[] readPrefixBounded(InputStream input, int maximum, Duration timeout) {
+        AtomicBoolean timedOut = new AtomicBoolean();
+        ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "provider-chat-error-body-timeout");
+            thread.setDaemon(true);
+            return thread;
+        });
+        var timeoutTask = timer.schedule(() -> {
+            timedOut.set(true);
+            close(input);
+        }, timeout.toMillis(), TimeUnit.MILLISECONDS);
+        byte[] buffer = new byte[Math.max(1, maximum)];
+        int total = 0;
+        try (InputStream body = input) {
+            while (total < buffer.length) {
+                int read = body.read(buffer, total, buffer.length - total);
+                if (read == -1) break;
+                total += read;
+            }
+            return Arrays.copyOf(buffer, total);
+        } catch (IOException failure) {
+            if (timedOut.get()) throw failure("RESPONSE_TIMEOUT");
+            return new byte[0];
+        } finally {
+            Arrays.fill(buffer, (byte) 0);
+            timeoutTask.cancel(false);
+            timer.shutdownNow();
+        }
+    }
+
+    private static String sanitizedDiagnostic(byte[] body, String credential) {
+        if (body.length == 0) return null;
+        String diagnostic;
+        try {
+            JsonNode root = ChatProtocolSupport.JSON.readTree(body);
+            JsonNode error = root == null ? null : root.get("error");
+            JsonNode source = error != null && error.isObject() ? error : root;
+            if (source == null || !source.isObject()) return null;
+            String type = diagnosticField(source, "type");
+            String code = diagnosticField(source, "code");
+            String message = diagnosticField(source, "message");
+            StringBuilder value = new StringBuilder();
+            if (type != null) value.append("type=").append(type);
+            if (code != null) {
+                if (!value.isEmpty()) value.append("; ");
+                value.append("code=").append(code);
+            }
+            if (message != null) {
+                if (!value.isEmpty()) value.append("; ");
+                value.append("message=").append(message);
+            }
+            diagnostic = value.toString();
+        } catch (Exception malformed) {
+            String prefix = new String(body, StandardCharsets.UTF_8);
+            String type = diagnosticField(prefix, "type");
+            String code = diagnosticField(prefix, "code");
+            String message = diagnosticField(prefix, "message");
+            StringBuilder value = new StringBuilder();
+            if (type != null) value.append("type=").append(type);
+            if (code != null) {
+                if (!value.isEmpty()) value.append("; ");
+                value.append("code=").append(code);
+            }
+            if (message != null) {
+                if (!value.isEmpty()) value.append("; ");
+                value.append("message=").append(message);
+            }
+            diagnostic = value.toString();
+        }
+        if (diagnostic.isBlank()) return null;
+        if (credential != null && credential.length() >= 3) {
+            diagnostic = diagnostic.replace(credential, "[REDACTED]");
+        }
+        diagnostic = diagnostic.replaceAll("[\\p{Cntrl}&&[^\\n\\t]]", " ")
+                .replaceAll("(?i)bearer\\s+[A-Za-z0-9._~+/-]{4,}", "Bearer [REDACTED]")
+                .replaceAll("(?i)(api[_ -]?key\\s*[:=]\\s*)\\S+", "$1[REDACTED]")
+                .replaceAll("\\bsk-[A-Za-z0-9_-]{4,}\\b", "[REDACTED]")
+                .replaceAll("\\s+", " ").trim();
+        return diagnostic.length() <= MAX_DIAGNOSTIC_CHARS
+                ? diagnostic : diagnostic.substring(0, MAX_DIAGNOSTIC_CHARS);
+    }
+
+    private static String diagnosticField(JsonNode source, String name) {
+        JsonNode value = source.get(name);
+        if (value == null || !value.isValueNode() || value.isNull()) return null;
+        String text = value.asText();
+        return text.isBlank() ? null : text;
+    }
+
+    private static String diagnosticField(String jsonPrefix, String name) {
+        Pattern pattern = Pattern.compile("\"" + Pattern.quote(name)
+                + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\]){0,1024})\"");
+        Matcher matcher = pattern.matcher(jsonPrefix);
+        if (!matcher.find()) return null;
+        String value = matcher.group(1).replace("\\\"", "\"")
+                .replace("\\\\", "\\");
+        return value.isBlank() ? null : value;
+    }
+
     private static void close(InputStream input) {
         try {
             if (input != null) input.close();
@@ -204,6 +314,10 @@ public final class ProviderChatTransport implements ChatTransport {
 
     private static TransportException failure(String code) {
         return new TransportException(code);
+    }
+
+    private static TransportException failure(String code, String diagnostic) {
+        return new TransportException(code, diagnostic);
     }
 
     public record Limits(Duration requestTimeout, int maxRequestBytes, int maxResponseBytes) {
@@ -233,10 +347,26 @@ public final class ProviderChatTransport implements ChatTransport {
 
     public static final class TransportException extends RuntimeException {
         private final String code;
+        private final String diagnostic;
         public TransportException(String code) {
+            this(code, null);
+        }
+        public TransportException(String code, String diagnostic) {
             super(code, null, false, false);
             this.code = code;
+            if (diagnostic == null || diagnostic.isBlank()) {
+                this.diagnostic = null;
+            } else {
+                String sanitized = diagnostic.replaceAll("[\\p{Cntrl}&&[^\\n\\t]]", " ")
+                        .replaceAll("(?i)bearer\\s+[A-Za-z0-9._~+/-]{4,}", "Bearer [REDACTED]")
+                        .replaceAll("(?i)(api[_ -]?key\\s*[:=]\\s*)\\S+", "$1[REDACTED]")
+                        .replaceAll("\\bsk-[A-Za-z0-9_-]{4,}\\b", "[REDACTED]")
+                        .replaceAll("\\s+", " ").trim();
+                this.diagnostic = sanitized.length() <= MAX_DIAGNOSTIC_CHARS
+                        ? sanitized : sanitized.substring(0, MAX_DIAGNOSTIC_CHARS);
+            }
         }
         public String code() { return code; }
+        public String diagnostic() { return diagnostic; }
     }
 }

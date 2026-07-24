@@ -5,7 +5,9 @@ param(
     [int]$BackendPort = 18080,
     [ValidateRange(1, 65535)]
     [int]$FrontendPort = 5173,
-    [string]$JavaHome = $env:JAVA_HOME
+    [string]$JavaHome = $env:JAVA_HOME,
+    [switch]$WithDockerRuntime,
+    [switch]$RebuildRuntimeImage
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,6 +62,27 @@ if (-not (Test-Path -LiteralPath $artifactPath)) {
     New-Item -ItemType Directory -Path $artifactPath | Out-Null
 }
 
+if ($WithDockerRuntime) {
+    $sandboxStateFile = Join-Path $PSScriptRoot 'sandbox-pack\.runtime\state.json'
+    $skipRuntimeBuild = (Test-Path -LiteralPath $sandboxStateFile) -and -not $RebuildRuntimeImage
+    if ($skipRuntimeBuild) {
+        & (Join-Path $PSScriptRoot 'sandbox-pack\Start-SandboxPack.ps1') `
+            -SkipRuntimeBuild
+    }
+    else {
+        & (Join-Path $PSScriptRoot 'sandbox-pack\Start-SandboxPack.ps1')
+    }
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sandboxStateFile -PathType Leaf)) {
+        throw 'Sandbox Pack startup failed.'
+    }
+    $sandboxState = Get-Content -Raw -LiteralPath $sandboxStateFile | ConvertFrom-Json
+    if ($sandboxState.capability -ne 'TRUSTED_DOCKER' -or
+        $sandboxState.artifactRuntimeImageUri -notmatch '^[a-z0-9.-]+(?::[0-9]{1,5})?/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$') {
+        throw 'Sandbox Pack returned an invalid trusted artifact runtime image.'
+    }
+    $env:VEYRION_ARTIFACT_RUNTIME_IMAGE_URI = $sandboxState.artifactRuntimeImageUri
+}
+
 if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'frontend\node_modules\.bin\vite.cmd'))) {
     & npm ci --prefix frontend
     if ($LASTEXITCODE -ne 0) {
@@ -84,5 +107,6 @@ $runtimeClasspath = $applicationClasses + [System.IO.Path]::PathSeparator + $run
     --workspace $workspace `
     --artifacts $artifactPath `
     --backend-port $BackendPort `
-    --frontend-port $FrontendPort
+    --frontend-port $FrontendPort `
+    --docker-artifact-worker $WithDockerRuntime.IsPresent
 exit $LASTEXITCODE

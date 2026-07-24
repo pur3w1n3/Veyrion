@@ -137,6 +137,16 @@ public final class ControlPlanePersistenceAcceptanceTest {
         expect(SQLiteControlPlanePersistence.MigrationException.class,
                 () -> ControlPlaneStore.sqlite(badV4Database, badV4Root),
                 "AI job migration checksum mismatch must fail closed");
+        Path badV5Root = Files.createTempDirectory("veyrion-bad-v005");
+        Path badV5Database = badV5Root.resolve("bad-v005.db");
+        ControlPlaneStore.sqlite(badV5Database, badV5Root);
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + badV5Database);
+             var statement = connection.createStatement()) {
+            statement.executeUpdate("UPDATE schema_migrations SET checksum='tampered' WHERE version=5");
+        }
+        expect(SQLiteControlPlanePersistence.MigrationException.class,
+                () -> ControlPlaneStore.sqlite(badV5Database, badV5Root),
+                "AI job event migration checksum mismatch must fail closed");
         Path badV1Root = Files.createTempDirectory("veyrion-bad-v001");
         Path badV1Database = badV1Root.resolve("bad-v001.db");
         ControlPlaneStore.sqlite(badV1Database, badV1Root);
@@ -153,7 +163,7 @@ public final class ControlPlanePersistenceAcceptanceTest {
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + upgradeDatabase);
              var statement = connection.createStatement()) {
             statement.executeUpdate("PRAGMA foreign_keys=OFF");
-            for (String table : List.of("audit_events", "ai_jobs", "project_ai_role_bindings",
+            for (String table : List.of("ai_job_events", "audit_events", "ai_jobs", "project_ai_role_bindings",
                     "provider_credentials", "providers", "operator_tokens", "operators")) {
                 statement.executeUpdate("DROP TABLE " + table);
             }
@@ -163,7 +173,7 @@ public final class ControlPlanePersistenceAcceptanceTest {
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + upgradeDatabase);
              var statement = connection.createStatement();
              var rows = statement.executeQuery("SELECT count(*) FROM schema_migrations")) {
-            check(rows.next() && rows.getInt(1) == 4, "V001 database upgrades through ordered V004");
+            check(rows.next() && rows.getInt(1) == 5, "V001 database upgrades through ordered V005");
         }
         expect(IllegalArgumentException.class,
                 () -> ControlPlaneStore.sqlite(root.getParent().resolve("outside.db"), root),

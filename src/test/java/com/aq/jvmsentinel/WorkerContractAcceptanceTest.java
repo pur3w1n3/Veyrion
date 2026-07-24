@@ -25,7 +25,7 @@ public final class WorkerContractAcceptanceTest {
         expect(IllegalStateException.class, () -> coordinator.enqueue(spec("task-lifecycle", true), "enqueue-1-conflict"));
         expect(SecurityException.class, () -> coordinator.enqueue(spec("task-denied", false), "denied"));
 
-        WorkerLease lease = coordinator.lease(spec.scope(), "worker-1", Set.of(WorkerCapability.FIXTURE_RUNC),
+        WorkerLease lease = coordinator.lease(spec.scope(), "worker-1", Set.of(WorkerCapability.TRUSTED_DOCKER),
                 Duration.ofSeconds(30), "lease-1");
         expect(SecurityException.class, () -> coordinator.start(spec.scope(), lease.leaseId(), "worker-other", "bad-worker"));
         TaskScope wrongScope = new TaskScope("project-other", DIGEST, "scan-1", "task-lifecycle");
@@ -58,7 +58,7 @@ public final class WorkerContractAcceptanceTest {
         WorkerTaskSpec cancelledSpec = spec("task-cancel", true);
         coordinator.enqueue(cancelledSpec, "enqueue-cancel");
         WorkerLease cancelLease = coordinator.lease(cancelledSpec.scope(), "worker-2",
-                Set.of(WorkerCapability.FIXTURE_RUNC), Duration.ofSeconds(10), "lease-cancel");
+                Set.of(WorkerCapability.TRUSTED_DOCKER), Duration.ofSeconds(10), "lease-cancel");
         coordinator.start(cancelledSpec.scope(), cancelLease.leaseId(), "worker-2", "start-cancel");
         check(coordinator.cancel(cancelledSpec.scope(), cancelLease.leaseId(), "worker-2",
                 StopReason.USER_CANCELLED, "cancel-1").lifecycle() == TaskLifecycle.CANCELLED, "cancel transition");
@@ -66,13 +66,13 @@ public final class WorkerContractAcceptanceTest {
         WorkerTaskSpec expirySpec = spec("task-expiry", true);
         coordinator.enqueue(expirySpec, "enqueue-expiry");
         WorkerLease expiredLease = coordinator.lease(expirySpec.scope(), "worker-3",
-                Set.of(WorkerCapability.FIXTURE_RUNC), Duration.ofSeconds(5), "lease-expiry");
+                Set.of(WorkerCapability.TRUSTED_DOCKER), Duration.ofSeconds(5), "lease-expiry");
         clock.advance(Duration.ofSeconds(5));
         expect(IllegalStateException.class, () -> coordinator.start(expirySpec.scope(), expiredLease.leaseId(),
                 "worker-3", "expired-start"));
         check(coordinator.get(expirySpec.scope()).lifecycle() == TaskLifecycle.QUEUED, "expired lease must be reclaimed");
         WorkerLease replacement = coordinator.lease(expirySpec.scope(), "worker-4",
-                Set.of(WorkerCapability.FIXTURE_RUNC), Duration.ofSeconds(5), "replacement-lease");
+                Set.of(WorkerCapability.TRUSTED_DOCKER), Duration.ofSeconds(5), "replacement-lease");
         check(!replacement.leaseId().equals(expiredLease.leaseId()), "reclaimed task must receive a new lease");
 
         TraceManifest manifest = traces.manifest(spec.scope());
@@ -85,9 +85,9 @@ public final class WorkerContractAcceptanceTest {
     }
 
     private static WorkerTaskSpec spec(String taskId, boolean authorized) {
-        return new WorkerTaskSpec(1, "project-1", DIGEST, "scan-1", taskId, "entry-1", authorized, true,
+        return new WorkerTaskSpec(1, "project-1", DIGEST, "scan-1", taskId, "entry-1", authorized, false,
                 new ResourceBudget(60, 10_000, 256 * 1024 * 1024L, 64 * 1024 * 1024L, 8 * 1024 * 1024L),
-                NetworkPolicy.denyAll(), WorkerCapability.FIXTURE_RUNC);
+                NetworkPolicy.denyAll(), WorkerCapability.TRUSTED_DOCKER);
     }
 
     private static void check(boolean value, String message) {

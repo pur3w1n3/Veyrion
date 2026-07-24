@@ -11,7 +11,6 @@ import com.aq.jvmsentinel.event.EventContext;
 import com.aq.jvmsentinel.event.EventFactory;
 import com.aq.jvmsentinel.event.IdempotencyKey;
 import com.aq.jvmsentinel.event.VersionedEvent;
-import com.aq.jvmsentinel.fixture.TrustedFixtureCatalog;
 import com.aq.jvmsentinel.model.ArtifactDescriptor;
 import com.aq.jvmsentinel.model.DependencyAccess;
 import com.aq.jvmsentinel.model.Entrypoint;
@@ -38,8 +37,10 @@ import com.aq.jvmsentinel.security.auth.OperatorRole;
 import com.aq.jvmsentinel.security.auth.Permission;
 import com.aq.jvmsentinel.worker.InMemoryTaskCoordinator;
 import com.aq.jvmsentinel.worker.InMemoryTraceStore;
+import com.aq.jvmsentinel.worker.ExternalArtifactTaskExecutor;
 import com.aq.jvmsentinel.worker.NetworkPolicy;
 import com.aq.jvmsentinel.worker.ResourceBudget;
+import com.aq.jvmsentinel.worker.TaskScope;
 import com.aq.jvmsentinel.worker.TaskSnapshot;
 import com.aq.jvmsentinel.worker.TraceProjectionService;
 import com.aq.jvmsentinel.worker.WorkerCapability;
@@ -56,6 +57,8 @@ import java.net.URLDecoder;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Clock;
@@ -74,6 +77,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.jar.JarFile;
 
 /**
  * Dependency-free Java 17 Control Plane for the local MVP.
@@ -92,6 +96,7 @@ public final class ControlPlaneServer implements AutoCloseable {
     private static final long DEFAULT_MEMORY_BYTES = 4L * 1024 * 1024 * 1024;
     private static final long DEFAULT_DISK_BYTES = 2L * 1024 * 1024 * 1024;
     private static final int MAX_IDEMPOTENCY_KEYS = 50_000;
+    private static final int MAX_AI_JOB_EVENTS = 128;
 
     private final InetSocketAddress bindAddress;
     private final ArtifactRegistry artifactRegistry;
@@ -105,7 +110,6 @@ public final class ControlPlaneServer implements AutoCloseable {
     private final Map<String, DynamicTaskReplay> idempotentDynamicTasks = new ConcurrentHashMap<>();
     private final String mutationToken;
     private final String workerToken;
-    private final TrustedFixtureCatalog fixtureCatalog;
     private final InMemoryTraceStore traceStore;
     private final InMemoryTaskCoordinator taskCoordinator;
     private final TraceProjectionService traceProjectionService;
@@ -148,17 +152,17 @@ public final class ControlPlaneServer implements AutoCloseable {
         this(new InetSocketAddress("127.0.0.1", port), new ArtifactRegistry(allowedRoot),
                 mutationToken == null || mutationToken.isBlank() ? DEFAULT_TOKEN : mutationToken,
                 Clock.systemUTC(), ControlPlaneStore.sqlite(databasePath, allowedRoot), new SseHub(),
-                new TrustedFixtureCatalog(), providerInventoryService, new ProviderChatTransport());
+                providerInventoryService, new ProviderChatTransport());
     }
 
-    /** Controlled provider injections for acceptance tests; production constructors keep HTTPS-only chat. */
+    /** Controlled provider injections for acceptance tests; production constructors keep the fixed transport. */
     public ControlPlaneServer(Path allowedRoot, int port, String mutationToken, Path databasePath,
                               ProviderInventoryService providerInventoryService,
                               ChatTransport chatTransport) {
         this(new InetSocketAddress("127.0.0.1", port), new ArtifactRegistry(allowedRoot),
                 mutationToken == null || mutationToken.isBlank() ? DEFAULT_TOKEN : mutationToken,
                 Clock.systemUTC(), ControlPlaneStore.sqlite(databasePath, allowedRoot), new SseHub(),
-                new TrustedFixtureCatalog(), providerInventoryService, chatTransport);
+                providerInventoryService, chatTransport);
     }
 
     public ControlPlaneServer(InetSocketAddress bindAddress, Path allowedRoot) {
@@ -179,47 +183,30 @@ public final class ControlPlaneServer implements AutoCloseable {
     }
 
     public ControlPlaneServer(String host, int port, Path allowedRoot, String mutationToken,
-                              TrustedFixtureCatalog fixtureCatalog) {
+                              Path databasePath) {
         this(new InetSocketAddress(Objects.requireNonNull(host, "host"), port),
                 new ArtifactRegistry(allowedRoot),
                 mutationToken == null || mutationToken.isBlank() ? DEFAULT_TOKEN : mutationToken,
-                Clock.systemUTC(), new ControlPlaneStore(), new SseHub(), fixtureCatalog);
-    }
-
-    public ControlPlaneServer(String host, int port, Path allowedRoot, String mutationToken,
-                              TrustedFixtureCatalog fixtureCatalog, Path databasePath) {
-        this(new InetSocketAddress(Objects.requireNonNull(host, "host"), port),
-                new ArtifactRegistry(allowedRoot),
-                mutationToken == null || mutationToken.isBlank() ? DEFAULT_TOKEN : mutationToken,
-                Clock.systemUTC(), ControlPlaneStore.sqlite(databasePath, allowedRoot), new SseHub(), fixtureCatalog);
+                Clock.systemUTC(), ControlPlaneStore.sqlite(databasePath, allowedRoot), new SseHub());
     }
 
     public ControlPlaneServer(InetSocketAddress bindAddress, ArtifactRegistry artifactRegistry,
                               String mutationToken, Clock clock, ControlPlaneStore store,
                               SseHub sseHub) {
         this(bindAddress, artifactRegistry, mutationToken, clock, store, sseHub,
-                new TrustedFixtureCatalog());
-    }
-
-    public ControlPlaneServer(InetSocketAddress bindAddress, ArtifactRegistry artifactRegistry,
-                              String mutationToken, Clock clock, ControlPlaneStore store,
-                              SseHub sseHub, TrustedFixtureCatalog fixtureCatalog) {
-        this(bindAddress, artifactRegistry, mutationToken, clock, store, sseHub, fixtureCatalog,
                 new ProviderModelInventoryClient()::fetch, new ProviderChatTransport());
     }
 
     public ControlPlaneServer(InetSocketAddress bindAddress, ArtifactRegistry artifactRegistry,
                               String mutationToken, Clock clock, ControlPlaneStore store,
-                              SseHub sseHub, TrustedFixtureCatalog fixtureCatalog,
-                              ProviderInventoryService providerInventoryService) {
-        this(bindAddress, artifactRegistry, mutationToken, clock, store, sseHub, fixtureCatalog,
+                              SseHub sseHub, ProviderInventoryService providerInventoryService) {
+        this(bindAddress, artifactRegistry, mutationToken, clock, store, sseHub,
                 providerInventoryService, new ProviderChatTransport());
     }
 
     public ControlPlaneServer(InetSocketAddress bindAddress, ArtifactRegistry artifactRegistry,
                               String mutationToken, Clock clock, ControlPlaneStore store,
-                              SseHub sseHub, TrustedFixtureCatalog fixtureCatalog,
-                              ProviderInventoryService providerInventoryService,
+                              SseHub sseHub, ProviderInventoryService providerInventoryService,
                               ChatTransport chatTransport) {
         this.bindAddress = Objects.requireNonNull(bindAddress, "bindAddress");
         this.artifactRegistry = Objects.requireNonNull(artifactRegistry, "artifactRegistry");
@@ -229,7 +216,6 @@ public final class ControlPlaneServer implements AutoCloseable {
         this.store = Objects.requireNonNull(store, "store");
         this.sseHub = Objects.requireNonNull(sseHub, "sseHub");
         this.workerToken = newWorkerToken(this.mutationToken);
-        this.fixtureCatalog = Objects.requireNonNull(fixtureCatalog, "fixtureCatalog");
         this.traceStore = new InMemoryTraceStore(this.clock);
         this.taskCoordinator = new InMemoryTaskCoordinator(this.clock, this.traceStore);
         this.traceProjectionService = new TraceProjectionService(this.traceStore);
@@ -332,8 +318,6 @@ public final class ControlPlaneServer implements AutoCloseable {
                 sendError(exchange, uploadFailure.status(), uploadFailure.code(), uploadFailure.getMessage(), requestId);
             } catch (PolicyViolationException policyViolation) {
                 sendError(exchange, 403, "POLICY_REJECTED", policyViolation.getMessage(), requestId);
-            } catch (TrustedFixtureCatalog.UnknownFixtureException unknownFixture) {
-                sendError(exchange, 404, "FIXTURE_NOT_FOUND", unknownFixture.getMessage(), requestId);
             } catch (IllegalArgumentException badRequest) {
                 sendError(exchange, 400, "INVALID_REQUEST", safeMessage(badRequest), requestId);
             } catch (Exception unexpected) {
@@ -509,6 +493,12 @@ public final class ControlPlaneServer implements AutoCloseable {
             requirePermission(exchange, "GET".equals(method) ? Permission.READ_SECURITY_CONFIGURATION : Permission.RUN_AI_JOBS);
             if ("GET".equals(method)) { listAiJobs(exchange, path.get(1)); return; }
             if ("POST".equals(method)) { createAiJob(exchange, path.get(1)); return; }
+        }
+        if (path.size() == 3 && "ai-jobs".equals(path.get(0))
+                && "events".equals(path.get(2)) && "GET".equals(method)) {
+            requirePermission(exchange, Permission.READ_SECURITY_CONFIGURATION);
+            listAiJobEvents(exchange, path.get(1));
+            return;
         }
         if (path.size() == 2 && "ai-jobs".equals(path.get(0))) {
             requirePermission(exchange, "GET".equals(method) ? Permission.READ_SECURITY_CONFIGURATION : Permission.RUN_AI_JOBS);
@@ -775,6 +765,34 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, aiJobMap(store.requireAiJob(jobId)));
     }
 
+    private void listAiJobEvents(HttpExchange exchange, String jobId) throws IOException {
+        var job = store.requireAiJob(jobId);
+        var events = store.aiJobEvents(jobId);
+        if (events.size() > MAX_AI_JOB_EVENTS) {
+            throw new ApiException(500, "AI_JOB_EVENT_BOUND_INVALID",
+                    "stored AI job event history exceeds its fixed bound");
+        }
+        List<Object> items = new ArrayList<>();
+        long expectedSequence = 1;
+        for (var event : events) {
+            if (!job.aiJobId().equals(event.aiJobId())
+                    || !job.workspaceId().equals(event.workspaceId())
+                    || !job.projectId().equals(event.projectId())) {
+                throw new ApiException(500, "AI_JOB_EVENT_SCOPE_INVALID",
+                        "stored AI job event scope does not match its job");
+            }
+            if (event.sequence() != expectedSequence++) {
+                throw new ApiException(500, "AI_JOB_EVENT_ORDER_INVALID",
+                        "stored AI job events are not contiguous and ordered");
+            }
+            items.add(aiJobEventMap(event, job.stopReason()));
+        }
+        Map<String, Object> response = stringEnvelope("aiJobEvents", items);
+        response.put("aiJobId", job.aiJobId());
+        response.put("projectId", job.projectId());
+        sendJson(exchange, 200, response);
+    }
+
     private void updateAiJob(HttpExchange exchange, String jobId) throws IOException {
         String action = optionalText(readObject(exchange), "action", null);
         if ("retry".equals(action)) {
@@ -1025,31 +1043,30 @@ public final class ControlPlaneServer implements AutoCloseable {
 
         Map<String, Object> body = readObject(exchange);
         for (String field : body.keySet()) {
-            if (!Set.of("authorized", "fixtureId").contains(field)) {
+            if (!Set.of("authorized").contains(field)) {
                 throw new ApiException(400, "RUNTIME_FIELD_REJECTED",
-                        "dynamic task body only accepts authorized and fixtureId");
+                        "dynamic task body only accepts authorized");
             }
         }
         if (!body.containsKey("authorized") || !requiredBoolean(body, "authorized")) {
             throw new ApiException(403, "AUTHORIZATION_REQUIRED", "dynamic task authorization is required");
         }
-        String fixtureId = optionalText(body, "fixtureId", null);
-        if (fixtureId == null) throw new ApiException(400, "FIXTURE_REQUIRED", "fixtureId is required");
-        TrustedFixtureCatalog.TrustedFixture fixture = fixtureCatalog.require(fixtureId);
-
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         ControlPlaneStore.ProjectRecord project = store.requireProject(scan.dto().projectId());
-        if (store.artifact(project, scan.dto().artifactDigest()) == null) {
+        ArtifactDescriptor artifact = store.artifact(project, scan.dto().artifactDigest());
+        if (artifact == null) {
             throw new ApiException(409, "SCAN_SCOPE_INVALID", "scan artifact is not registered for project");
         }
-        boolean targetExists = scan.dto().entries().stream()
-                .anyMatch(entry -> fixture.targetEntryId().equals(entry.id()));
-        if (!targetExists) {
+        if (artifact.type() != com.aq.jvmsentinel.model.ArtifactType.JAR) {
+            throw new ApiException(409, "JAR_REQUIRED", "Docker dynamic execution currently requires a JAR");
+        }
+        String targetEntryId = scan.dto().entries().stream().map(ApiDtos.EntryDto::id).findFirst().orElse(null);
+        if (targetEntryId == null) {
             throw new ApiException(409, "TARGET_ENTRY_NOT_IN_SCAN",
-                    "trusted fixture target entry is not present in scan");
+                    "the scan has no entrypoint to observe");
         }
 
-        DynamicTaskPayload payload = new DynamicTaskPayload(scanId, fixture.fixtureId(), fixture.targetEntryId());
+        DynamicTaskPayload payload = new DynamicTaskPayload(scanId, scan.dto().artifactDigest(), targetEntryId);
         DynamicTaskReplay replay = idempotentDynamicTasks.get(replayKey);
         if (replay != null) {
             if (!replay.payload().equals(payload)) {
@@ -1067,23 +1084,66 @@ public final class ControlPlaneServer implements AutoCloseable {
                 scan.dto().artifactDigest(),
                 scanId,
                 taskId,
-                fixture.targetEntryId(),
+                targetEntryId,
                 true,
-                true,
-                new ResourceBudget(60, 30_000, 128L * 1024 * 1024,
-                        64L * 1024 * 1024, 2L * 1024 * 1024),
+                new ResourceBudget(60, 30_000, 1024L * 1024 * 1024,
+                        64L * 1024 * 1024, 512L * 1024),
                 NetworkPolicy.denyAll(),
-                WorkerCapability.FIXTURE_RUNC,
-                fixture.fixtureId(),
-                fixture.imageUri(),
-                fixture.mainClass(),
-                fixture.fixtureDigest());
+                WorkerCapability.TRUSTED_DOCKER);
         TaskSnapshot snapshot = workerApi.enqueueFromControlPlane(spec,
                 "public-dynamic-" + UUID.randomUUID().toString().replace("-", ""));
         store.auditChange(scan.dto().projectId(), actor(exchange).operatorId(), "dynamic-task.enqueue",
-                "worker-task", taskId, "{\"fixtureOnly\":true}", Instant.now(clock).toString());
+                "worker-task", taskId,
+                "{\"capability\":\"TRUSTED_DOCKER\",\"networkMode\":\"DENY\"}",
+                Instant.now(clock).toString());
         idempotentDynamicTasks.put(replayKey, new DynamicTaskReplay(payload, snapshot));
         sendJson(exchange, 202, dynamicTaskMap(snapshot));
+    }
+
+    /**
+     * Resolves only the immutable backend-managed copy for the process-local Docker worker.
+     * This method does not expose the path through HTTP.
+     */
+    public ExternalArtifactTaskExecutor.ArtifactRegistration requireLocalArtifact(TaskScope scope) {
+        Objects.requireNonNull(scope, "scope");
+        ControlPlaneStore.ScanRecord scan = store.requireScan(scope.scanId());
+        if (!scan.dto().projectId().equals(scope.projectId())
+                || !scan.dto().artifactDigest().equals(scope.artifactDigest())) {
+            throw new SecurityException("worker task scope does not match the persisted scan");
+        }
+        ControlPlaneStore.ProjectRecord project = store.requireProject(scope.projectId());
+        ArtifactDescriptor artifact = store.artifact(project, scope.artifactDigest());
+        if (artifact == null) throw new SecurityException("worker artifact is not registered");
+        artifactRegistry.verifyUnchanged(artifact);
+        Path path = artifact.normalizedPath().toAbsolutePath().normalize();
+        Path managedRoot = artifactRegistry.allowedRoot().resolve(".veyrion")
+                .resolve("artifacts").resolve("sha256").toAbsolutePath().normalize();
+        if (!path.startsWith(managedRoot)
+                || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(path)
+                || !path.getFileName().toString().matches(scope.artifactDigest() + "\\.jar")) {
+            throw new SecurityException("dynamic execution requires the managed content-addressed JAR copy");
+        }
+        if (!hasExecutableMainClass(path)) {
+            throw new SecurityException("registered JAR has no executable Main-Class");
+        }
+        ApiDtos.EntryDto entry = scan.dto().entries().stream().findFirst()
+                .orElseThrow(() -> new SecurityException("scan has no bounded HTTP probe target"));
+        int packageSeparator = entry.declaringClass().lastIndexOf('.');
+        String classPrefix = packageSeparator > 0
+                ? entry.declaringClass().substring(0, packageSeparator) : entry.declaringClass();
+        return new ExternalArtifactTaskExecutor.ArtifactRegistration(
+                scope.projectId(), scope.artifactDigest(), path, artifact.sizeBytes(), true,
+                entry.method(), entry.route(), classPrefix);
+    }
+
+    private static boolean hasExecutableMainClass(Path path) {
+        try (JarFile jar = new JarFile(path.toFile(), false)) {
+            return jar.getManifest() != null
+                    && jar.getManifest().getMainAttributes().getValue("Main-Class") != null;
+        } catch (IOException invalidJar) {
+            throw new SecurityException("registered JAR manifest could not be read", invalidJar);
+        }
     }
 
     private void streamEvents(HttpExchange exchange, String scanId) throws IOException {
@@ -1683,15 +1743,13 @@ public final class ControlPlaneServer implements AutoCloseable {
         result.put("scanId", spec.scanId());
         result.put("taskId", spec.taskId());
         result.put("targetEntryId", spec.targetEntryId());
-        result.put("fixtureId", spec.fixtureId());
-        result.put("fixtureDigest", spec.fixtureDigest());
         result.put("status", snapshot.lifecycle().name());
         result.put("verificationStatus", "DYNAMIC_SUSPECTED");
-        result.put("requiredCapability", WorkerCapability.FIXTURE_RUNC.name());
-        result.put("fixtureOnly", true);
+        result.put("requiredCapability", spec.requiredCapability().name());
+        result.put("fixtureOnly", false);
         result.put("networkMode", "DENY");
         result.put("networkAllowlist", List.of());
-        result.put("dynamicExecutionMode", "FIXTURE_RUNC_QUEUED");
+        result.put("dynamicExecutionMode", "TRUSTED_DOCKER_NETWORK_NONE");
         result.put("maxWallClockSeconds", spec.resourceBudget().maxWallClockSeconds());
         result.put("maxCpuMillis", spec.resourceBudget().maxCpuMillis());
         result.put("maxMemoryBytes", spec.resourceBudget().maxMemoryBytes());
@@ -1804,6 +1862,46 @@ public final class ControlPlaneServer implements AutoCloseable {
         result.put("createdAt", job.createdAt());
         result.put("updatedAt", job.updatedAt());
         result.put("verificationStatus", job.conclusionJson() == null ? "UNREACHED" : "INFERENCE");
+        return result;
+    }
+
+    private static Map<String, Object> aiJobEventMap(
+            com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.AiJobEventData event,
+            String jobStopReason) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", 1);
+        result.put("aiJobId", event.aiJobId());
+        result.put("sequence", event.sequence());
+        result.put("workspaceId", event.workspaceId());
+        result.put("projectId", event.projectId());
+        result.put("stage", event.stage());
+        result.put("status", event.status());
+        if (event.providerRequestSummary() != null) {
+            result.put("providerRequestSummary", event.providerRequestSummary());
+        }
+        if (event.providerResultSummary() != null) {
+            result.put("providerResultSummary", event.providerResultSummary());
+        }
+        if (event.toolCallName() != null) result.put("toolCallName", event.toolCallName());
+        if (event.toolArgumentsSummary() != null) {
+            result.put("toolArgumentsSummary", event.toolArgumentsSummary());
+        }
+        if (event.toolResultStatus() != null) {
+            result.put("toolResultStatus", event.toolResultStatus());
+        }
+        if (event.modelInferenceSummary() != null) {
+            result.put("modelInferenceSummary", event.modelInferenceSummary());
+        }
+        if (event.failureDiagnostic() != null) {
+            result.put("failureDiagnostic", event.failureDiagnostic());
+        } else if ("FAILED".equals(event.status())) {
+            String failureCode = jobStopReason != null
+                    && jobStopReason.matches("[A-Z0-9_]{1,64}")
+                    ? jobStopReason : "AI_JOB_FAILED";
+            result.put("failureDiagnostic",
+                    "Failure code: " + failureCode + "; detailed provider output was not retained");
+        }
+        result.put("createdAt", event.createdAt());
         return result;
     }
 
@@ -2076,7 +2174,7 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private record ScanBuild(ApiDtos.ScanDto scan, Map<String, ApiDtos.EvidenceDto> evidence,
                              List<ApiDtos.FindingDto> findings, List<ApiDtos.AttackChainDto> chains) { }
-    private record DynamicTaskPayload(String scanId, String fixtureId, String targetEntryId) { }
+    private record DynamicTaskPayload(String scanId, String artifactDigest, String targetEntryId) { }
     private record DynamicTaskReplay(DynamicTaskPayload payload, TaskSnapshot snapshot) { }
 
     @FunctionalInterface

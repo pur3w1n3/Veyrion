@@ -179,11 +179,11 @@ public final class ProviderContracts {
                 throw new IllegalArgumentException("loopback provider endpoint must use HTTP(S)");
             }
         } else {
-            if (!"https".equals(scheme)) {
-                throw new IllegalArgumentException("remote provider endpoint must use HTTPS");
+            if (!("http".equals(scheme) || "https".equals(scheme))) {
+                throw new IllegalArgumentException("provider endpoint must use HTTP(S)");
             }
             if (forbiddenRemoteHost(host)) {
-                throw new IllegalArgumentException("remote provider endpoint must not target a local address");
+                throw new IllegalArgumentException("provider endpoint targets a forbidden host");
             }
         }
         return value.normalize();
@@ -207,8 +207,7 @@ public final class ProviderContracts {
             try {
                 InetAddress address = InetAddress.getByName(normalized);
                 return address.isAnyLocalAddress() || address.isLoopbackAddress()
-                        || address.isLinkLocalAddress() || address.isSiteLocalAddress()
-                        || address.isMulticastAddress();
+                        || address.isLinkLocalAddress() || address.isMulticastAddress();
             } catch (Exception invalidLiteral) {
                 return true;
             }
@@ -226,11 +225,8 @@ public final class ProviderContracts {
         }
         int first = octets[0];
         int second = octets[1];
-        return first == 0 || first == 10 || first == 127
+        return first == 0 || first == 127
                 || first == 169 && second == 254
-                || first == 172 && second >= 16 && second <= 31
-                || first == 192 && second == 168
-                || first == 100 && second >= 64 && second <= 127
                 || first >= 224;
     }
 }

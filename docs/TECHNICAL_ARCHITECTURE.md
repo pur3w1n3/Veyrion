@@ -287,22 +287,13 @@ Agent Gateway 对模型、工具和提示模板做版本登记；模型输出必
 后端能力必须显式分级：
 
 - `STATIC_ONLY`：没有可用 Worker，拒绝动态执行；
-- `FIXTURE_RUNC`：普通 runc，仅可运行仓库内受控测试 fixture；
+- `TRUSTED_DOCKER`：运维显式启用的本地 Docker runc，只接受后端管理并复核摘要的内部可执行 JAR；不是强化隔离；
 - `HARDENED_GVISOR`：通过 gVisor 运行时自检和安全门槛；
 - `HARDENED_KATA`：通过 Kata/微虚拟机运行时自检和安全门槛。
 
-Windows 可作为 Control Plane 和开发宿主，动态任务运行在 OpenSandbox 管理的 Linux Worker。普通 Docker/runc 不能作为恶意闭源制品的安全边界；只有强化运行时完成网络/DNS、宿主路径、非 root、只读根、资源耗尽和逃逸测试后，才允许外部制品执行。在此之前 health 必须报告 `DYNAMIC_DISABLED`，失败时退回静态分析而不是降级到不安全执行。
+Windows 可作为 Control Plane 和开发宿主；本地调试可显式启动进程内 `TRUSTED_DOCKER` Worker，生产动态任务应运行在独立 Linux gVisor/Kata Worker。普通 Docker/runc 不能作为恶意闭源制品的安全边界；只有强化运行时完成网络/DNS、宿主路径、非 root、只读根、资源耗尽和逃逸测试后，才允许不受信制品生产执行。任何动态后端失败时都退回静态分析，不得降级为宿主 Java。
 
 Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约、checkpoint 和 trace chunk 都绑定 `projectId`、`artifactDigest`、`scanId`、`taskId`，运行时轨迹以 SHA-256 前序摘要链追加提交。GUI token、Worker token、OpenSandbox API key 和沙箱内凭据相互隔离；任何来自制品、模型或前端的字段都不能修改运行时能力等级、网络策略或挂载范围。
-
-### 13.1 已实现的受控 Fixture 切片
-
-- Public API 只能按代码白名单 fixture ID 排队任务；镜像、命令、路径、能力和预算均不能由浏览器提供。镜像默认指向 `registry.invalid`，运维覆盖必须是实际仓库的 `@sha256:` 引用。
-- execute-one Worker 从内部认证任务快照读取预算和网络策略，经 OpenSandbox 执行固定命令；不存在宿主 Java、shell 或 Docker fallback。Worker token 不能自行创建 `FIXTURE_RUNC` 任务。
-- Agent JSONL 在 Worker 侧按 UTF-8、字段、事件、序列、行数和字节预算严格验证，再转换为带前序摘要的不可变 trace chunk。显式探针属于 `APPLICATION_REPORTED`，所有动态结果固定为 `DYNAMIC_SUSPECTED`。
-- 只有 `COMPLETED + fixtureOnly + FIXTURE_RUNC` 且摘要链复验通过的任务才投影到 dashboard/path/evidence；公共证据只返回摘要和 task/digest/sequence 引用，不返回原始 detail。
-- 受控 Spring Boot fixture 不监听 HTTP，直接调用真实 controller 映射一次；JDBC/FILE/PROCESS 只上报 `executed=false` 的无害意图，不产生真实外部操作。
-- runc 部署还必须由运维方声明 deny network、资源预算、非 root、只读根和 `writable-tmp-v1`。当前验收使用 mock OpenSandbox；仓库没有发布镜像，不能据此宣称真实部署或外部制品运行已验证。
 
 ## 14. 本地首版持久化与管理控制
 
@@ -332,7 +323,7 @@ Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约�
 1. **Desktop Core**：使用 `jlink + jpackage` 在目标平台分别构建安装包，包含裁剪 Java runtime、Control Plane、SQLite native library 和 React 静态资源。应用只绑定 loopback，并打开系统浏览器。
 2. **Sandbox Pack（可选）**：以 digest-pinned Docker Compose 提供 Linux Worker/OpenSandbox。Desktop Core 通过版本化 Worker 合约连接；健康或 attestation 不通过时动态能力关闭。
 
-该拆分满足无 Docker 的静态开箱使用，也保留强化动态隔离。Compose 只提供部署一致性，不自动成为恶意制品安全边界；普通 runc 仍只能运行受控 fixture。多平台产物必须在对应 OS/架构 CI 构建、签名并生成 SBOM。GraalVM Native Image 待反射、JNI 与插件契约稳定后另行评估。
+该拆分满足无 Docker 的静态开箱使用，也保留强化动态隔离。Compose 只提供部署一致性，不自动成为恶意制品安全边界；本地普通 runc 仅允许操作员信任、由后端管理并复核摘要的内部 JAR。多平台产物必须在对应 OS/架构 CI 构建、签名并生成 SBOM。GraalVM Native Image 待反射、JNI 与插件契约稳定后另行评估。
 
 ## 17. 外部 Spring Boot JAR 动态分析首版
 
@@ -342,13 +333,13 @@ Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约�
 2. Vineflower/CFR 派生视图与 AI `HarnessPlan` 只用于输入和状态规划，不能编译为替代目标；
 3. harness 只能链接 digest-verified 原始 JAR，最终观察来自强化沙箱中的原始字节码。
 
-`ExternalArtifactTaskExecutor` 只消费内部 task scope 和 artifact catalog。执行前复核文件身份、大小、ZIP signature 和 SHA-256；OpenSandbox 请求只携带内容摘要引用，不泄露宿主路径。命令、Agent 路径、runtime image、UID/GID、tmpfs、网络和预算由部署策略固定。外部任务必须使用 `HARDENED_GVISOR` 或 `HARDENED_KATA`，并与 P0 release decision 的镜像/capability 一致。
+`ExternalArtifactTaskExecutor` 只消费内部 task scope 和 artifact catalog。执行前复核文件身份、大小、ZIP signature 和 SHA-256；浏览器请求不携带宿主路径，命令、Agent 路径、runtime image、UID/GID、tmpfs、网络和预算由部署策略固定。本地调试任务可使用部署方显式启用的 `TRUSTED_DOCKER`；面向不受信制品的生产任务必须使用 `HARDENED_GVISOR` 或 `HARDENED_KATA`，并与 P0 release decision 的镜像/capability 一致。
 
 Agent 使用 startup-only Byte Buddy 插桩，不修改 bootstrap class：Spring mapping/Servlet 与 JDBC implementation 采用方法 Advice，JDK HTTP/文件/进程采用应用调用点插桩。事件区分 `RUNTIME_OBSERVED`、`AGENT_INSTRUMENTED`、`APPLICATION_REPORTED`，并回指 caller class、method descriptor、target 与 invocation ordinal。Agent 与目标同 JVM，恶意目标理论上可以干扰或伪造进程内状态，因此 Agent 永远不是安全或不可篡改边界；Worker 负责 trace 预算、摘要链、完整性和双次重放。
 
 替身层仅提供 loopback 固定 HTTP route、精确 SQL 规则结果、授权 tmpfs 文件和默认拒绝的进程模拟。每个结果绑定项目/制品/扫描/任务、policy digest、sequence、provenance、executed、预算与 stop reason；完整 transcript 有稳定摘要。替身不允许外部转发、真实 JDBC URL、宿主路径或任意进程。
 
-外部能力发布前必须具备最近 30 天内、由受信 verifier 验证的完整 P0 证据：网络、DNS、metadata、宿主挂载、Docker socket、非 root、只读根、capability、资源耗尽、trace 篡改、Agent 缺失与沙箱逃逸套件。当前仓库只实现门禁和 mock 验收，未执行真实 gVisor/Kata 逃逸测试，故公共 health/API 仍应保持外部动态执行 disabled。
+不受信制品的生产能力发布前必须具备最近 30 天内、由受信 verifier 验证的完整 P0 证据：网络、DNS、metadata、宿主挂载、Docker socket、非 root、只读根、capability、资源耗尽、trace 篡改、Agent 缺失与沙箱逃逸套件。当前仓库未执行真实 gVisor/Kata 逃逸测试；本地 `TRUSTED_DOCKER` 即使可用，也不能据此标记强化动态能力已通过发布门禁。
 
 ## 18. 有界 AI Job 与工具协议
 
@@ -356,12 +347,28 @@ Agent 使用 startup-only Byte Buddy 插桩，不修改 bootstrap class：Spring
 - AI Job 创建必须显式 `authorized=true`，并固化项目、扫描、制品摘要、角色、Provider、模型、角色绑定版本、Provider kind/base URL/配置版本和资源预算。执行前再次比对扫描和配置；发生漂移即 fail-closed。
 - 两类协议先转换为 canonical `ToolCall`。服务端固定注册表再检查角色 allowlist、scope、JSON schema/深度/字节、调用次数、deadline 和结果预算；模型字段不能携带权限、审批、网络、沙箱或租户覆盖。
 - OpenAI 使用 strict function schema、`parallel_tool_calls=false` 和相邻 `role=tool` 结果；Anthropic 使用 `disable_parallel_tool_use=true` 和紧邻 `tool_result`。截断、过滤、拒绝、畸形参数、重复 ID、未知 block 或缺失结果均不执行工具。
-- 生产传输仅允许经过 Provider 边界验证的 HTTPS endpoint，禁止重定向，并限制连接、请求、响应和读取时间。凭据只在最短解密作用域内进入 header；响应原始字节在解析后清零。
+- 生产传输只允许经过 Provider 边界验证的显式 HTTP(S) endpoint，禁止重定向，并限制连接、请求、响应和读取时间。为兼容受信内网网关可使用明文 HTTP，但这会暴露凭据与模型数据，公网部署应强制 HTTPS。凭据只在最短解密作用域内进入 header；响应原始字节在解析后清零。
 - 当前工具只读取已持久化扫描的入口、依赖、sink 和证据摘要，不能执行制品、联网、调用 shell、反编译或创建动态任务。持久化只保留状态、停止原因、请求 ID、耗时、轮次、工具决策摘要和脱敏截断的 `INFERENCE`。
+- 真实 Provider 首轮互操作失败定位为 dotted function names 被 Provider 拒绝。代码侧名称固定改为 snake_case：`facts_search`、`evidence_get`、`plan_propose`；Provider 不能借此注册新工具或扩大角色 allowlist。
+- SQLite V005 为单个 AI job 最多追加 128 条顺序事件：Provider 请求/结果仅保留协议、轮次、限额、HTTP 状态、耗时、请求 ID、停止原因和工具数等有界元数据；工具参数只保留 shape/field count/encoded bytes，另存工具结果状态、脱敏截断的模型摘要和失败诊断。
+- 事件接口不保存或返回 Provider 原始响应、API Key、完整工具参数、模型隐藏推理或 chain-of-thought。`modelInferenceSummary` 是经过脱敏和 16 KiB 截断的用户可见模型文本，不是推理轨迹，结论仍固定为 `INFERENCE`。
 - 当前仍是本地单节点、进程内执行器，未完成真实供应商互操作、生产 egress/DNS rebinding 防护、流式协议、成本计量或多租户调度；Azure/LOCAL 聊天保持 disabled。
 
 ## 19. 静态信号与本地 Provider 兼容边界
 
 - 类名包含 `File`、`Path`、`Exec` 等词不是 sink 事实。class-name 规则只对无法解析有效 classfile 元数据的对象降级启用；可正常解析的 Spring Boot loader、框架类和应用类不会仅凭名称生成 sink。
 - 静态发现的 severity 表示排查优先级，不表示漏洞严重度。没有入口绑定的信号固定为 `info`；静态绑定的 file/command 信号最高为 `low`/`medium`，不得显示为 `high/critical`。
-- OpenAI Chat 与 Anthropic Messages 的非 loopback endpoint 仍强制 HTTPS。为支持用户本机的协议代理，HTTP 只允许精确 loopback host，仍拒绝 userinfo、query、fragment、重定向和所有非 loopback 明文地址。
+- OpenAI Chat 与 Anthropic Messages 接受显式 HTTP(S)，支持本机及 RFC1918/ULA 内网兼容网关；仍拒绝 userinfo、query、fragment、重定向、链路本地/metadata 和组播目标。该兼容能力不提供传输机密性：非本机 HTTP 的 API Key、模型输入和结果均可能被窃听。
+
+## 20. Windows TRUSTED_DOCKER 开发运行时
+
+Docker Desktop/WSL2 提供 Linux runc，但当前 runtime inventory 没有 runsc；本地运行时因此只声明 `TRUSTED_DOCKER`。`sandbox-pack` 只在 loopback 启动 registry，构建并推送包含固定 JVM Agent 的 digest-pinned runtime image；当前开发 Worker 使用 `LocalDockerTrustedSandboxClient` 直接执行后端管理的内部 JAR：
+
+- public 动态请求 body 只允许 `authorized=true`；Control Plane 从不可变 scan 快照选择入口并从 artifact catalog 解析内容寻址副本，浏览器不能提供镜像、命令、路径、挂载或 capability；
+- 执行前复核文件身份、大小、ZIP signature 和 SHA-256，只挂载一个目标 JAR 到固定 `/opt/veyrion/artifact/application.jar`，且 mount 为只读；
+- 容器固定 `--network none`、只读 rootfs、专用有界 trace tmpfs、`65532:65532`、cap-drop ALL、no-new-privileges、PID/内存/CPU 限制；
+- 容器创建后以 `docker inspect` 复核网络、mount、身份、rootfs、capability、tmpfs 和资源配置，并以非 root probe 验证 rootfs 不可写、trace tmpfs 可写；
+- runtime 内以固定 `java -javaagent:... -jar /opt/veyrion/artifact/application.jar` 启动目标，`java.io.tmpdir` 指向有界 tmpfs，Agent class prefix 由 scan 入口声明类的包名派生，避免框架启动类淹没 trace。若进程存活，Agent helper 从同一容器访问目标 JVM loopback 入口；`--network none` 同时阻断外部 DNS 和外部网络，该 loopback probe 不会离开容器；
+- Worker 仍通过独立 token 的 HTTP contract 拉取任务、租约、提交 trace 和完成任务；任何 Docker 或策略检查失败均 fail-closed，不存在宿主 Java fallback。
+
+该 backend 是显式开发能力，不是 OpenSandbox 故障降级，也不是 gVisor/Kata 强化隔离。它只适用于操作员信任的内部 JAR；恶意或不受信制品的生产执行仍须部署到支持 runsc/Kata 的 Linux Worker 并通过 P0 release gate。本机真实 Docker 回归要求通过 `VEYRION_TEST_ARTIFACT_JAR` 显式提供后端管理的可执行测试 JAR，覆盖 public 排队、断网运行、loopback HTTP、不可变 trace commit 和 dashboard `DYNAMIC_SUSPECTED` 投影。

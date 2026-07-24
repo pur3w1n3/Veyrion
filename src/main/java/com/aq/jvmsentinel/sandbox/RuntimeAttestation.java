@@ -39,14 +39,14 @@ public record RuntimeAttestation(String protocolVersion, WorkerCapability capabi
         if (capability != request.requiredCapability()) {
             throw OpenSandboxException.capability("runtime capability downgrade");
         }
-        if (!request.fixtureOnly() && capability != WorkerCapability.HARDENED_GVISOR
+        if (capability != WorkerCapability.HARDENED_GVISOR
                 && capability != WorkerCapability.HARDENED_KATA) {
             throw OpenSandboxException.capability("external artifact runtime is not hardened");
         }
         if (!egressDefaultDeny || !nonRoot || !readOnlyRootFilesystem || !serverCapabilities.containsAll(REQUIRED)) {
             throw OpenSandboxException.capability("required isolation capability is absent");
         }
-        if (!request.fixtureOnly() && !serverCapabilities.containsAll(EXTERNAL_REQUIRED)) {
+        if (!serverCapabilities.containsAll(EXTERNAL_REQUIRED)) {
             throw OpenSandboxException.capability("external artifact mount isolation capability is absent");
         }
         String normalized = runtime.toLowerCase(java.util.Locale.ROOT);
@@ -56,9 +56,6 @@ public record RuntimeAttestation(String protocolVersion, WorkerCapability capabi
         }
         if (capability == WorkerCapability.HARDENED_KATA && !normalized.contains("kata")) {
             throw OpenSandboxException.capability("Kata runtime attestation mismatch");
-        }
-        if (capability == WorkerCapability.FIXTURE_RUNC && !request.fixtureOnly()) {
-            throw OpenSandboxException.capability("runc is restricted to fixtures");
         }
     }
 }

@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -43,11 +44,13 @@ import java.util.UUID;
  */
 public final class SQLiteControlPlanePersistence {
     private static final int BUSY_TIMEOUT_MILLIS = 5_000;
+    private static final int MAX_AI_JOB_EVENTS = 128;
     private static final List<String> MIGRATIONS = List.of(
             "db/migration/V001__control_plane.sql",
             "db/migration/V002__management_configuration.sql",
             "db/migration/V003__provider_protocols.sql",
-            "db/migration/V004__bounded_ai_jobs.sql");
+            "db/migration/V004__bounded_ai_jobs.sql",
+            "db/migration/V005__bounded_ai_job_events.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 
@@ -470,6 +473,79 @@ public final class SQLiteControlPlanePersistence {
         return listAiJobs(null).stream().filter(value -> value.aiJobId().equals(jobId)).findFirst();
     }
 
+    public AiJobEventData appendAiJobEvent(AiJobEventData event) {
+        Objects.requireNonNull(event, "event");
+        event = sanitizedEvent(event);
+        validateEvent(event);
+        AiJobEventData candidate = event;
+        AiJobEventData[] stored = new AiJobEventData[1];
+        transaction("could not append AI job event", connection -> {
+            long sequence;
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "SELECT workspace_id,project_id,"
+                            + "(SELECT count(*) FROM ai_job_events WHERE ai_job_id=?),"
+                            + "(SELECT coalesce(max(sequence_no),0) FROM ai_job_events WHERE ai_job_id=?)"
+                            + " FROM ai_jobs WHERE ai_job_id=?")) {
+                statement.setString(1, candidate.aiJobId());
+                statement.setString(2, candidate.aiJobId());
+                statement.setString(3, candidate.aiJobId());
+                try (ResultSet rows = statement.executeQuery()) {
+                    if (!rows.next()) throw new SQLException("AI job does not exist");
+                    if (!candidate.workspaceId().equals(rows.getString(1))
+                            || !candidate.projectId().equals(rows.getString(2))) {
+                        throw new SQLException("AI job event scope mismatch");
+                    }
+                    if (rows.getInt(3) >= MAX_AI_JOB_EVENTS) {
+                        throw new SQLException("AI job event limit reached");
+                    }
+                    sequence = rows.getLong(4) + 1;
+                }
+            }
+            stored[0] = new AiJobEventData(candidate.aiJobId(), sequence, candidate.workspaceId(),
+                    candidate.projectId(), candidate.stage(), candidate.status(),
+                    candidate.providerRequestSummary(), candidate.providerResultSummary(),
+                    candidate.toolCallName(), candidate.toolArgumentsSummary(),
+                    candidate.toolResultStatus(), candidate.modelInferenceSummary(),
+                    candidate.failureDiagnostic(), candidate.createdAt());
+            update(connection, "INSERT INTO ai_job_events(ai_job_id,sequence_no,workspace_id,project_id,"
+                            + "stage,status,provider_request_summary,provider_result_summary,tool_call_name,"
+                            + "tool_arguments_summary,tool_result_status,model_inference_summary,"
+                            + "failure_diagnostic,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    stored[0].aiJobId(), stored[0].sequence(), stored[0].workspaceId(),
+                    stored[0].projectId(), stored[0].stage(), stored[0].status(),
+                    stored[0].providerRequestSummary(), stored[0].providerResultSummary(),
+                    stored[0].toolCallName(), stored[0].toolArgumentsSummary(),
+                    stored[0].toolResultStatus(), stored[0].modelInferenceSummary(),
+                    stored[0].failureDiagnostic(), stored[0].createdAt());
+        });
+        return stored[0];
+    }
+
+    public List<AiJobEventData> listAiJobEvents(String jobId) {
+        Objects.requireNonNull(jobId, "jobId");
+        String sql = "SELECT ai_job_id,sequence_no,workspace_id,project_id,stage,status,"
+                + "provider_request_summary,provider_result_summary,tool_call_name,"
+                + "tool_arguments_summary,tool_result_status,model_inference_summary,"
+                + "failure_diagnostic,created_at FROM ai_job_events WHERE ai_job_id=?"
+                + " ORDER BY sequence_no";
+        try (Connection connection = open(); PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, jobId);
+            List<AiJobEventData> result = new ArrayList<>();
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    result.add(new AiJobEventData(rows.getString(1), rows.getLong(2),
+                            rows.getString(3), rows.getString(4), rows.getString(5),
+                            rows.getString(6), rows.getString(7), rows.getString(8),
+                            rows.getString(9), rows.getString(10), rows.getString(11),
+                            rows.getString(12), rows.getString(13), rows.getString(14)));
+                }
+            }
+            return List.copyOf(result);
+        } catch (SQLException failure) {
+            throw databaseFailure("could not list AI job events", failure);
+        }
+    }
+
     public void deleteAiJob(AiJobData job, String actorId, String now) {
         transaction("could not delete AI job", connection -> {
             update(connection, "DELETE FROM ai_jobs WHERE ai_job_id=?", job.aiJobId());
@@ -692,6 +768,86 @@ public final class SQLiteControlPlanePersistence {
                 rows.getString(19), rows.getString(20));
     }
 
+    private void validateEvent(AiJobEventData event) {
+        boundedEventText(event.aiJobId(), 128, false, "aiJobId");
+        boundedEventText(event.workspaceId(), 128, false, "workspaceId");
+        boundedEventText(event.projectId(), 128, false, "projectId");
+        boundedEventText(event.stage(), 64, false, "stage");
+        boundedEventText(event.status(), 64, false, "status");
+        boundedEventText(event.providerRequestSummary(), 2048, true, "providerRequestSummary");
+        boundedEventText(event.providerResultSummary(), 2048, true, "providerResultSummary");
+        boundedEventText(event.toolCallName(), 128, true, "toolCallName");
+        boundedEventText(event.toolArgumentsSummary(), 1024, true, "toolArgumentsSummary");
+        boundedEventText(event.toolResultStatus(), 64, true, "toolResultStatus");
+        boundedEventText(event.modelInferenceSummary(), 16_384, true, "modelInferenceSummary");
+        boundedEventText(event.failureDiagnostic(), 1024, true, "failureDiagnostic");
+        boundedEventText(event.createdAt(), 64, false, "createdAt");
+        if (event.sequence() != 0) throw new IllegalArgumentException("event sequence must be assigned by persistence");
+        if (!event.stage().matches("[A-Z0-9_]{1,64}")
+                || !event.status().matches("[A-Z0-9_]{1,64}")
+                || event.toolCallName() != null
+                && !event.toolCallName().matches("[A-Za-z0-9_-]{1,128}")
+                || event.toolResultStatus() != null
+                && !event.toolResultStatus().matches("[A-Z0-9_]{1,64}")) {
+            throw new IllegalArgumentException("AI job event code field is invalid");
+        }
+        validateMetadataJson(event.providerRequestSummary(),
+                Set.of("protocol", "round", "maxOutputTokens", "toolDefinitionCount"),
+                "providerRequestSummary");
+        validateMetadataJson(event.providerResultSummary(),
+                Set.of("httpStatus", "elapsedMillis", "requestId", "stopReason", "toolCallCount"),
+                "providerResultSummary");
+        validateMetadataJson(event.toolArgumentsSummary(),
+                Set.of("shape", "fieldCount", "encodedBytes"), "toolArgumentsSummary");
+    }
+
+    private AiJobEventData sanitizedEvent(AiJobEventData event) {
+        return new AiJobEventData(event.aiJobId(), event.sequence(), event.workspaceId(),
+                event.projectId(), event.stage(), event.status(), event.providerRequestSummary(),
+                event.providerResultSummary(), event.toolCallName(), event.toolArgumentsSummary(),
+                event.toolResultStatus(), sanitizedAuditText(event.modelInferenceSummary(), 16_384),
+                sanitizedAuditText(event.failureDiagnostic(), 1024), event.createdAt());
+    }
+
+    private static String sanitizedAuditText(String value, int maximum) {
+        if (value == null) return null;
+        String sanitized = value.replaceAll("[\\p{Cntrl}&&[^\\n\\t]]", " ")
+                .replaceAll("(?i)bearer\\s+[A-Za-z0-9._~+/-]{4,}", "Bearer [REDACTED]")
+                .replaceAll("(?i)(api[_ -]?key\\s*[:=]\\s*)\\S+", "$1[REDACTED]")
+                .replaceAll("\\bsk-[A-Za-z0-9_-]{4,}\\b", "[REDACTED]");
+        return sanitized.length() <= maximum ? sanitized : sanitized.substring(0, maximum);
+    }
+
+    private void validateMetadataJson(String value, Set<String> allowedFields, String name) {
+        if (value == null) return;
+        try {
+            var root = mapper.readTree(value);
+            if (root == null || !root.isObject() || root.isEmpty()) {
+                throw new IllegalArgumentException(name + " must be a non-empty metadata object");
+            }
+            for (var field : root.properties()) {
+                if (!allowedFields.contains(field.getKey()) || !field.getValue().isValueNode()
+                        || field.getValue().isTextual() && field.getValue().asText().length() > 256) {
+                    throw new IllegalArgumentException(name + " contains non-audit metadata");
+                }
+            }
+        } catch (JsonProcessingException invalid) {
+            throw new IllegalArgumentException(name + " is not valid JSON metadata", invalid);
+        }
+    }
+
+    private static void boundedEventText(String value, int maximum, boolean nullable, String name) {
+        if (value == null) {
+            if (nullable) return;
+            throw new IllegalArgumentException(name + " is required");
+        }
+        if (value.isBlank() || value.length() > maximum
+                || value.getBytes(StandardCharsets.UTF_8).length > maximum * 4L
+                || value.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException(name + " is invalid");
+        }
+    }
+
     private String write(Object value) {
         try {
             return mapper.writeValueAsString(value);
@@ -787,6 +943,12 @@ public final class SQLiteControlPlanePersistence {
                             String stopReason, String stagesJson, String providerRequestId,
                             long elapsedMillis, int rounds, String toolSummaryJson,
                             String conclusionJson, String createdAt, String updatedAt) { }
+    public record AiJobEventData(String aiJobId, long sequence, String workspaceId, String projectId,
+                                 String stage, String status, String providerRequestSummary,
+                                 String providerResultSummary, String toolCallName,
+                                 String toolArgumentsSummary, String toolResultStatus,
+                                 String modelInferenceSummary, String failureDiagnostic,
+                                 String createdAt) { }
     public record AuditData(String auditEventId, String projectId, String operatorId, String action,
                             String targetType, String targetId, String outcome, String detailsJson,
                             String createdAt) { }

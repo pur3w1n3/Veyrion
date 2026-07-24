@@ -33,7 +33,7 @@ public final class ProviderModelInventoryAcceptanceTest {
         malformedAndOversizedResponsesFailClosed();
         modelCountAndStatusFailuresAreBoundedAndRedacted();
         redirectsAndEndpointInjectionAreRejected();
-        productionConstructionRejectsPlaintextRemoteEndpoints();
+        productionConstructionAllowsExplicitHttpAndRejectsUnsafeEndpointForms();
         System.out.println("ProviderModelInventoryAcceptanceTest: PASS");
     }
 
@@ -204,11 +204,12 @@ public final class ProviderModelInventoryAcceptanceTest {
         }
     }
 
-    private static void productionConstructionRejectsPlaintextRemoteEndpoints() {
-        expect(IllegalArgumentException.class, () -> new ProviderDefinition(
-                        1, "local", "provider-a", "Provider A", ProviderKind.ANTHROPIC_MESSAGES,
-                        URI.create("http://api.anthropic.invalid"), true, true, NOW, NOW),
-                "production provider DTO rejects remote HTTP");
+    private static void productionConstructionAllowsExplicitHttpAndRejectsUnsafeEndpointForms() {
+        ProviderDefinition plaintextRemote = new ProviderDefinition(
+                1, "local", "provider-http", "Provider HTTP", ProviderKind.ANTHROPIC_MESSAGES,
+                URI.create("http://api.anthropic.invalid"), true, true, NOW, NOW);
+        check("http".equals(plaintextRemote.endpoint().getScheme()),
+                "explicit remote HTTP endpoint remains available for compatible gateways");
         expect(IllegalArgumentException.class, () -> new ProviderDefinition(
                         1, "local", "provider-a", "Provider A", ProviderKind.OPENAI_CHAT,
                         URI.create("https://user@api.openai.invalid"), true, true, NOW, NOW),
@@ -226,7 +227,7 @@ public final class ProviderModelInventoryAcceptanceTest {
         ProviderDefinition secure = new ProviderDefinition(
                 1, "local", "provider-a", "Provider A", ProviderKind.OPENAI_CHAT,
                 URI.create("https://api.openai.invalid"), true, true, NOW, NOW);
-        check(secure.endpoint().getScheme().equals("https"), "production remote endpoint is HTTPS");
+        check(secure.endpoint().getScheme().equals("https"), "HTTPS endpoint remains supported");
     }
 
     private static ModelInventory fetch(MockServer mock, ProviderKind kind) {

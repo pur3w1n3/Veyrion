@@ -59,6 +59,7 @@
 4. 根 Agent 必须审阅 diff、运行相关测试，并检查安全边界、数据契约和文档一致性后，才能接受功能。
 5. 未通过审计的代码不得作为已完成能力对外宣称；可以保留为实验性分支/模块并明确标记。
 6. 每次重要决策、范围变化、模型/依赖变化和审计结论都追加到本文件的变更记录。
+7. 对可安全拆分且文件边界明确的任务，默认并行启动多个子 Agent；根 Agent 负责划分互不冲突的范围、汇总结果、解决集成冲突并执行统一回归。
 
 本环境没有可选的 GPT-5.5 模型标识，已使用可用的 GPT-5.6-sol 实现 Agent；这不改变“子 Agent 实现、根 Agent 决策和审计”的协作规则。
 
@@ -163,10 +164,10 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 ## 13. OpenSandbox Worker 决策（2026-07-24）
 
 - 动态执行采用 OpenSandbox 协议作为可插拔后端；Veyrion 控制任务授权、租约、资源预算、证据状态和不可变 trace，OpenSandbox 只提供生命周期与隔离执行面。
-- 后端能力分为 `STATIC_ONLY`、`FIXTURE_RUNC`、`HARDENED_GVISOR`、`HARDENED_KATA`。普通 runc 只允许仓库内可信 fixture，不能运行用户导入的闭源制品。
+- 后端能力最初包含仓库样例专用的 `FIXTURE_RUNC`；该能力随后被 `TRUSTED_DOCKER` 后端管理制品路线取代并删除。当前保留 `STATIC_ONLY`、`TRUSTED_DOCKER`、`HARDENED_GVISOR`、`HARDENED_KATA`。
 - Windows 只作为 Control Plane/开发宿主，动态任务运行在 Linux Worker。强化运行时未通过 P0 网络/DNS、宿主路径、非 root、只读根、资源耗尽和逃逸测试前，health 必须保持 `DYNAMIC_DISABLED` 并 fail-closed。
 - Worker 合约必须版本化并绑定项目、制品摘要、扫描和任务四元组；trace 采用带前序 SHA-256 的追加链。GUI token、Worker token 和 OpenSandbox API key 相互隔离。
-- JVM Agent 是观测层而不是安全边界。首个动态切片只在受控 fixture 上产出 `DYNAMIC_SUSPECTED`；在强化沙箱和可重放证据完成前不得生成 `VERIFIED`。
+- JVM Agent 是观测层而不是安全边界。动态结果只能产出 `DYNAMIC_SUSPECTED`；在强化沙箱和可重放证据完成前不得生成 `VERIFIED`。
 - OpenSandbox 本地开发仍依赖 Docker；后续可替换为其他兼容后端，但不得静默降级到宿主 Java 子进程执行外部制品。
 
 ## 14. Worker、OpenSandbox 与 JVM Agent 实现审计（2026-07-24）
@@ -177,18 +178,13 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 独立 `agent/` Maven 模块提供 Java 17 `premain`/`agentmain`、类加载观测和 HTTP/FILE/JDBC/PROCESS 显式探针，输出受目录授权、事件/字节预算、字段边界、控制字符清理和敏感键脱敏约束的 JSONL。
 - JVM Agent 不是安全边界。类加载等 Agent 自有事件标为 `RUNTIME_OBSERVED`；显式探针可被应用调用，必须标为 `APPLICATION_REPORTED`。两者当前都只能是 `DYNAMIC_SUSPECTED`，不得生成 `VERIFIED`。
 - 根 Agent 已逐文件审阅三个并行实现轨并修正显式探针证据来源；使用 JBR 21 复验根 Maven、六个 main-style 验收类、Agent Maven test/package 和真实 `-javaagent` 子进程，全部通过。
-- Git 审计备份：`94d55fb`（OpenSandbox 适配器）、`1108a98`（Worker Control Plane API）、`41d36a9`（JVM Agent）。下一步只接通仓库内受控 fixture；普通 runc 仍禁止执行用户导入制品。
+- Git 审计备份：`94d55fb`（OpenSandbox 适配器）、`1108a98`（Worker Control Plane API）、`41d36a9`（JVM Agent）。后续路线已转为后端管理制品与显式 `TRUSTED_DOCKER`/强化运行时。
 
-## 15. 受控 Spring Fixture 动态闭环（2026-07-24，根 Agent 审计通过）
+## 15. 早期受控样例动态切片（2026-07-24，已退役）
 
-- 已接通 public 动态任务排队、独立 Worker HTTP 客户端、execute-one 启动器、OpenSandbox 固定执行模板、Agent JSONL 转换、不可变 trace 链以及 dashboard/path/evidence 投影。
-- Public 请求只接受 `authorized` 和 fixture ID；镜像 URI、main class、命令、路径、预算和能力由 Control Plane 白名单与内部任务快照决定。Worker token 不能创建 `FIXTURE_RUNC` 任务。
-- `fixtures/http-entry/` 是 Spring Boot 4.1.0 一次性 fixture：启动 Spring context、直接调用真实 controller mapping 后退出；HTTP/JDBC/FILE/PROCESS 均为无害显式 intent，依赖操作标记 `executed=false`。
-- 镜像默认使用 `registry.invalid`；运维方只能以 digest-pinned 环境配置覆盖。仓库提供显式 push 后读取真实 repository digest 的脚本，但本轮未运行 Docker、未发布镜像，也未完成真实 OpenSandbox 部署验收。
-- runc fixture 要求 deny-all 网络、非 root、只读根、资源预算和 `writable-tmp-v1` attestation；Agent trace 统一写入 `/tmp/veyrion-trace`。任何能力缺失均 fail-closed。
-- 动态证据仅为 `DYNAMIC_SUSPECTED`。Agent 自有事件保留 `RUNTIME_OBSERVED`，显式探针为 `APPLICATION_REPORTED`；trace 摘要不能把应用上报升级为 `VERIFIED`。
-- 根 Agent 修正了 public 预算信任、Worker 任意 fixture 入队、清理后置、静态 GUI provenance、跨项目 evidence ID 和只读根写目录等边界；mock OpenSandbox 全链路、真实 `-javaagent` fixture 冒烟、Maven/GUI 回归均通过。
-- 分阶段 Git 备份：`04d314f`、`a54fdb7`、`a39a88d`、`b76c155`、`7b6ef23`、`fb82aa3`、`c624e74`。这些提交证明受控切片可测试，不代表生产沙箱或外部制品动态执行可用。
+- 该早期切片曾验证 public 排队、Worker HTTP、Agent JSONL、不可变 trace 与 dashboard/path/evidence 投影；随后由后端管理制品的 `TRUSTED_DOCKER` 路线取代。
+- 仓库受控样例、固定镜像模板、专用 public/Worker 合约和相关验收现已删除。历史备份不代表生产沙箱或外部制品动态执行可用。
+- 保留的安全结论不变：动态证据仅为 `DYNAMIC_SUSPECTED`；Agent 自有事件为 `RUNTIME_OBSERVED`，应用或插桩事件不能被摘要升级为 `VERIFIED`。
 
 ## 16. 本地一键开发启动器（2026-07-24）
 
@@ -199,7 +195,7 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 ## 17. 本地首版管理与分析闭环（2026-07-24，根 Agent 审计通过）
 
 - 本地默认 Store 改为 SQLite/plain JDBC，使用 V001/V002 有序迁移和历史 checksum 校验；项目、制品元数据、扫描、证据、发现、攻击链、Provider、AI 角色绑定、阻断态 AI job、操作员 PAT 和审计事件可跨重启恢复。数据库与密钥路径必须留在授权根目录下。
-- Provider API Key 只进入专用请求字段，使用后端文件根密钥与 AES-256-GCM 加密；AAD 绑定 workspace/provider/credential/version，数据库、响应、异常和审计不返回明文或密文。远程 Provider 只接受无 userinfo/query/fragment 的 HTTPS；LOCAL 只接受 loopback。真实 Provider 请求仍未启用。
+- Provider API Key 只进入专用请求字段，使用后端文件根密钥与 AES-256-GCM 加密；AAD 绑定 workspace/provider/credential/version，数据库、响应、异常和审计不返回明文或密文。Provider endpoint 拒绝 userinfo/query/fragment，LOCAL 只接受 loopback。后续为兼容受信内网网关增加了远程 HTTP，但其传输不保密。
 - 操作员 PAT 只保存 SHA-256 hash，写操作按本地 RBAC 默认拒绝；Worker token/header 不能进入操作员权限域。当前仍是 loopback 单 workspace 首版，没有 SSO、HttpOnly session、多租户或生产读权限；为兼容 SSE，既有结果 GET 仍未全部要求操作员认证。
 - AI 角色固定为 `PRE_ANALYSIS`、`PATH_EXPLORATION`、`VULNERABILITY_TRIAGE`、`REPORT_GENERATION`。创建 AI job 只生成四阶段数据流并固定 `BLOCKED / PROVIDER_EXECUTION_DISABLED`，不得伪造模型输出或生成 `VERIFIED`。
 - classfile 事实层新增类层次、字段/方法、字段读写、`invoke*`、`invokedynamic`、直接/保守 CHA/未解析动态边；保留字节码 offset/ordinal 证据和事实预算。它不加载类、不展开完整 classpath、不做跨方法数据流，反编译器仍未进入 Control Plane 进程。
@@ -244,7 +240,7 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 
 - 在 SQLite V004 上实现 `QUEUED/RUNNING/COMPLETED/FAILED/CANCELLED/BLOCKED` 状态与 workspace/project/scan/artifact/role/provider/model/policy 快照；中断进程遗留的排队或运行任务重启后 fail-closed 为 `PROCESS_RESTARTED`。
 - 只有显式 `authorized=true`、启用且有凭据的角色绑定，以及 `OPENAI_CHAT`、`ANTHROPIC_MESSAGES` 或旧 `OPENAI_COMPATIBLE` 才可进入异步编排；`AZURE_OPENAI`、`LOCAL` 和缺失配置保持阻断。GET 不触发 Provider 清单或聊天出站。
-- 生产聊天传输使用 Java `HttpClient`、HTTPS 固定协议路径、禁止重定向，并限制连接/请求/响应/轮次/token/工具调用和响应读取时间。工具执行仍由代码侧 `AiToolRegistry` 决定，parallel 禁用，每轮最多一个调用。
+- 生产聊天传输使用 Java `HttpClient`、HTTP(S) 固定协议路径、禁止重定向，并限制连接/请求/响应/轮次/token/工具调用和响应读取时间。明文 HTTP 仅用于兼容用户明确配置的受信网关，不提供凭据或模型数据机密性。工具执行仍由代码侧 `AiToolRegistry` 决定，parallel 禁用，每轮最多一个调用。
 - 模型、制品文本和工具结果固定标记为不可信数据；最终仅持久化经截断和脱敏的 `INFERENCE` 摘要、最小运行元数据与工具决策摘要，不生成 `VERIFIED`。
 - 根 Agent 补强 OpenAI strict schema、未完成工具结果顺序、未知/越权调用预算、迭代 JSON 深度、运行任务删除竞态、创建字段 allowlist、Provider/角色绑定/scan 配置漂移复核和响应临时字节清零。
 - mock 传输验收覆盖 OpenAI/Anthropic 各一次工具循环、无授权/绑定、429/500/超时、取消、重启恢复、配置漂移、提示注入、越权、预算、截断、畸形响应与敏感内容不落 AI job/审计；9 个相关 Java main-style 验收及 GUI 生产构建通过。
@@ -254,5 +250,33 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 
 - 修复 Spring Boot loader 类名误报：有效 classfile 不再仅因类名包含 `File`、`Path`、`Exec` 等词生成 sink；class-name sink/dependency 规则只保留给元数据无法解析时的显式降级。
 - 修复静态推断 severity 误导：`UNBOUND` 信号固定为 `info`；已绑定入口的静态 file/command 信号最高为 `low`/`medium`，不再把无路径、无动态证据的名称命中显示为 `high/critical`。
-- Provider endpoint 允许 OpenAI Chat/Anthropic Messages 使用 loopback HTTP，满足本机代理场景；非 loopback 地址仍强制 HTTPS，并继续拒绝 userinfo/query/fragment 和重定向。
+- Provider endpoint 允许 OpenAI Chat/Anthropic Messages 使用显式 HTTP(S)，满足本机和受信内网代理场景；继续拒绝 userinfo/query/fragment、重定向、链路本地/metadata 与组播目标。非本机 HTTP 会明文暴露 API Key 和模型数据，不得描述为安全默认。
 - 旧 scan 是不可变历史快照，不会被后台改写；用户需要重新扫描才能看到修正后的结果。
+
+## 24. 管理 GUI 可用性修正（2026-07-25）
+
+- 扫描策略页在工作区切换后自动清空旧目标并加载该项目制品，异步响应带组件生命周期保护；移除“刷新目标”按钮。
+- AI 角色的 `providerModelName` 改为可搜索 datalist 输入，既可选择 inventory 模型，也可手工输入兼容网关模型名；绑定仍需显式点击保存。
+- 真实动态状态仍取决于独立 Linux Worker/OpenSandbox。Windows 本地启动器不会把宿主 JVM 或普通 Docker 冒充强化沙箱；未部署时 UI 保持 `UNAVAILABLE`。
+
+## 25. Windows Docker 调试路线演进（2026-07-25）
+
+- 最初的仓库受控样例调试切片已退役；其代码、镜像、public/Worker 合约和专用验收不再保留。
+- Docker Desktop 当前为 Linux/WSL2 Engine，但 runtime 清单只有 runc，没有 runsc；Windows 本地能力只能声明 `TRUSTED_DOCKER`，不能标记为 `HARDENED_GVISOR`。
+- 对照当前官方协议后确认既有 OpenSandbox 适配器尚未完成 SSE/status、认证和 endpoint 校验互操作；在这些边界完成前不得启用或宣称 OpenSandbox/gVisor 已验收。
+
+## 26. TRUSTED_DOCKER 内部 JAR 直接执行与 AI 可审计性修正（2026-07-25）
+
+- 用户可见动态入口不再选择或运行受控 Fixture。`POST /api/v1/scans/{scanId}/dynamic-tasks` 只接受 `authorized=true`，Control Plane 根据不可变 scan 快照选择首个入口，并只从后端 artifact catalog 解析已登记、内容寻址且执行前复核 SHA-256 的可执行 Spring Boot JAR；浏览器不能提供镜像、命令、宿主路径、挂载或 capability。
+- Windows 本地显式开关为 `-WithDockerRuntime` 与 `-RebuildRuntimeImage`；旧 Fixture 命名 alias 已删除。Sandbox Pack 构建只包含固定 Agent 的 digest-pinned runtime image，并启动 loopback registry；当前直接 Docker Worker 不依赖或假装经过 OpenSandbox。
+- 该开发能力单独声明 `TRUSTED_DOCKER`，不是 `FIXTURE_RUNC`，也不是 gVisor/Kata 强化运行时。容器固定 `--network none`、只读 rootfs、单个只读 artifact bind mount、非 root `65532:65532`、cap-drop ALL、no-new-privileges、PID/内存/CPU 上限和有界 trace tmpfs，创建后复核有效 Docker 配置；任何失败均 fail-closed，绝不回退到宿主 Java。
+- `--network none` 同时阻断外部 DNS 和外部网络；执行器的 HTTP probe 由同一容器内的 Agent helper 访问目标 JVM loopback，不是外部网络探测。Docker runc 仍不是运行恶意制品的强化隔离边界，对外生产启用仍需 gVisor/Kata 与 P0 release gate。
+- 首轮真实 AI 失败的根因是 Provider 拒绝带点号的函数名；代码侧工具标识统一改为 Provider 可接受的 snake_case：`facts_search`、`evidence_get`、`plan_propose`。这属于协议互操作修正，不扩大工具 allowlist、作用域或权限。
+- SQLite V005 为每个 AI job 保存最多 128 条顺序事件，记录有界 Provider 请求/结果元数据、工具名、参数形状/字节数、工具结果状态、脱敏截断的模型摘要和失败诊断。API 展示的是可审计事件摘要，不保存 Provider 原始响应、秘密、模型隐藏推理或 chain-of-thought；模型结论仍只能是 `INFERENCE`。
+- `LocalDockerDynamicLoopAcceptanceTest` 现要求通过 `VEYRION_TEST_ARTIFACT_JAR` 显式提供后端管理的 executable 测试 JAR；仓库不再携带受控 Fixture 代码、镜像或专用合约测试。回归继续覆盖 public 排队、内容寻址只读挂载、断网容器、容器内 loopback HTTP、不可变 trace commit 与 dashboard `DYNAMIC_SUSPECTED` 投影；这只验证本地受信 JAR 开发路径，不代表恶意制品隔离或真实外部 Provider 互操作已验证。
+
+## 27. 受控 Fixture 样例退役（2026-07-25）
+
+- 删除 `fixtures/http-entry/`、旧 `FIXTURE_RUNC` public/Worker/OpenSandbox 专用验收以及 Fixture Worker/本地 Fixture sandbox 验收。
+- 本地真实 Docker 动态回归不再依赖仓库样例；测试操作者必须显式设置 `VEYRION_TEST_ARTIFACT_JAR`，指向后端可登记并复核摘要的 executable Spring Boot 测试 JAR。
+- 删除 `-WithDockerFixture`、`-RebuildFixtureImage`、`-SkipFixtureBuild` 兼容 alias。保留 `TRUSTED_DOCKER` 安全边界和 AI 审计文档，不将普通 Docker 描述为强化恶意代码隔离。

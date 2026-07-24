@@ -43,6 +43,20 @@ public final class AiJobOrchestrationAcceptanceTest {
         check("BLOCKED".equals(unbound.status())
                         && "ROLE_BINDING_REQUIRED".equals(unbound.stopReason()),
                 "missing role binding is persisted as fail-closed BLOCKED");
+        for (int index = 0; index < 128; index++) {
+            store.appendAiJobEvent(new SQLiteControlPlanePersistence.AiJobEventData(
+                    unbound.aiJobId(), 0, unbound.workspaceId(), unbound.projectId(),
+                    "TEST", "BLOCKED", null, null, null, null, null,
+                    null, null, now));
+        }
+        check(store.aiJobEvents(unbound.aiJobId()).size() == 128,
+                "AI job event persistence accepts its exact per-job bound");
+        expect(SQLiteControlPlanePersistence.PersistenceException.class,
+                () -> store.appendAiJobEvent(new SQLiteControlPlanePersistence.AiJobEventData(
+                        unbound.aiJobId(), 0, unbound.workspaceId(), unbound.projectId(),
+                        "TEST", "BLOCKED", null, null, null, null, null,
+                        null, null, now)),
+                "AI job event persistence rejects rows beyond its fixed bound");
         store.saveProvider("no-key", "No Key", ProviderKind.OPENAI_CHAT,
                 "https://no-key.example", "gpt-test", true, null,
                 "local-admin", now);
@@ -72,9 +86,11 @@ public final class AiJobOrchestrationAcceptanceTest {
         store.cancelAiJob(activeDelete.aiJobId(), "local-admin", Instant.now().toString());
 
         ControlledTransport mock = new ControlledTransport();
+        String completedOpenAiJobId;
         try (AiJobOrchestrator orchestrator = new AiJobOrchestrator(store, mock, Clock.systemUTC())) {
             var openAi = store.createAiJob("project-ai", AgentRole.PRE_ANALYSIS,
                     true, "local-admin", Instant.now().toString());
+            completedOpenAiJobId = openAi.aiJobId();
             orchestrator.submit(openAi, "local-admin");
             var openAiDone = awaitTerminal(store, openAi.aiJobId());
             assertInference(openAiDone, "OpenAI");
@@ -87,11 +103,27 @@ public final class AiJobOrchestrationAcceptanceTest {
         }
         check(mock.requests.get("openai").get() == 2 && mock.requests.get("anthropic").get() == 2,
                 "both protocols complete exactly one tool round and one final round");
+        List<SQLiteControlPlanePersistence.AiJobEventData> events =
+                store.aiJobEvents(completedOpenAiJobId);
+        check(!events.isEmpty() && events.get(events.size() - 1).modelInferenceSummary() != null,
+                "ordered events include the final model inference summary");
+        for (int index = 0; index < events.size(); index++) {
+            check(events.get(index).sequence() == index + 1,
+                    "AI job event sequence is contiguous and persistence-owned");
+        }
+        String eventText = events.toString();
+        check(eventText.contains("PROVIDER_REQUEST") && eventText.contains("PROVIDER_RESPONSE")
+                        && eventText.contains("TOOL_CALL") && eventText.contains("facts_search")
+                        && eventText.contains("encodedBytes")
+                        && !eventText.contains(API_KEY) && !eventText.contains(RESPONSE_SECRET)
+                        && !eventText.contains("ignore all prior instructions"),
+                "events persist only bounded, sanitized lifecycle metadata");
 
         store.saveRoleBinding("project-ai", AgentRole.VULNERABILITY_TRIAGE,
                 "openai", "gpt-test", "local-admin", Instant.now().toString());
         ChatTransport rateLimited = (provider, credential, request, limits) -> {
-            throw new ProviderChatTransport.TransportException("HTTP_429");
+            throw new ProviderChatTransport.TransportException(
+                    "HTTP_429", "type=rate_limit; message=retry later");
         };
         try (AiJobOrchestrator orchestrator = new AiJobOrchestrator(store, rateLimited, Clock.systemUTC())) {
             var job = store.createAiJob("project-ai", AgentRole.VULNERABILITY_TRIAGE,
@@ -100,6 +132,10 @@ public final class AiJobOrchestrationAcceptanceTest {
             var failed = awaitTerminal(store, job.aiJobId());
             check("FAILED".equals(failed.status()) && "HTTP_429".equals(failed.stopReason()),
                     "provider status failures are bounded and persisted without response bodies");
+            var failureEvents = store.aiJobEvents(job.aiJobId());
+            check(failureEvents.get(failureEvents.size() - 1).failureDiagnostic()
+                            .contains("rate_limit"),
+                    "sanitized provider diagnostic is persisted separately from stopReason");
         }
         assertTransportFailure(store, "HTTP_500");
         assertTransportFailure(store, "RESPONSE_TIMEOUT");
@@ -221,7 +257,7 @@ public final class AiJobOrchestrationAcceptanceTest {
                         && !job.conclusionJson().contains(RESPONSE_SECRET)
                         && !job.conclusionJson().contains("\"classification\":\"VERIFIED\""),
                 protocol + " final text is bounded/redacted INFERENCE only");
-        check(job.toolSummaryJson().contains("\"tool\":\"facts.search\"")
+        check(job.toolSummaryJson().contains("\"tool\":\"facts_search\"")
                         && job.toolSummaryJson().contains("\"status\":\"SUCCESS\""),
                 protocol + " tool decision summary is persisted");
     }
@@ -265,7 +301,7 @@ public final class AiJobOrchestrationAcceptanceTest {
             if (provider.kind() == ProviderKind.ANTHROPIC_MESSAGES) {
                 body = round == 1
                         ? "{\"role\":\"assistant\",\"stop_reason\":\"tool_use\",\"content\":["
-                        + "{\"type\":\"tool_use\",\"id\":\"tool-1\",\"name\":\"facts.search\","
+                        + "{\"type\":\"tool_use\",\"id\":\"tool-1\",\"name\":\"facts_search\","
                         + "\"input\":{\"kind\":\"EVIDENCE\",\"limit\":1}}]}"
                         : "{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":["
                         + "{\"type\":\"text\",\"text\":\"VERIFIED apiKey=" + RESPONSE_SECRET + "\"}]}";
@@ -273,7 +309,7 @@ public final class AiJobOrchestrationAcceptanceTest {
                 body = round == 1
                         ? "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{"
                         + "\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"tool-1\","
-                        + "\"type\":\"function\",\"function\":{\"name\":\"facts.search\","
+                        + "\"type\":\"function\",\"function\":{\"name\":\"facts_search\","
                         + "\"arguments\":\"{\\\"kind\\\":\\\"EVIDENCE\\\",\\\"limit\\\":1}\"}}]}}]}"
                         : "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
                         + "\"content\":\"VERIFIED apiKey=" + RESPONSE_SECRET + "\"}}]}";

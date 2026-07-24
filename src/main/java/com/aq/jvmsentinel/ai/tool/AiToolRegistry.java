@@ -145,7 +145,7 @@ public final class AiToolRegistry {
         ToolSchema schema = new ToolSchema(
                 Map.of("kind", Field.string(64), "query", Field.string(1024), "limit", Field.integer(1, 100)),
                 Set.of("kind"));
-        ToolDefinition definition = new ToolDefinition("facts.search",
+        ToolDefinition definition = new ToolDefinition("facts_search",
                 "Search already-indexed, read-only facts in the server-bound project.",
                 schema.jsonSchema(), OverflowPolicy.TRUNCATE);
         return new RegisteredTool(definition, schema, (call, context) -> {
@@ -166,7 +166,7 @@ public final class AiToolRegistry {
 
     private RegisteredTool evidenceGet() {
         ToolSchema schema = new ToolSchema(Map.of("evidenceRef", Field.string(1024)), Set.of("evidenceRef"));
-        ToolDefinition definition = new ToolDefinition("evidence.get",
+        ToolDefinition definition = new ToolDefinition("evidence_get",
                 "Read one existing evidence item from the server-bound project.",
                 schema.jsonSchema(), OverflowPolicy.DENY);
         return new RegisteredTool(definition, schema, (call, context) -> {
@@ -184,7 +184,7 @@ public final class AiToolRegistry {
                 "objective", Field.string(4096),
                 "candidateInputs", Field.stringArray(16, 1024),
                 "maxCandidates", Field.integer(1, 16)), Set.of("entrypointRef", "objective"));
-        ToolDefinition definition = new ToolDefinition("plan.propose",
+        ToolDefinition definition = new ToolDefinition("plan_propose",
                 "Create a non-executing, evidence-linked candidate plan; it grants no capabilities.",
                 schema.jsonSchema(), OverflowPolicy.DENY);
         return new RegisteredTool(definition, schema, (call, context) -> {

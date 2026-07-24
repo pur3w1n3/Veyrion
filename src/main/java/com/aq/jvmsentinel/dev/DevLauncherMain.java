@@ -2,7 +2,8 @@ package com.aq.jvmsentinel.dev;
 
 import com.aq.jvmsentinel.control.ControlPlaneServer;
 import com.aq.jvmsentinel.control.JsonCodec;
-import com.aq.jvmsentinel.fixture.TrustedFixtureCatalog;
+import com.aq.jvmsentinel.sandbox.LocalDockerTrustedSandboxClient;
+import com.aq.jvmsentinel.worker.LocalArtifactWorkerLoop;
 
 import java.io.IOException;
 import java.net.URI;
@@ -24,8 +25,8 @@ import java.util.concurrent.TimeUnit;
 /**
  * Local-development launcher for the loopback Control Plane and Vite GUI.
  *
- * <p>This class launches only the repository's frontend tooling. It is not used by a Worker
- * and never executes an imported artifact.</p>
+ * <p>When explicitly enabled, this launcher also starts the process-local trusted Docker
+ * worker. The worker still consumes the authenticated contract and has no host JVM fallback.</p>
  */
 public final class DevLauncherMain {
     private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
@@ -41,23 +42,39 @@ public final class DevLauncherMain {
 
         try (ControlPlaneServer server = new ControlPlaneServer(
                 "127.0.0.1", config.backendPort(), config.artifactRoot(), token,
-                TrustedFixtureCatalog.fromEnvironment(System.getenv()), database).start()) {
+                database).start()) {
+            LocalArtifactWorkerLoop worker = config.dockerArtifactWorker()
+                    ? new LocalArtifactWorkerLoop(
+                            server.baseUri().resolve("/internal/worker/v1/"),
+                            server.workerToken(), new LocalDockerTrustedSandboxClient(),
+                            server::requireLocalArtifact, requiredRuntimeImage()).start()
+                    : null;
             String projectId = loadOrCreateProject(server.baseUri(), token);
             Process frontend = startFrontend(config, server.baseUri(), projectId, token);
             Runtime.getRuntime().addShutdownHook(new Thread(
-                    () -> stop(frontend), "veyrion-dev-shutdown"));
+                    () -> {
+                        stop(frontend);
+                        if (worker != null) worker.close();
+                    }, "veyrion-dev-shutdown"));
 
             System.out.println("Veyrion Control Plane: " + server.baseUri());
             System.out.println("Veyrion GUI: http://127.0.0.1:" + config.frontendPort());
             System.out.println("Development project: " + projectId);
             System.out.println("Authorized artifact directory: " + config.artifactRoot());
+            System.out.println("Trusted internal JAR Docker worker: "
+                    + (worker == null ? "disabled" : "enabled (TRUSTED_DOCKER, network none)"));
             System.out.println("Press Ctrl+C to stop both processes.");
 
-            if (frontend.waitFor(2, TimeUnit.SECONDS)) {
-                throw new IllegalStateException("frontend exited during startup with code " + frontend.exitValue());
+            try {
+                if (frontend.waitFor(2, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException(
+                            "frontend exited during startup with code " + frontend.exitValue());
+                }
+                int exitCode = frontend.waitFor();
+                if (exitCode != 0) throw new IllegalStateException("frontend exited with code " + exitCode);
+            } finally {
+                if (worker != null) worker.close();
             }
-            int exitCode = frontend.waitFor();
-            if (exitCode != 0) throw new IllegalStateException("frontend exited with code " + exitCode);
         }
     }
 
@@ -162,6 +179,15 @@ public final class DevLauncherMain {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(value);
     }
 
+    private static String requiredRuntimeImage() {
+        String value = System.getenv("VEYRION_ARTIFACT_RUNTIME_IMAGE_URI");
+        if (value == null || !value.matches("[a-z0-9.-]+(?::[0-9]{1,5})?"
+                + "(?:/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}")) {
+            throw new IllegalStateException("VEYRION_ARTIFACT_RUNTIME_IMAGE_URI is missing or invalid");
+        }
+        return value;
+    }
+
     private static void stop(Process process) {
         if (process == null || !process.isAlive()) return;
         process.destroy();
@@ -174,7 +200,8 @@ public final class DevLauncherMain {
     }
 
     public record Configuration(Path workspace, Path artifactRoot, Path frontendDirectory,
-                                int backendPort, int frontendPort, String npmExecutable) {
+                                int backendPort, int frontendPort, String npmExecutable,
+                                boolean dockerArtifactWorker) {
         public Configuration {
             workspace = realDirectory(workspace, "workspace");
             artifactRoot = absoluteWithin(workspace, artifactRoot, "artifactRoot");
@@ -215,13 +242,17 @@ public final class DevLauncherMain {
                 frontendPort = port(values.get("frontend-port"), "frontend-port");
             }
             if (values.containsKey("npm")) npm = values.get("npm");
+            boolean dockerArtifactWorker = values.containsKey("docker-artifact-worker")
+                    && booleanValue(values.get("docker-artifact-worker"), "docker-artifact-worker");
             return new Configuration(workspace, artifactRoot, workspace.resolve("frontend"),
-                    backendPort, frontendPort, npm);
+                    backendPort, frontendPort, npm, dockerArtifactWorker);
         }
 
         private static Map<String, String> parseArguments(String[] args) {
             Map<String, String> result = new LinkedHashMap<>();
-            List<String> allowed = List.of("workspace", "artifacts", "backend-port", "frontend-port", "npm");
+            List<String> allowed = List.of(
+                    "workspace", "artifacts", "backend-port", "frontend-port", "npm",
+                    "docker-artifact-worker");
             for (int index = 0; index < args.length; index++) {
                 String argument = args[index];
                 if (!argument.startsWith("--") || !allowed.contains(argument.substring(2))
@@ -245,6 +276,12 @@ public final class DevLauncherMain {
             } catch (NumberFormatException invalid) {
                 throw new IllegalArgumentException(name + " must be a valid TCP port");
             }
+        }
+
+        private static boolean booleanValue(String value, String name) {
+            if ("true".equalsIgnoreCase(value)) return true;
+            if ("false".equalsIgnoreCase(value)) return false;
+            throw new IllegalArgumentException(name + " must be true or false");
         }
 
         private static Path realDirectory(Path value, String name) {

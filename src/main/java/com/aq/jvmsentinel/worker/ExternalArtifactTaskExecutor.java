@@ -3,10 +3,10 @@ package com.aq.jvmsentinel.worker;
 import com.aq.jvmsentinel.policy.NetworkMode;
 import com.aq.jvmsentinel.sandbox.CommandRequest;
 import com.aq.jvmsentinel.sandbox.CommandResult;
-import com.aq.jvmsentinel.sandbox.OpenSandboxClient;
 import com.aq.jvmsentinel.sandbox.ReadOnlyArtifactMount;
 import com.aq.jvmsentinel.sandbox.SandboxHandle;
 import com.aq.jvmsentinel.sandbox.SandboxRequest;
+import com.aq.jvmsentinel.sandbox.SandboxRuntimeClient;
 import com.aq.jvmsentinel.verification.SandboxReleaseGate;
 
 import java.io.IOException;
@@ -33,11 +33,11 @@ import java.util.Set;
 public final class ExternalArtifactTaskExecutor {
     static final String AGENT_PATH = "/opt/veyrion/agent/veyrion-agent.jar";
     static final String ARTIFACT_PATH = "/opt/veyrion/artifact/application.jar";
-    static final String WORKING_DIRECTORY = "/tmp";
+    static final String WORKING_DIRECTORY = "/sandbox";
     static final String TRACE_DIRECTORY = "/tmp/veyrion-trace";
     static final String TRACE_FILE = TRACE_DIRECTORY + "/agent-events.jsonl";
-    static final int SANDBOX_UID = 10000;
-    static final int SANDBOX_GID = 10000;
+    static final int SANDBOX_UID = 65532;
+    static final int SANDBOX_GID = 65532;
 
     private static final long MAX_WALL_SECONDS = 3_600;
     private static final long MAX_CPU_MILLIS = 3_600_000;
@@ -48,13 +48,13 @@ public final class ExternalArtifactTaskExecutor {
     private static final long MAX_TMPFS_BYTES = 64L * 1024 * 1024;
 
     private final WorkerControlPlaneClient control;
-    private final OpenSandboxClient sandbox;
+    private final SandboxRuntimeClient sandbox;
     private final ArtifactCatalog catalog;
     private final RuntimePolicy runtimePolicy;
     private final AgentJsonlTraceConverter converter;
     private final String workerId;
 
-    public ExternalArtifactTaskExecutor(WorkerControlPlaneClient control, OpenSandboxClient sandbox,
+    public ExternalArtifactTaskExecutor(WorkerControlPlaneClient control, SandboxRuntimeClient sandbox,
                                         ArtifactCatalog catalog, RuntimePolicy runtimePolicy,
                                         String workerId) {
         this(control, sandbox, catalog, runtimePolicy,
@@ -63,7 +63,7 @@ public final class ExternalArtifactTaskExecutor {
                 workerId);
     }
 
-    public ExternalArtifactTaskExecutor(WorkerControlPlaneClient control, OpenSandboxClient sandbox,
+    public ExternalArtifactTaskExecutor(WorkerControlPlaneClient control, SandboxRuntimeClient sandbox,
                                         ArtifactCatalog catalog, RuntimePolicy runtimePolicy,
                                         AgentJsonlTraceConverter converter, String workerId) {
         this.control = Objects.requireNonNull(control, "control");
@@ -103,23 +103,29 @@ public final class ExternalArtifactTaskExecutor {
                     registration.path(), ARTIFACT_PATH, registration.sha256(), registration.sizeBytes());
             SandboxHandle handle = sandbox.create(new SandboxRequest(
                     runtimePolicy.imageUri(), List.of("/bin/sleep", "infinity"), timeoutSeconds(budget),
-                    budget, false, descriptor.requiredCapability(), List.of(mount),
+                    budget, descriptor.requiredCapability(), List.of(mount),
                     Math.min(MAX_TMPFS_BYTES, budget.maxDiskBytes())));
             sandboxId = handle.id();
 
             CommandResult prepareTrace = sandbox.command(sandboxId, new CommandRequest(
-                    "/bin/mkdir -m 700 " + TRACE_DIRECTORY, WORKING_DIRECTORY,
+                    "umask 077 && rm -f " + TRACE_FILE, WORKING_DIRECTORY,
                     Duration.ofSeconds(10), SANDBOX_UID, SANDBOX_GID));
             if (prepareTrace.exitCode() != 0) {
                 throw new ExternalArtifactExecutionException(
                         "TRACE_DIRECTORY_FAILED", "Agent trace directory could not be prepared", null);
             }
             CommandResult run = sandbox.command(sandboxId, new CommandRequest(
-                    fixedCommand(budget), WORKING_DIRECTORY, commandTimeout(budget),
+                    fixedCommand(budget, registration), WORKING_DIRECTORY, commandTimeout(budget),
                     SANDBOX_UID, SANDBOX_GID));
             if (run.exitCode() != 0) {
+                CommandResult applicationLog = sandbox.command(sandboxId, new CommandRequest(
+                        "tail -c 2048 " + TRACE_DIRECTORY + "/application.log 2>/dev/null || true",
+                        WORKING_DIRECTORY, Duration.ofSeconds(10), SANDBOX_UID, SANDBOX_GID));
                 throw new ExternalArtifactExecutionException(
-                        "EXTERNAL_ARTIFACT_EXIT_NONZERO", "external artifact returned a non-zero exit code", null);
+                        "EXTERNAL_ARTIFACT_EXIT_NONZERO",
+                        "external artifact returned exit " + run.exitCode() + ": "
+                                + diagnostic(run.stdout() + "\n" + applicationLog.stdout(),
+                                run.stderr() + "\n" + applicationLog.stderr()), null);
             }
 
             CommandResult traceRead = sandbox.command(sandboxId, new CommandRequest(
@@ -174,20 +180,17 @@ public final class ExternalArtifactTaskExecutor {
         if (!value.scope().equals(expectedScope) || value.lifecycle() != expectedLifecycle) {
             throw new SecurityException("task response changed execution identity or lifecycle");
         }
-        if (!value.authorized() || value.fixtureOnly()) {
-            throw new SecurityException("external artifact execution requires an authorized non-fixture task");
+        if (!value.authorized()) {
+            throw new SecurityException("external artifact execution requires an authorized task");
         }
-        if (value.requiredCapability() != WorkerCapability.HARDENED_GVISOR
+        if (value.requiredCapability() != WorkerCapability.TRUSTED_DOCKER
+                && value.requiredCapability() != WorkerCapability.HARDENED_GVISOR
                 && value.requiredCapability() != WorkerCapability.HARDENED_KATA) {
-            throw new SecurityException("external artifact execution requires a hardened runtime");
+            throw new SecurityException("external artifact execution requires an approved artifact runtime");
         }
         if (value.networkPolicy().mode() != NetworkMode.DENY
                 || !value.networkPolicy().allowlist().isEmpty()) {
             throw new SecurityException("external artifact execution requires deny-all network policy");
-        }
-        if (value.fixtureId() != null || value.imageUri() != null
-                || value.mainClass() != null || value.fixtureDigest() != null) {
-            throw new SecurityException("external artifact task contains fixture-controlled runtime fields");
         }
     }
 
@@ -209,14 +212,9 @@ public final class ExternalArtifactTaskExecutor {
         if (!expected.scope().equals(actual.scope())
                 || !expected.targetEntryId().equals(actual.targetEntryId())
                 || expected.authorized() != actual.authorized()
-                || expected.fixtureOnly() != actual.fixtureOnly()
                 || expected.requiredCapability() != actual.requiredCapability()
                 || !expected.resourceBudget().equals(actual.resourceBudget())
-                || !expected.networkPolicy().equals(actual.networkPolicy())
-                || !Objects.equals(expected.fixtureId(), actual.fixtureId())
-                || !Objects.equals(expected.imageUri(), actual.imageUri())
-                || !Objects.equals(expected.mainClass(), actual.mainClass())
-                || !Objects.equals(expected.fixtureDigest(), actual.fixtureDigest())) {
+                || !expected.networkPolicy().equals(actual.networkPolicy())) {
             throw new SecurityException("task response changed the immutable execution policy");
         }
     }
@@ -291,14 +289,45 @@ public final class ExternalArtifactTaskExecutor {
         }
     }
 
-    private static String fixedCommand(ResourceBudget budget) {
+    private static String fixedCommand(ResourceBudget budget, ArtifactRegistration registration) {
         long maxBytes = Math.min(MAX_TRACE_BYTES, budget.maxTraceBytes());
         long maxEvents = Math.max(1, Math.min(100_000, maxBytes / 256));
+        long runSeconds = Math.max(1, budget.maxWallClockSeconds() - 15);
+        long startupSeconds = Math.min(30, Math.max(10, runSeconds / 2));
         return "java"
                 + " -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
                 + " -Dveyrion.sandbox.traceDir.authorized=true"
+                + " -Djava.io.tmpdir=" + TRACE_DIRECTORY
                 + " -javaagent:" + AGENT_PATH + "=maxBytes=" + maxBytes + ",maxEvents=" + maxEvents
-                + " -jar " + ARTIFACT_PATH;
+                + (registration.classPrefix().isEmpty()
+                ? "" : ",classPrefix=" + registration.classPrefix())
+                + " -jar " + ARTIFACT_PATH
+                + " > " + TRACE_DIRECTORY + "/application.log 2>&1"
+                + " & pid=$!; elapsed=0; probe_status=1"
+                + "; while kill -0 \"$pid\" 2>/dev/null"
+                + " && [ \"$elapsed\" -lt " + startupSeconds + " ]"
+                + "; do sleep 1; elapsed=$((elapsed+1)); done"
+                + "; if kill -0 \"$pid\" 2>/dev/null && java -cp " + AGENT_PATH
+                + " com.aq.jvmsentinel.agent.LoopbackHttpProbe "
+                + registration.probeMethod() + " '" + registration.probeRoute() + "'"
+                + "; then probe_status=0; fi"
+                + "; while kill -0 \"$pid\" 2>/dev/null && [ \"$probe_status\" -ne 0 ]"
+                + " && [ \"$elapsed\" -lt " + runSeconds + " ]"
+                + "; do sleep 3; elapsed=$((elapsed+3))"
+                + "; if java -cp " + AGENT_PATH
+                + " com.aq.jvmsentinel.agent.LoopbackHttpProbe "
+                + registration.probeMethod() + " '" + registration.probeRoute() + "'"
+                + "; then probe_status=0; fi; done"
+                + "; while kill -0 \"$pid\" 2>/dev/null && [ \"$elapsed\" -lt " + runSeconds + " ]"
+                + "; do sleep 1; elapsed=$((elapsed+1)); done"
+                + "; if kill -0 \"$pid\" 2>/dev/null; then kill -TERM \"$pid\""
+                + "; grace=0; while kill -0 \"$pid\" 2>/dev/null && [ \"$grace\" -lt 10 ]"
+                + "; do sleep 1; grace=$((grace+1)); done"
+                + "; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi"
+                + "; wait \"$pid\" 2>/dev/null || true"
+                + "; if [ \"$probe_status\" -eq 0 ]; then exit 0; else exit 70; fi"
+                + "; else wait \"$pid\"; app_status=$?"
+                + "; if [ \"$probe_status\" -ne 0 ]; then exit 70; else exit \"$app_status\"; fi; fi";
     }
 
     private static int timeoutSeconds(ResourceBudget budget) {
@@ -317,6 +346,13 @@ public final class ExternalArtifactTaskExecutor {
         return "EXTERNAL_ARTIFACT_EXECUTION_FAILED";
     }
 
+    private static String diagnostic(String stdout, String stderr) {
+        String value = ((stderr == null ? "" : stderr) + "\n"
+                + (stdout == null ? "" : stdout))
+                .replaceAll("[\\p{Cntrl}&&[^\\r\\n\\t]]", "?").strip();
+        return value.length() <= 2048 ? value : value.substring(value.length() - 2048);
+    }
+
     private static String requireId(String value, String name) {
         Objects.requireNonNull(value, name);
         if (!value.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) {
@@ -331,7 +367,20 @@ public final class ExternalArtifactTaskExecutor {
     }
 
     public record ArtifactRegistration(String projectId, String sha256, Path path, long sizeBytes,
-                                       boolean executableSpringBootJar) {
+                                       boolean executableSpringBootJar, String probeMethod,
+                                       String probeRoute, String classPrefix) {
+        public ArtifactRegistration(String projectId, String sha256, Path path, long sizeBytes,
+                                    boolean executableSpringBootJar) {
+            this(projectId, sha256, path, sizeBytes, executableSpringBootJar, "GET", "/", "");
+        }
+
+        public ArtifactRegistration(String projectId, String sha256, Path path, long sizeBytes,
+                                    boolean executableSpringBootJar, String probeMethod,
+                                    String probeRoute) {
+            this(projectId, sha256, path, sizeBytes, executableSpringBootJar,
+                    probeMethod, probeRoute, "");
+        }
+
         public ArtifactRegistration {
             projectId = requireId(projectId, "projectId");
             if (sha256 == null || !sha256.matches("[0-9a-f]{64}")) {
@@ -342,16 +391,47 @@ public final class ExternalArtifactTaskExecutor {
             if (sizeBytes <= 0 || sizeBytes > MAX_ARTIFACT_BYTES) {
                 throw new IllegalArgumentException("registered artifact size is outside limits");
             }
+            probeMethod = Objects.requireNonNull(probeMethod, "probeMethod")
+                    .toUpperCase(java.util.Locale.ROOT);
+            if (!Set.of("GET", "POST", "PUT", "PATCH", "DELETE").contains(probeMethod)
+                    || probeRoute == null
+                    || !probeRoute.matches("/[A-Za-z0-9_./{}:-]{0,1023}")) {
+                throw new IllegalArgumentException("artifact probe target is invalid");
+            }
+            classPrefix = Objects.requireNonNull(classPrefix, "classPrefix");
+            if (!classPrefix.isEmpty()
+                    && !classPrefix.matches("[A-Za-z_$][A-Za-z0-9_$.]{0,254}")) {
+                throw new IllegalArgumentException("artifact class prefix is invalid");
+            }
         }
     }
 
     /** Deployment-owned runtime image containing the trusted Agent at the fixed path. */
-    public record RuntimePolicy(String imageUri, SandboxReleaseGate.ReleaseDecision releaseDecision) {
-        public RuntimePolicy {
-            Objects.requireNonNull(imageUri, "imageUri");
+    public static final class RuntimePolicy {
+        private final String imageUri;
+        private final SandboxReleaseGate.ReleaseDecision releaseDecision;
+        private final boolean trustedLocalDocker;
+
+        /** Release-gated policy for hardened gVisor/Kata deployments. */
+        public RuntimePolicy(String imageUri, SandboxReleaseGate.ReleaseDecision releaseDecision) {
+            this(imageUri, releaseDecision, false);
+        }
+
+        private RuntimePolicy(String imageUri, SandboxReleaseGate.ReleaseDecision releaseDecision,
+                              boolean trustedLocalDocker) {
+            this.imageUri = Objects.requireNonNull(imageUri, "imageUri");
+            this.releaseDecision = releaseDecision;
+            this.trustedLocalDocker = trustedLocalDocker;
             if (imageUri.length() > 512
-                    || !imageUri.matches("[a-z0-9.-]+(?:/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}")) {
+                    || !imageUri.matches("[a-z0-9.-]+(?::[0-9]{1,5})?"
+                    + "(?:/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}")) {
                 throw new IllegalArgumentException("external runtime image must be digest-pinned");
+            }
+            if (trustedLocalDocker) {
+                if (releaseDecision != null) {
+                    throw new IllegalArgumentException("trusted-local policy cannot carry a release decision");
+                }
+                return;
             }
             Objects.requireNonNull(releaseDecision, "releaseDecision");
             if (!releaseDecision.enabled()
@@ -360,8 +440,25 @@ public final class ExternalArtifactTaskExecutor {
             }
         }
 
+        /** Explicit local policy; it never authorizes fixture or hardened capabilities. */
+        public static RuntimePolicy trustedLocalDocker(String imageUri) {
+            return new RuntimePolicy(imageUri, null, true);
+        }
+
+        public String imageUri() {
+            return imageUri;
+        }
+
+        public SandboxReleaseGate.ReleaseDecision releaseDecision() {
+            return releaseDecision;
+        }
+
         void requireCapability(WorkerCapability capability) {
-            if (releaseDecision.capability() != capability) {
+            if (trustedLocalDocker) {
+                if (capability != WorkerCapability.TRUSTED_DOCKER) {
+                    throw new SecurityException("trusted-local policy only covers TRUSTED_DOCKER");
+                }
+            } else if (releaseDecision.capability() != capability) {
                 throw new SecurityException("task capability is not covered by the sandbox release decision");
             }
         }

@@ -1,9 +1,15 @@
 package com.aq.jvmsentinel.worker;
 
 import com.aq.jvmsentinel.control.JsonCodec;
+import com.aq.jvmsentinel.sandbox.CommandRequest;
+import com.aq.jvmsentinel.sandbox.CommandResult;
 import com.aq.jvmsentinel.sandbox.OpenSandboxClient;
 import com.aq.jvmsentinel.sandbox.OpenSandboxConfig;
 import com.aq.jvmsentinel.sandbox.RuntimeAttestation;
+import com.aq.jvmsentinel.sandbox.SandboxHandle;
+import com.aq.jvmsentinel.sandbox.SandboxRequest;
+import com.aq.jvmsentinel.sandbox.SandboxRuntimeClient;
+import com.aq.jvmsentinel.sandbox.SandboxStatus;
 import com.aq.jvmsentinel.verification.SandboxReleaseGate;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -51,7 +57,19 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         try {
             ExternalArtifactTaskExecutor.ArtifactRegistration registration =
                     new ExternalArtifactTaskExecutor.ArtifactRegistration(
+                            "project-1", digest, jar, Files.size(jar), true,
+                            "POST", "/sample/http-entry");
+            ExternalArtifactTaskExecutor.ArtifactRegistration legacyRegistration =
+                    new ExternalArtifactTaskExecutor.ArtifactRegistration(
                             "project-1", digest, jar, Files.size(jar), true);
+            check(legacyRegistration.probeMethod().equals("GET")
+                            && legacyRegistration.probeRoute().equals("/"),
+                    "legacy artifact registration constructor");
+            expect(IllegalArgumentException.class,
+                    () -> new ExternalArtifactTaskExecutor.ArtifactRegistration(
+                            "project-1", digest, jar, Files.size(jar), true,
+                            "POST", "/sample/http-entry;touch-/tmp/escape"),
+                    "probe route command expansion rejection");
             ExternalArtifactTaskExecutor executor = executor(mock, scope(digest, "task-success"), registration);
             ExternalArtifactTaskExecutor.ExecutionResult result =
                     executor.execute(new ExternalArtifactTaskExecutor.ExecutionRequest(
@@ -61,6 +79,15 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     && result.traceChunks() == 1, "successful execution");
             mock.assertSecureCreateAndCommand(digest);
             check(mock.deleted == 1, "successful sandbox cleanup");
+
+            ExternalArtifactTaskExecutor trusted = executor(
+                    mock, scope(digest, "task-trusted-local"), registration);
+            ExternalArtifactTaskExecutor.ExecutionResult trustedResult = trusted.execute(
+                    new ExternalArtifactTaskExecutor.ExecutionRequest(
+                            scope(digest, "task-trusted-local")));
+            check(trustedResult.lifecycle() == TaskLifecycle.COMPLETED,
+                    "explicit trusted-local execution");
+            mock.assertSecureCreateAndCommand(digest);
 
             int createsBeforeTamper = mock.creates;
             Files.writeString(jar, "tampered", StandardCharsets.UTF_8);
@@ -84,14 +111,6 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
             check(mock.failedTasks.contains("task-command-failure"), "failed execution state");
             mock.failCommand = false;
 
-            ExternalArtifactTaskExecutor fixture = executor(
-                    mock, scope(digest, "task-fixture"), registration);
-            int createsBeforeFixture = mock.creates;
-            expect(SecurityException.class, () -> fixture.execute(
-                    new ExternalArtifactTaskExecutor.ExecutionRequest(scope(digest, "task-fixture"))),
-                    "fixture task rejection");
-            check(mock.creates == createsBeforeFixture, "fixture task must not create external sandbox");
-
             expect(IllegalArgumentException.class,
                     () -> new ExternalArtifactTaskExecutor.RuntimePolicy("runtime:latest", releaseDecision()),
                     "unpinned runtime image");
@@ -109,16 +128,25 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         URI origin = URI.create("http://127.0.0.1:" + mock.port() + "/");
         WorkerControlPlaneClient control = new WorkerControlPlaneClient(
                 origin.resolve("internal/worker/v1/"), "worker-token", Duration.ofSeconds(5));
+        WorkerCapability capability = scope.taskId().equals("task-trusted-local")
+                ? WorkerCapability.TRUSTED_DOCKER : WorkerCapability.HARDENED_GVISOR;
         RuntimeAttestation attestation = new RuntimeAttestation(
-                "0.1.0", WorkerCapability.HARDENED_GVISOR, "runsc-gvisor",
+                "0.1.0", capability,
+                capability == WorkerCapability.TRUSTED_DOCKER ? "docker-desktop-runc" : "runsc-gvisor",
                 true, true, true, Set.of(FEATURES.split(",")));
-        OpenSandboxClient sandbox = new OpenSandboxClient(new OpenSandboxConfig(
-                origin.resolve("v1/"), "sandbox-key", "execd-token",
-                Duration.ofSeconds(5), "0.1.0", attestation));
+        SandboxRuntimeClient sandbox = capability == WorkerCapability.TRUSTED_DOCKER
+                ? new TrustedRuntimeClient(attestation)
+                : new OpenSandboxClient(new OpenSandboxConfig(
+                        origin.resolve("v1/"), "sandbox-key", "execd-token",
+                        Duration.ofSeconds(5), "0.1.0", attestation));
+        ExternalArtifactTaskExecutor.RuntimePolicy policy =
+                capability == WorkerCapability.TRUSTED_DOCKER
+                        ? ExternalArtifactTaskExecutor.RuntimePolicy.trustedLocalDocker(IMAGE)
+                        : new ExternalArtifactTaskExecutor.RuntimePolicy(IMAGE, releaseDecision());
         return new ExternalArtifactTaskExecutor(control, sandbox, requested -> {
             check(requested.equals(scope), "catalog scope");
             return registration;
-        }, new ExternalArtifactTaskExecutor.RuntimePolicy(IMAGE, releaseDecision()), "worker-1");
+        }, policy, "worker-1");
     }
 
     private static SandboxReleaseGate.ReleaseDecision releaseDecision() {
@@ -161,6 +189,40 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
     @FunctionalInterface
     private interface ThrowingRunnable {
         void run() throws Exception;
+    }
+
+    private static final class TrustedRuntimeClient implements SandboxRuntimeClient {
+        private final RuntimeAttestation attestation;
+        private boolean created;
+
+        private TrustedRuntimeClient(RuntimeAttestation attestation) {
+            this.attestation = attestation;
+        }
+
+        @Override
+        public SandboxHandle create(SandboxRequest request) {
+            check(request.requiredCapability() == WorkerCapability.TRUSTED_DOCKER
+                    && !request.fixtureOnly() && request.readOnlyArtifacts().size() == 1,
+                    "trusted runtime request");
+            created = true;
+            return new SandboxHandle("trusted-sandbox-1",
+                    new SandboxStatus(SandboxStatus.State.RUNNING, null, null), attestation);
+        }
+
+        @Override
+        public CommandResult command(String sandboxId, CommandRequest request) {
+            check(created && sandboxId.equals("trusted-sandbox-1"), "known trusted sandbox");
+            String stdout = request.command().equals(
+                    "/bin/cat /tmp/veyrion-trace/agent-events.jsonl")
+                    ? MockServices.agentJsonl() : "";
+            return new CommandResult(null, stdout, "", 0);
+        }
+
+        @Override
+        public void delete(String sandboxId) {
+            check(created && sandboxId.equals("trusted-sandbox-1"), "trusted sandbox cleanup");
+            created = false;
+        }
     }
 
     private static final class MockServices implements AutoCloseable {
@@ -270,7 +332,6 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         }
 
         private Map<String, Object> task(String taskId, TaskLifecycle lifecycle) {
-            boolean fixture = taskId.equals("task-fixture");
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("schemaVersion", 1);
             result.put("workerContractVersion", 1);
@@ -283,13 +344,11 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
             result.put("updatedAt", Instant.parse("2026-07-24T00:00:00Z").toString());
             result.put("targetEntryId", "entry-1");
             result.put("authorized", true);
-            result.put("fixtureOnly", fixture);
-            result.put("requiredCapability", "HARDENED_GVISOR");
+            result.put("fixtureOnly", false);
+            result.put("requiredCapability", capability(taskId).name());
             result.put("dynamicExecutionMode", "DYNAMIC_DISABLED");
-            result.put("fixtureId", null);
             result.put("imageUri", null);
             result.put("mainClass", null);
-            result.put("fixtureDigest", null);
             result.put("resourceBudget", Map.of(
                     "maxWallClockSeconds", 120,
                     "maxCpuMillis", 60_000,
@@ -318,10 +377,15 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     Map.entry("taskId", taskId),
                     Map.entry("leaseId", "lease-" + taskId),
                     Map.entry("workerId", "worker-1"),
-                    Map.entry("capability", "HARDENED_GVISOR"),
+                    Map.entry("capability", capability(taskId).name()),
                     Map.entry("issuedAt", "2026-07-24T00:00:00Z"),
                     Map.entry("heartbeatAt", "2026-07-24T00:00:00Z"),
                     Map.entry("expiresAt", "2026-07-24T01:00:00Z"));
+        }
+
+        private static WorkerCapability capability(String taskId) {
+            return taskId.equals("task-trusted-local")
+                    ? WorkerCapability.TRUSTED_DOCKER : WorkerCapability.HARDENED_GVISOR;
         }
 
         @SuppressWarnings("unchecked")
@@ -340,14 +404,23 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     "digest-pinned read-only artifact mount");
             check(lastCreate.containsKey("tmpfs") && !lastCreate.containsKey("volumes")
                     && !lastCreate.containsKey("env"), "controlled writable surface");
-            check(lastCommand.get("command").equals(
+            String command = (String) lastCommand.get("command");
+            check(command.startsWith(
                     "java -Dveyrion.sandbox.traceDir=/tmp/veyrion-trace"
                             + " -Dveyrion.sandbox.traceDir.authorized=true"
+                            + " -Djava.io.tmpdir=/tmp/veyrion-trace"
                             + " -javaagent:/opt/veyrion/agent/veyrion-agent.jar"
                             + "=maxBytes=1048576,maxEvents=4096"
-                            + " -jar /opt/veyrion/artifact/application.jar"), "fixed command");
-            check(((Number) lastCommand.get("uid")).intValue() == 10000
-                    && ((Number) lastCommand.get("gid")).intValue() == 10000
+                            + " -jar /opt/veyrion/artifact/application.jar")
+                    && command.contains("com.aq.jvmsentinel.agent.LoopbackHttpProbe"
+                            + " POST '/sample/http-entry'")
+                    && command.contains("probe_status=1")
+                    && command.contains("exit 70")
+                    && command.contains("kill -TERM \"$pid\"")
+                    && command.contains("kill -KILL \"$pid\""),
+                    "fixed command with bounded graceful stop");
+            check(((Number) lastCommand.get("uid")).intValue() == 65532
+                    && ((Number) lastCommand.get("gid")).intValue() == 65532
                     && !lastCommand.containsKey("envs"), "non-root command without environment");
         }
 

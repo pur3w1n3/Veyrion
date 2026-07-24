@@ -33,8 +33,7 @@ public final class WorkerControlPlaneClient {
     private static final Set<String> SNAPSHOT_FIELDS = Set.of(
             "schemaVersion", "workerContractVersion", "projectId", "artifactDigest", "scanId", "taskId",
             "lifecycle", "status", "updatedAt", "targetEntryId", "authorized", "fixtureOnly",
-            "requiredCapability", "dynamicExecutionMode", "fixtureId", "imageUri", "mainClass",
-            "fixtureDigest", "resourceBudget", "networkPolicy", "lease", "checkpoint",
+            "requiredCapability", "dynamicExecutionMode", "resourceBudget", "networkPolicy", "lease", "checkpoint",
             "stopReason", "failureCode");
     private static final Set<String> LEASE_FIELDS = Set.of(
             "schemaVersion", "workerContractVersion", "projectId", "artifactDigest", "scanId", "taskId",
@@ -75,7 +74,15 @@ public final class WorkerControlPlaneClient {
         WorkerContracts.id(projectId, "projectId");
         WorkerContracts.id(scanId, "scanId");
         String query = "projectId=" + encode(projectId) + "&scanId=" + encode(scanId);
-        Map<String, Object> root = send("GET", resolve("tasks?" + query), null, null);
+        return list(resolve("tasks?" + query));
+    }
+
+    public List<TaskDescriptor> list() {
+        return list(resolve("tasks"));
+    }
+
+    private List<TaskDescriptor> list(URI endpoint) {
+        Map<String, Object> root = send("GET", endpoint, null, null);
         requireExactFields(root, Set.of(
                 "schemaVersion", "workerContractVersion", "dynamicExecutionMode", "tasks"), "task list");
         requireVersions(root);
@@ -193,8 +200,23 @@ public final class WorkerControlPlaneClient {
             }
             if (bytes.length > maxResponseBytes) throw protocol("Worker response exceeds limit", null);
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                String detail = "";
+                try {
+                    Map<String, Object> error = JsonCodec.parseObject(decodeUtf8(bytes));
+                    if (error.get("code") instanceof String code
+                            && code.matches("[A-Z][A-Z0-9_]{1,127}")) {
+                        detail = " (" + code + ")";
+                    }
+                    if (error.get("message") instanceof String message
+                            && message.length() <= 256
+                            && message.chars().allMatch(c -> c >= 0x20 && c != 0x7f)) {
+                        detail += ": " + message;
+                    }
+                } catch (RuntimeException ignored) {
+                    // Preserve the status-only error if the body is not contract JSON.
+                }
                 throw new WorkerClientException("HTTP_ERROR", response.statusCode(),
-                        "Worker control plane returned HTTP " + response.statusCode(), null);
+                        "Worker control plane returned HTTP " + response.statusCode() + detail, null);
             }
             String contentType = response.headers().firstValue("Content-Type").orElse("")
                     .toLowerCase(Locale.ROOT);
@@ -217,8 +239,7 @@ public final class WorkerControlPlaneClient {
     }
 
     private static TaskDescriptor parseTask(Map<String, Object> root) {
-        if (!root.keySet().equals(SNAPSHOT_FIELDS)
-                && !root.keySet().equals(withoutFixtureFields(SNAPSHOT_FIELDS))) {
+        if (!root.keySet().equals(SNAPSHOT_FIELDS)) {
             throw protocol("task response fields do not match the contract", null);
         }
         requireVersions(root);
@@ -246,41 +267,19 @@ public final class WorkerControlPlaneClient {
                 enumValue(WorkerCapability.class, string(root, "requiredCapability"), "requiredCapability");
         ResourceBudget resourceBudget = parseResourceBudget(object(root.get("resourceBudget"), "resourceBudget"));
         NetworkPolicy networkPolicy = parseNetworkPolicy(object(root.get("networkPolicy"), "networkPolicy"));
-        String fixtureId = optionalString(root, "fixtureId");
-        String imageUri = optionalString(root, "imageUri");
-        String mainClass = optionalString(root, "mainClass");
-        String fixtureDigest = optionalString(root, "fixtureDigest");
-        int runtimeFields = (fixtureId == null ? 0 : 1) + (imageUri == null ? 0 : 1)
-                + (mainClass == null ? 0 : 1) + (fixtureDigest == null ? 0 : 1);
-        if (runtimeFields != 0 && runtimeFields != 4) {
-            throw protocol("fixture runtime fields are incomplete", null);
+        if (bool(root, "fixtureOnly")) {
+            throw protocol("controlled fixture tasks are no longer supported", null);
         }
-        if (runtimeFields == 4) {
-            WorkerContracts.id(fixtureId, "fixtureId");
-            WorkerContracts.digest(fixtureDigest, "fixtureDigest");
-            if (!imageUri.matches("[a-z0-9.-]+(?:/[A-Za-z0-9._-]+)+@sha256:[0-9a-f]{64}")
-                    || !imageUri.endsWith("@sha256:" + fixtureDigest)
-                    || !mainClass.matches("[A-Za-z_$][A-Za-z0-9_$.]{0,254}")) {
-                throw protocol("fixture runtime fields are invalid", null);
-            }
-        }
-        String expectedMode = capability == WorkerCapability.FIXTURE_RUNC
-                ? (lifecycle == TaskLifecycle.QUEUED
-                ? "FIXTURE_RUNC_QUEUED" : "FIXTURE_RUNC_WORKER_MANAGED")
-                : "DYNAMIC_DISABLED";
+        String expectedMode = capability == WorkerCapability.STATIC_ONLY
+                ? "DYNAMIC_DISABLED"
+                : capability.name() + (lifecycle == TaskLifecycle.QUEUED
+                ? "_QUEUED" : "_WORKER_MANAGED");
         if (!expectedMode.equals(string(root, "dynamicExecutionMode"))) {
             throw protocol("dynamic execution mode mismatch", null);
         }
         return new TaskDescriptor(scope, lifecycle, string(root, "targetEntryId"),
                 bool(root, "authorized"), bool(root, "fixtureOnly"), capability,
-                fixtureId, imageUri, mainClass, fixtureDigest,
                 resourceBudget, networkPolicy, lease, instant(root, "updatedAt"));
-    }
-
-    private static Set<String> withoutFixtureFields(Set<String> fields) {
-        java.util.HashSet<String> copy = new java.util.HashSet<>(fields);
-        copy.removeAll(Set.of("fixtureId", "imageUri", "mainClass", "fixtureDigest"));
-        return Set.copyOf(copy);
     }
 
     private static WorkerLease parseLease(Map<String, Object> root) {
@@ -475,9 +474,8 @@ public final class WorkerControlPlaneClient {
 
     public record TaskDescriptor(TaskScope scope, TaskLifecycle lifecycle, String targetEntryId,
                                  boolean authorized, boolean fixtureOnly,
-                                 WorkerCapability requiredCapability, String fixtureId,
-                                 String imageUri, String mainClass, String fixtureDigest,
-                                 ResourceBudget resourceBudget, NetworkPolicy networkPolicy,
+                                 WorkerCapability requiredCapability, ResourceBudget resourceBudget,
+                                 NetworkPolicy networkPolicy,
                                  WorkerLease lease, Instant updatedAt) {
         public TaskDescriptor {
             Objects.requireNonNull(scope, "scope");

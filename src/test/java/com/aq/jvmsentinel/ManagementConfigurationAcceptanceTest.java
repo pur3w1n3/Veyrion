@@ -60,6 +60,17 @@ public final class ManagementConfigurationAcceptanceTest {
                     "DELETE", "", bootstrap).statusCode() == 204,
                     "loopback provider cleanup");
 
+            HttpResponse<String> lanOpenAi = send(client, uri(server, "/providers"), "POST",
+                    "{\"name\":\"LAN OpenAI\",\"kind\":\"OPENAI_CHAT\","
+                            + "\"baseUrl\":\"http://192.168.1.10:3000/v1\",\"model\":\"lan-model\","
+                            + "\"apiKey\":\"lan-secret\"}", bootstrap);
+            check(lanOpenAi.statusCode() == 201 && !lanOpenAi.body().contains("lan-secret"),
+                    "explicit LAN HTTP provider is accepted without echoing its credential");
+            String lanProviderId = text(ok(lanOpenAi), "providerId");
+            check(send(client, uri(server, "/providers/" + lanProviderId),
+                    "DELETE", "", bootstrap).statusCode() == 204,
+                    "LAN HTTP provider cleanup");
+
             String endpointSecret = "userinfo-secret-must-not-echo";
             HttpResponse<String> invalidEndpoint = send(client, uri(server, "/providers"), "POST",
                     "{\"name\":\"bad\",\"kind\":\"OPENAI_COMPATIBLE\","
@@ -109,6 +120,18 @@ public final class ManagementConfigurationAcceptanceTest {
             check(job.get("stages") instanceof List<?> stages && stages.size() == 1,
                     "AI job contains only its requested, versioned role stage");
             check(!job.toString().contains("VERIFIED"), "AI job never fabricates VERIFIED output");
+            URI eventUri = uri(server, "/ai-jobs/" + jobId + "/events");
+            check(send(client, eventUri, "GET", "", server.workerToken()).statusCode() == 401,
+                    "Worker token is rejected by the AI job event route");
+            Map<String, Object> emptyEvents = ok(send(client, eventUri, "GET", "", viewerPat));
+            check(jobId.equals(emptyEvents.get("aiJobId"))
+                            && projectId.equals(emptyEvents.get("projectId"))
+                            && emptyEvents.get("aiJobEvents") instanceof List<?> events
+                            && events.isEmpty(),
+                    "AI job event response is authenticated and explicitly project scoped");
+            check(send(client, uri(server, "/ai-jobs/missing/events"),
+                    "GET", "", bootstrap).statusCode() == 404,
+                    "AI job event route rejects an unknown job");
 
             Map<String, Object> audits = ok(send(client, uri(server,
                     "/projects/" + projectId + "/audit-events"), "GET", "", bootstrap));
@@ -121,6 +144,14 @@ public final class ManagementConfigurationAcceptanceTest {
         }
 
         assertSecretAbsent(root, secret);
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + database);
+             var statement = connection.createStatement()) {
+            statement.executeUpdate("DROP TABLE ai_job_events");
+            check(statement.executeUpdate("DELETE FROM schema_migrations WHERE version=5") == 1,
+                    "V005 is removed to emulate an existing V004 installation");
+            check(statement.executeUpdate("UPDATE ai_jobs SET status='FAILED', stop_reason='HTTP_500'") == 1,
+                    "legacy fixture represents a failed job without detailed event rows");
+        }
         try (ControlPlaneServer restarted = new ControlPlaneServer(root, 0, bootstrap, database).start()) {
             Map<String, Object> providers = ok(send(client, uri(restarted, "/providers"),
                     "GET", "", bootstrap));
@@ -136,6 +167,23 @@ public final class ManagementConfigurationAcceptanceTest {
                     "GET", "", bootstrap));
             check(jobId.equals(text(first((List<?>) jobs.get("aiJobs")), "aiJobId")),
                     "AI job survives restart");
+            Map<String, Object> migratedEvents = ok(send(client,
+                    uri(restarted, "/ai-jobs/" + jobId + "/events"),
+                    "GET", "", bootstrap));
+            check(jobId.equals(migratedEvents.get("aiJobId"))
+                            && projectId.equals(migratedEvents.get("projectId")),
+                    "migrated AI job event envelope retains job and project scope");
+            Map<?, ?> migratedEvent = first((List<?>) migratedEvents.get("aiJobEvents"));
+            check(migratedEvent.get("sequence") instanceof Number sequence
+                            && sequence.longValue() == 1
+                            && jobId.equals(migratedEvent.get("aiJobId"))
+                            && projectId.equals(migratedEvent.get("projectId"))
+                            && "MIGRATED_SNAPSHOT".equals(migratedEvent.get("stage"))
+                            && "FAILED".equals(migratedEvent.get("status"))
+                            && migratedEvent.get("failureDiagnostic") instanceof String diagnostic
+                            && diagnostic.contains("HTTP_500")
+                            && diagnostic.contains("provider response body was not retained"),
+                    "failed V004 jobs receive one ordered snapshot with a clear retained-data diagnostic");
             Map<String, Object> audits = ok(send(client, uri(restarted, "/audit-events"),
                     "GET", "", bootstrap));
             check(!((List<?>) audits.get("auditEvents")).isEmpty(), "global audit survives restart");

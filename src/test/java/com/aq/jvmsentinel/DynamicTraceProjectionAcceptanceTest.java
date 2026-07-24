@@ -29,10 +29,10 @@ public final class DynamicTraceProjectionAcceptanceTest {
             "{\"schemaVersion\":1,\"sequence\":0,\"eventType\":\"AGENT_STARTED\","
                     + "\"provenanceKind\":\"RUNTIME_OBSERVED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
                     + "\"class\":\"\",\"method\":\"premain\",\"timestamp\":\"2026-07-24T00:00:00Z\","
-                    + "\"thread\":\"main\",\"detail\":{\"mode\":\"fixture\"}}\n"
+                    + "\"thread\":\"main\",\"detail\":{\"mode\":\"test\"}}\n"
                     + "{\"schemaVersion\":1,\"sequence\":1,\"eventType\":\"JDBC\","
                     + "\"provenanceKind\":\"APPLICATION_REPORTED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
-                    + "\"class\":\"fixture.Repository\",\"method\":\"query\",\"timestamp\":\"2026-07-24T00:00:01Z\","
+                    + "\"class\":\"sample.Repository\",\"method\":\"query\",\"timestamp\":\"2026-07-24T00:00:01Z\","
                     + "\"thread\":\"main\",\"detail\":{\"operation\":\"select\"}}\n";
     private static final String EXTERNAL_JSONL =
             "{\"schemaVersion\":1,\"sequence\":0,\"eventType\":\"AGENT_STARTED\","
@@ -49,9 +49,6 @@ public final class DynamicTraceProjectionAcceptanceTest {
                     + "\"targetMethod\":\"send\",\"instructionOrdinal\":\"0\"}}\n";
 
     public static void main(String[] args) throws Exception {
-        // Runs the real public dashboard/path/evidence HTTP loop with its mock OpenSandbox backend.
-        FixtureDynamicLoopAcceptanceTest.main(args);
-
         Clock clock = Clock.fixed(Instant.parse("2026-07-24T00:00:10Z"), ZoneOffset.UTC);
         InMemoryTraceStore traces = new InMemoryTraceStore(clock);
         InMemoryTaskCoordinator tasks = new InMemoryTaskCoordinator(clock, traces);
@@ -87,7 +84,7 @@ public final class DynamicTraceProjectionAcceptanceTest {
         check("DYNAMIC_SUSPECTED".equals(projection.path().verificationStatus())
                         && projection.path().steps().stream()
                         .noneMatch(step -> "VERIFIED".equals(step.verificationStatus())),
-                "completed fixture remains DYNAMIC_SUSPECTED");
+                "completed dynamic task remains DYNAMIC_SUSPECTED");
 
         WorkerTaskSpec externalSpec = new WorkerTaskSpec(
                 1, "project-1", DIGEST, "scan-external", "task-external", "entry-1",
@@ -147,9 +144,9 @@ public final class DynamicTraceProjectionAcceptanceTest {
 
     private static WorkerTaskSpec spec(String scanId, String taskId) {
         return new WorkerTaskSpec(1, "project-1", DIGEST, scanId, taskId, "entry-1",
-                true, true, new ResourceBudget(60, 30_000, 128 * 1024 * 1024L,
+                true, false, new ResourceBudget(60, 30_000, 128 * 1024 * 1024L,
                 64 * 1024 * 1024L, 64 * 1024), NetworkPolicy.denyAll(),
-                WorkerCapability.FIXTURE_RUNC);
+                WorkerCapability.TRUSTED_DOCKER);
     }
 
     private static TaskSnapshot start(InMemoryTaskCoordinator tasks, WorkerTaskSpec spec, String key) {

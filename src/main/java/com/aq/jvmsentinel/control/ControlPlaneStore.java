@@ -319,6 +319,22 @@ public class ControlPlaneStore {
         return persistence.findAiJob(jobId).orElseThrow(() -> new MissingRecordException("AI job not found"));
     }
 
+    public SQLiteControlPlanePersistence.AiJobEventData appendAiJobEvent(
+            SQLiteControlPlanePersistence.AiJobEventData event) {
+        requirePersistentManagement();
+        SQLiteControlPlanePersistence.AiJobData job = requireAiJob(event.aiJobId());
+        if (!job.workspaceId().equals(event.workspaceId())
+                || !job.projectId().equals(event.projectId())) {
+            throw new IllegalArgumentException("AI job event scope mismatch");
+        }
+        return persistence.appendAiJobEvent(event);
+    }
+
+    public List<SQLiteControlPlanePersistence.AiJobEventData> aiJobEvents(String jobId) {
+        requireAiJob(jobId);
+        return persistence.listAiJobEvents(jobId);
+    }
+
     public SQLiteControlPlanePersistence.AiJobData cancelAiJob(String jobId, String actorId, String now) {
         SQLiteControlPlanePersistence.AiJobData existing = requireAiJob(jobId);
         if ("COMPLETED".equals(existing.status()) || "FAILED".equals(existing.status())

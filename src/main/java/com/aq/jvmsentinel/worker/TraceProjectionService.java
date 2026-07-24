@@ -12,7 +12,7 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Strict, read-only projection of completed trusted-fixture traces into public DTOs.
+ * Strict, read-only projection of completed authorized artifact traces into public DTOs.
  * It never changes task state and never creates VERIFIED evidence.
  */
 public final class TraceProjectionService {
@@ -109,7 +109,7 @@ public final class TraceProjectionService {
                 snapshot.scope().artifactDigest(), snapshot.scope().scanId(),
                 "path-dynamic-" + snapshot.scope().taskId(), snapshot.spec().targetEntryId(),
                 "DYNAMIC_SUSPECTED", ApiDtos.MOCK, List.of(), "COMPLETED",
-                refs, steps, snapshot.scope().taskId(), snapshot.spec().fixtureOnly(),
+                refs, steps, snapshot.scope().taskId(), false,
                 snapshot.spec().requiredCapability().name(),
                 snapshot.spec().requiredCapability().name() + "_COMPLETED");
         return new Projection(snapshot.scope(), path, projectedEvidence, snapshot.updatedAt().toString());
@@ -142,16 +142,15 @@ public final class TraceProjectionService {
     private static void requireEligible(TaskSnapshot snapshot) {
         Objects.requireNonNull(snapshot, "snapshot");
         WorkerTaskSpec spec = snapshot.spec();
-        boolean fixtureEligible = spec.fixtureOnly()
-                && spec.requiredCapability() == WorkerCapability.FIXTURE_RUNC;
-        boolean externalEligible = !spec.fixtureOnly()
-                && (spec.requiredCapability() == WorkerCapability.HARDENED_GVISOR
+        boolean externalEligible = spec.authorized()
+                && (spec.requiredCapability() == WorkerCapability.TRUSTED_DOCKER
+                || spec.requiredCapability() == WorkerCapability.HARDENED_GVISOR
                 || spec.requiredCapability() == WorkerCapability.HARDENED_KATA);
         if (snapshot.lifecycle() != TaskLifecycle.COMPLETED
                 || snapshot.stopReason() != StopReason.COMPLETED
-                || !(fixtureEligible || externalEligible)) {
+                || !externalEligible) {
             throw new IllegalArgumentException(
-                    "only completed fixture or hardened external tasks may be projected");
+                    "only completed authorized artifact tasks may be projected");
         }
     }
 

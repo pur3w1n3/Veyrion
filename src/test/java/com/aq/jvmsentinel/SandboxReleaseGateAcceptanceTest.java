@@ -38,9 +38,9 @@ public final class SandboxReleaseGateAcceptanceTest {
         reject(() -> gate.evaluate(attestation(WorkerCapability.HARDENED_GVISOR,
                         evidence(NOW.minusSeconds(31L * 24 * 60 * 60))), NOW),
                 "stale evidence");
-        reject(() -> gate.evaluate(attestation(WorkerCapability.FIXTURE_RUNC,
+        reject(() -> gate.evaluate(attestation(WorkerCapability.TRUSTED_DOCKER,
                         evidence(NOW.minusSeconds(60))), NOW),
-                "ordinary runc");
+                "trusted Docker runc");
 
         System.out.println("SandboxReleaseGateAcceptanceTest: PASS");
     }

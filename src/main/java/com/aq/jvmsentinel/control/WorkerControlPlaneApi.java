@@ -143,10 +143,6 @@ final class WorkerControlPlaneApi implements HttpHandler {
         String key = requireIdempotencyKey(exchange);
         Map<String, Object> body = readObject(exchange);
         WorkerTaskSpec spec = taskSpec(body);
-        if (spec.requiredCapability() == WorkerCapability.FIXTURE_RUNC) {
-            throw new WorkerApiException(403, "FIXTURE_ENQUEUE_FORBIDDEN",
-                    "fixture tasks must be created by the trusted Control Plane catalog");
-        }
         TaskSnapshot result = enqueueFromControlPlane(spec, key);
         publish(result.scope(), "ScanCreated", key, Map.of(
                 "status", result.lifecycle().name(),
@@ -160,13 +156,13 @@ final class WorkerControlPlaneApi implements HttpHandler {
         validateExternalScope(spec.scope());
         TaskSnapshot result = coordinator.enqueue(spec, key);
         scopes.putIfAbsent(result.scope(), Boolean.TRUE);
-        if (spec.requiredCapability() == WorkerCapability.FIXTURE_RUNC) {
+        if (spec.requiredCapability() != WorkerCapability.STATIC_ONLY) {
             publish(result.scope(), "DynamicTaskQueued", key, Map.of(
                     "status", result.lifecycle().name(),
                     "verificationStatus", "DYNAMIC_SUSPECTED",
-                    "requiredCapability", "FIXTURE_RUNC",
-                    "fixtureOnly", true,
-                    "dynamicExecutionMode", "FIXTURE_RUNC_QUEUED"));
+                    "requiredCapability", spec.requiredCapability().name(),
+                    "fixtureOnly", false,
+                    "dynamicExecutionMode", dynamicExecutionMode(result)));
         }
         return result;
     }
@@ -258,7 +254,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
         }
         byte[] payload;
         try {
-            payload = Base64.getDecoder().decode(requiredText(body, "payloadBase64"));
+            payload = Base64.getDecoder().decode(requiredPayloadBase64(body));
         } catch (IllegalArgumentException invalid) {
             throw new WorkerApiException(400, "INVALID_TRACE_PAYLOAD", "payloadBase64 is invalid");
         }
@@ -290,12 +286,12 @@ final class WorkerControlPlaneApi implements HttpHandler {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("status", snapshot.lifecycle().name());
         payload.put("reason", snapshot.stopReason() == null ? snapshot.lifecycle().name() : snapshot.stopReason().name());
-        boolean fixtureTask = snapshot.spec().requiredCapability() == WorkerCapability.FIXTURE_RUNC;
-        payload.put("verificationStatus", fixtureTask ? "DYNAMIC_SUSPECTED" : "UNREACHED");
+        boolean dynamicTask = snapshot.spec().requiredCapability() != WorkerCapability.STATIC_ONLY;
+        payload.put("verificationStatus", dynamicTask ? "DYNAMIC_SUSPECTED" : "UNREACHED");
         payload.put("dependencyMode", ApiDtos.MOCK);
-        payload.put("fixtureOnly", snapshot.spec().fixtureOnly());
+        payload.put("fixtureOnly", false);
         payload.put("requiredCapability", snapshot.spec().requiredCapability().name());
-        payload.put("dynamicExecutionMode", fixtureTask ? "FIXTURE_RUNC_WORKER_MANAGED" : "DYNAMIC_DISABLED");
+        payload.put("dynamicExecutionMode", dynamicExecutionMode(snapshot));
         payload.put("evidenceRefs", List.of());
         publish(snapshot.scope(), "TaskStopped", key, payload);
         publish(snapshot.scope(), "ScanCompleted", key, payload);
@@ -328,6 +324,10 @@ final class WorkerControlPlaneApi implements HttpHandler {
         TaskScope scope = scope(body, requiredText(body, "taskId"));
         boolean authorized = requiredBoolean(body, "authorized");
         boolean fixtureOnly = optionalBoolean(body, "fixtureOnly", false);
+        if (fixtureOnly || body.containsKey("fixtureId") || body.containsKey("imageUri")
+                || body.containsKey("mainClass") || body.containsKey("fixtureDigest")) {
+            throw new SecurityException("controlled fixture task fields are no longer supported");
+        }
         WorkerCapability capability = enumValue(WorkerCapability.class,
                 optionalText(body, "requiredCapability", "STATIC_ONLY"), "requiredCapability");
         ResourceBudget budget = new ResourceBudget(
@@ -339,9 +339,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
         NetworkMode mode = enumValue(NetworkMode.class, optionalText(body, "networkMode", "DENY"), "networkMode");
         NetworkPolicy network = new NetworkPolicy(mode, stringList(body.get("networkAllowlist"), "networkAllowlist"));
         return new WorkerTaskSpec(CONTRACT_VERSION, scope.projectId(), scope.artifactDigest(), scope.scanId(),
-                scope.taskId(), requiredText(body, "targetEntryId"), authorized, fixtureOnly, budget, network, capability,
-                optionalText(body, "fixtureId", null), optionalText(body, "imageUri", null),
-                optionalText(body, "mainClass", null), optionalText(body, "fixtureDigest", null));
+                scope.taskId(), requiredText(body, "targetEntryId"), authorized, budget, network, capability);
     }
 
     private TaskCheckpoint checkpoint(TaskScope scope, Map<String, Object> body) {
@@ -430,7 +428,8 @@ final class WorkerControlPlaneApi implements HttpHandler {
         result.put("updatedAt", value.updatedAt().toString());
         result.put("targetEntryId", value.spec().targetEntryId());
         result.put("authorized", value.spec().authorized());
-        result.put("fixtureOnly", value.spec().fixtureOnly());
+        // v1 wire compatibility: old clients require this field. It is now invariantly false.
+        result.put("fixtureOnly", false);
         result.put("requiredCapability", value.spec().requiredCapability().name());
         ResourceBudget budget = value.spec().resourceBudget();
         result.put("resourceBudget", Map.of(
@@ -443,12 +442,6 @@ final class WorkerControlPlaneApi implements HttpHandler {
                 "mode", value.spec().networkPolicy().mode().name(),
                 "allowlist", value.spec().networkPolicy().allowlist()));
         result.put("dynamicExecutionMode", dynamicExecutionMode(value));
-        if (value.spec().fixtureId() != null) {
-            result.put("fixtureId", value.spec().fixtureId());
-            result.put("imageUri", value.spec().imageUri());
-            result.put("mainClass", value.spec().mainClass());
-            result.put("fixtureDigest", value.spec().fixtureDigest());
-        }
         result.put("lease", value.lease() == null ? null : leaseMap(value.lease()));
         result.put("checkpoint", value.checkpoint() == null ? null : checkpointMap(value.checkpoint()));
         result.put("stopReason", value.stopReason() == null ? null : value.stopReason().name());
@@ -457,9 +450,9 @@ final class WorkerControlPlaneApi implements HttpHandler {
     }
 
     private static String dynamicExecutionMode(TaskSnapshot snapshot) {
-        if (snapshot.spec().requiredCapability() != WorkerCapability.FIXTURE_RUNC) return "DYNAMIC_DISABLED";
-        return snapshot.lifecycle() == TaskLifecycle.QUEUED
-                ? "FIXTURE_RUNC_QUEUED" : "FIXTURE_RUNC_WORKER_MANAGED";
+        if (snapshot.spec().requiredCapability() == WorkerCapability.STATIC_ONLY) return "DYNAMIC_DISABLED";
+        return snapshot.spec().requiredCapability().name()
+                + (snapshot.lifecycle() == TaskLifecycle.QUEUED ? "_QUEUED" : "_WORKER_MANAGED");
     }
 
     private static Map<String, Object> leaseMap(WorkerLease value) {
@@ -532,6 +525,14 @@ final class WorkerControlPlaneApi implements HttpHandler {
         String result = optionalText(body, name, null);
         if (result == null) throw new IllegalArgumentException(name + " is required");
         return result;
+    }
+
+    private static String requiredPayloadBase64(Map<String, Object> body) {
+        Object value = body.get("payloadBase64");
+        if (!(value instanceof String text) || text.isBlank() || text.length() > MAX_BODY_BYTES) {
+            throw new IllegalArgumentException("payloadBase64 is invalid");
+        }
+        return text;
     }
 
     private static String optionalText(Map<String, Object> body, String name, String fallback) {

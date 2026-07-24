@@ -8,16 +8,18 @@ import java.util.Objects;
 
 /** Safe creation request: the public shape intentionally has no host mounts, environment, or credentials. */
 public record SandboxRequest(String image, List<String> entrypoint, int timeoutSeconds,
-                             ResourceBudget resourceBudget, boolean fixtureOnly,
-                             WorkerCapability requiredCapability,
+                             ResourceBudget resourceBudget, WorkerCapability requiredCapability,
                              List<ReadOnlyArtifactMount> readOnlyArtifacts,
                              long tmpfsBytes) {
-    /** Compatibility constructor for trusted fixtures, which do not mount external artifacts. */
+    /**
+     * v1 source compatibility. The removed fixture discriminator may only be false.
+     */
     public SandboxRequest(String image, List<String> entrypoint, int timeoutSeconds,
                           ResourceBudget resourceBudget, boolean fixtureOnly,
-                          WorkerCapability requiredCapability) {
-        this(image, entrypoint, timeoutSeconds, resourceBudget, fixtureOnly, requiredCapability,
-                List.of(), resourceBudget.maxDiskBytes());
+                          WorkerCapability requiredCapability,
+                          List<ReadOnlyArtifactMount> readOnlyArtifacts, long tmpfsBytes) {
+        this(image, entrypoint, timeoutSeconds, rejectFixture(fixtureOnly, resourceBudget),
+                requiredCapability, readOnlyArtifacts, tmpfsBytes);
     }
 
     public SandboxRequest {
@@ -40,15 +42,23 @@ public record SandboxRequest(String image, List<String> entrypoint, int timeoutS
         if (requiredCapability == WorkerCapability.STATIC_ONLY) {
             throw new IllegalArgumentException("STATIC_ONLY cannot create a sandbox");
         }
-        if (!fixtureOnly && requiredCapability != WorkerCapability.HARDENED_GVISOR
-                && requiredCapability != WorkerCapability.HARDENED_KATA) {
-            throw new IllegalArgumentException("external artifacts require a hardened runtime");
+        if (requiredCapability != WorkerCapability.HARDENED_GVISOR
+                && requiredCapability != WorkerCapability.HARDENED_KATA
+                && requiredCapability != WorkerCapability.TRUSTED_DOCKER) {
+            throw new IllegalArgumentException("external artifacts require an approved artifact runtime");
         }
-        if (requiredCapability == WorkerCapability.FIXTURE_RUNC && !fixtureOnly) {
-            throw new IllegalArgumentException("FIXTURE_RUNC is restricted to trusted fixtures");
+        if (readOnlyArtifacts.size() != 1) {
+            throw new IllegalArgumentException("dynamic artifact execution requires one read-only artifact mount");
         }
-        if (fixtureOnly && !readOnlyArtifacts.isEmpty()) {
-            throw new IllegalArgumentException("fixture tasks cannot mount external artifacts");
-        }
+    }
+
+    /** v1 wire/source compatibility; fixture execution has been removed. */
+    public boolean fixtureOnly() {
+        return false;
+    }
+
+    private static ResourceBudget rejectFixture(boolean fixtureOnly, ResourceBudget budget) {
+        if (fixtureOnly) throw new IllegalArgumentException("controlled fixture sandboxes are no longer supported");
+        return budget;
     }
 }

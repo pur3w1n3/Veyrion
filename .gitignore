@@ -17,3 +17,4 @@ frontend/.env*
 
 # Local Veyrion databases and encryption keys
 samples/.veyrion/
+sandbox-pack/.runtime/

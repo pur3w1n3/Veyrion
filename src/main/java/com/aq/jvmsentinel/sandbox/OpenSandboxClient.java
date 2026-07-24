@@ -20,7 +20,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /** Dependency-free, fail-closed OpenSandbox lifecycle and Execd protocol adapter. */
-public final class OpenSandboxClient {
+public final class OpenSandboxClient implements SandboxRuntimeClient {
     private static final Set<String> SAFE_ENDPOINT_HEADERS = Set.of(
             "x-opensandbox-access-token", "x-opensandbox-endpoint-token");
     private final OpenSandboxConfig config;
@@ -41,7 +41,7 @@ public final class OpenSandboxClient {
         java.util.Objects.requireNonNull(request, "request");
         // Attestation is deployment-owned configuration, so reject missing capability before creating anything.
         config.runtimeAttestation().require(config, request);
-        if (!request.fixtureOnly() && request.readOnlyArtifacts().size() != 1) {
+        if (request.readOnlyArtifacts().size() != 1) {
             throw OpenSandboxException.capability(
                     "external artifact requires one digest-pinned read-only mount");
         }
@@ -150,7 +150,6 @@ public final class OpenSandboxClient {
         extensions.putAll(Map.of(
                 "veyrion.protocolVersion", config.requiredProtocolVersion(),
                 "veyrion.requiredCapability", request.requiredCapability().name(),
-                "veyrion.fixtureOnly", Boolean.toString(request.fixtureOnly()),
                 "veyrion.maxCpuMillis", Long.toString(budget.maxCpuMillis()),
                 "veyrion.maxTraceBytes", Long.toString(budget.maxTraceBytes()),
                 "veyrion.readOnlyRootFilesystem", "true",
@@ -173,7 +172,8 @@ public final class OpenSandboxClient {
     }
 
     private ExecdEndpoint resolveExecdEndpoint(String sandboxId) {
-        Response response = sendLifecycle("GET", "sandboxes/" + sandboxId + "/endpoints/44772", null);
+        Response response = sendLifecycle("GET",
+                "sandboxes/" + sandboxId + "/endpoints/44772?use_server_proxy=true", null);
         requireStatus(response, 200);
         try {
             Map<String, Object> root = JsonCodec.parseObject(response.body());
