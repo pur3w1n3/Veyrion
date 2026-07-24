@@ -415,6 +415,16 @@ final class WorkerControlPlaneApi implements HttpHandler {
         result.put("authorized", value.spec().authorized());
         result.put("fixtureOnly", value.spec().fixtureOnly());
         result.put("requiredCapability", value.spec().requiredCapability().name());
+        ResourceBudget budget = value.spec().resourceBudget();
+        result.put("resourceBudget", Map.of(
+                "maxWallClockSeconds", budget.maxWallClockSeconds(),
+                "maxCpuMillis", budget.maxCpuMillis(),
+                "maxMemoryBytes", budget.maxMemoryBytes(),
+                "maxDiskBytes", budget.maxDiskBytes(),
+                "maxTraceBytes", budget.maxTraceBytes()));
+        result.put("networkPolicy", Map.of(
+                "mode", value.spec().networkPolicy().mode().name(),
+                "allowlist", value.spec().networkPolicy().allowlist()));
         result.put("dynamicExecutionMode", dynamicExecutionMode(value));
         if (value.spec().fixtureId() != null) {
             result.put("fixtureId", value.spec().fixtureId());
