@@ -2,7 +2,7 @@
 param(
     [string]$Artifacts = (Join-Path $PSScriptRoot 'samples'),
     [ValidateRange(1, 65535)]
-    [int]$BackendPort = 8080,
+    [int]$BackendPort = 18080,
     [ValidateRange(1, 65535)]
     [int]$FrontendPort = 5173,
     [string]$JavaHome = $env:JAVA_HOME
@@ -72,7 +72,15 @@ if ($LASTEXITCODE -ne 0) {
     throw "Maven build failed with exit code $LASTEXITCODE"
 }
 
-& java -cp 'target/classes' com.aq.jvmsentinel.dev.DevLauncherMain `
+& mvn -q '-Dmaven.repo.local=.m2' dependency:build-classpath '-Dmdep.outputFile=target/runtime-classpath.txt'
+if ($LASTEXITCODE -ne 0) {
+    throw "Runtime classpath resolution failed with exit code $LASTEXITCODE"
+}
+$runtimeDependencies = (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'target\runtime-classpath.txt')).Trim()
+$applicationClasses = Join-Path $PSScriptRoot 'target\classes'
+$runtimeClasspath = $applicationClasses + [System.IO.Path]::PathSeparator + $runtimeDependencies
+
+& $javaExecutable -cp $runtimeClasspath com.aq.jvmsentinel.dev.DevLauncherMain `
     --workspace $workspace `
     --artifacts $artifactPath `
     --backend-port $BackendPort `

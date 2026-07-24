@@ -12,6 +12,7 @@ public final class ControlPlaneMain {
 
     public static void main(String[] args) throws Exception {
         Path root = null;
+        Path database = null;
         int port = 0;
         String token = ControlPlaneServer.DEFAULT_TOKEN;
         for (int i = 0; i < args.length; i++) {
@@ -29,14 +30,19 @@ public final class ControlPlaneMain {
                     if (++i >= args.length) usage();
                     token = args[i];
                 }
+                case "--database" -> {
+                    if (++i >= args.length) usage();
+                    database = Path.of(args[i]);
+                }
                 case "--help", "-h" -> usage();
                 default -> usage();
             }
         }
         if (root == null || !Files.isDirectory(root)) usage();
+        if (database == null) database = root.resolve(".veyrion").resolve("control-plane.db");
         TrustedFixtureCatalog fixtureCatalog = TrustedFixtureCatalog.fromEnvironment(System.getenv());
         try (ControlPlaneServer server =
-                     new ControlPlaneServer("127.0.0.1", port, root, token, fixtureCatalog).start()) {
+                     new ControlPlaneServer("127.0.0.1", port, root, token, fixtureCatalog, database).start()) {
             System.out.println("Control Plane listening at " + server.baseUri());
             System.out.println("Mutation token is configured locally; imported artifacts are metadata-only in this MVP.");
             new CountDownLatch(1).await();
@@ -44,7 +50,8 @@ public final class ControlPlaneMain {
     }
 
     private static void usage() {
-        System.err.println("usage: ControlPlaneMain --root <allowed-artifact-directory> [--port <0-65535>] [--token <local-token>]");
+        System.err.println("usage: ControlPlaneMain --root <allowed-artifact-directory> "
+                + "[--database <path-under-root>] [--port <0-65535>] [--token <local-token>]");
         System.exit(2);
     }
 }

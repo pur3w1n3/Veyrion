@@ -49,6 +49,25 @@ public final class DevLauncherAcceptanceTest {
                     "created project is stored by the Control Plane");
         }
 
+        Path database = artifacts.resolve(".veyrion").resolve("control-plane.db");
+        String persistentProjectId;
+        try (ControlPlaneServer server =
+                     new ControlPlaneServer(artifacts, 0, "first-launch-token", database).start()) {
+            persistentProjectId = DevLauncherMain.loadOrCreateProject(
+                    server.baseUri(), "first-launch-token");
+        }
+        try (ControlPlaneServer restarted =
+                     new ControlPlaneServer(artifacts, 0, "second-launch-token", database).start()) {
+            String restored = DevLauncherMain.loadOrCreateProject(
+                    restarted.baseUri(), "second-launch-token");
+            check(restored.equals(persistentProjectId),
+                    "launcher reuses the persistent development project");
+            check(restarted.store().authenticateOperator("second-launch-token") != null,
+                    "new process token rotates the persistent bootstrap credential");
+            check(restarted.store().authenticateOperator("first-launch-token") == null,
+                    "prior process token is revoked on restart");
+        }
+
         System.out.println("DevLauncherAcceptanceTest: PASS");
     }
 

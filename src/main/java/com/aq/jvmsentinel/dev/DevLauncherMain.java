@@ -2,6 +2,7 @@ package com.aq.jvmsentinel.dev;
 
 import com.aq.jvmsentinel.control.ControlPlaneServer;
 import com.aq.jvmsentinel.control.JsonCodec;
+import com.aq.jvmsentinel.fixture.TrustedFixtureCatalog;
 
 import java.io.IOException;
 import java.net.URI;
@@ -28,6 +29,7 @@ import java.util.concurrent.TimeUnit;
  */
 public final class DevLauncherMain {
     private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
+    private static final String DEVELOPMENT_PROJECT_NAME = "Veyrion Local Development";
 
     private DevLauncherMain() { }
 
@@ -35,10 +37,12 @@ public final class DevLauncherMain {
         Configuration config = Configuration.parse(args, Path.of("").toAbsolutePath());
         Files.createDirectories(config.artifactRoot());
         String token = randomToken();
+        Path database = config.artifactRoot().resolve(".veyrion").resolve("control-plane.db");
 
         try (ControlPlaneServer server = new ControlPlaneServer(
-                "127.0.0.1", config.backendPort(), config.artifactRoot(), token).start()) {
-            String projectId = createProject(server.baseUri(), token);
+                "127.0.0.1", config.backendPort(), config.artifactRoot(), token,
+                TrustedFixtureCatalog.fromEnvironment(System.getenv()), database).start()) {
+            String projectId = loadOrCreateProject(server.baseUri(), token);
             Process frontend = startFrontend(config, server.baseUri(), projectId, token);
             Runtime.getRuntime().addShutdownHook(new Thread(
                     () -> stop(frontend), "veyrion-dev-shutdown"));
@@ -66,7 +70,7 @@ public final class DevLauncherMain {
                 .header("X-Sentinel-Authorization", token)
                 .header("Idempotency-Key", "dev-launcher-project")
                 .POST(HttpRequest.BodyPublishers.ofString(
-                        JsonCodec.stringify(Map.of("name", "Veyrion Local Development")),
+                        JsonCodec.stringify(Map.of("name", DEVELOPMENT_PROJECT_NAME)),
                         StandardCharsets.UTF_8))
                 .build();
         try {
@@ -85,6 +89,45 @@ public final class DevLauncherMain {
                 throw new IllegalStateException("Control Plane returned an invalid projectId");
             }
             return projectId;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("project bootstrap interrupted", interrupted);
+        } catch (IOException failure) {
+            throw new IllegalStateException("project bootstrap transport failed", failure);
+        }
+    }
+
+    static String loadOrCreateProject(URI apiBaseUri, String token) {
+        Objects.requireNonNull(apiBaseUri, "apiBaseUri");
+        HttpRequest request = HttpRequest.newBuilder(
+                        URI.create(apiBaseUri.toString() + "/projects"))
+                .timeout(HTTP_TIMEOUT)
+                .header("Accept", "application/json")
+                .GET()
+                .build();
+        try {
+            HttpResponse<String> response = HttpClient.newBuilder()
+                    .connectTimeout(HTTP_TIMEOUT)
+                    .followRedirects(HttpClient.Redirect.NEVER)
+                    .build()
+                    .send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new IllegalStateException("Control Plane project listing failed with HTTP "
+                        + response.statusCode());
+            }
+            Object projects = JsonCodec.parseObject(response.body()).get("projects");
+            if (!(projects instanceof List<?> values)) {
+                throw new IllegalStateException("Control Plane returned an invalid project list");
+            }
+            for (Object value : values) {
+                if (value instanceof Map<?, ?> project
+                        && DEVELOPMENT_PROJECT_NAME.equals(project.get("name"))
+                        && project.get("projectId") instanceof String projectId
+                        && projectId.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) {
+                    return projectId;
+                }
+            }
+            return createProject(apiBaseUri, token);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("project bootstrap interrupted", interrupted);

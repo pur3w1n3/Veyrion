@@ -22,6 +22,12 @@ import com.aq.jvmsentinel.policy.NetworkMode;
 import com.aq.jvmsentinel.policy.PolicyValidator;
 import com.aq.jvmsentinel.policy.PolicyViolationException;
 import com.aq.jvmsentinel.policy.ScanPolicy;
+import com.aq.jvmsentinel.provider.AgentRole;
+import com.aq.jvmsentinel.provider.ProviderContracts.ProviderKind;
+import com.aq.jvmsentinel.security.auth.AuthContext;
+import com.aq.jvmsentinel.security.auth.Authorizer;
+import com.aq.jvmsentinel.security.auth.OperatorRole;
+import com.aq.jvmsentinel.security.auth.Permission;
 import com.aq.jvmsentinel.worker.InMemoryTaskCoordinator;
 import com.aq.jvmsentinel.worker.InMemoryTraceStore;
 import com.aq.jvmsentinel.worker.NetworkPolicy;
@@ -96,6 +102,7 @@ public final class ControlPlaneServer implements AutoCloseable {
     private final TraceProjectionService traceProjectionService;
     private final WorkerControlPlaneApi workerApi;
     private final Clock clock;
+    private final Authorizer authorizer = new Authorizer();
     private volatile HttpServer server;
     private volatile ExecutorService executor;
 
@@ -115,6 +122,13 @@ public final class ControlPlaneServer implements AutoCloseable {
         this(new InetSocketAddress("127.0.0.1", port), new ArtifactRegistry(allowedRoot),
                 mutationToken == null || mutationToken.isBlank() ? DEFAULT_TOKEN : mutationToken,
                 Clock.systemUTC(), new ControlPlaneStore(), new SseHub());
+    }
+
+    /** Loopback constructor with explicitly controlled SQLite persistence. */
+    public ControlPlaneServer(Path allowedRoot, int port, String mutationToken, Path databasePath) {
+        this(new InetSocketAddress("127.0.0.1", port), new ArtifactRegistry(allowedRoot),
+                mutationToken == null || mutationToken.isBlank() ? DEFAULT_TOKEN : mutationToken,
+                Clock.systemUTC(), ControlPlaneStore.sqlite(databasePath, allowedRoot), new SseHub());
     }
 
     public ControlPlaneServer(InetSocketAddress bindAddress, Path allowedRoot) {
@@ -142,6 +156,14 @@ public final class ControlPlaneServer implements AutoCloseable {
                 Clock.systemUTC(), new ControlPlaneStore(), new SseHub(), fixtureCatalog);
     }
 
+    public ControlPlaneServer(String host, int port, Path allowedRoot, String mutationToken,
+                              TrustedFixtureCatalog fixtureCatalog, Path databasePath) {
+        this(new InetSocketAddress(Objects.requireNonNull(host, "host"), port),
+                new ArtifactRegistry(allowedRoot),
+                mutationToken == null || mutationToken.isBlank() ? DEFAULT_TOKEN : mutationToken,
+                Clock.systemUTC(), ControlPlaneStore.sqlite(databasePath, allowedRoot), new SseHub(), fixtureCatalog);
+    }
+
     public ControlPlaneServer(InetSocketAddress bindAddress, ArtifactRegistry artifactRegistry,
                               String mutationToken, Clock clock, ControlPlaneStore store,
                               SseHub sseHub) {
@@ -165,6 +187,9 @@ public final class ControlPlaneServer implements AutoCloseable {
         this.traceProjectionService = new TraceProjectionService(this.traceStore);
         this.workerApi = new WorkerControlPlaneApi(this.workerToken, this.clock, this.store, this.sseHub,
                 this.traceStore, this.taskCoordinator, this.traceProjectionService);
+        if ("SQLITE".equals(this.store.persistenceMode())) {
+            this.store.bootstrapOperator(this.mutationToken, Instant.now(this.clock).toString());
+        }
     }
 
     /** Starts listening; calling start more than once is idempotent. */
@@ -226,7 +251,7 @@ public final class ControlPlaneServer implements AutoCloseable {
             addCorsHeaders(exchange);
             try {
                 if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
-                    exchange.getResponseHeaders().set("Allow", "GET,POST,OPTIONS");
+                    exchange.getResponseHeaders().set("Allow", "GET,POST,PATCH,DELETE,OPTIONS");
                     sendEmpty(exchange, 204);
                     return;
                 }
@@ -275,16 +300,25 @@ public final class ControlPlaneServer implements AutoCloseable {
             sendJson(exchange, 200, health());
             return;
         }
-        if (path.size() == 1 && "projects".equals(path.get(0)) && "POST".equals(method)) {
-            requireMutation(exchange);
-            createProject(exchange);
-            return;
+        if (path.size() == 1 && "projects".equals(path.get(0))) {
+            if ("POST".equals(method)) { requirePermission(exchange, Permission.MANAGE_PROJECTS); createProject(exchange); return; }
+            if ("GET".equals(method)) { listProjects(exchange); return; }
         }
         if (path.size() == 2 && "projects".equals(path.get(0))) {
             if ("GET".equals(method)) { sendProject(exchange, path.get(1)); return; }
+            if ("PATCH".equals(method)) {
+                requirePermission(exchange, Permission.MANAGE_PROJECTS);
+                updateProject(exchange, path.get(1));
+                return;
+            }
+            if ("DELETE".equals(method)) {
+                requirePermission(exchange, Permission.MANAGE_PROJECTS);
+                deleteProject(exchange, path.get(1));
+                return;
+            }
         }
         if (path.size() == 3 && "projects".equals(path.get(0)) && "artifacts".equals(path.get(2))) {
-            if ("POST".equals(method)) { requireMutation(exchange); registerArtifact(exchange, path.get(1)); return; }
+            if ("POST".equals(method)) { requirePermission(exchange, Permission.MANAGE_PROJECTS); registerArtifact(exchange, path.get(1)); return; }
             if ("GET".equals(method)) { listArtifacts(exchange, path.get(1)); return; }
         }
         if (path.size() == 3 && "projects".equals(path.get(0)) && "entries".equals(path.get(2))
@@ -293,7 +327,7 @@ public final class ControlPlaneServer implements AutoCloseable {
             return;
         }
         if (path.size() == 3 && "projects".equals(path.get(0)) && "scans".equals(path.get(2))) {
-            if ("POST".equals(method)) { requireMutation(exchange); createScan(exchange, path.get(1)); return; }
+            if ("POST".equals(method)) { requirePermission(exchange, Permission.RUN_SCANS); createScan(exchange, path.get(1)); return; }
             if ("GET".equals(method)) { listScans(exchange, path.get(1)); return; }
         }
         if (path.size() == 3 && "projects".equals(path.get(0)) && "dashboard".equals(path.get(2))
@@ -316,7 +350,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         }
         if (path.size() == 3 && "scans".equals(path.get(0)) && "dynamic-tasks".equals(path.get(2))
                 && "POST".equals(method)) {
-            requireMutation(exchange);
+            requirePermission(exchange, Permission.RUN_SCANS);
             createDynamicTask(exchange, path.get(1));
             return;
         }
@@ -345,7 +379,68 @@ public final class ControlPlaneServer implements AutoCloseable {
             return;
         }
         if (path.size() == 3 && "findings".equals(path.get(0)) && "replay".equals(path.get(2))) {
-            if ("POST".equals(method)) { requireMutation(exchange); replayFinding(exchange, path.get(1)); return; }
+            if ("POST".equals(method)) { requirePermission(exchange, Permission.RUN_SCANS); replayFinding(exchange, path.get(1)); return; }
+        }
+        if (path.size() == 1 && "operators".equals(path.get(0))) {
+            requirePermission(exchange, Permission.MANAGE_OPERATOR_ACCESS);
+            if ("GET".equals(method)) { listOperators(exchange); return; }
+            if ("POST".equals(method)) { createOperator(exchange); return; }
+        }
+        if (path.size() == 2 && "operators".equals(path.get(0)) && "PATCH".equals(method)) {
+            requirePermission(exchange, Permission.MANAGE_OPERATOR_ACCESS);
+            updateOperator(exchange, path.get(1));
+            return;
+        }
+        if (path.size() == 1 && "providers".equals(path.get(0))) {
+            requirePermission(exchange, "GET".equals(method)
+                    ? Permission.READ_SECURITY_CONFIGURATION : Permission.MANAGE_PROVIDERS);
+            if ("GET".equals(method)) { listProviders(exchange); return; }
+            if ("POST".equals(method)) { createProvider(exchange); return; }
+        }
+        if (path.size() == 2 && "providers".equals(path.get(0))) {
+            requirePermission(exchange, Permission.MANAGE_PROVIDERS);
+            if ("PATCH".equals(method)) { updateProvider(exchange, path.get(1)); return; }
+            if ("DELETE".equals(method)) { deleteProvider(exchange, path.get(1)); return; }
+        }
+        if (path.size() == 3 && "projects".equals(path.get(0))
+                && "role-assignments".equals(path.get(2)) && "GET".equals(method)) {
+            requirePermission(exchange, Permission.READ_SECURITY_CONFIGURATION);
+            listRoleAssignments(exchange, path.get(1));
+            return;
+        }
+        if (path.size() == 4 && "projects".equals(path.get(0))
+                && "role-assignments".equals(path.get(2))) {
+            if ("GET".equals(method)) {
+                requirePermission(exchange, Permission.READ_SECURITY_CONFIGURATION);
+                sendRoleAssignment(exchange, path.get(1), role(path.get(3)));
+                return;
+            }
+            requirePermission(exchange, Permission.ASSIGN_AGENT_ROLES);
+            if ("PATCH".equals(method)) { saveRoleAssignment(exchange, path.get(1), role(path.get(3))); return; }
+            if ("DELETE".equals(method)) { deleteRoleAssignment(exchange, path.get(1), role(path.get(3))); return; }
+        }
+        if (path.size() == 3 && "projects".equals(path.get(0))
+                && "ai-jobs".equals(path.get(2))) {
+            requirePermission(exchange, "GET".equals(method) ? Permission.READ_SECURITY_CONFIGURATION : Permission.RUN_AI_JOBS);
+            if ("GET".equals(method)) { listAiJobs(exchange, path.get(1)); return; }
+            if ("POST".equals(method)) { createAiJob(exchange, path.get(1)); return; }
+        }
+        if (path.size() == 2 && "ai-jobs".equals(path.get(0))) {
+            requirePermission(exchange, "GET".equals(method) ? Permission.READ_SECURITY_CONFIGURATION : Permission.RUN_AI_JOBS);
+            if ("GET".equals(method)) { sendAiJob(exchange, path.get(1)); return; }
+            if ("PATCH".equals(method)) { updateAiJob(exchange, path.get(1)); return; }
+            if ("DELETE".equals(method)) { deleteAiJob(exchange, path.get(1)); return; }
+        }
+        if (path.size() == 1 && "audit-events".equals(path.get(0)) && "GET".equals(method)) {
+            requirePermission(exchange, Permission.READ_AUDIT);
+            listAudit(exchange, query(exchange.getRequestURI(), "projectId"));
+            return;
+        }
+        if (path.size() == 3 && "projects".equals(path.get(0))
+                && "audit-events".equals(path.get(2)) && "GET".equals(method)) {
+            requirePermission(exchange, Permission.READ_AUDIT);
+            listAudit(exchange, path.get(1));
+            return;
         }
         if (path.size() == 2 && "evidence".equals(path.get(0)) && "GET".equals(method)) {
             sendEvidence(exchange, path.get(1));
@@ -371,13 +466,189 @@ public final class ControlPlaneServer implements AutoCloseable {
         Map<String, Object> body = readObject(exchange);
         String id = optionalText(body, "projectId", optionalText(body, "id", null));
         String name = optionalText(body, "name", optionalText(body, "displayName", null));
-        ControlPlaneStore.ProjectRecord project = store.createProject(id, name, Instant.now(clock).toString());
+        ControlPlaneStore.ProjectRecord project = store.createProject(id, name, Instant.now(clock).toString(),
+                actor(exchange).operatorId());
         if (idempotencyHeader != null) idempotentProjects.put(idempotencyHeader, project.projectId());
         sendJson(exchange, 201, projectMap(project));
     }
 
     private void sendProject(HttpExchange exchange, String projectId) throws IOException {
         sendJson(exchange, 200, projectMap(store.requireProject(projectId)));
+    }
+
+    private void listProjects(HttpExchange exchange) throws IOException {
+        List<Object> projects = new ArrayList<>();
+        for (ControlPlaneStore.ProjectRecord project : store.projects()) projects.add(projectMap(project));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", ApiDtos.SCHEMA_VERSION);
+        result.put("projects", projects);
+        result.put("items", projects);
+        sendJson(exchange, 200, result);
+    }
+
+    private synchronized void updateProject(HttpExchange exchange, String projectId) throws IOException {
+        Map<String, Object> body = readObject(exchange);
+        for (String field : body.keySet()) {
+            if (!Set.of("name", "status").contains(field)) {
+                throw new ApiException(400, "INVALID_FIELD", "project patch only accepts name and status");
+            }
+        }
+        if (body.isEmpty()) throw new ApiException(400, "INVALID_FIELD", "project patch cannot be empty");
+        String name = body.containsKey("name") ? optionalText(body, "name", null) : null;
+        String status = body.containsKey("status") ? optionalText(body, "status", null) : null;
+        sendJson(exchange, 200, projectMap(store.updateProject(projectId, name, status,
+                Instant.now(clock).toString(), actor(exchange).operatorId())));
+    }
+
+    private synchronized void deleteProject(HttpExchange exchange, String projectId) throws IOException {
+        store.softDeleteProject(projectId, Instant.now(clock).toString(), actor(exchange).operatorId());
+        sendEmpty(exchange, 204);
+    }
+
+    private void listOperators(HttpExchange exchange) throws IOException {
+        List<Object> items = new ArrayList<>();
+        for (var operator : store.operators()) items.add(operatorMap(operator, null));
+        sendJson(exchange, 200, stringEnvelope("operators", items));
+    }
+
+    private void createOperator(HttpExchange exchange) throws IOException {
+        Map<String, Object> body = readObject(exchange);
+        String username = optionalText(body, "username", null);
+        OperatorRole role = operatorRole(optionalText(body, "role", null));
+        String now = Instant.now(clock).toString();
+        ControlPlaneStore.CreatedOperator created =
+                store.createOperator(username, role, actor(exchange).operatorId(), now);
+        sendJson(exchange, 201, operatorMap(created.operator(), created.personalAccessToken()));
+    }
+
+    private void updateOperator(HttpExchange exchange, String operatorId) throws IOException {
+        Map<String, Object> body = readObject(exchange);
+        OperatorRole role = operatorRole(optionalText(body, "role", null));
+        boolean revoke = optionalBoolean(body, "revokeTokens", false);
+        AuthContext actor = actor(exchange);
+        if (actor.operatorId().equals(operatorId)
+                && (revoke || role != OperatorRole.ADMINISTRATOR)) {
+            throw new ApiException(409, "SELF_LOCKOUT_REJECTED",
+                    "administrator cannot revoke or demote the active account");
+        }
+        store.updateOperator(operatorId, role, revoke, actor.operatorId(), Instant.now(clock).toString());
+        var updated = store.operators().stream().filter(value -> value.operatorId().equals(operatorId))
+                .findFirst().orElseThrow(() -> new ControlPlaneStore.MissingRecordException("operator not found"));
+        sendJson(exchange, 200, operatorMap(updated, null));
+    }
+
+    private void listProviders(HttpExchange exchange) throws IOException {
+        List<Object> items = new ArrayList<>();
+        for (var provider : store.providers()) items.add(providerMap(provider));
+        sendJson(exchange, 200, stringEnvelope("providers", items));
+    }
+
+    private void createProvider(HttpExchange exchange) throws IOException {
+        Map<String, Object> body = readObject(exchange);
+        String id = optionalText(body, "providerId",
+                "provider-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
+        var saved = saveProviderBody(exchange, id, body, null);
+        sendJson(exchange, 201, providerMap(saved));
+    }
+
+    private void updateProvider(HttpExchange exchange, String providerId) throws IOException {
+        var existing = store.requireProvider(providerId);
+        Map<String, Object> body = readObject(exchange);
+        sendJson(exchange, 200, providerMap(saveProviderBody(exchange, providerId, body, existing)));
+    }
+
+    private com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.ProviderData saveProviderBody(
+            HttpExchange exchange, String providerId, Map<String, Object> body,
+            com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.ProviderData existing) {
+        String name = optionalText(body, "name", existing == null ? null : existing.name());
+        String kindText = optionalText(body, "kind", existing == null ? null : existing.kind().name());
+        String baseUrl = optionalText(body, "baseUrl", existing == null ? null : existing.baseUrl());
+        if (name == null || kindText == null || baseUrl == null) {
+            throw new ApiException(400, "INVALID_PROVIDER", "name, kind, and baseUrl are required");
+        }
+        ProviderKind kind;
+        try { kind = ProviderKind.valueOf(kindText); }
+        catch (IllegalArgumentException invalid) {
+            throw new ApiException(400, "INVALID_PROVIDER_KIND", "unsupported provider kind");
+        }
+        String model = optionalText(body, "model", existing == null ? null : existing.model());
+        boolean enabled = optionalBoolean(body, "enabled", existing == null || existing.enabled());
+        String apiKey = body.containsKey("apiKey") ? optionalText(body, "apiKey", null) : null;
+        return store.saveProvider(providerId, name, kind, baseUrl, model, enabled, apiKey,
+                actor(exchange).operatorId(), Instant.now(clock).toString());
+    }
+
+    private void deleteProvider(HttpExchange exchange, String providerId) throws IOException {
+        store.deleteProvider(providerId, actor(exchange).operatorId(), Instant.now(clock).toString());
+        sendEmpty(exchange, 204);
+    }
+
+    private void listRoleAssignments(HttpExchange exchange, String projectId) throws IOException {
+        List<Object> items = new ArrayList<>();
+        for (var binding : store.roleBindings(projectId)) items.add(roleBindingMap(binding));
+        sendJson(exchange, 200, stringEnvelope("roleAssignments", items));
+    }
+
+    private void sendRoleAssignment(HttpExchange exchange, String projectId, AgentRole role) throws IOException {
+        var binding = store.roleBindings(projectId).stream().filter(value -> value.role() == role)
+                .findFirst().orElseThrow(() -> new ControlPlaneStore.MissingRecordException(
+                        "role assignment not found"));
+        sendJson(exchange, 200, roleBindingMap(binding));
+    }
+
+    private void saveRoleAssignment(HttpExchange exchange, String projectId, AgentRole role) throws IOException {
+        Map<String, Object> body = readObject(exchange);
+        String providerId = optionalText(body, "providerId", null);
+        if (providerId == null) throw new ApiException(400, "PROVIDER_REQUIRED", "providerId is required");
+        var provider = store.requireProvider(providerId);
+        String model = optionalText(body, "model", provider.model());
+        if (model == null) throw new ApiException(400, "MODEL_REQUIRED", "model is required");
+        sendJson(exchange, 200, roleBindingMap(store.saveRoleBinding(projectId, role, providerId, model,
+                actor(exchange).operatorId(), Instant.now(clock).toString())));
+    }
+
+    private void deleteRoleAssignment(HttpExchange exchange, String projectId, AgentRole role) throws IOException {
+        store.deleteRoleBinding(projectId, role, actor(exchange).operatorId(), Instant.now(clock).toString());
+        sendEmpty(exchange, 204);
+    }
+
+    private void listAiJobs(HttpExchange exchange, String projectId) throws IOException {
+        List<Object> items = new ArrayList<>();
+        for (var job : store.aiJobs(projectId)) items.add(aiJobMap(job));
+        sendJson(exchange, 200, stringEnvelope("aiJobs", items));
+    }
+
+    private void createAiJob(HttpExchange exchange, String projectId) throws IOException {
+        Map<String, Object> body = readObject(exchange);
+        AgentRole role = role(optionalText(body, "role", null));
+        var job = store.createAiJob(projectId, role, actor(exchange).operatorId(),
+                Instant.now(clock).toString());
+        sendJson(exchange, 202, aiJobMap(job));
+    }
+
+    private void sendAiJob(HttpExchange exchange, String jobId) throws IOException {
+        sendJson(exchange, 200, aiJobMap(store.requireAiJob(jobId)));
+    }
+
+    private void updateAiJob(HttpExchange exchange, String jobId) throws IOException {
+        String action = optionalText(readObject(exchange), "action", null);
+        if ("retry".equals(action)) {
+            throw new ApiException(409, "PROVIDER_EXECUTION_DISABLED", "provider execution is disabled");
+        }
+        if (!"cancel".equals(action)) throw new ApiException(400, "INVALID_ACTION", "action must be cancel or retry");
+        sendJson(exchange, 200, aiJobMap(store.cancelAiJob(jobId, actor(exchange).operatorId(),
+                Instant.now(clock).toString())));
+    }
+
+    private void deleteAiJob(HttpExchange exchange, String jobId) throws IOException {
+        store.deleteAiJob(jobId, actor(exchange).operatorId(), Instant.now(clock).toString());
+        sendEmpty(exchange, 204);
+    }
+
+    private void listAudit(HttpExchange exchange, String projectId) throws IOException {
+        List<Object> items = new ArrayList<>();
+        for (var event : store.auditEvents(projectId)) items.add(auditMap(event));
+        sendJson(exchange, 200, stringEnvelope("auditEvents", items));
     }
 
     private synchronized void registerArtifact(HttpExchange exchange, String projectId) throws IOException {
@@ -403,7 +674,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (rawPath == null) throw new ApiException(400, "PATH_REQUIRED", "artifact path is required");
         ArtifactDescriptor descriptor = artifactRegistry.register(Path.of(rawPath));
         artifactRegistry.verifyUnchanged(descriptor);
-        store.registerArtifact(project, descriptor);
+        store.registerArtifact(project, descriptor, actor(exchange).operatorId());
         if (idempotencyHeader != null) idempotentArtifacts.putIfAbsent(projectId + ":" + idempotencyHeader, descriptor.sha256());
         sendJson(exchange, 201, artifactMap(artifactDto(projectId, descriptor)));
     }
@@ -514,7 +785,8 @@ public final class ControlPlaneServer implements AutoCloseable {
                     "status", "STOPPED", "reason", "STATIC_ANALYSIS_FAILED"));
             throw new ApiException(422, "ANALYSIS_FAILED", "static metadata analysis could not complete");
         }
-        store.saveScan(new ControlPlaneStore.ScanRecord(build.scan(), build.evidence(), build.findings(), build.chains()));
+        store.saveScan(new ControlPlaneStore.ScanRecord(build.scan(), build.evidence(), build.findings(), build.chains()),
+                actor(exchange).operatorId());
         if (idempotencyHeader != null) {
             idempotentScans.putIfAbsent(projectId + ":" + idempotencyHeader, scanId);
         }
@@ -598,6 +870,8 @@ public final class ControlPlaneServer implements AutoCloseable {
                 fixture.fixtureDigest());
         TaskSnapshot snapshot = workerApi.enqueueFromControlPlane(spec,
                 "public-dynamic-" + UUID.randomUUID().toString().replace("-", ""));
+        store.auditChange(scan.dto().projectId(), actor(exchange).operatorId(), "dynamic-task.enqueue",
+                "worker-task", taskId, "{\"fixtureOnly\":true}", Instant.now(clock).toString());
         idempotentDynamicTasks.put(replayKey, new DynamicTaskReplay(payload, snapshot));
         sendJson(exchange, 202, dynamicTaskMap(snapshot));
     }
@@ -773,7 +1047,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         body.put("schemaVersion", ApiDtos.SCHEMA_VERSION);
         body.put("status", "UP");
         body.put("service", "jvm-sentinel-control-plane");
-        body.put("persistenceMode", "IN_MEMORY_MVP");
+        body.put("persistenceMode", store.persistenceMode());
         body.put("analysisMode", "STATIC_METADATA_ONLY");
         body.put("dynamicExecutionMode", "DYNAMIC_DISABLED");
         body.put("workerContractVersion", WorkerControlPlaneApi.CONTRACT_VERSION);
@@ -783,7 +1057,17 @@ public final class ControlPlaneServer implements AutoCloseable {
         return body;
     }
 
-    private void requireMutation(HttpExchange exchange) {
+    private void requirePermission(HttpExchange exchange, Permission permission) {
+        AuthContext context = actor(exchange);
+        Authorizer.Decision decision = authorizer.authorize(
+                context, com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.LOCAL_WORKSPACE,
+                permission);
+        if (!decision.allowed()) {
+            throw new ApiException(403, "PERMISSION_DENIED", "operator permission is required");
+        }
+    }
+
+    private AuthContext actor(HttpExchange exchange) {
         String supplied = exchange.getRequestHeaders().getFirst("X-Sentinel-Authorization");
         if (supplied == null || supplied.isBlank()) {
             String authorization = exchange.getRequestHeaders().getFirst("Authorization");
@@ -791,8 +1075,39 @@ public final class ControlPlaneServer implements AutoCloseable {
                 supplied = authorization.substring(7).trim();
             }
         }
+        if (supplied == null || supplied.isBlank() || constantTimeEquals(workerToken, supplied)) {
+            throw new ApiException(401, "AUTHORIZATION_REQUIRED", "a local authorization token is required");
+        }
+        if ("SQLITE".equals(store.persistenceMode())) {
+            var operator = store.authenticateOperator(supplied);
+            if (operator == null) {
+                throw new ApiException(401, "AUTHORIZATION_REQUIRED", "a local authorization token is required");
+            }
+            return AuthContext.authenticated(operator.operatorId(),
+                    com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.LOCAL_WORKSPACE,
+                    Set.of(operator.role()));
+        }
         if (!constantTimeEquals(mutationToken, supplied)) {
             throw new ApiException(401, "AUTHORIZATION_REQUIRED", "a local authorization token is required");
+        }
+        return AuthContext.authenticated("local-admin",
+                com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.LOCAL_WORKSPACE,
+                Set.of(OperatorRole.ADMINISTRATOR));
+    }
+
+    private static AgentRole role(String value) {
+        if (value == null) throw new ApiException(400, "INVALID_ROLE", "AI role is required");
+        try { return AgentRole.valueOf(value); }
+        catch (IllegalArgumentException invalid) {
+            throw new ApiException(400, "INVALID_ROLE", "unsupported AI role");
+        }
+    }
+
+    private static OperatorRole operatorRole(String value) {
+        if (value == null) throw new ApiException(400, "INVALID_ROLE", "operator role is required");
+        try { return OperatorRole.valueOf(value); }
+        catch (IllegalArgumentException invalid) {
+            throw new ApiException(400, "INVALID_ROLE", "unsupported operator role");
         }
     }
 
@@ -1013,7 +1328,9 @@ public final class ControlPlaneServer implements AutoCloseable {
         result.put("schemaVersion", dto.schemaVersion());
         result.put("projectId", dto.projectId());
         result.put("name", dto.name());
+        result.put("status", project.status());
         result.put("createdAt", dto.createdAt());
+        result.put("updatedAt", project.updatedAt());
         result.put("verificationStatus", dto.verificationStatus());
         result.put("dependencyMode", dto.dependencyMode());
         result.put("evidenceRefs", dto.evidenceRefs());
@@ -1178,6 +1495,79 @@ public final class ControlPlaneServer implements AutoCloseable {
         result.put("confidence", dto.confidence()); result.put("verificationStatus", dto.verificationStatus());
         result.put("status", dto.verificationStatus()); result.put("findingRefs", dto.findingRefs());
         result.put("evidenceRefs", dto.evidenceRefs());
+        return result;
+    }
+
+    private static Map<String, Object> operatorMap(
+            com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.OperatorData operator,
+            String personalAccessToken) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", 1);
+        result.put("operatorId", operator.operatorId());
+        result.put("username", operator.username());
+        result.put("role", operator.role().name());
+        result.put("createdAt", operator.createdAt());
+        result.put("updatedAt", operator.updatedAt());
+        if (personalAccessToken != null) result.put("personalAccessToken", personalAccessToken);
+        return result;
+    }
+
+    private static Map<String, Object> providerMap(
+            com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.ProviderData provider) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", 1);
+        result.put("providerId", provider.providerId());
+        result.put("name", provider.name());
+        result.put("kind", provider.kind().name());
+        result.put("baseUrl", provider.baseUrl());
+        if (provider.model() != null) result.put("model", provider.model());
+        result.put("enabled", provider.enabled());
+        result.put("hasCredential", provider.hasCredential());
+        result.put("updatedAt", provider.updatedAt());
+        return result;
+    }
+
+    private static Map<String, Object> roleBindingMap(
+            com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.RoleBindingData binding) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", 1);
+        result.put("projectId", binding.projectId());
+        result.put("role", binding.role().name());
+        result.put("providerId", binding.providerId());
+        result.put("model", binding.model());
+        result.put("updatedAt", binding.updatedAt());
+        return result;
+    }
+
+    private static Map<String, Object> aiJobMap(
+            com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.AiJobData job) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", 1);
+        result.put("aiJobId", job.aiJobId());
+        result.put("projectId", job.projectId());
+        result.put("role", job.role().name());
+        result.put("status", job.status());
+        result.put("errorCode", job.errorCode());
+        result.put("stages", JsonCodec.parse(job.stagesJson()));
+        result.put("createdAt", job.createdAt());
+        result.put("updatedAt", job.updatedAt());
+        result.put("verificationStatus", "UNREACHED");
+        return result;
+    }
+
+    private static Map<String, Object> auditMap(
+            com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.AuditData event) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", 1);
+        result.put("auditEventId", event.auditEventId());
+        if (event.projectId() != null) result.put("projectId", event.projectId());
+        result.put("operatorId", event.operatorId());
+        result.put("action", event.action());
+        result.put("targetType", event.targetType());
+        result.put("targetId", event.targetId());
+        result.put("outcome", event.outcome());
+        result.put("details", JsonCodec.parse(event.detailsJson()));
+        result.put("createdAt", event.createdAt());
         return result;
     }
 
@@ -1363,7 +1753,7 @@ public final class ControlPlaneServer implements AutoCloseable {
             exchange.getResponseHeaders().set("Access-Control-Allow-Credentials", "true");
         }
         exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Sentinel-Authorization, Last-Event-ID, Idempotency-Key");
-        exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
     }
 
     private static boolean isLocalOrigin(String origin) {

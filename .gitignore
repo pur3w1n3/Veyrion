@@ -14,3 +14,6 @@ frontend/.env*
 .idea/
 *.iml
 *.log
+
+# Local Veyrion databases and encryption keys
+samples/.veyrion/
