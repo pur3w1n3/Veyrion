@@ -146,7 +146,7 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - README、PRD、技术架构、MVP backlog、GUI 规范和文档审计摘要已同步 Control Plane REST/SSE 的实际完成状态、静态分析边界、真实 GUI 配置和未完成能力。
 - 验证结果：使用 IntelliJ JBR 21 按 Java 17 编译，`mvn -Dmaven.repo.local=.m2 test`、`AcceptanceTest`、`ControlPlaneAcceptanceTest` 均通过；在 `frontend/` 执行 `npm run build` 通过，`npm audit --audit-level=high` 为 0 vulnerabilities。系统默认 Maven 缓存下的 `mvn test` 仍可能因 Surefire 目录权限失败，属于环境问题。
 
-当前未完成工作：扩大真实授权 Spring 制品的入口召回基准、沙箱 Worker 与 JVM Agent、动态路径/依赖替身、持久化和租户授权，最后才接入受证据约束的 AI Gateway。
+当前未完成工作：扩大真实授权 Spring 制品的入口召回基准、受控 fixture 动态路径/依赖替身、持久化和租户授权，最后才接入受证据约束的 AI Gateway。
 
 ## 12. 受限 classfile 注解切片（2026-07-24，根 Agent 审计通过）
 
@@ -168,3 +168,13 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - Worker 合约必须版本化并绑定项目、制品摘要、扫描和任务四元组；trace 采用带前序 SHA-256 的追加链。GUI token、Worker token 和 OpenSandbox API key 相互隔离。
 - JVM Agent 是观测层而不是安全边界。首个动态切片只在受控 fixture 上产出 `DYNAMIC_SUSPECTED`；在强化沙箱和可重放证据完成前不得生成 `VERIFIED`。
 - OpenSandbox 本地开发仍依赖 Docker；后续可替换为其他兼容后端，但不得静默降级到宿主 Java 子进程执行外部制品。
+
+## 14. Worker、OpenSandbox 与 JVM Agent 实现审计（2026-07-24）
+
+- 已完成版本化 Worker 任务、租约、检查点和 trace 合约，以及作用域绑定、幂等状态机、租约过期回收和带前序 SHA-256 的追加 trace 链。
+- Control Plane 已接入独立 GUI/Worker token 的任务与 trace API，并强制 `ResourceBudget.maxTraceBytes`；本轮仍是进程内协调器，不代表持久化或多租户生产能力。
+- OpenSandbox 适配器按 sandbox ID 从 lifecycle API 解析 44772 Execd 代理端点；运行时能力只接受部署运维方配置的 attestation，响应数据不能授予能力。适配器限制同源、端点路径和凭据头，拒绝网络放开、root、可写根目录及能力降级。
+- 独立 `agent/` Maven 模块提供 Java 17 `premain`/`agentmain`、类加载观测和 HTTP/FILE/JDBC/PROCESS 显式探针，输出受目录授权、事件/字节预算、字段边界、控制字符清理和敏感键脱敏约束的 JSONL。
+- JVM Agent 不是安全边界。类加载等 Agent 自有事件标为 `RUNTIME_OBSERVED`；显式探针可被应用调用，必须标为 `APPLICATION_REPORTED`。两者当前都只能是 `DYNAMIC_SUSPECTED`，不得生成 `VERIFIED`。
+- 根 Agent 已逐文件审阅三个并行实现轨并修正显式探针证据来源；使用 JBR 21 复验根 Maven、六个 main-style 验收类、Agent Maven test/package 和真实 `-javaagent` 子进程，全部通过。
+- Git 审计备份：`94d55fb`（OpenSandbox 适配器）、`1108a98`（Worker Control Plane API）、`41d36a9`（JVM Agent）。下一步只接通仓库内受控 fixture；普通 runc 仍禁止执行用户导入制品。
