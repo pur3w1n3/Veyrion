@@ -33,7 +33,7 @@ public final class AgentJsonlTraceConverterAcceptanceTest {
     private static void convertsMultipleChunksAndChainsDigests() throws Exception {
         String first = event(0, "AGENT_STARTED", "RUNTIME_OBSERVED", "1900-01-01T00:00:00Z");
         String second = event(1, "CLASS_LOAD", "RUNTIME_OBSERVED", "2999-01-01T00:00:00Z");
-        String third = event(2, "HTTP", "APPLICATION_REPORTED", "2000-01-01T00:00:00Z");
+        String third = event(2, "HTTP_CLIENT", "AGENT_INSTRUMENTED", "2000-01-01T00:00:00Z");
         int chunkLimit = Math.max(payloadLength(first), Math.max(payloadLength(second), payloadLength(third)));
         String input = first + "\r\n" + second + "\n" + third;
         AgentJsonlTraceConverter converter = converter(bytes(input).length, 4096, 3, chunkLimit);

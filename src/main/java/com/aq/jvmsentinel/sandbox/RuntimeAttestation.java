@@ -16,6 +16,8 @@ public record RuntimeAttestation(String protocolVersion, WorkerCapability capabi
             "lifecycle-v1", "execd-command-v1", "network-deny-v1",
             "resource-budget-v1", "non-root-v1", "read-only-rootfs-v1",
             "writable-tmp-v1");
+    private static final Set<String> EXTERNAL_REQUIRED = Set.of(
+            "controlled-tmpfs-v1", "digest-pinned-readonly-artifact-v1");
 
     public RuntimeAttestation {
         protocolVersion = SandboxContracts.text(protocolVersion, "protocolVersion", 32);
@@ -43,6 +45,9 @@ public record RuntimeAttestation(String protocolVersion, WorkerCapability capabi
         }
         if (!egressDefaultDeny || !nonRoot || !readOnlyRootFilesystem || !serverCapabilities.containsAll(REQUIRED)) {
             throw OpenSandboxException.capability("required isolation capability is absent");
+        }
+        if (!request.fixtureOnly() && !serverCapabilities.containsAll(EXTERNAL_REQUIRED)) {
+            throw OpenSandboxException.capability("external artifact mount isolation capability is absent");
         }
         String normalized = runtime.toLowerCase(java.util.Locale.ROOT);
         if (capability == WorkerCapability.HARDENED_GVISOR && !normalized.contains("gvisor")

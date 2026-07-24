@@ -34,6 +34,19 @@ public final class DynamicTraceProjectionAcceptanceTest {
                     + "\"provenanceKind\":\"APPLICATION_REPORTED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
                     + "\"class\":\"fixture.Repository\",\"method\":\"query\",\"timestamp\":\"2026-07-24T00:00:01Z\","
                     + "\"thread\":\"main\",\"detail\":{\"operation\":\"select\"}}\n";
+    private static final String EXTERNAL_JSONL =
+            "{\"schemaVersion\":1,\"sequence\":0,\"eventType\":\"AGENT_STARTED\","
+                    + "\"provenanceKind\":\"RUNTIME_OBSERVED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                    + "\"class\":\"agent.VeyrionAgent\",\"method\":\"premain\","
+                    + "\"timestamp\":\"2026-07-24T00:00:00Z\",\"thread\":\"main\","
+                    + "\"detail\":{\"captureMode\":\"automatic\"}}\n"
+                    + "{\"schemaVersion\":1,\"sequence\":1,\"eventType\":\"HTTP_CLIENT\","
+                    + "\"provenanceKind\":\"AGENT_INSTRUMENTED\","
+                    + "\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                    + "\"class\":\"example.Client\",\"method\":\"call()V\","
+                    + "\"timestamp\":\"2026-07-24T00:00:01Z\",\"thread\":\"main\","
+                    + "\"detail\":{\"targetClass\":\"java.net.http.HttpClient\","
+                    + "\"targetMethod\":\"send\",\"instructionOrdinal\":\"0\"}}\n";
 
     public static void main(String[] args) throws Exception {
         // Runs the real public dashboard/path/evidence HTTP loop with its mock OpenSandbox backend.
@@ -75,6 +88,27 @@ public final class DynamicTraceProjectionAcceptanceTest {
                         && projection.path().steps().stream()
                         .noneMatch(step -> "VERIFIED".equals(step.verificationStatus())),
                 "completed fixture remains DYNAMIC_SUSPECTED");
+
+        WorkerTaskSpec externalSpec = new WorkerTaskSpec(
+                1, "project-1", DIGEST, "scan-external", "task-external", "entry-1",
+                true, false, new ResourceBudget(60, 30_000, 128 * 1024 * 1024L,
+                64 * 1024 * 1024L, 64 * 1024), NetworkPolicy.denyAll(),
+                WorkerCapability.HARDENED_GVISOR);
+        TaskSnapshot externalActive = start(tasks, externalSpec, "external");
+        List<TraceChunk> externalChunks = converter.convert(
+                EXTERNAL_JSONL.getBytes(StandardCharsets.UTF_8), externalActive.scope(),
+                externalSpec.resourceBudget());
+        for (TraceChunk chunk : externalChunks) {
+            traces.append(externalActive.scope(), "external-" + chunk.sequence(), chunk);
+        }
+        TaskSnapshot externalCompleted = tasks.complete(
+                externalActive.scope(), externalActive.lease().leaseId(), "worker-1", "external-complete");
+        TraceProjectionService.Projection externalProjection = service.publishCompleted(externalCompleted);
+        check(!externalProjection.path().fixtureOnly()
+                        && "HARDENED_GVISOR".equals(externalProjection.path().requiredCapability())
+                        && externalProjection.path().steps().stream()
+                        .anyMatch(step -> "AGENT_INSTRUMENTED".equals(step.provenanceKind())),
+                "hardened original-artifact trace was not projected with its provenance");
 
         byte[] changedPayload = VALID_JSONL.replace("Repository", "TamperedRepo")
                 .getBytes(StandardCharsets.UTF_8);
@@ -120,7 +154,7 @@ public final class DynamicTraceProjectionAcceptanceTest {
 
     private static TaskSnapshot start(InMemoryTaskCoordinator tasks, WorkerTaskSpec spec, String key) {
         tasks.enqueue(spec, "enqueue-" + key);
-        WorkerLease lease = tasks.lease(spec.scope(), "worker-1", Set.of(WorkerCapability.FIXTURE_RUNC),
+        WorkerLease lease = tasks.lease(spec.scope(), "worker-1", Set.of(spec.requiredCapability()),
                 Duration.ofMinutes(1), "lease-" + key);
         return tasks.start(spec.scope(), lease.leaseId(), "worker-1", "start-" + key);
     }

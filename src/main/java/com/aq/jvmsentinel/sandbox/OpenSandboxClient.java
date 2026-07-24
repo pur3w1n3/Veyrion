@@ -39,9 +39,14 @@ public final class OpenSandboxClient {
 
     public SandboxHandle create(SandboxRequest request) {
         java.util.Objects.requireNonNull(request, "request");
+        // Attestation is deployment-owned configuration, so reject missing capability before creating anything.
+        config.runtimeAttestation().require(config, request);
+        if (!request.fixtureOnly() && request.readOnlyArtifacts().size() != 1) {
+            throw OpenSandboxException.capability(
+                    "external artifact requires one digest-pinned read-only mount");
+        }
         Response response = sendLifecycle("POST", "sandboxes", createBody(request));
         requireStatus(response, 202);
-        config.runtimeAttestation().require(config, request);
         SandboxHandle handle = parseHandle(response.body(), config.runtimeAttestation());
         SandboxRequest previous = expectations.putIfAbsent(handle.id(), request);
         if (previous != null && !previous.equals(request)) {
@@ -126,15 +131,39 @@ public final class OpenSandboxClient {
                 "ephemeral-storage", budget.maxDiskBytes() + "B"));
         body.put("entrypoint", request.entrypoint());
         body.put("networkPolicy", Map.of("defaultAction", "deny", "egress", List.of()));
-        body.put("extensions", Map.of(
+        body.put("tmpfs", List.of(Map.of(
+                "destination", "/tmp",
+                "sizeBytes", request.tmpfsBytes(),
+                "mode", "0700",
+                "uid", 10000,
+                "gid", 10000)));
+        if (!request.readOnlyArtifacts().isEmpty()) {
+            body.put("readOnlyArtifacts", request.readOnlyArtifacts().stream().map(mount -> Map.of(
+                    "sourceRef", "sha256:" + mount.sha256(),
+                    "destination", mount.destination(),
+                    "sha256", mount.sha256(),
+                    "sizeBytes", mount.sizeBytes(),
+                    "readOnly", true,
+                    "verifyBeforeStart", true)).toList());
+        }
+        Map<String, String> extensions = new LinkedHashMap<>();
+        extensions.putAll(Map.of(
                 "veyrion.protocolVersion", config.requiredProtocolVersion(),
                 "veyrion.requiredCapability", request.requiredCapability().name(),
                 "veyrion.fixtureOnly", Boolean.toString(request.fixtureOnly()),
                 "veyrion.maxCpuMillis", Long.toString(budget.maxCpuMillis()),
                 "veyrion.maxTraceBytes", Long.toString(budget.maxTraceBytes()),
                 "veyrion.readOnlyRootFilesystem", "true",
+                "veyrion.controlledTmpfs", "true",
                 "veyrion.writableTmp", "true",
                 "veyrion.nonRoot", "true"));
+        if (!request.readOnlyArtifacts().isEmpty()) {
+            ReadOnlyArtifactMount mount = request.readOnlyArtifacts().get(0);
+            extensions.put("veyrion.artifactSha256", mount.sha256());
+            extensions.put("veyrion.artifactReadOnly", "true");
+            extensions.put("veyrion.artifactVerifyBeforeStart", "true");
+        }
+        body.put("extensions", extensions);
         return body;
     }
 

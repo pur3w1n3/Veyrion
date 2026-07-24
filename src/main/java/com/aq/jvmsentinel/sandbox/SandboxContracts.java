@@ -27,6 +27,14 @@ final class SandboxContracts {
         return value;
     }
 
+    static String sha256(String value, String name) {
+        Objects.requireNonNull(value, name);
+        if (!value.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException(name + " must be a lowercase SHA-256 digest");
+        }
+        return value;
+    }
+
     static List<String> command(List<String> values, String name) {
         Objects.requireNonNull(values, name);
         if (values.isEmpty() || values.size() > 128) throw new IllegalArgumentException("invalid " + name);

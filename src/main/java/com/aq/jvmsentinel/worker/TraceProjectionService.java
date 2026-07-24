@@ -80,8 +80,8 @@ public final class TraceProjectionService {
             String evidenceId = "evidence-dynamic-" + scopeDigest + "-" + event.sequence();
             String kind = switch (event.eventType()) {
                 case "AGENT_STARTED", "HTTP" -> "entry";
-                case "CLASS_LOAD" -> "transform";
-                case "FILE", "JDBC" -> "dependency";
+                case "CLASS_LOAD", "INSTRUMENTATION_CAPABILITY", "INSTRUMENTATION_ERROR" -> "transform";
+                case "HTTP_CLIENT", "FILE", "JDBC" -> "dependency";
                 case "PROCESS" -> "sink";
                 default -> throw new IllegalArgumentException("unsupported Agent event type");
             };
@@ -109,8 +109,9 @@ public final class TraceProjectionService {
                 snapshot.scope().artifactDigest(), snapshot.scope().scanId(),
                 "path-dynamic-" + snapshot.scope().taskId(), snapshot.spec().targetEntryId(),
                 "DYNAMIC_SUSPECTED", ApiDtos.MOCK, List.of(), "COMPLETED",
-                refs, steps, snapshot.scope().taskId(), true, "FIXTURE_RUNC",
-                "FIXTURE_RUNC_COMPLETED");
+                refs, steps, snapshot.scope().taskId(), snapshot.spec().fixtureOnly(),
+                snapshot.spec().requiredCapability().name(),
+                snapshot.spec().requiredCapability().name() + "_COMPLETED");
         return new Projection(snapshot.scope(), path, projectedEvidence, snapshot.updatedAt().toString());
     }
 
@@ -141,11 +142,16 @@ public final class TraceProjectionService {
     private static void requireEligible(TaskSnapshot snapshot) {
         Objects.requireNonNull(snapshot, "snapshot");
         WorkerTaskSpec spec = snapshot.spec();
+        boolean fixtureEligible = spec.fixtureOnly()
+                && spec.requiredCapability() == WorkerCapability.FIXTURE_RUNC;
+        boolean externalEligible = !spec.fixtureOnly()
+                && (spec.requiredCapability() == WorkerCapability.HARDENED_GVISOR
+                || spec.requiredCapability() == WorkerCapability.HARDENED_KATA);
         if (snapshot.lifecycle() != TaskLifecycle.COMPLETED
                 || snapshot.stopReason() != StopReason.COMPLETED
-                || !spec.fixtureOnly()
-                || spec.requiredCapability() != WorkerCapability.FIXTURE_RUNC) {
-            throw new IllegalArgumentException("only completed FIXTURE_RUNC fixture tasks may be projected");
+                || !(fixtureEligible || externalEligible)) {
+            throw new IllegalArgumentException(
+                    "only completed fixture or hardened external tasks may be projected");
         }
     }
 
