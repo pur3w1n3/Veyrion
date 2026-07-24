@@ -1,0 +1,226 @@
+package com.aq.jvmsentinel.dev;
+
+import com.aq.jvmsentinel.control.ControlPlaneServer;
+import com.aq.jvmsentinel.control.JsonCodec;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.SecureRandom;
+import java.time.Duration;
+import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * Local-development launcher for the loopback Control Plane and Vite GUI.
+ *
+ * <p>This class launches only the repository's frontend tooling. It is not used by a Worker
+ * and never executes an imported artifact.</p>
+ */
+public final class DevLauncherMain {
+    private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
+
+    private DevLauncherMain() { }
+
+    public static void main(String[] args) throws Exception {
+        Configuration config = Configuration.parse(args, Path.of("").toAbsolutePath());
+        Files.createDirectories(config.artifactRoot());
+        String token = randomToken();
+
+        try (ControlPlaneServer server = new ControlPlaneServer(
+                "127.0.0.1", config.backendPort(), config.artifactRoot(), token).start()) {
+            String projectId = createProject(server.baseUri(), token);
+            Process frontend = startFrontend(config, server.baseUri(), projectId, token);
+            Runtime.getRuntime().addShutdownHook(new Thread(
+                    () -> stop(frontend), "veyrion-dev-shutdown"));
+
+            System.out.println("Veyrion Control Plane: " + server.baseUri());
+            System.out.println("Veyrion GUI: http://127.0.0.1:" + config.frontendPort());
+            System.out.println("Development project: " + projectId);
+            System.out.println("Authorized artifact directory: " + config.artifactRoot());
+            System.out.println("Press Ctrl+C to stop both processes.");
+
+            if (frontend.waitFor(2, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("frontend exited during startup with code " + frontend.exitValue());
+            }
+            int exitCode = frontend.waitFor();
+            if (exitCode != 0) throw new IllegalStateException("frontend exited with code " + exitCode);
+        }
+    }
+
+    static String createProject(URI apiBaseUri, String token) {
+        Objects.requireNonNull(apiBaseUri, "apiBaseUri");
+        Objects.requireNonNull(token, "token");
+        URI endpoint = URI.create(apiBaseUri.toString() + "/projects");
+        HttpRequest request = HttpRequest.newBuilder(endpoint).timeout(HTTP_TIMEOUT)
+                .header("Content-Type", "application/json")
+                .header("X-Sentinel-Authorization", token)
+                .header("Idempotency-Key", "dev-launcher-project")
+                .POST(HttpRequest.BodyPublishers.ofString(
+                        JsonCodec.stringify(Map.of("name", "Veyrion Local Development")),
+                        StandardCharsets.UTF_8))
+                .build();
+        try {
+            HttpResponse<String> response = HttpClient.newBuilder()
+                    .connectTimeout(HTTP_TIMEOUT)
+                    .followRedirects(HttpClient.Redirect.NEVER)
+                    .build()
+                    .send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new IllegalStateException("Control Plane project bootstrap failed with HTTP "
+                        + response.statusCode());
+            }
+            Object value = JsonCodec.parseObject(response.body()).get("projectId");
+            if (!(value instanceof String projectId)
+                    || !projectId.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) {
+                throw new IllegalStateException("Control Plane returned an invalid projectId");
+            }
+            return projectId;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("project bootstrap interrupted", interrupted);
+        } catch (IOException failure) {
+            throw new IllegalStateException("project bootstrap transport failed", failure);
+        }
+    }
+
+    static Process startFrontend(Configuration config, URI apiBaseUri,
+                                 String projectId, String token) throws IOException {
+        ProcessBuilder builder = new ProcessBuilder(frontendCommand(config));
+        builder.directory(config.frontendDirectory().toFile());
+        builder.inheritIO();
+        Map<String, String> environment = builder.environment();
+        environment.put("VITE_DEMO_MODE", "false");
+        environment.put("VITE_API_BASE_URL", apiBaseUri.toString());
+        environment.put("VITE_PROJECT_ID", projectId);
+        environment.put("VITE_API_TOKEN", token);
+        return builder.start();
+    }
+
+    static List<String> frontendCommand(Configuration config) {
+        return List.of(config.npmExecutable(), "run", "dev", "--",
+                "--host", "127.0.0.1",
+                "--port", Integer.toString(config.frontendPort()),
+                "--strictPort");
+    }
+
+    private static String randomToken() {
+        byte[] value = new byte[32];
+        new SecureRandom().nextBytes(value);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(value);
+    }
+
+    private static void stop(Process process) {
+        if (process == null || !process.isAlive()) return;
+        process.destroy();
+        try {
+            if (!process.waitFor(3, TimeUnit.SECONDS)) process.destroyForcibly();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+        }
+    }
+
+    public record Configuration(Path workspace, Path artifactRoot, Path frontendDirectory,
+                                int backendPort, int frontendPort, String npmExecutable) {
+        public Configuration {
+            workspace = realDirectory(workspace, "workspace");
+            artifactRoot = absoluteWithin(workspace, artifactRoot, "artifactRoot");
+            frontendDirectory = realDirectory(frontendDirectory, "frontendDirectory");
+            if (!frontendDirectory.startsWith(workspace)
+                    || !Files.isRegularFile(frontendDirectory.resolve("package.json"))) {
+                throw new IllegalArgumentException("frontendDirectory must be the workspace frontend");
+            }
+            if (backendPort < 1 || backendPort > 65535
+                    || frontendPort < 1 || frontendPort > 65535
+                    || backendPort == frontendPort) {
+                throw new IllegalArgumentException("development ports are invalid");
+            }
+            Objects.requireNonNull(npmExecutable, "npmExecutable");
+            if (npmExecutable.isBlank() || npmExecutable.length() > 1024
+                    || npmExecutable.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {
+                throw new IllegalArgumentException("npmExecutable is invalid");
+            }
+        }
+
+        static Configuration parse(String[] args, Path defaultWorkspace) {
+            Objects.requireNonNull(args, "args");
+            Path workspace = defaultWorkspace;
+            Path artifactRoot = null;
+            int backendPort = 8080;
+            int frontendPort = 5173;
+            String npm = System.getProperty("os.name", "").toLowerCase().contains("win")
+                    ? "npm.cmd" : "npm";
+            Map<String, String> values = parseArguments(args);
+            if (values.containsKey("workspace")) workspace = Path.of(values.get("workspace"));
+            workspace = realDirectory(workspace, "workspace");
+            artifactRoot = values.containsKey("artifacts")
+                    ? Path.of(values.get("artifacts")) : workspace.resolve("samples");
+            if (values.containsKey("backend-port")) {
+                backendPort = port(values.get("backend-port"), "backend-port");
+            }
+            if (values.containsKey("frontend-port")) {
+                frontendPort = port(values.get("frontend-port"), "frontend-port");
+            }
+            if (values.containsKey("npm")) npm = values.get("npm");
+            return new Configuration(workspace, artifactRoot, workspace.resolve("frontend"),
+                    backendPort, frontendPort, npm);
+        }
+
+        private static Map<String, String> parseArguments(String[] args) {
+            Map<String, String> result = new LinkedHashMap<>();
+            List<String> allowed = List.of("workspace", "artifacts", "backend-port", "frontend-port", "npm");
+            for (int index = 0; index < args.length; index++) {
+                String argument = args[index];
+                if (!argument.startsWith("--") || !allowed.contains(argument.substring(2))
+                        || index + 1 >= args.length) {
+                    throw new IllegalArgumentException("unsupported or incomplete development option");
+                }
+                String key = argument.substring(2);
+                String value = args[++index];
+                if (value.isBlank() || result.putIfAbsent(key, value) != null) {
+                    throw new IllegalArgumentException("duplicate or empty development option");
+                }
+            }
+            return result;
+        }
+
+        private static int port(String value, String name) {
+            try {
+                int parsed = Integer.parseInt(value);
+                if (parsed < 1 || parsed > 65535) throw new NumberFormatException();
+                return parsed;
+            } catch (NumberFormatException invalid) {
+                throw new IllegalArgumentException(name + " must be a valid TCP port");
+            }
+        }
+
+        private static Path realDirectory(Path value, String name) {
+            Objects.requireNonNull(value, name);
+            try {
+                if (!Files.isDirectory(value)) throw new IllegalArgumentException(name + " must be a directory");
+                return value.toRealPath();
+            } catch (IOException failure) {
+                throw new IllegalArgumentException(name + " cannot be resolved", failure);
+            }
+        }
+
+        private static Path absoluteWithin(Path workspace, Path value, String name) {
+            Objects.requireNonNull(value, name);
+            Path absolute = value.toAbsolutePath().normalize();
+            if (!absolute.startsWith(workspace)) {
+                throw new IllegalArgumentException(name + " must stay inside the workspace");
+            }
+            return absolute;
+        }
+    }
+}

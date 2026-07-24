@@ -1,0 +1,72 @@
+package com.aq.jvmsentinel.dev;
+
+import com.aq.jvmsentinel.control.ControlPlaneServer;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+
+/** Dependency-free checks for the local two-process development launcher. */
+public final class DevLauncherAcceptanceTest {
+    private DevLauncherAcceptanceTest() { }
+
+    public static void main(String[] args) throws Exception {
+        Path workspace = Files.createTempDirectory("veyrion-dev-launcher-");
+        Path frontend = Files.createDirectory(workspace.resolve("frontend"));
+        Files.writeString(frontend.resolve("package.json"), "{}");
+
+        DevLauncherMain.Configuration config = DevLauncherMain.Configuration.parse(new String[] {
+                "--workspace", workspace.toString(),
+                "--backend-port", "18080",
+                "--frontend-port", "15173",
+                "--npm", "trusted-npm"
+        }, workspace);
+        check(config.artifactRoot().equals(workspace.resolve("samples")),
+                "default artifact directory stays in workspace");
+        check(DevLauncherMain.frontendCommand(config).equals(List.of(
+                        "trusted-npm", "run", "dev", "--", "--host", "127.0.0.1",
+                        "--port", "15173", "--strictPort")),
+                "frontend command is direct and loopback-only");
+
+        reject(() -> DevLauncherMain.Configuration.parse(new String[] {
+                "--workspace", workspace.toString(), "--artifacts", workspace.resolve("..").toString()
+        }, workspace), "artifact directory escape");
+        reject(() -> DevLauncherMain.Configuration.parse(new String[] {
+                "--workspace", workspace.toString(), "--backend-port", "5173",
+                "--frontend-port", "5173"
+        }, workspace), "port collision");
+        reject(() -> DevLauncherMain.Configuration.parse(new String[] {
+                "--workspace", workspace.toString(), "--unknown", "value"
+        }, workspace), "unknown option");
+
+        Path artifacts = Files.createDirectory(workspace.resolve("artifacts"));
+        try (ControlPlaneServer server =
+                     new ControlPlaneServer(artifacts, 0, "launcher-test-token").start()) {
+            String projectId = DevLauncherMain.createProject(server.baseUri(), "launcher-test-token");
+            check(projectId.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"),
+                    "launcher creates one valid local project");
+            check(server.store().requireProject(projectId) != null,
+                    "created project is stored by the Control Plane");
+        }
+
+        System.out.println("DevLauncherAcceptanceTest: PASS");
+    }
+
+    private static void reject(ThrowingRunnable action, String message) throws Exception {
+        try {
+            action.run();
+        } catch (IllegalArgumentException expected) {
+            return;
+        }
+        throw new AssertionError("expected rejection: " + message);
+    }
+
+    private static void check(boolean condition, String message) {
+        if (!condition) throw new AssertionError(message);
+    }
+
+    @FunctionalInterface
+    private interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+}

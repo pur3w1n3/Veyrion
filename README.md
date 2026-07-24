@@ -11,6 +11,14 @@ M0 使用受控目录中的原文件并在分析前复核摘要；生产版需�
 
 需要 Java 17+ 和 Maven：
 
+Windows 本地开发可在仓库根目录一键启动后端和 Vite 前端：
+
+```powershell
+.\Start-Veyrion.ps1
+```
+
+脚本会创建 `samples/`、按需安装前端依赖、编译 Java、创建本地项目并启动两个 loopback 服务。默认 GUI 为 `http://127.0.0.1:5173`，Control Plane 为 `http://127.0.0.1:8080/api/v1`；按 `Ctrl+C` 一并停止。可用 `-Artifacts`、`-BackendPort`、`-FrontendPort` 覆盖默认值，但制品目录必须位于工作区内。
+
 ```powershell
 mvn -q '-Dmaven.repo.local=.m2' '-Dmaven.test.skip=true' package
 mvn -q '-Dmaven.repo.local=.m2' test-compile

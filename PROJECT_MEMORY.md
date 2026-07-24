@@ -189,3 +189,9 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 动态证据仅为 `DYNAMIC_SUSPECTED`。Agent 自有事件保留 `RUNTIME_OBSERVED`，显式探针为 `APPLICATION_REPORTED`；trace 摘要不能把应用上报升级为 `VERIFIED`。
 - 根 Agent 修正了 public 预算信任、Worker 任意 fixture 入队、清理后置、静态 GUI provenance、跨项目 evidence ID 和只读根写目录等边界；mock OpenSandbox 全链路、真实 `-javaagent` fixture 冒烟、Maven/GUI 回归均通过。
 - 分阶段 Git 备份：`04d314f`、`a54fdb7`、`a39a88d`、`b76c155`、`7b6ef23`、`fb82aa3`、`c624e74`。这些提交证明受控切片可测试，不代表生产沙箱或外部制品动态执行可用。
+
+## 16. 本地一键开发启动器（2026-07-24）
+
+- 新增 `DevLauncherMain` 与根目录 `Start-Veyrion.ps1`：自动创建工作区内 `samples/`、生成进程内随机 mutation token、启动 loopback Control Plane、创建本地项目并以环境变量启动 Vite。
+- 启动器只直接执行仓库前端的 `npm run dev`，不经过 shell，不执行导入制品，也不属于 Worker fallback；前端退出时后端随之关闭，JVM 关闭钩子负责清理子进程。
+- 制品目录必须位于工作区内，前后端端口必须不同；实际冒烟已验证后端 health 与 Vite 首页均可访问。
