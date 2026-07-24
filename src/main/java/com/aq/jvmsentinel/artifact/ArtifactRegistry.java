@@ -61,6 +61,54 @@ public final class ArtifactRegistry {
     }
 
     public ArtifactDescriptor register(Path input) {
+        ArtifactDescriptor descriptor = inspect(input);
+        byDigest.putIfAbsent(descriptor.sha256(), descriptor);
+        return byDigest.get(descriptor.sha256());
+    }
+
+    /**
+     * Applies the complete artifact validation policy without publishing the
+     * descriptor. This is used before an upload is atomically installed in
+     * managed content storage.
+     */
+    public ArtifactDescriptor validate(Path input) {
+        return inspect(input);
+    }
+
+    /**
+     * Validates bytes stored under an internal temporary name while deriving
+     * the artifact type solely from a separately validated display filename.
+     */
+    public ArtifactDescriptor validate(Path input, String fileName) {
+        return inspect(input, typeOf(Path.of(Objects.requireNonNull(fileName, "fileName"))));
+    }
+
+    /**
+     * Registers an already installed managed copy. Unlike legacy path
+     * registration, the managed descriptor takes precedence for future
+     * digest lookups so an earlier client-owned source path cannot leak back
+     * into an upload registration.
+     */
+    public ArtifactDescriptor registerManaged(Path input) {
+        ArtifactDescriptor descriptor = inspect(input);
+        byDigest.put(descriptor.sha256(), descriptor);
+        return descriptor;
+    }
+
+    /** Resolved root used for backend-managed storage only. */
+    public Path allowedRoot() {
+        return allowedRoot;
+    }
+
+    public long maxArtifactBytes() {
+        return maxArtifactBytes;
+    }
+
+    private ArtifactDescriptor inspect(Path input) {
+        return inspect(input, null);
+    }
+
+    private ArtifactDescriptor inspect(Path input, ArtifactType requestedType) {
         Objects.requireNonNull(input, "input");
         Path candidate = input.toAbsolutePath().normalize();
         if (!candidate.startsWith(allowedRoot)) {
@@ -74,7 +122,7 @@ public final class ArtifactRegistry {
             if (!path.startsWith(allowedRoot) || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
                 throw new ArtifactValidationException("artifact must be a regular file inside the allowed root");
             }
-            ArtifactType type = typeOf(path);
+            ArtifactType type = requestedType == null ? typeOf(path) : requestedType;
             long beforeSize = Files.size(path);
             if (beforeSize > maxArtifactBytes) {
                 throw new ArtifactValidationException("artifact exceeds the configured size limit");
@@ -87,8 +135,7 @@ public final class ArtifactRegistry {
             }
             ArtifactDescriptor descriptor = new ArtifactDescriptor(
                     digest.substring(0, 16), type, path, afterSize, digest, type == ArtifactType.CLASS, Instant.now(clock));
-            byDigest.putIfAbsent(digest, descriptor);
-            return byDigest.get(digest);
+            return descriptor;
         } catch (IOException e) {
             throw new ArtifactValidationException("cannot read artifact: " + e.getMessage());
         }

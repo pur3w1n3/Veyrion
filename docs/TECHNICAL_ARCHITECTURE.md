@@ -311,6 +311,14 @@ Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约�
 - 本地 bootstrap token 映射到 `local-admin`，每次进程启动轮换，旧 token 失效；操作员 PAT 与 Worker token 使用不同格式、header、存储和校验器。当前只完成 loopback 单 workspace RBAC，生产 SSO/session 和全部 GET 的身份边界仍待实现。
 - AI Gateway 尚未执行外部请求。四角色 job 只保存受证据约束的数据流计划并固定为阻断状态；模型输出无权修改工具、网络、沙箱、预算或验证等级。
 
+### 14.1 浏览器制品上传边界
+
+- GUI 只读取用户通过文件选择器明确选择的 JAR/WAR/CLASS，并在本地计算完整 SHA-256；不接收浏览器伪造的宿主路径。
+- Control Plane 以项目作用域创建有 TTL 和总预算的进程内上传会话，只接受顺序 offset、明确 Content-Length、单块不超过 4 MiB 且 `X-Chunk-SHA256` 匹配的字节。
+- 完成时再次核对声明大小和完整摘要，并通过 `ArtifactRegistry` 检查扩展名、文件边界及 JAR/WAR ZIP 结构。通过后只能原子移动到授权根内的内容寻址路径，项目登记和扫描引用该副本。
+- 启动时仅清理匹配内部命名规则的残留 `.part`；已安装内容不受影响。取消和过期会释放会话预算。上传权限属于操作员 `MANAGE_PROJECTS`，Worker 凭据不能进入该域。
+- 旧路径登记暂时保留为本地兼容入口，但 GUI 默认折叠；它不具备浏览器上传语义。上传会话尚未持久化，断线续传只在同一进程生命周期内有效。
+
 ## 15. 字节码事实索引
 
 - 在既有有界 classfile reader 上提取类层次、字段、方法、字段读写、调用指令与稳定指令证据，不加载或初始化被测类。

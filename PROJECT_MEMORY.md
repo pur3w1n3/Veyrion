@@ -83,7 +83,7 @@ Spring Boot JAR/WAR
 - 所有跨模块消息必须有版本号和 JSON Schema/等价契约。
 - 原始制品和轨迹不能未经脱敏直接发送给云端模型。
 - 依赖替身的每个返回值都要标注来源：用户提供、录制回放、规则生成或模型推断。
-- 生产制品必须进入内容寻址、只读存储；当前 M0 本地切片仅允许受控目录原文件并在分析前复核摘要。
+- 生产制品必须进入内容寻址、只读存储；浏览器上传切片已将校验后的副本安装到内容寻址目录。旧路径登记仍只允许受控目录原文件并在分析前复核摘要。
 - 结果状态至少区分：`STATIC_INFERRED`、`DYNAMIC_SUSPECTED`、`VERIFIED`、`UNREACHED`。
 - 每个任务都必须有资源预算、超时、取消和恢复语义。
 
@@ -231,3 +231,11 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 外部 trace 已接入严格 Agent JSONL converter、Worker trace 提交和公共路径/证据投影；双次重放绑定原始 JAR、Agent、runtime image、harness、替身 transcript 和 outcome。即使匹配也只形成 `DYNAMIC_SUSPECTED` 候选，不生成 `VERIFIED`。
 - 根 Maven 编译、11 个相关 main-style 验收、Agent Maven clean/test/package 和重定位后 packaged `-javaagent` 验收通过；IDE lint 无错误。真实 OpenSandbox/gVisor/Kata、协议级数据库替身、公开外部执行 API 和真实恶意样本仍未验收，外部动态能力不得对用户标记为 enabled。
 - 分阶段 Git 备份：`a17755f`（自动 Agent 插桩）、`fc69d5d`（外部执行、替身、反编译/harness、重放与发布门禁）。
+
+## 21. 浏览器分块制品上传（2026-07-24，根 Agent 审计通过）
+
+- GUI 默认通过文件选择器读取用户明确选择的 JAR/WAR/CLASS，使用 Web Crypto 计算完整 SHA-256，并以 1 MiB 顺序分块上传；显示进度、支持取消，旧路径登记移入高级兼容区域。
+- Control Plane 新增项目作用域的初始化、PUT 分块、完成和取消路由，统一要求操作员 `MANAGE_PROJECTS`，Worker token 被拒绝。上传会话限制数量、声明总量、TTL、顺序 offset 和单块 4 MiB，并验证每块摘要。
+- 完成时复核大小、完整 SHA-256、扩展名和 JAR/WAR ZIP 结构，通过 `ArtifactRegistry` 后原子安装到 `.veyrion/artifacts/sha256/<prefix>/<digest>.<ext>`。项目登记和后续扫描只引用该受控副本；删除浏览器源文件不影响扫描。
+- 重启只清理内部命名的残留 `.part`，不删除已安装内容。当前会话仍是进程内状态，浏览器完整摘要上限为 256 MiB，尚未提供跨重启续传或流式前端摘要。
+- 根 Agent 审阅服务、API、前端契约和负向验收；`ArtifactUploadAcceptanceTest` 覆盖篡改、乱序、跨项目、未授权、超限、坏 ZIP、取消、重复摘要、源文件删除和启动残留清理。Maven test-compile/验收与 GUI 生产构建通过。

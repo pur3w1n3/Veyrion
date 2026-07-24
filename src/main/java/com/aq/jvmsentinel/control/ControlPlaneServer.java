@@ -4,6 +4,7 @@ import com.aq.jvmsentinel.analysis.PreAnalysisResult;
 import com.aq.jvmsentinel.analysis.PreAnalysisInput;
 import com.aq.jvmsentinel.analysis.ArtifactMetadataReader;
 import com.aq.jvmsentinel.artifact.ArtifactRegistry;
+import com.aq.jvmsentinel.artifact.ArtifactUploadService;
 import com.aq.jvmsentinel.artifact.ArtifactValidationException;
 import com.aq.jvmsentinel.event.EventContext;
 import com.aq.jvmsentinel.event.EventFactory;
@@ -87,6 +88,7 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private final InetSocketAddress bindAddress;
     private final ArtifactRegistry artifactRegistry;
+    private final ArtifactUploadService artifactUploadService;
     private final PreAnalysisServiceAdapter analysis = new PreAnalysisServiceAdapter();
     private final ControlPlaneStore store;
     private final SseHub sseHub;
@@ -176,6 +178,7 @@ public final class ControlPlaneServer implements AutoCloseable {
                               SseHub sseHub, TrustedFixtureCatalog fixtureCatalog) {
         this.bindAddress = Objects.requireNonNull(bindAddress, "bindAddress");
         this.artifactRegistry = Objects.requireNonNull(artifactRegistry, "artifactRegistry");
+        this.artifactUploadService = new ArtifactUploadService(this.artifactRegistry);
         this.mutationToken = requireToken(mutationToken);
         this.clock = Objects.requireNonNull(clock, "clock");
         this.store = Objects.requireNonNull(store, "store");
@@ -251,7 +254,7 @@ public final class ControlPlaneServer implements AutoCloseable {
             addCorsHeaders(exchange);
             try {
                 if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
-                    exchange.getResponseHeaders().set("Allow", "GET,POST,PATCH,DELETE,OPTIONS");
+                    exchange.getResponseHeaders().set("Allow", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
                     sendEmpty(exchange, 204);
                     return;
                 }
@@ -275,6 +278,8 @@ public final class ControlPlaneServer implements AutoCloseable {
                 sendError(exchange, 429, "STORE_LIMIT", limited.getMessage(), requestId);
             } catch (ArtifactValidationException invalidArtifact) {
                 sendError(exchange, 422, "INVALID_ARTIFACT", invalidArtifact.getMessage(), requestId);
+            } catch (ArtifactUploadService.UploadException uploadFailure) {
+                sendError(exchange, uploadFailure.status(), uploadFailure.code(), uploadFailure.getMessage(), requestId);
             } catch (PolicyViolationException policyViolation) {
                 sendError(exchange, 403, "POLICY_REJECTED", policyViolation.getMessage(), requestId);
             } catch (TrustedFixtureCatalog.UnknownFixtureException unknownFixture) {
@@ -320,6 +325,29 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (path.size() == 3 && "projects".equals(path.get(0)) && "artifacts".equals(path.get(2))) {
             if ("POST".equals(method)) { requirePermission(exchange, Permission.MANAGE_PROJECTS); registerArtifact(exchange, path.get(1)); return; }
             if ("GET".equals(method)) { listArtifacts(exchange, path.get(1)); return; }
+        }
+        if (path.size() == 3 && "projects".equals(path.get(0)) && "artifact-uploads".equals(path.get(2))
+                && "POST".equals(method)) {
+            requirePermission(exchange, Permission.MANAGE_PROJECTS);
+            initializeArtifactUpload(exchange, path.get(1));
+            return;
+        }
+        if (path.size() == 4 && "projects".equals(path.get(0)) && "artifact-uploads".equals(path.get(2))) {
+            requirePermission(exchange, Permission.MANAGE_PROJECTS);
+            if ("PUT".equals(method)) {
+                appendArtifactUpload(exchange, path.get(1), path.get(3));
+                return;
+            }
+            if ("DELETE".equals(method)) {
+                cancelArtifactUpload(exchange, path.get(1), path.get(3));
+                return;
+            }
+        }
+        if (path.size() == 5 && "projects".equals(path.get(0)) && "artifact-uploads".equals(path.get(2))
+                && "complete".equals(path.get(4)) && "POST".equals(method)) {
+            requirePermission(exchange, Permission.MANAGE_PROJECTS);
+            completeArtifactUpload(exchange, path.get(1), path.get(3));
+            return;
         }
         if (path.size() == 3 && "projects".equals(path.get(0)) && "entries".equals(path.get(2))
                 && "GET".equals(method)) {
@@ -677,6 +705,64 @@ public final class ControlPlaneServer implements AutoCloseable {
         store.registerArtifact(project, descriptor, actor(exchange).operatorId());
         if (idempotencyHeader != null) idempotentArtifacts.putIfAbsent(projectId + ":" + idempotencyHeader, descriptor.sha256());
         sendJson(exchange, 201, artifactMap(artifactDto(projectId, descriptor)));
+    }
+
+    private void initializeArtifactUpload(HttpExchange exchange, String projectId) throws IOException {
+        store.requireProject(projectId);
+        Map<String, Object> body = readObject(exchange);
+        String fileName = optionalText(body, "fileName", null);
+        String sha256 = optionalText(body, "sha256", null);
+        if (fileName == null || sha256 == null || !body.containsKey("sizeBytes")) {
+            throw new ApiException(400, "UPLOAD_METADATA_REQUIRED",
+                    "fileName, sizeBytes and sha256 are required");
+        }
+        long sizeBytes = positiveLong(body, "sizeBytes", -1);
+        ArtifactUploadService.UploadSession session =
+                artifactUploadService.initialize(projectId, fileName, sizeBytes, sha256);
+        sendJson(exchange, 201, uploadSessionMap(session));
+    }
+
+    private void appendArtifactUpload(HttpExchange exchange, String projectId,
+                                      String uploadId) throws IOException {
+        store.requireProject(projectId);
+        String rawOffset = query(exchange.getRequestURI(), "offset");
+        if (rawOffset == null) {
+            throw new ApiException(400, "OFFSET_REQUIRED", "offset query parameter is required");
+        }
+        long offset = nonNegativeLong(rawOffset, "offset");
+        String rawLength = exchange.getRequestHeaders().getFirst("Content-Length");
+        if (rawLength == null) {
+            throw new ApiException(411, "CONTENT_LENGTH_REQUIRED", "Content-Length is required");
+        }
+        long contentLength = parseContentLength(rawLength);
+        String chunkSha256 = exchange.getRequestHeaders().getFirst("X-Chunk-SHA256");
+        if (chunkSha256 == null) {
+            throw new ApiException(400, "CHUNK_DIGEST_REQUIRED", "X-Chunk-SHA256 is required");
+        }
+        ArtifactUploadService.UploadSession session = artifactUploadService.append(
+                projectId, uploadId, offset, contentLength, chunkSha256, exchange.getRequestBody());
+        sendJson(exchange, 200, uploadSessionMap(session));
+    }
+
+    private void completeArtifactUpload(HttpExchange exchange, String projectId,
+                                        String uploadId) throws IOException {
+        ControlPlaneStore.ProjectRecord project = store.requireProject(projectId);
+        Map<String, Object> body = readObject(exchange);
+        if (!requiredBoolean(body, "authorized")) {
+            throw new ApiException(403, "AUTHORIZATION_REQUIRED",
+                    "artifact upload completion requires explicit authorization");
+        }
+        ArtifactDescriptor descriptor = artifactUploadService.complete(projectId, uploadId);
+        store.registerArtifact(project, descriptor, actor(exchange).operatorId());
+        artifactUploadService.finish(projectId, uploadId);
+        sendJson(exchange, 201, artifactMap(artifactDto(projectId, descriptor)));
+    }
+
+    private void cancelArtifactUpload(HttpExchange exchange, String projectId,
+                                      String uploadId) throws IOException {
+        store.requireProject(projectId);
+        artifactUploadService.cancel(projectId, uploadId);
+        sendEmpty(exchange, 204);
     }
 
     private void listArtifacts(HttpExchange exchange, String projectId) throws IOException {
@@ -1576,6 +1662,21 @@ public final class ControlPlaneServer implements AutoCloseable {
         result.put("schemaVersion", ApiDtos.SCHEMA_VERSION); result.put(key, value); return result;
     }
 
+    private static Map<String, Object> uploadSessionMap(ArtifactUploadService.UploadSession session) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", ApiDtos.SCHEMA_VERSION);
+        result.put("uploadId", session.uploadId());
+        result.put("projectId", session.projectId());
+        result.put("fileName", session.fileName());
+        result.put("sizeBytes", session.sizeBytes());
+        result.put("sha256", session.sha256());
+        result.put("nextOffset", session.nextOffset());
+        result.put("expiresAt", session.expiresAt().toString());
+        result.put("recommendedChunkBytes", session.recommendedChunkBytes());
+        result.put("maxChunkBytes", session.maxChunkBytes());
+        return result;
+    }
+
     private static Map<String, Object> readObjectOrEmpty(String body) {
         if (body == null || body.isBlank()) return new LinkedHashMap<>();
         return JsonCodec.parseObject(body);
@@ -1613,6 +1714,16 @@ public final class ControlPlaneServer implements AutoCloseable {
     private static long parseContentLength(String value) {
         try { long result = Long.parseLong(value); if (result < 0) throw new NumberFormatException(); return result; }
         catch (NumberFormatException invalid) { throw new ApiException(400, "INVALID_LENGTH", "invalid Content-Length"); }
+    }
+
+    private static long nonNegativeLong(String value, String name) {
+        try {
+            long result = Long.parseLong(value);
+            if (result < 0) throw new NumberFormatException();
+            return result;
+        } catch (NumberFormatException invalid) {
+            throw new ApiException(400, "INVALID_FIELD", name + " must be a non-negative integer");
+        }
     }
 
     private static List<String> pathSegments(URI uri) {
@@ -1752,8 +1863,8 @@ public final class ControlPlaneServer implements AutoCloseable {
             exchange.getResponseHeaders().set("Vary", "Origin");
             exchange.getResponseHeaders().set("Access-Control-Allow-Credentials", "true");
         }
-        exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Sentinel-Authorization, Last-Event-ID, Idempotency-Key");
-        exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+        exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Authorization, X-Sentinel-Authorization, X-Chunk-SHA256, Last-Event-ID, Idempotency-Key");
+        exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     }
 
     private static boolean isLocalOrigin(String origin) {

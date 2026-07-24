@@ -190,6 +190,15 @@ export type RegisterArtifactRequest = {
   idempotencyKey?: string
 }
 
+export type UploadProgressHandler = (percent: number) => void
+
+export type UploadTask = Promise<ArtifactDto> & {
+  cancel: () => void
+}
+
+export const ARTIFACT_UPLOAD_CHUNK_BYTES = 1024 * 1024
+export const MAX_BROWSER_HASH_BYTES = 256 * 1024 * 1024
+
 export type CreateScanRequest = {
   artifactId?: string
   artifactDigest?: string
@@ -269,6 +278,25 @@ export class ApiUnavailableError extends Error {
   }
 }
 
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly requestId?: string
+  ) {
+    super(message)
+    this.name = 'ApiRequestError'
+  }
+}
+
+export class UploadCancelledError extends Error {
+  constructor() {
+    super('上传已取消')
+    this.name = 'UploadCancelledError'
+  }
+}
+
 export type ScanEventType =
   | 'ScanCreated'
   | 'TaskLeased'
@@ -311,6 +339,7 @@ export interface SentinelApi {
   deleteProject(projectId: string): Promise<void>
   listArtifacts(projectId: string): Promise<ArtifactDto[]>
   registerArtifact(request: RegisterArtifactRequest | string, projectId?: string): Promise<ArtifactDto>
+  uploadArtifact(file: File, projectId: string, onProgress: UploadProgressHandler): UploadTask
   updateArtifact(projectId: string, artifactId: string, request: UpdateArtifactRequest): Promise<ArtifactDto>
   deleteArtifact(projectId: string, artifactId: string): Promise<void>
   listScans(projectId: string): Promise<ScanDto[]>
@@ -822,6 +851,71 @@ const mutationHeaders = (token: string | undefined, idempotencyKey: string): Hea
 
 type FetchLike = typeof fetch
 
+const sha256Hex = async (blob: Blob): Promise<string> => {
+  if (!globalThis.crypto?.subtle) throw new Error('当前浏览器不支持 Web Crypto SHA-256')
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+const boundedErrorText = async (response: Response, maxBytes = 8192): Promise<string | undefined> => {
+  const declaredLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) return undefined
+  if (!response.body) {
+    const text = await response.text()
+    return text.length <= maxBytes ? text : undefined
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let total = 0
+  let text = ''
+  try {
+    while (true) {
+      const part = await reader.read()
+      if (part.done) break
+      total += part.value.byteLength
+      if (total > maxBytes) {
+        await reader.cancel()
+        return undefined
+      }
+      text += decoder.decode(part.value, { stream: true })
+    }
+    text += decoder.decode()
+    return text
+  } catch {
+    return undefined
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+const safeErrorField = (value: unknown, maxLength: number): string | undefined => {
+  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength || /[\u0000-\u001f\u007f-\u009f]/.test(value)) return undefined
+  return value
+}
+
+const parseAllowlistedError = async (response: Response): Promise<{ code?: string; message?: string; requestId?: string }> => {
+  if (response.status !== 422 || !response.headers.get('content-type')?.toLowerCase().includes('application/json')) return {}
+  const text = await boundedErrorText(response)
+  if (!text) return {}
+  try {
+    const value: unknown = JSON.parse(text)
+    if (!isRecord(value)) return {}
+    const code = safeErrorField(value.code, 64)
+    const message = safeErrorField(value.message, 512)
+    const requestId = safeErrorField(value.requestId, 128)
+    return {
+      code: code && /^[A-Za-z0-9_.-]+$/.test(code) ? code : undefined,
+      message,
+      requestId: requestId && /^[A-Za-z0-9_.:-]+$/.test(requestId) ? requestId : undefined
+    }
+  } catch {
+    return {}
+  }
+}
+
+const uploadTask = (promise: Promise<ArtifactDto>, controller: AbortController): UploadTask =>
+  Object.assign(promise, { cancel: () => controller.abort() })
+
 export class HttpSentinelApi implements SentinelApi {
   readonly mode: ApiMode = 'control-plane'
   private readonly fetchFn: FetchLike
@@ -846,13 +940,17 @@ export class HttpSentinelApi implements SentinelApi {
     try {
       response = await this.fetchFn(this.url(path), init)
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') throw new UploadCancelledError()
       throw new ApiUnavailableError(operation, undefined, { cause: error })
     }
     if (response.ok === false || (typeof response.status === 'number' && response.status >= 400)) {
-      // Do not include response bodies: they may contain source, credentials or
-      // unsanitized model output. Status is enough for the UI and audit log.
+      // Only a small, allowlisted JSON shape from validation failures is safe
+      // to render. HTML and arbitrary response fields are never propagated.
+      const detail = await parseAllowlistedError(response)
       if ([404, 405, 501, 502, 503, 504].includes(response.status)) throw new ApiUnavailableError(operation, response.status)
-      throw new Error(`${operation} failed: ${response.status}`)
+      const requestSuffix = detail.requestId ? `（请求 ${detail.requestId}）` : ''
+      const codeSuffix = detail.code ? ` [${detail.code}]` : ''
+      throw new ApiRequestError(detail.message ? `${detail.message}${codeSuffix}${requestSuffix}` : `${operation} failed: ${response.status}`, response.status, detail.code, detail.requestId)
     }
     if (response.status === 204) return {}
     try {
@@ -918,6 +1016,85 @@ export class HttpSentinelApi implements SentinelApi {
       method: 'POST', credentials: 'include', headers: mutationHeaders(this.token, requestKey), body: JSON.stringify(wireBody)
     }, 'register artifact')
     return parseArtifact(response)
+  }
+
+  uploadArtifact(file: File, projectId: string, onProgress: UploadProgressHandler): UploadTask {
+    const controller = new AbortController()
+    const promise = this.performArtifactUpload(file, projectId, onProgress, controller.signal)
+    return uploadTask(promise, controller)
+  }
+
+  private async performArtifactUpload(file: File, projectId: string, onProgress: UploadProgressHandler, signal: AbortSignal): Promise<ArtifactDto> {
+    if (!(file instanceof File)) throw new Error('请选择要上传的制品文件')
+    const type = file.name.split('.').pop()?.toUpperCase()
+    if (type !== 'JAR' && type !== 'WAR' && type !== 'CLASS') throw new Error('仅支持 .jar、.war 或 .class 文件')
+    if (file.size <= 0) throw new Error('不能上传空文件')
+    if (file.size > MAX_BROWSER_HASH_BYTES) throw new Error(`文件超过浏览器摘要上限 ${MAX_BROWSER_HASH_BYTES / 1024 / 1024} MiB；请使用高级/兼容方式登记`)
+    if (typeof onProgress !== 'function') throw new Error('upload progress handler is required')
+
+    let uploadId: string | undefined
+    let completed = false
+    try {
+      if (signal.aborted) throw new UploadCancelledError()
+      onProgress(0)
+      const fileSha256 = await sha256Hex(file)
+      if (signal.aborted) throw new UploadCancelledError()
+      const initialized = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/artifact-uploads`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: mutationHeaders(this.token, generatedIdempotencyKey()),
+        body: JSON.stringify({ fileName: file.name, sizeBytes: file.size, sha256: fileSha256 }),
+        signal
+      }, 'initialize artifact upload')
+      const session = unwrap(initialized, 'upload')
+      if (!isRecord(session)) throw new Error('invalid artifact upload response')
+      uploadId = asText(session.uploadId, 'upload.uploadId')
+      if (session.recommendedChunkBytes !== undefined && asSafeInteger(session.recommendedChunkBytes, 'upload.recommendedChunkBytes', 1) !== ARTIFACT_UPLOAD_CHUNK_BYTES) {
+        throw new Error('unsupported artifact upload chunk size')
+      }
+      const uploadPath = `projects/${encodeURIComponent(projectId)}/artifact-uploads/${encodeURIComponent(uploadId)}`
+
+      for (let offset = 0; offset < file.size; offset += ARTIFACT_UPLOAD_CHUNK_BYTES) {
+        if (signal.aborted) throw new UploadCancelledError()
+        const chunk = file.slice(offset, Math.min(offset + ARTIFACT_UPLOAD_CHUNK_BYTES, file.size))
+        const chunkSha256 = await sha256Hex(chunk)
+        await this.request(`${uploadPath}?offset=${offset}`, {
+          method: 'PUT',
+          credentials: 'include',
+          headers: {
+            ...jsonHeaders(this.token),
+            'Content-Type': 'application/octet-stream',
+            'X-Chunk-SHA256': chunkSha256
+          },
+          body: chunk,
+          signal
+        }, 'upload artifact chunk')
+        onProgress(Math.min(99, Math.round(((offset + chunk.size) / file.size) * 100)))
+      }
+
+      const result = await this.request(`${uploadPath}/complete`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: mutationHeaders(this.token, generatedIdempotencyKey()),
+        body: JSON.stringify({ authorized: true }),
+        signal
+      }, 'complete artifact upload')
+      completed = true
+      onProgress(100)
+      return parseArtifact(result)
+    } finally {
+      if (uploadId && !completed) {
+        try {
+          await this.request(`projects/${encodeURIComponent(projectId)}/artifact-uploads/${encodeURIComponent(uploadId)}`, {
+            method: 'DELETE',
+            credentials: 'include',
+            headers: mutationHeaders(this.token, generatedIdempotencyKey())
+          }, 'cancel artifact upload')
+        } catch {
+          // Cancellation is best-effort and must not hide the original error.
+        }
+      }
+    }
   }
 
   async updateArtifact(projectId: string, artifactId: string, request: UpdateArtifactRequest): Promise<ArtifactDto> {
@@ -1176,6 +1353,11 @@ export class MockSentinelApi implements SentinelApi {
   async registerArtifact(request: RegisterArtifactRequest | string, _projectId?: string): Promise<ArtifactDto> {
     const path = typeof request === 'string' ? request : request.path
     return { schemaVersion: 1, artifactId: 'demo-artifact', type: 'JAR', artifactDigest: '0'.repeat(64), sizeBytes: 0, staticOnly: true, verificationStatus: 'STATIC_INFERRED', registeredAt: new Date(0).toISOString(), projectId: 'project-01' }
+  }
+
+  uploadArtifact(): UploadTask {
+    const controller = new AbortController()
+    return uploadTask(Promise.reject(new ApiUnavailableError('artifact upload (demo adapter)')), controller)
   }
 
   async updateArtifact(): Promise<ArtifactDto> { return this.unavailable('update artifact') }
