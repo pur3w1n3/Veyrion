@@ -84,15 +84,18 @@ public final class ManagementConfigurationAcceptanceTest {
                     "PATCH", "{\"providerId\":\"" + providerId + "\",\"model\":\"model-a\"}",
                     bootstrap).statusCode() == 404, "cross-project role write is rejected");
 
+            check(send(client, uri(server, "/projects/" + projectId + "/ai-jobs"), "POST",
+                    "{\"role\":\"PRE_ANALYSIS\"}", bootstrap).statusCode() == 403,
+                    "AI job requires explicit request authorization");
             Map<String, Object> job = ok(send(client,
                     uri(server, "/projects/" + projectId + "/ai-jobs"), "POST",
-                    "{\"role\":\"PRE_ANALYSIS\"}", bootstrap));
+                    "{\"role\":\"PRE_ANALYSIS\",\"authorized\":true}", bootstrap));
             jobId = text(job, "aiJobId");
             check("BLOCKED".equals(job.get("status"))
-                            && "PROVIDER_EXECUTION_DISABLED".equals(job.get("errorCode")),
-                    "AI job is explicitly blocked");
-            check(job.get("stages") instanceof List<?> stages && stages.size() == 4,
-                    "AI job contains the versioned four-stage flow");
+                            && "SCAN_REQUIRED".equals(job.get("errorCode")),
+                    "AI job without a persisted scan is explicitly blocked");
+            check(job.get("stages") instanceof List<?> stages && stages.size() == 1,
+                    "AI job contains only its requested, versioned role stage");
             check(!job.toString().contains("VERIFIED"), "AI job never fabricates VERIFIED output");
 
             Map<String, Object> audits = ok(send(client, uri(server,

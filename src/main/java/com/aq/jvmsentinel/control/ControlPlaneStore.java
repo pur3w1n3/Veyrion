@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 /**
  * Bounded Control Plane store with injectable in-memory or SQLite persistence.
@@ -152,11 +153,16 @@ public class ControlPlaneStore {
         SQLiteControlPlanePersistence.StoredSecret secret = null;
         if (apiKey != null) {
             validateManagementText(apiKey, "apiKey");
-            long version = persistence.findProviderSecret(providerId)
-                    .map(value -> value.scope().credentialVersion() + 1).orElse(1L);
+            SQLiteControlPlanePersistence.StoredSecret existingSecret =
+                    persistence.findProviderSecret(providerId).orElse(null);
+            long version = existingSecret == null ? 1L
+                    : existingSecret.scope().credentialVersion() + 1;
+            String credentialId = existingSecret == null
+                    ? "provider-api-key-" + sha256(providerId).substring(0, 32)
+                    : existingSecret.scope().credentialId();
             ProviderSecretCipher.SecretScope scope = new ProviderSecretCipher.SecretScope(
                     SQLiteControlPlanePersistence.LOCAL_WORKSPACE, providerId,
-                    "provider-api-key", version);
+                    credentialId, version);
             byte[] plaintext = apiKey.getBytes(StandardCharsets.UTF_8);
             try {
                 secret = new SQLiteControlPlanePersistence.StoredSecret(
@@ -175,6 +181,23 @@ public class ControlPlaneStore {
                 .orElseThrow(() -> new MissingRecordException("provider credential not found"));
         byte[] plaintext = providerCipher.decrypt(rootKey, stored.scope(), stored.encrypted());
         Arrays.fill(plaintext, (byte) 0);
+    }
+
+    /**
+     * Decrypts a provider credential only for the duration of the supplied operation.
+     * The operation must not retain the array; this method clears it on every exit path.
+     */
+    public <T> T withProviderCredential(String providerId, Function<byte[], T> operation) {
+        requirePersistentManagement();
+        Objects.requireNonNull(operation, "operation");
+        SQLiteControlPlanePersistence.StoredSecret stored = persistence.findProviderSecret(providerId)
+                .orElseThrow(() -> new MissingRecordException("provider credential not found"));
+        byte[] plaintext = providerCipher.decrypt(rootKey, stored.scope(), stored.encrypted());
+        try {
+            return operation.apply(plaintext);
+        } finally {
+            Arrays.fill(plaintext, (byte) 0);
+        }
     }
 
     public void deleteProvider(String providerId, String actorId, String now) {
@@ -208,34 +231,85 @@ public class ControlPlaneStore {
     }
 
     public SQLiteControlPlanePersistence.AiJobData createAiJob(
-            String projectId, AgentRole requestedRole, String actorId, String now) {
+            String projectId, AgentRole requestedRole, boolean authorized, String actorId, String now) {
         requireProject(projectId);
         requirePersistentManagement();
+        if (!authorized) throw new SecurityException("explicit AI job authorization is required");
         String jobId = "ai-job-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
-        List<Map<String, Object>> stages = new ArrayList<>();
-        for (AgentRole role : AgentRole.values()) {
-            var binding = persistence.findRoleBinding(projectId, role);
-            Map<String, Object> stage = new LinkedHashMap<>();
-            stage.put("schemaVersion", 1);
-            stage.put("role", role.name());
-            stage.put("status", "BLOCKED");
-            stage.put("errorCode", "PROVIDER_EXECUTION_DISABLED");
-            binding.ifPresent(value -> {
-                stage.put("providerId", value.providerId());
-                stage.put("model", value.model());
-            });
-            stages.add(stage);
+        var binding = persistence.findRoleBinding(projectId, requestedRole).orElse(null);
+        var provider = binding == null ? null : persistence.findProvider(binding.providerId()).orElse(null);
+        ProjectRecord project = requireProject(projectId);
+        ScanRecord scan = project.latestScanId() == null ? null : scan(project.latestScanId());
+        String reason = null;
+        if (binding == null) reason = "ROLE_BINDING_REQUIRED";
+        else if (provider == null) reason = "PROVIDER_NOT_FOUND";
+        else if (!provider.enabled()) reason = "PROVIDER_DISABLED";
+        else if (!provider.hasCredential()) reason = "PROVIDER_CREDENTIAL_REQUIRED";
+        else if (provider.kind() != ProviderContracts.ProviderKind.OPENAI_CHAT
+                && provider.kind() != ProviderContracts.ProviderKind.ANTHROPIC_MESSAGES
+                && provider.kind() != ProviderContracts.ProviderKind.OPENAI_COMPATIBLE) {
+            reason = "PROVIDER_PROTOCOL_UNSUPPORTED";
+        } else if (scan == null) reason = "SCAN_REQUIRED";
+        String status = reason == null ? "QUEUED" : "BLOCKED";
+        Map<String, Object> stage = new LinkedHashMap<>();
+        stage.put("schemaVersion", 1);
+        stage.put("role", requestedRole.name());
+        stage.put("status", status);
+        if (reason != null) stage.put("errorCode", reason);
+        if (binding != null) {
+            stage.put("providerId", binding.providerId());
+            stage.put("model", binding.model());
         }
+        List<Map<String, Object>> stages = List.of(stage);
         String stagesJson = JsonCodec.stringify(stages);
+        Map<String, Object> policySnapshot = new LinkedHashMap<>();
+        policySnapshot.put("schemaVersion", 1);
+        policySnapshot.put("maxRounds", 4);
+        policySnapshot.put("maxToolCalls", 4);
+        policySnapshot.put("maxOutputTokens", 2048);
+        policySnapshot.put("maxResponseBytes", 1_048_576);
+        policySnapshot.put("requestTimeoutSeconds", 15);
+        policySnapshot.put("parallelToolCalls", false);
+        if (binding != null) {
+            policySnapshot.put("providerId", binding.providerId());
+            policySnapshot.put("model", binding.model());
+            policySnapshot.put("roleBindingUpdatedAt", binding.updatedAt());
+        }
+        if (provider != null) {
+            policySnapshot.put("providerKind", provider.kind().name());
+            policySnapshot.put("providerBaseUrl", provider.baseUrl());
+            policySnapshot.put("providerConfigurationUpdatedAt", provider.updatedAt());
+        }
+        String policy = JsonCodec.stringify(policySnapshot);
         SQLiteControlPlanePersistence.AiJobData job = new SQLiteControlPlanePersistence.AiJobData(
-                jobId, projectId, requestedRole, "BLOCKED", "PROVIDER_EXECUTION_DISABLED",
-                stagesJson, now, now);
-        persistence.saveAiJob(job, actorId, "ai-job.create");
+                jobId, SQLiteControlPlanePersistence.LOCAL_WORKSPACE, projectId,
+                scan == null ? null : scan.dto().scanId(),
+                scan == null ? null : scan.dto().artifactDigest(), requestedRole,
+                binding == null ? null : binding.providerId(), binding == null ? null : binding.model(),
+                policy, true, status, reason == null ? "QUEUED" : reason, stagesJson,
+                null, 0, 0, "[]", null, now, now);
+        persistence.saveAiJob(job, actorId, status.equals("QUEUED") ? "ai-job.queued" : "ai-job.blocked");
         return job;
     }
 
+    public SQLiteControlPlanePersistence.AiJobData updateAiJob(
+            SQLiteControlPlanePersistence.AiJobData existing, String status, String stopReason,
+            String stagesJson, String providerRequestId, long elapsedMillis, int rounds,
+            String toolSummaryJson, String conclusionJson, String actorId, String action, String now) {
+        requirePersistentManagement();
+        SQLiteControlPlanePersistence.AiJobData updated = new SQLiteControlPlanePersistence.AiJobData(
+                existing.aiJobId(), existing.workspaceId(), existing.projectId(), existing.scanId(),
+                existing.artifactDigest(), existing.role(), existing.providerId(), existing.model(),
+                existing.policySnapshotJson(), existing.authorized(), status, stopReason, stagesJson,
+                providerRequestId, Math.max(0, elapsedMillis), Math.max(0, rounds),
+                toolSummaryJson == null ? "[]" : toolSummaryJson, conclusionJson,
+                existing.createdAt(), now);
+        persistence.saveAiJob(updated, actorId, action);
+        return updated;
+    }
+
     public List<SQLiteControlPlanePersistence.AiJobData> aiJobs(String projectId) {
-        requireProject(projectId);
+        if (projectId != null) requireProject(projectId);
         requirePersistentManagement();
         return persistence.listAiJobs(projectId);
     }
@@ -247,15 +321,21 @@ public class ControlPlaneStore {
 
     public SQLiteControlPlanePersistence.AiJobData cancelAiJob(String jobId, String actorId, String now) {
         SQLiteControlPlanePersistence.AiJobData existing = requireAiJob(jobId);
-        SQLiteControlPlanePersistence.AiJobData cancelled = new SQLiteControlPlanePersistence.AiJobData(
-                existing.aiJobId(), existing.projectId(), existing.role(), "CANCELLED", existing.errorCode(),
-                existing.stagesJson(), existing.createdAt(), now);
-        persistence.saveAiJob(cancelled, actorId, "ai-job.cancel");
-        return cancelled;
+        if ("COMPLETED".equals(existing.status()) || "FAILED".equals(existing.status())
+                || "CANCELLED".equals(existing.status()) || "BLOCKED".equals(existing.status())) {
+            return existing;
+        }
+        return updateAiJob(existing, "CANCELLED", "USER_CANCELLED", existing.stagesJson(),
+                existing.providerRequestId(), existing.elapsedMillis(), existing.rounds(),
+                existing.toolSummaryJson(), null, actorId, "ai-job.cancel", now);
     }
 
     public void deleteAiJob(String jobId, String actorId, String now) {
-        persistence.deleteAiJob(requireAiJob(jobId), actorId, now);
+        SQLiteControlPlanePersistence.AiJobData existing = requireAiJob(jobId);
+        if ("QUEUED".equals(existing.status()) || "RUNNING".equals(existing.status())) {
+            throw new IllegalStateException("active AI job must be cancelled before deletion");
+        }
+        persistence.deleteAiJob(existing, actorId, now);
     }
 
     public List<SQLiteControlPlanePersistence.AuditData> auditEvents(String projectId) {

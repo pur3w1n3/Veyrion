@@ -45,7 +45,9 @@ public final class SQLiteControlPlanePersistence {
     private static final int BUSY_TIMEOUT_MILLIS = 5_000;
     private static final List<String> MIGRATIONS = List.of(
             "db/migration/V001__control_plane.sql",
-            "db/migration/V002__management_configuration.sql");
+            "db/migration/V002__management_configuration.sql",
+            "db/migration/V003__provider_protocols.sql",
+            "db/migration/V004__bounded_ai_jobs.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 
@@ -427,20 +429,29 @@ public final class SQLiteControlPlanePersistence {
 
     public void saveAiJob(AiJobData job, String actorId, String action) {
         transaction("could not save AI job", connection -> {
-            update(connection, "INSERT INTO ai_jobs(ai_job_id,project_id,role,status,error_code,stages_json,"
-                            + "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)"
+            update(connection, "INSERT INTO ai_jobs(ai_job_id,workspace_id,project_id,scan_id,artifact_digest,"
+                            + "role,provider_id,model,policy_snapshot_json,authorized,status,stop_reason,stages_json,"
+                            + "provider_request_id,elapsed_ms,rounds,tool_summary_json,conclusion_json,created_at,updated_at)"
+                            + " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
                             + " ON CONFLICT(ai_job_id) DO UPDATE SET status=excluded.status,"
-                            + "error_code=excluded.error_code,stages_json=excluded.stages_json,"
-                            + "updated_at=excluded.updated_at",
-                    job.aiJobId(), job.projectId(), job.role().name(), job.status(), job.errorCode(),
-                    job.stagesJson(), job.createdAt(), job.updatedAt());
+                            + "stop_reason=excluded.stop_reason,stages_json=excluded.stages_json,"
+                            + "provider_request_id=excluded.provider_request_id,elapsed_ms=excluded.elapsed_ms,"
+                            + "rounds=excluded.rounds,tool_summary_json=excluded.tool_summary_json,"
+                            + "conclusion_json=excluded.conclusion_json,updated_at=excluded.updated_at",
+                    job.aiJobId(), job.workspaceId(), job.projectId(), job.scanId(), job.artifactDigest(),
+                    job.role().name(), job.providerId(), job.model(), job.policySnapshotJson(),
+                    job.authorized() ? 1 : 0, job.status(), job.stopReason(), job.stagesJson(),
+                    job.providerRequestId(), job.elapsedMillis(), job.rounds(), job.toolSummaryJson(),
+                    job.conclusionJson(), job.createdAt(), job.updatedAt());
             audit(connection, job.projectId(), actorId, action, "ai-job", job.aiJobId(),
                     "{\"status\":\"" + job.status() + "\"}", job.updatedAt());
         });
     }
 
     public List<AiJobData> listAiJobs(String projectId) {
-        String sql = "SELECT ai_job_id,project_id,role,status,error_code,stages_json,created_at,updated_at"
+        String sql = "SELECT ai_job_id,workspace_id,project_id,scan_id,artifact_digest,role,provider_id,model,"
+                + "policy_snapshot_json,authorized,status,stop_reason,stages_json,provider_request_id,"
+                + "elapsed_ms,rounds,tool_summary_json,conclusion_json,created_at,updated_at"
                 + " FROM ai_jobs" + (projectId == null ? "" : " WHERE project_id=?")
                 + " ORDER BY created_at,ai_job_id";
         try (Connection connection = open(); PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -673,8 +684,12 @@ public final class SQLiteControlPlanePersistence {
     }
 
     private static AiJobData job(ResultSet rows) throws SQLException {
-        return new AiJobData(rows.getString(1), rows.getString(2), AgentRole.valueOf(rows.getString(3)),
-                rows.getString(4), rows.getString(5), rows.getString(6), rows.getString(7), rows.getString(8));
+        return new AiJobData(rows.getString(1), rows.getString(2), rows.getString(3),
+                rows.getString(4), rows.getString(5), AgentRole.valueOf(rows.getString(6)),
+                rows.getString(7), rows.getString(8), rows.getString(9), rows.getInt(10) != 0,
+                rows.getString(11), rows.getString(12), rows.getString(13), rows.getString(14),
+                rows.getLong(15), rows.getInt(16), rows.getString(17), rows.getString(18),
+                rows.getString(19), rows.getString(20));
     }
 
     private String write(Object value) {
@@ -766,8 +781,12 @@ public final class SQLiteControlPlanePersistence {
     public record StoredSecret(SecretScope scope, EncryptedSecret encrypted) { }
     public record RoleBindingData(String projectId, AgentRole role, String providerId,
                                   String model, String updatedAt) { }
-    public record AiJobData(String aiJobId, String projectId, AgentRole role, String status,
-                            String errorCode, String stagesJson, String createdAt, String updatedAt) { }
+    public record AiJobData(String aiJobId, String workspaceId, String projectId, String scanId,
+                            String artifactDigest, AgentRole role, String providerId, String model,
+                            String policySnapshotJson, boolean authorized, String status,
+                            String stopReason, String stagesJson, String providerRequestId,
+                            long elapsedMillis, int rounds, String toolSummaryJson,
+                            String conclusionJson, String createdAt, String updatedAt) { }
     public record AuditData(String auditEventId, String projectId, String operatorId, String action,
                             String targetType, String targetId, String outcome, String detailsJson,
                             String createdAt) { }

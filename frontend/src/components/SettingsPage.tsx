@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { api, type AiJobDto, type AiRole, type ProviderDto, type ProviderKind, type RoleAssignmentDto } from '../api'
+import { api, type AiJobDto, type AiRole, type ProviderDto, type ProviderKind, type ProviderModelInventoryDto, type RoleAssignmentDto } from '../api'
 import { errorMessage, Notice, PageHeader } from './Common'
 
 const roles: Array<{ id: AiRole; name: string; description: string }> = [
@@ -9,10 +9,20 @@ const roles: Array<{ id: AiRole; name: string; description: string }> = [
   { id: 'REPORT_GENERATION', name: '报告生成', description: '汇总证据等级、限制与未覆盖区域' }
 ]
 
+const providerKindLabel = (kind: ProviderKind) => {
+  if (kind === 'OPENAI_COMPATIBLE') return 'OPENAI_COMPATIBLE（旧类型兼容）'
+  if (kind === 'AZURE_OPENAI') return 'AZURE_OPENAI（不支持模型清单）'
+  if (kind === 'LOCAL') return 'LOCAL（旧类型兼容）'
+  return kind
+}
+
 export function SettingsPage({ projectId, theme, onTheme }: { projectId: string; theme: 'light' | 'dark'; onTheme: () => void }) {
   const [providers, setProviders] = useState<ProviderDto[]>([])
   const [assignments, setAssignments] = useState<RoleAssignmentDto[]>([])
   const [jobs, setJobs] = useState<AiJobDto[]>([])
+  const [inventories, setInventories] = useState<Record<string, ProviderModelInventoryDto>>({})
+  const [roleProviders, setRoleProviders] = useState<Partial<Record<AiRole, string>>>({})
+  const [loadingProvider, setLoadingProvider] = useState<string>()
   const [error, setError] = useState<string>()
   const [message, setMessage] = useState<string>()
   const keyRef = useRef<HTMLInputElement>(null)
@@ -25,7 +35,10 @@ export function SettingsPage({ projectId, theme, onTheme }: { projectId: string;
       projectId ? api.listAiJobs(projectId) : Promise.resolve([])
     ])
     if (results[0].status === 'fulfilled') setProviders(results[0].value)
-    if (results[1].status === 'fulfilled') setAssignments(results[1].value)
+    if (results[1].status === 'fulfilled') {
+      setAssignments(results[1].value)
+      setRoleProviders(Object.fromEntries(results[1].value.map((item) => [item.role, item.providerId])))
+    }
     if (results[2].status === 'fulfilled') setJobs(results[2].value)
     const rejected = results.find((item): item is PromiseRejectedResult => item.status === 'rejected')
     if (rejected) setError(errorMessage(rejected.reason))
@@ -54,16 +67,26 @@ export function SettingsPage({ projectId, theme, onTheme }: { projectId: string;
     })
   }
 
-  const assign = (role: AiRole, providerId: string) => {
-    if (!projectId || !providerId) return
+  const fetchModels = (providerId: string) => {
+    setError(undefined); setMessage(undefined); setLoadingProvider(providerId)
+    void api.refreshProviderModels(providerId).then((inventory) => {
+      setInventories((current) => ({ ...current, [providerId]: inventory }))
+      setMessage(`已获取 ${inventory.models.length} 个 inventory-only 模型；未自动启用或绑定`)
+    }).catch((cause) => setError(errorMessage(cause))).finally(() => setLoadingProvider(undefined))
+  }
+
+  const assign = (role: AiRole, providerId: string, providerModelName: string) => {
+    if (!projectId || !providerId || !providerModelName) return
     setError(undefined)
-    void api.saveRoleAssignment(projectId, role, { providerId }).then(refresh).catch((cause) => setError(errorMessage(cause)))
+    void api.saveRoleAssignment(projectId, role, { providerId, model: providerModelName })
+      .then(refresh).catch((cause) => setError(errorMessage(cause)))
   }
 
   const startJob = (role: AiRole) => {
     if (!projectId) return
+    if (!window.confirm('确认授权该 AI Job 使用当前项目已持久化、受限且可能发送至远端 Provider 的脱敏事实？')) return
     setError(undefined)
-    void api.createAiJob(projectId, { role }).then(refresh).catch((cause) => setError(errorMessage(cause)))
+    void api.createAiJob(projectId, { role, authorized: true }).then(refresh).catch((cause) => setError(errorMessage(cause)))
   }
 
   return <section>
@@ -82,19 +105,24 @@ export function SettingsPage({ projectId, theme, onTheme }: { projectId: string;
       <article className="panel">
         <div className="panel-head"><div><p className="eyebrow">PROVIDER</p><h2>新增模型服务</h2></div><span>{providers.length}</span></div>
         <form className="stack-form" onSubmit={saveProvider} autoComplete="off">
-          <div className="form-grid"><label className="field"><span>名称</span><input required name="name" /></label><label className="field"><span>类型</span><select name="kind"><option>OPENAI_COMPATIBLE</option><option>AZURE_OPENAI</option><option>LOCAL</option></select></label></div>
+          <div className="form-grid"><label className="field"><span>名称</span><input required name="name" /></label><label className="field"><span>类型</span><select name="kind"><option>OPENAI_CHAT</option><option>ANTHROPIC_MESSAGES</option><option>OPENAI_COMPATIBLE</option><option>AZURE_OPENAI</option><option>LOCAL</option></select></label></div>
           <label className="field"><span>Base URL</span><input name="baseUrl" type="url" placeholder="由后端执行 allowlist 校验" /></label>
           <div className="form-grid"><label className="field"><span>默认模型</span><input name="model" /></label><label className="field"><span>API Key</span><input ref={keyRef} name="apiKey" type="password" autoComplete="new-password" /></label></div>
           <p className="form-help">提交成功或失败后，密钥输入都会立即清空。</p>
           <button className="primary-button">保存 Provider</button>
         </form>
+        <div className="card-list section-gap">{providers.map((provider) => <div className="list-card" key={provider.providerId}><div><strong>{provider.name}</strong><small>{providerKindLabel(provider.kind)} · {provider.enabled ? '已启用' : '已禁用'} · {provider.hasCredential ? '凭据已配置' : '无凭据'}</small></div><button className="secondary-button" type="button" disabled={loadingProvider === provider.providerId || !provider.enabled || !provider.hasCredential || provider.kind === 'AZURE_OPENAI'} onClick={() => fetchModels(provider.providerId)}>{loadingProvider === provider.providerId ? '获取中…' : '获取模型'}</button></div>)}</div>
       </article>
     </div>
     <article className="panel section-gap">
       <div className="panel-head"><div><p className="eyebrow">ROLE ASSIGNMENTS</p><h2>AI 四角色分配</h2></div><span>{projectId || 'NO PROJECT'}</span></div>
       <div className="role-grid">{roles.map((role) => {
         const assignment = assignments.find((item) => item.role === role.id)
-        return <article className="role-card" key={role.id}><span>{role.id}</span><strong>{role.name}</strong><p>{role.description}</p><label className="field"><span>Provider</span><select value={assignment?.providerId ?? ''} disabled={!projectId} onChange={(event) => assign(role.id, event.target.value)}><option value="">未分配</option>{providers.map((provider) => <option value={provider.providerId} key={provider.providerId}>{provider.name}</option>)}</select></label><button className="secondary-button" disabled={!assignment} onClick={() => startJob(role.id)}>创建 AI Job</button></article>
+        const selectedProvider = roleProviders[role.id] ?? assignment?.providerId ?? ''
+        const inventoryModels = inventories[selectedProvider]?.models ?? []
+        const assignedModel = assignment?.providerId === selectedProvider ? assignment.model : undefined
+        const hasLegacyAssignment = assignedModel && !inventoryModels.some((item) => item.providerModelName === assignedModel)
+        return <article className="role-card" key={role.id}><span>{role.id}</span><strong>{role.name}</strong><p>{role.description}</p><label className="field"><span>Provider</span><select value={selectedProvider} disabled={!projectId} onChange={(event) => setRoleProviders((current) => ({ ...current, [role.id]: event.target.value }))}><option value="">未分配</option>{providers.map((provider) => <option value={provider.providerId} key={provider.providerId}>{provider.name} · {providerKindLabel(provider.kind)}</option>)}</select></label><label className="field"><span>providerModelName</span><select value={assignedModel ?? ''} disabled={!projectId || !selectedProvider} onChange={(event) => assign(role.id, selectedProvider, event.target.value)}><option value="">{inventoryModels.length ? '选择 inventory-only 模型' : '请先获取模型'}</option>{hasLegacyAssignment && <option value={assignedModel}>{assignedModel}（旧绑定兼容）</option>}{inventoryModels.map((model) => <option value={model.providerModelName} key={model.modelId}>{model.providerModelName}</option>)}</select></label><button className="secondary-button" disabled={!assignment} onClick={() => startJob(role.id)}>创建 AI Job</button></article>
       })}</div>
     </article>
     <article className="panel section-gap">

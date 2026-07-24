@@ -219,7 +219,7 @@ export type UpdateProjectRequest = { name: string }
 export type UpdateArtifactRequest = { label?: string }
 export type UpdateScanRequest = { action: 'cancel' | 'resume' }
 
-export type ProviderKind = 'OPENAI_COMPATIBLE' | 'AZURE_OPENAI' | 'LOCAL'
+export type ProviderKind = 'OPENAI_CHAT' | 'ANTHROPIC_MESSAGES' | 'OPENAI_COMPATIBLE' | 'AZURE_OPENAI' | 'LOCAL'
 export type ProviderDto = {
   schemaVersion: number
   providerId: string
@@ -238,6 +238,24 @@ export type SaveProviderRequest = {
   model?: string
   apiKey?: string
   enabled?: boolean
+}
+
+export type ProviderInventoryModelDto = {
+  schemaVersion: number
+  modelId: string
+  providerId: string
+  providerModelName: string
+  contextWindowTokens: 0
+  enabled: false
+}
+export type ProviderModelInventoryDto = {
+  schemaVersion: number
+  workspaceId: string
+  providerId: string
+  protocol: 'OPENAI_CHAT' | 'ANTHROPIC_MESSAGES'
+  semantics: 'REMOTE_INVENTORY_ONLY'
+  fetchedAt: string
+  models: ProviderInventoryModelDto[]
 }
 
 export type AiRole = 'PRE_ANALYSIS' | 'PATH_EXPLORATION' | 'VULNERABILITY_TRIAGE' | 'REPORT_GENERATION'
@@ -266,6 +284,7 @@ export type AiJobDto = {
 }
 export type CreateAiJobRequest = {
   role: AiRole
+  authorized: true
   scanId?: string
   artifactId?: string
   instruction?: string
@@ -350,6 +369,7 @@ export interface SentinelApi {
   createProvider(request: SaveProviderRequest): Promise<ProviderDto>
   updateProvider(providerId: string, request: Partial<SaveProviderRequest>): Promise<ProviderDto>
   deleteProvider(providerId: string): Promise<void>
+  refreshProviderModels(providerId: string): Promise<ProviderModelInventoryDto>
   listRoleAssignments(projectId: string): Promise<RoleAssignmentDto[]>
   saveRoleAssignment(projectId: string, role: AiRole, request: SaveRoleAssignmentRequest): Promise<RoleAssignmentDto>
   deleteRoleAssignment(projectId: string, role: AiRole): Promise<void>
@@ -713,7 +733,7 @@ export const parseProvider = (value: unknown): ProviderDto => {
   const body = unwrap(value, 'provider')
   if (!isRecord(body)) throw new Error('invalid provider response')
   const kind = asText(body.kind, 'provider.kind') as ProviderKind
-  if (!['OPENAI_COMPATIBLE', 'AZURE_OPENAI', 'LOCAL'].includes(kind)) {
+  if (!['OPENAI_CHAT', 'ANTHROPIC_MESSAGES', 'OPENAI_COMPATIBLE', 'AZURE_OPENAI', 'LOCAL'].includes(kind)) {
     throw new Error('invalid provider.kind')
   }
   return {
@@ -726,6 +746,42 @@ export const parseProvider = (value: unknown): ProviderDto => {
     enabled: body.enabled === undefined ? true : asBoolean(body.enabled, 'provider.enabled'),
     hasCredential: body.hasCredential === undefined ? false : asBoolean(body.hasCredential, 'provider.hasCredential'),
     updatedAt: optionalText(body.updatedAt)
+  }
+}
+
+export const parseProviderModelInventory = (value: unknown): ProviderModelInventoryDto => {
+  if (!isRecord(value) || !Array.isArray(value.models)) throw new Error('invalid provider inventory response')
+  const protocol = asText(value.protocol, 'providerInventory.protocol')
+  if (protocol !== 'OPENAI_CHAT' && protocol !== 'ANTHROPIC_MESSAGES') {
+    throw new Error('invalid providerInventory.protocol')
+  }
+  if (value.semantics !== 'REMOTE_INVENTORY_ONLY') {
+    throw new Error('invalid providerInventory.semantics')
+  }
+  const providerId = asText(value.providerId, 'providerInventory.providerId')
+  return {
+    schemaVersion: schemaVersion(value.schemaVersion, 'providerInventory.schemaVersion'),
+    workspaceId: asText(value.workspaceId, 'providerInventory.workspaceId'),
+    providerId,
+    protocol,
+    semantics: 'REMOTE_INVENTORY_ONLY',
+    fetchedAt: asText(value.fetchedAt, 'providerInventory.fetchedAt'),
+    models: value.models.map((item) => {
+      if (!isRecord(item)
+          || item.providerId !== providerId
+          || item.enabled !== false
+          || item.contextWindowTokens !== 0) {
+        throw new Error('invalid providerInventory.models')
+      }
+      return {
+        schemaVersion: schemaVersion(item.schemaVersion, 'providerInventory.model.schemaVersion'),
+        modelId: asText(item.modelId, 'providerInventory.model.modelId'),
+        providerId,
+        providerModelName: asText(item.providerModelName, 'providerInventory.model.providerModelName'),
+        contextWindowTokens: 0,
+        enabled: false
+      }
+    })
   }
 }
 
@@ -1171,6 +1227,16 @@ export class HttpSentinelApi implements SentinelApi {
     }, 'delete provider')
   }
 
+  async refreshProviderModels(providerId: string): Promise<ProviderModelInventoryDto> {
+    const response = await this.request(`providers/${encodeURIComponent(asText(providerId, 'providerId'))}/models/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: mutationHeaders(this.token, generatedIdempotencyKey()),
+      body: '{}'
+    }, 'refresh provider models')
+    return parseProviderModelInventory(response)
+  }
+
   async listRoleAssignments(projectId: string): Promise<RoleAssignmentDto[]> {
     const response = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/role-assignments`, { credentials: 'include', headers: jsonHeaders(this.token) }, 'list role assignments')
     return parseList(response, 'roleAssignments', parseRoleAssignment)
@@ -1374,6 +1440,7 @@ export class MockSentinelApi implements SentinelApi {
   async createProvider(): Promise<ProviderDto> { return this.unavailable('create provider') }
   async updateProvider(): Promise<ProviderDto> { return this.unavailable('update provider') }
   async deleteProvider(): Promise<void> { return this.unavailable('delete provider') }
+  async refreshProviderModels(): Promise<ProviderModelInventoryDto> { return this.unavailable('refresh provider models') }
   async listRoleAssignments(): Promise<RoleAssignmentDto[]> { return [] }
   async saveRoleAssignment(): Promise<RoleAssignmentDto> { return this.unavailable('save role assignment') }
   async deleteRoleAssignment(): Promise<void> { return this.unavailable('delete role assignment') }

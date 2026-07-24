@@ -81,7 +81,8 @@ public final class AiContracts {
         RUNNING,
         COMPLETED,
         FAILED,
-        CANCELLED
+        CANCELLED,
+        BLOCKED
     }
 
     public enum StageStatus {
@@ -89,6 +90,8 @@ public final class AiContracts {
         RUNNING,
         COMPLETED,
         FAILED,
+        CANCELLED,
+        BLOCKED,
         SKIPPED
     }
 

@@ -117,6 +117,26 @@ public final class ControlPlanePersistenceAcceptanceTest {
         expect(SQLiteControlPlanePersistence.MigrationException.class,
                 () -> ControlPlaneStore.sqlite(badDatabase, badRoot),
                 "migration checksum mismatch must fail closed");
+        Path badV3Root = Files.createTempDirectory("veyrion-bad-v003");
+        Path badV3Database = badV3Root.resolve("bad-v003.db");
+        ControlPlaneStore.sqlite(badV3Database, badV3Root);
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + badV3Database);
+             var statement = connection.createStatement()) {
+            statement.executeUpdate("UPDATE schema_migrations SET checksum='tampered' WHERE version=3");
+        }
+        expect(SQLiteControlPlanePersistence.MigrationException.class,
+                () -> ControlPlaneStore.sqlite(badV3Database, badV3Root),
+                "provider protocol migration checksum mismatch must fail closed");
+        Path badV4Root = Files.createTempDirectory("veyrion-bad-v004");
+        Path badV4Database = badV4Root.resolve("bad-v004.db");
+        ControlPlaneStore.sqlite(badV4Database, badV4Root);
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + badV4Database);
+             var statement = connection.createStatement()) {
+            statement.executeUpdate("UPDATE schema_migrations SET checksum='tampered' WHERE version=4");
+        }
+        expect(SQLiteControlPlanePersistence.MigrationException.class,
+                () -> ControlPlaneStore.sqlite(badV4Database, badV4Root),
+                "AI job migration checksum mismatch must fail closed");
         Path badV1Root = Files.createTempDirectory("veyrion-bad-v001");
         Path badV1Database = badV1Root.resolve("bad-v001.db");
         ControlPlaneStore.sqlite(badV1Database, badV1Root);
@@ -137,13 +157,13 @@ public final class ControlPlanePersistenceAcceptanceTest {
                     "provider_credentials", "providers", "operator_tokens", "operators")) {
                 statement.executeUpdate("DROP TABLE " + table);
             }
-            statement.executeUpdate("DELETE FROM schema_migrations WHERE version=2");
+            statement.executeUpdate("DELETE FROM schema_migrations WHERE version>=2");
         }
         ControlPlaneStore.sqlite(upgradeDatabase, upgradeRoot);
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + upgradeDatabase);
              var statement = connection.createStatement();
              var rows = statement.executeQuery("SELECT count(*) FROM schema_migrations")) {
-            check(rows.next() && rows.getInt(1) == 2, "V001 database upgrades to ordered V002");
+            check(rows.next() && rows.getInt(1) == 4, "V001 database upgrades through ordered V004");
         }
         expect(IllegalArgumentException.class,
                 () -> ControlPlaneStore.sqlite(root.getParent().resolve("outside.db"), root),

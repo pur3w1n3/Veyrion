@@ -239,3 +239,13 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 完成时复核大小、完整 SHA-256、扩展名和 JAR/WAR ZIP 结构，通过 `ArtifactRegistry` 后原子安装到 `.veyrion/artifacts/sha256/<prefix>/<digest>.<ext>`。项目登记和后续扫描只引用该受控副本；删除浏览器源文件不影响扫描。
 - 重启只清理内部命名的残留 `.part`，不删除已安装内容。当前会话仍是进程内状态，浏览器完整摘要上限为 256 MiB，尚未提供跨重启续传或流式前端摘要。
 - 根 Agent 审阅服务、API、前端契约和负向验收；`ArtifactUploadAcceptanceTest` 覆盖篡改、乱序、跨项目、未授权、超限、坏 ZIP、取消、重复摘要、源文件删除和启动残留清理。Maven test-compile/验收与 GUI 生产构建通过。
+
+## 22. 有界 AI Job 首版（2026-07-24，根 Agent 审计通过）
+
+- 在 SQLite V004 上实现 `QUEUED/RUNNING/COMPLETED/FAILED/CANCELLED/BLOCKED` 状态与 workspace/project/scan/artifact/role/provider/model/policy 快照；中断进程遗留的排队或运行任务重启后 fail-closed 为 `PROCESS_RESTARTED`。
+- 只有显式 `authorized=true`、启用且有凭据的角色绑定，以及 `OPENAI_CHAT`、`ANTHROPIC_MESSAGES` 或旧 `OPENAI_COMPATIBLE` 才可进入异步编排；`AZURE_OPENAI`、`LOCAL` 和缺失配置保持阻断。GET 不触发 Provider 清单或聊天出站。
+- 生产聊天传输使用 Java `HttpClient`、HTTPS 固定协议路径、禁止重定向，并限制连接/请求/响应/轮次/token/工具调用和响应读取时间。工具执行仍由代码侧 `AiToolRegistry` 决定，parallel 禁用，每轮最多一个调用。
+- 模型、制品文本和工具结果固定标记为不可信数据；最终仅持久化经截断和脱敏的 `INFERENCE` 摘要、最小运行元数据与工具决策摘要，不生成 `VERIFIED`。
+- 根 Agent 补强 OpenAI strict schema、未完成工具结果顺序、未知/越权调用预算、迭代 JSON 深度、运行任务删除竞态、创建字段 allowlist、Provider/角色绑定/scan 配置漂移复核和响应临时字节清零。
+- mock 传输验收覆盖 OpenAI/Anthropic 各一次工具循环、无授权/绑定、429/500/超时、取消、重启恢复、配置漂移、提示注入、越权、预算、截断、畸形响应与敏感内容不落 AI job/审计；9 个相关 Java main-style 验收及 GUI 生产构建通过。
+- 审计结论只接受为“本地有界 AI Job 首版”。尚无真实供应商互操作、生产 egress/DNS rebinding 防护、流式协议、成本计量或多租户调度，不得标记为生产可用；模型输出始终只能是 `INFERENCE`。

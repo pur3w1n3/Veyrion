@@ -3,6 +3,7 @@ package com.aq.jvmsentinel.control;
 import com.aq.jvmsentinel.analysis.PreAnalysisResult;
 import com.aq.jvmsentinel.analysis.PreAnalysisInput;
 import com.aq.jvmsentinel.analysis.ArtifactMetadataReader;
+import com.aq.jvmsentinel.ai.AiJobOrchestrator;
 import com.aq.jvmsentinel.artifact.ArtifactRegistry;
 import com.aq.jvmsentinel.artifact.ArtifactUploadService;
 import com.aq.jvmsentinel.artifact.ArtifactValidationException;
@@ -24,7 +25,13 @@ import com.aq.jvmsentinel.policy.PolicyValidator;
 import com.aq.jvmsentinel.policy.PolicyViolationException;
 import com.aq.jvmsentinel.policy.ScanPolicy;
 import com.aq.jvmsentinel.provider.AgentRole;
+import com.aq.jvmsentinel.provider.ProviderContracts.ModelInventory;
+import com.aq.jvmsentinel.provider.ProviderContracts.ProviderDefinition;
 import com.aq.jvmsentinel.provider.ProviderContracts.ProviderKind;
+import com.aq.jvmsentinel.provider.ProviderModelInventoryClient;
+import com.aq.jvmsentinel.provider.chat.ChatTransport;
+import com.aq.jvmsentinel.provider.chat.ProviderChatTransport;
+import com.aq.jvmsentinel.security.ProviderSecretCipher;
 import com.aq.jvmsentinel.security.auth.AuthContext;
 import com.aq.jvmsentinel.security.auth.Authorizer;
 import com.aq.jvmsentinel.security.auth.OperatorRole;
@@ -103,6 +110,8 @@ public final class ControlPlaneServer implements AutoCloseable {
     private final InMemoryTaskCoordinator taskCoordinator;
     private final TraceProjectionService traceProjectionService;
     private final WorkerControlPlaneApi workerApi;
+    private final ProviderInventoryService providerInventoryService;
+    private final AiJobOrchestrator aiJobOrchestrator;
     private final Clock clock;
     private final Authorizer authorizer = new Authorizer();
     private volatile HttpServer server;
@@ -131,6 +140,25 @@ public final class ControlPlaneServer implements AutoCloseable {
         this(new InetSocketAddress("127.0.0.1", port), new ArtifactRegistry(allowedRoot),
                 mutationToken == null || mutationToken.isBlank() ? DEFAULT_TOKEN : mutationToken,
                 Clock.systemUTC(), ControlPlaneStore.sqlite(databasePath, allowedRoot), new SseHub());
+    }
+
+    /** Controlled inventory injection for HTTP acceptance tests; production uses the secure client. */
+    public ControlPlaneServer(Path allowedRoot, int port, String mutationToken, Path databasePath,
+                              ProviderInventoryService providerInventoryService) {
+        this(new InetSocketAddress("127.0.0.1", port), new ArtifactRegistry(allowedRoot),
+                mutationToken == null || mutationToken.isBlank() ? DEFAULT_TOKEN : mutationToken,
+                Clock.systemUTC(), ControlPlaneStore.sqlite(databasePath, allowedRoot), new SseHub(),
+                new TrustedFixtureCatalog(), providerInventoryService, new ProviderChatTransport());
+    }
+
+    /** Controlled provider injections for acceptance tests; production constructors keep HTTPS-only chat. */
+    public ControlPlaneServer(Path allowedRoot, int port, String mutationToken, Path databasePath,
+                              ProviderInventoryService providerInventoryService,
+                              ChatTransport chatTransport) {
+        this(new InetSocketAddress("127.0.0.1", port), new ArtifactRegistry(allowedRoot),
+                mutationToken == null || mutationToken.isBlank() ? DEFAULT_TOKEN : mutationToken,
+                Clock.systemUTC(), ControlPlaneStore.sqlite(databasePath, allowedRoot), new SseHub(),
+                new TrustedFixtureCatalog(), providerInventoryService, chatTransport);
     }
 
     public ControlPlaneServer(InetSocketAddress bindAddress, Path allowedRoot) {
@@ -176,6 +204,23 @@ public final class ControlPlaneServer implements AutoCloseable {
     public ControlPlaneServer(InetSocketAddress bindAddress, ArtifactRegistry artifactRegistry,
                               String mutationToken, Clock clock, ControlPlaneStore store,
                               SseHub sseHub, TrustedFixtureCatalog fixtureCatalog) {
+        this(bindAddress, artifactRegistry, mutationToken, clock, store, sseHub, fixtureCatalog,
+                new ProviderModelInventoryClient()::fetch, new ProviderChatTransport());
+    }
+
+    public ControlPlaneServer(InetSocketAddress bindAddress, ArtifactRegistry artifactRegistry,
+                              String mutationToken, Clock clock, ControlPlaneStore store,
+                              SseHub sseHub, TrustedFixtureCatalog fixtureCatalog,
+                              ProviderInventoryService providerInventoryService) {
+        this(bindAddress, artifactRegistry, mutationToken, clock, store, sseHub, fixtureCatalog,
+                providerInventoryService, new ProviderChatTransport());
+    }
+
+    public ControlPlaneServer(InetSocketAddress bindAddress, ArtifactRegistry artifactRegistry,
+                              String mutationToken, Clock clock, ControlPlaneStore store,
+                              SseHub sseHub, TrustedFixtureCatalog fixtureCatalog,
+                              ProviderInventoryService providerInventoryService,
+                              ChatTransport chatTransport) {
         this.bindAddress = Objects.requireNonNull(bindAddress, "bindAddress");
         this.artifactRegistry = Objects.requireNonNull(artifactRegistry, "artifactRegistry");
         this.artifactUploadService = new ArtifactUploadService(this.artifactRegistry);
@@ -190,9 +235,13 @@ public final class ControlPlaneServer implements AutoCloseable {
         this.traceProjectionService = new TraceProjectionService(this.traceStore);
         this.workerApi = new WorkerControlPlaneApi(this.workerToken, this.clock, this.store, this.sseHub,
                 this.traceStore, this.taskCoordinator, this.traceProjectionService);
+        this.providerInventoryService = Objects.requireNonNull(
+                providerInventoryService, "providerInventoryService");
         if ("SQLITE".equals(this.store.persistenceMode())) {
             this.store.bootstrapOperator(this.mutationToken, Instant.now(this.clock).toString());
         }
+        this.aiJobOrchestrator = new AiJobOrchestrator(this.store,
+                Objects.requireNonNull(chatTransport, "chatTransport"), this.clock);
     }
 
     /** Starts listening; calling start more than once is idempotent. */
@@ -223,6 +272,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         ExecutorService pool = executor;
         executor = null;
         if (pool != null) pool.shutdownNow();
+        aiJobOrchestrator.close();
     }
 
     public void stop() { stop(0); }
@@ -430,6 +480,13 @@ public final class ControlPlaneServer implements AutoCloseable {
             if ("PATCH".equals(method)) { updateProvider(exchange, path.get(1)); return; }
             if ("DELETE".equals(method)) { deleteProvider(exchange, path.get(1)); return; }
         }
+        if (path.size() == 4 && "providers".equals(path.get(0))
+                && "models".equals(path.get(2)) && "refresh".equals(path.get(3))
+                && "POST".equals(method)) {
+            requirePermission(exchange, Permission.MANAGE_PROVIDERS);
+            refreshProviderModels(exchange, path.get(1));
+            return;
+        }
         if (path.size() == 3 && "projects".equals(path.get(0))
                 && "role-assignments".equals(path.get(2)) && "GET".equals(method)) {
             requirePermission(exchange, Permission.READ_SECURITY_CONFIGURATION);
@@ -611,6 +668,54 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendEmpty(exchange, 204);
     }
 
+    private void refreshProviderModels(HttpExchange exchange, String providerId) throws IOException {
+        var provider = store.requireProvider(providerId);
+        if (!provider.enabled()) {
+            throw new ApiException(409, "PROVIDER_DISABLED",
+                    "provider must be enabled before inventory refresh");
+        }
+        if (!provider.hasCredential()) {
+            throw new ApiException(409, "PROVIDER_CREDENTIAL_REQUIRED",
+                    "provider credential is required for inventory refresh");
+        }
+        if (provider.kind() == ProviderKind.AZURE_OPENAI) {
+            throw new ApiException(422, "PROVIDER_INVENTORY_UNSUPPORTED",
+                    "provider kind does not support model inventory");
+        }
+        ProviderDefinition definition;
+        try {
+            definition = new ProviderDefinition(1,
+                    com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.LOCAL_WORKSPACE,
+                    provider.providerId(), provider.name(), provider.kind(), URI.create(provider.baseUrl()),
+                    provider.enabled(), provider.hasCredential(), Instant.parse(provider.createdAt()),
+                    Instant.parse(provider.updatedAt()));
+        } catch (RuntimeException invalidConfiguration) {
+            throw new ApiException(409, "PROVIDER_CONFIGURATION_INVALID",
+                    "provider configuration is invalid");
+        }
+        ModelInventory inventory;
+        try {
+            inventory = store.withProviderCredential(providerId,
+                    credential -> providerInventoryService.fetch(definition, credential));
+        } catch (ProviderSecretCipher.SecretCipherException invalidCredential) {
+            throw new ApiException(409, "PROVIDER_CREDENTIAL_INVALID",
+                    "provider credential could not be used");
+        } catch (ControlPlaneStore.MissingRecordException missingCredential) {
+            throw new ApiException(409, "PROVIDER_CREDENTIAL_REQUIRED",
+                    "provider credential is required for inventory refresh");
+        } catch (RuntimeException providerFailure) {
+            throw new ApiException(502, "PROVIDER_INVENTORY_FAILED",
+                    "provider inventory request failed");
+        }
+        if (inventory == null
+                || !definition.workspaceId().equals(inventory.workspaceId())
+                || !providerId.equals(inventory.providerId())) {
+            throw new ApiException(502, "PROVIDER_INVENTORY_INVALID",
+                    "provider inventory response was invalid");
+        }
+        sendJson(exchange, 200, inventoryMap(inventory));
+    }
+
     private void listRoleAssignments(HttpExchange exchange, String projectId) throws IOException {
         List<Object> items = new ArrayList<>();
         for (var binding : store.roleBindings(projectId)) items.add(roleBindingMap(binding));
@@ -648,9 +753,21 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private void createAiJob(HttpExchange exchange, String projectId) throws IOException {
         Map<String, Object> body = readObject(exchange);
+        for (String field : body.keySet()) {
+            if (!Set.of("role", "authorized").contains(field)) {
+                throw new ApiException(400, "AI_JOB_FIELD_REJECTED",
+                        "AI job body only accepts role and authorized");
+            }
+        }
         AgentRole role = role(optionalText(body, "role", null));
-        var job = store.createAiJob(projectId, role, actor(exchange).operatorId(),
+        if (!requiredBoolean(body, "authorized")) {
+            throw new ApiException(403, "AUTHORIZATION_REQUIRED",
+                    "explicit AI job authorization is required");
+        }
+        String operatorId = actor(exchange).operatorId();
+        var job = store.createAiJob(projectId, role, true, operatorId,
                 Instant.now(clock).toString());
+        aiJobOrchestrator.submit(job, operatorId);
         sendJson(exchange, 202, aiJobMap(job));
     }
 
@@ -661,14 +778,21 @@ public final class ControlPlaneServer implements AutoCloseable {
     private void updateAiJob(HttpExchange exchange, String jobId) throws IOException {
         String action = optionalText(readObject(exchange), "action", null);
         if ("retry".equals(action)) {
-            throw new ApiException(409, "PROVIDER_EXECUTION_DISABLED", "provider execution is disabled");
+            throw new ApiException(409, "RETRY_REQUIRES_NEW_AUTHORIZATION",
+                    "create a new explicitly authorized AI job");
         }
         if (!"cancel".equals(action)) throw new ApiException(400, "INVALID_ACTION", "action must be cancel or retry");
-        sendJson(exchange, 200, aiJobMap(store.cancelAiJob(jobId, actor(exchange).operatorId(),
-                Instant.now(clock).toString())));
+        var cancelled = store.cancelAiJob(jobId, actor(exchange).operatorId(), Instant.now(clock).toString());
+        aiJobOrchestrator.cancel(jobId);
+        sendJson(exchange, 200, aiJobMap(cancelled));
     }
 
     private void deleteAiJob(HttpExchange exchange, String jobId) throws IOException {
+        var existing = store.requireAiJob(jobId);
+        if ("QUEUED".equals(existing.status()) || "RUNNING".equals(existing.status())) {
+            throw new ApiException(409, "AI_JOB_ACTIVE",
+                    "cancel the AI job before deletion");
+        }
         store.deleteAiJob(jobId, actor(exchange).operatorId(), Instant.now(clock).toString());
         sendEmpty(exchange, 204);
     }
@@ -1613,6 +1737,32 @@ public final class ControlPlaneServer implements AutoCloseable {
         return result;
     }
 
+    private static Map<String, Object> inventoryMap(ModelInventory inventory) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", inventory.schemaVersion());
+        result.put("workspaceId", inventory.workspaceId());
+        result.put("providerId", inventory.providerId());
+        result.put("protocol", inventory.protocol().name());
+        result.put("semantics", inventory.semantics().name());
+        result.put("fetchedAt", inventory.fetchedAt().toString());
+        List<Object> models = new ArrayList<>();
+        for (var model : inventory.models()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("schemaVersion", model.schemaVersion());
+            item.put("workspaceId", model.workspaceId());
+            item.put("modelId", model.modelId());
+            item.put("providerId", model.providerId());
+            item.put("providerModelName", model.providerModelName());
+            item.put("contextWindowTokens", model.contextWindowTokens());
+            item.put("enabled", model.enabled());
+            item.put("createdAt", model.createdAt().toString());
+            item.put("updatedAt", model.updatedAt().toString());
+            models.add(item);
+        }
+        result.put("models", models);
+        return result;
+    }
+
     private static Map<String, Object> roleBindingMap(
             com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.RoleBindingData binding) {
         Map<String, Object> result = new LinkedHashMap<>();
@@ -1630,14 +1780,27 @@ public final class ControlPlaneServer implements AutoCloseable {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("schemaVersion", 1);
         result.put("aiJobId", job.aiJobId());
+        result.put("workspaceId", job.workspaceId());
         result.put("projectId", job.projectId());
+        if (job.scanId() != null) result.put("scanId", job.scanId());
+        if (job.artifactDigest() != null) result.put("artifactDigest", job.artifactDigest());
         result.put("role", job.role().name());
+        if (job.providerId() != null) result.put("providerId", job.providerId());
+        if (job.model() != null) result.put("model", job.model());
+        result.put("authorized", job.authorized());
         result.put("status", job.status());
-        result.put("errorCode", job.errorCode());
+        result.put("stopReason", job.stopReason());
+        if (!"COMPLETED".equals(job.status())) result.put("errorCode", job.stopReason());
         result.put("stages", JsonCodec.parse(job.stagesJson()));
+        result.put("policySnapshot", JsonCodec.parse(job.policySnapshotJson()));
+        if (job.providerRequestId() != null) result.put("providerRequestId", job.providerRequestId());
+        result.put("elapsedMillis", job.elapsedMillis());
+        result.put("rounds", job.rounds());
+        result.put("toolSummary", JsonCodec.parse(job.toolSummaryJson()));
+        if (job.conclusionJson() != null) result.put("conclusion", JsonCodec.parse(job.conclusionJson()));
         result.put("createdAt", job.createdAt());
         result.put("updatedAt", job.updatedAt());
-        result.put("verificationStatus", "UNREACHED");
+        result.put("verificationStatus", job.conclusionJson() == null ? "UNREACHED" : "INFERENCE");
         return result;
     }
 
@@ -1912,6 +2075,11 @@ public final class ControlPlaneServer implements AutoCloseable {
                              List<ApiDtos.FindingDto> findings, List<ApiDtos.AttackChainDto> chains) { }
     private record DynamicTaskPayload(String scanId, String fixtureId, String targetEntryId) { }
     private record DynamicTaskReplay(DynamicTaskPayload payload, TaskSnapshot snapshot) { }
+
+    @FunctionalInterface
+    public interface ProviderInventoryService {
+        ModelInventory fetch(ProviderDefinition provider, byte[] credential);
+    }
 
     private static final class ApiException extends RuntimeException {
         private final int status;

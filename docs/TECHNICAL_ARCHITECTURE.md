@@ -306,10 +306,10 @@ Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约�
 
 ## 14. 本地首版持久化与管理控制
 
-- Desktop Core 使用 SQLite/plain JDBC 保存项目、制品元数据、扫描结果、Provider、AI 角色绑定、阻断态 AI job、本地操作员 PAT hash 和脱敏审计。迁移按版本顺序执行并校验历史文件摘要，未知版本、断档或 checksum 漂移均拒绝启动。
+- Desktop Core 使用 SQLite/plain JDBC 保存项目、制品元数据、扫描结果、Provider、AI 角色绑定、有界 AI job、本地操作员 PAT hash 和脱敏审计。迁移按版本顺序执行并校验历史文件摘要，未知版本、断档或 checksum 漂移均拒绝启动。
 - Provider secret 使用数据库外根密钥和 AES-256-GCM；AAD 绑定 workspace、Provider、credential 和版本。HTTP DTO 不包含明文、密文、nonce 或可逆片段。根密钥文件权限在支持的平台尽力收紧，非 loopback/生产形态无法确认权限时必须拒绝启用。
 - 本地 bootstrap token 映射到 `local-admin`，每次进程启动轮换，旧 token 失效；操作员 PAT 与 Worker token 使用不同格式、header、存储和校验器。当前只完成 loopback 单 workspace RBAC，生产 SSO/session 和全部 GET 的身份边界仍待实现。
-- AI Gateway 尚未执行外部请求。四角色 job 只保存受证据约束的数据流计划并固定为阻断状态；模型输出无权修改工具、网络、沙箱、预算或验证等级。
+- AI Gateway 已支持 OpenAI Chat/Anthropic Messages 非流式请求和单工具调用循环；只有显式授权、固定角色绑定、启用 Provider、后端凭据和完整配置快照一致时才出站。模型输出无权修改工具、网络、沙箱、预算或验证等级，结论固定为 `INFERENCE`。
 
 ### 14.1 浏览器制品上传边界
 
@@ -349,3 +349,13 @@ Agent 使用 startup-only Byte Buddy 插桩，不修改 bootstrap class：Spring
 替身层仅提供 loopback 固定 HTTP route、精确 SQL 规则结果、授权 tmpfs 文件和默认拒绝的进程模拟。每个结果绑定项目/制品/扫描/任务、policy digest、sequence、provenance、executed、预算与 stop reason；完整 transcript 有稳定摘要。替身不允许外部转发、真实 JDBC URL、宿主路径或任意进程。
 
 外部能力发布前必须具备最近 30 天内、由受信 verifier 验证的完整 P0 证据：网络、DNS、metadata、宿主挂载、Docker socket、非 root、只读根、capability、资源耗尽、trace 篡改、Agent 缺失与沙箱逃逸套件。当前仓库只实现门禁和 mock 验收，未执行真实 gVisor/Kata 逃逸测试，故公共 health/API 仍应保持外部动态执行 disabled。
+
+## 18. 有界 AI Job 与工具协议
+
+- Provider 类型显式区分 `OPENAI_CHAT` 与 `ANTHROPIC_MESSAGES`，保留旧 `OPENAI_COMPATIBLE` 读取兼容。模型 inventory 仅表示远端发现结果，不证明工具、上下文窗口或 allowlist 能力，也不自动创建角色绑定。
+- AI Job 创建必须显式 `authorized=true`，并固化项目、扫描、制品摘要、角色、Provider、模型、角色绑定版本、Provider kind/base URL/配置版本和资源预算。执行前再次比对扫描和配置；发生漂移即 fail-closed。
+- 两类协议先转换为 canonical `ToolCall`。服务端固定注册表再检查角色 allowlist、scope、JSON schema/深度/字节、调用次数、deadline 和结果预算；模型字段不能携带权限、审批、网络、沙箱或租户覆盖。
+- OpenAI 使用 strict function schema、`parallel_tool_calls=false` 和相邻 `role=tool` 结果；Anthropic 使用 `disable_parallel_tool_use=true` 和紧邻 `tool_result`。截断、过滤、拒绝、畸形参数、重复 ID、未知 block 或缺失结果均不执行工具。
+- 生产传输仅允许经过 Provider 边界验证的 HTTPS endpoint，禁止重定向，并限制连接、请求、响应和读取时间。凭据只在最短解密作用域内进入 header；响应原始字节在解析后清零。
+- 当前工具只读取已持久化扫描的入口、依赖、sink 和证据摘要，不能执行制品、联网、调用 shell、反编译或创建动态任务。持久化只保留状态、停止原因、请求 ID、耗时、轮次、工具决策摘要和脱敏截断的 `INFERENCE`。
+- 当前仍是本地单节点、进程内执行器，未完成真实供应商互操作、生产 egress/DNS rebinding 防护、流式协议、成本计量或多租户调度；Azure/LOCAL 聊天保持 disabled。

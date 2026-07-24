@@ -4,8 +4,7 @@ JVM 应用安全验证平台（本地首版）
 
 产品正式名称为 **溯脉 · Veyrion**（英文：**Veyrion**）。现有 `com.aq.jvmsentinel` 包名、Maven artifactId、内部 service name 和 API 兼容标识暂不变，避免破坏已有调用方。商标、域名和公司名称尚未完成正式检索。
 
-主 Control Plane 是 Java 17 本地分析服务，使用 SQLite JDBC 持久化并以 AES-256-GCM 加密 Provider 凭据。它登记 JAR/WAR/CLASS、计算 SHA-256、校验扫描策略，并以有界 classfile 解析识别 Spring MVC/权限注解以及方法、字段、调用点和保守调用边。另有独立 JVM Agent、OpenSandbox Worker 适配器和仓库内受控 Spring fixture；普通 runc 只允许该 fixture，绝不执行用户导入制品。
-M0 使用受控目录中的原文件并在分析前复核摘要；生产版需要改为内容寻址的只读制品存储。
+主 Control Plane 是 Java 17 本地分析服务，使用 SQLite JDBC 持久化并以 AES-256-GCM 加密 Provider 凭据。它登记 JAR/WAR/CLASS、计算 SHA-256、校验扫描策略，并以有界 classfile 解析识别 Spring MVC/权限注解以及方法、字段、调用点和保守调用边。浏览器上传的制品会在完整校验后进入内容寻址受控目录；旧路径登记仅作为本地兼容入口。另有独立 JVM Agent、OpenSandbox Worker 适配器和仓库内受控 Spring fixture；普通 runc 只允许该 fixture，绝不执行用户导入制品。
 
 ## 构建
 
@@ -74,8 +73,9 @@ java -cp "<target/classes + Maven runtime dependencies>" com.aq.jvmsentinel.cont
 - `GET /api/v1/projects/{projectId}/dashboard`、`GET /api/v1/projects/{projectId}/evidence`、`GET /api/v1/scans/{scanId}/evidence`：仪表盘和证据。
 - `GET /api/v1/findings/{findingId}`、`POST /api/v1/findings/{findingId}/replay`、`GET /api/v1/attack-chains`：当前静态发现/演示链查询；replay 仍是受限的元数据重放语义。
 - `GET|POST /api/v1/providers`、`PATCH|DELETE /api/v1/providers/{providerId}`：管理 Provider；API Key 只以加密形式保存在后端，响应不返回明文或密文。
+- `POST /api/v1/providers/{providerId}/models/refresh`：按受管凭据获取 OpenAI/Anthropic 模型 inventory；结果不自动启用或绑定，GET 不触发外部请求。
 - `GET|PATCH|DELETE /api/v1/projects/{projectId}/role-assignments[/role]`：为预分析、路径探索、漏洞研判和报告生成分配 Provider/模型。
-- `GET|POST /api/v1/projects/{projectId}/ai-jobs`、`GET|PATCH|DELETE /api/v1/ai-jobs/{jobId}`：展示版本化 AI 数据流；真实调用尚未启用，任务固定为 `BLOCKED / PROVIDER_EXECUTION_DISABLED`。
+- `GET|POST /api/v1/projects/{projectId}/ai-jobs`、`GET|PATCH|DELETE /api/v1/ai-jobs/{jobId}`：显式授权后运行有界 AI Job、查询状态或取消；运行中任务必须先取消才能删除。
 - `GET|POST /api/v1/operators`、`PATCH /api/v1/operators/{operatorId}`、`GET /api/v1/audit-events`：本地 PAT、RBAC 和脱敏审计。
 
 最小调用顺序是“创建项目 → 上传或兼容登记制品 → 显式授权创建扫描”。GUI 默认使用文件选择器和分块上传；旧的路径登记仅用于 Control Plane 能直接访问该路径的兼容场景：
@@ -103,9 +103,9 @@ Idempotency-Key: scan-demo-1
 
 SSE 客户端通过 `Last-Event-ID` 请求头断线续接。事件包含 `id`、`event`、`data`，并携带项目/制品/扫描上下文、`schemaVersion`、`verificationStatus`、`dependencyMode` 和 `evidenceRefs`。SSE 仅作增量提示，断线或终态后必须以 `GET /api/v1/scans/{scanId}` 等幂等查询为准；终态事件包括 `ScanCompleted` 或 `TaskStopped`。
 
-当前限制：默认启动器只绑定 loopback；项目、制品元数据、扫描结果、Provider、角色、AI job 和审计已进入 SQLite，但幂等窗口、SSE 历史、Worker 任务和动态 trace 仍是进程内状态。操作员是本地 PAT/RBAC，尚无 SSO、HttpOnly session 或多租户隔离。字节码调用边是无 classpath 展开的保守事实，不是完整数据流。真实 LLM 调用和真实依赖连接保持禁用。动态闭环目前仅为受控 Spring fixture，结论固定为 `DYNAMIC_SUSPECTED`；外部制品动态执行保持禁用。
+当前限制：默认启动器只绑定 loopback；项目、制品元数据、扫描结果、Provider、角色、AI job 和审计已进入 SQLite，但幂等窗口、SSE 历史、Worker 任务和动态 trace 仍是进程内状态。操作员是本地 PAT/RBAC，尚无 SSO、HttpOnly session 或多租户隔离。字节码调用边是无 classpath 展开的保守事实，不是完整数据流。OpenAI Chat/Anthropic Messages 已支持 inventory 与有界工具循环，但仍是本地单节点首版，未做真实供应商互操作和生产出站网关验收；模型结论只允许 `INFERENCE`。动态闭环目前仅为受控 Spring fixture，结论固定为 `DYNAMIC_SUSPECTED`；外部制品动态执行保持禁用。
 
-GUI 采用 React/TypeScript，默认亮色并支持持久化暗色主题，已接通项目选择/创建/删除、文件选择与分块制品上传、兼容路径登记、扫描策略、执行时间线、结果、Provider、AI 四角色和阻断态 AI job；真实模式失败不会伪造成功或回退 Demo。
+GUI 采用 React/TypeScript，默认亮色并支持持久化暗色主题，已接通项目选择/创建/删除、文件选择与分块制品上传、兼容路径登记、扫描策略、执行时间线、结果、Provider、模型 inventory、AI 四角色和有界 AI job；真实模式失败不会伪造成功或回退 Demo。
 
 前端原型位于 `frontend/`：
 
@@ -147,7 +147,7 @@ VITE_API_TOKEN=local-demo
 ## 明确未实现
 
 - 没有真实 OpenSandbox/gVisor/Kata 部署验收、公开外部执行入队 API、真实反编译器镜像、协议级数据库替身或真实漏洞利用；
-- 没有真实 LLM 调用；当前 AI job 只展示受证据约束的数据流并明确阻断；
+- 没有真实供应商互操作、生产出站代理、成本计量或流式聊天验收；当前 AI Job 仅支持 OpenAI Chat/Anthropic Messages 的非流式有界工具循环，Azure/LOCAL 聊天保持阻断；
 - 没有生产级 SSO/session、多租户隔离、Worker/trace 持久化或完整审计防篡改链；
 - 注解入口和类名推断的入口/sink 均为 `STATIC_INFERRED`；权限只作为前置条件保留，不能据此声称匿名可达、权限绕过或漏洞已验证。
 
