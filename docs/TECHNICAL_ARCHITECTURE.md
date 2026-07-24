@@ -303,3 +303,25 @@ Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约�
 - 只有 `COMPLETED + fixtureOnly + FIXTURE_RUNC` 且摘要链复验通过的任务才投影到 dashboard/path/evidence；公共证据只返回摘要和 task/digest/sequence 引用，不返回原始 detail。
 - 受控 Spring Boot fixture 不监听 HTTP，直接调用真实 controller 映射一次；JDBC/FILE/PROCESS 只上报 `executed=false` 的无害意图，不产生真实外部操作。
 - runc 部署还必须由运维方声明 deny network、资源预算、非 root、只读根和 `writable-tmp-v1`。当前验收使用 mock OpenSandbox；仓库没有发布镜像，不能据此宣称真实部署或外部制品运行已验证。
+
+## 14. 本地首版持久化与管理控制
+
+- Desktop Core 使用 SQLite/plain JDBC 保存项目、制品元数据、扫描结果、Provider、AI 角色绑定、阻断态 AI job、本地操作员 PAT hash 和脱敏审计。迁移按版本顺序执行并校验历史文件摘要，未知版本、断档或 checksum 漂移均拒绝启动。
+- Provider secret 使用数据库外根密钥和 AES-256-GCM；AAD 绑定 workspace、Provider、credential 和版本。HTTP DTO 不包含明文、密文、nonce 或可逆片段。根密钥文件权限在支持的平台尽力收紧，非 loopback/生产形态无法确认权限时必须拒绝启用。
+- 本地 bootstrap token 映射到 `local-admin`，每次进程启动轮换，旧 token 失效；操作员 PAT 与 Worker token 使用不同格式、header、存储和校验器。当前只完成 loopback 单 workspace RBAC，生产 SSO/session 和全部 GET 的身份边界仍待实现。
+- AI Gateway 尚未执行外部请求。四角色 job 只保存受证据约束的数据流计划并固定为阻断状态；模型输出无权修改工具、网络、沙箱、预算或验证等级。
+
+## 15. 字节码事实索引
+
+- 在既有有界 classfile reader 上提取类层次、字段、方法、字段读写、调用指令与稳定指令证据，不加载或初始化被测类。
+- `invokestatic`/`invokespecial` 只记录符号直接目标；虚调用和接口调用标为保守 CHA 声明目标；`invokedynamic`、反射、JNI 和动态代理标为 unresolved。当前不展开完整 classpath 子类、不执行 bootstrap、不做跨方法污点或反射字符串求值。
+- 反编译只作为未来隔离分析 Worker 的派生阅读视图，不能作为事实源，也不能在 Control Plane 进程内运行。
+
+## 16. 交付与部署形态
+
+默认交付采用两层产物：
+
+1. **Desktop Core**：使用 `jlink + jpackage` 在目标平台分别构建安装包，包含裁剪 Java runtime、Control Plane、SQLite native library 和 React 静态资源。应用只绑定 loopback，并打开系统浏览器。
+2. **Sandbox Pack（可选）**：以 digest-pinned Docker Compose 提供 Linux Worker/OpenSandbox。Desktop Core 通过版本化 Worker 合约连接；健康或 attestation 不通过时动态能力关闭。
+
+该拆分满足无 Docker 的静态开箱使用，也保留强化动态隔离。Compose 只提供部署一致性，不自动成为恶意制品安全边界；普通 runc 仍只能运行受控 fixture。多平台产物必须在对应 OS/架构 CI 构建、签名并生成 SBOM。GraalVM Native Image 待反射、JNI 与插件契约稳定后另行评估。

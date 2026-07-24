@@ -1,10 +1,10 @@
 # 溯脉 · Veyrion
 
-JVM 应用安全验证平台（M0/M1 与 Control Plane MVP slice）
+JVM 应用安全验证平台（本地首版）
 
 产品正式名称为 **溯脉 · Veyrion**（英文：**Veyrion**）。现有 `com.aq.jvmsentinel` 包名、Maven artifactId、内部 service name 和 API 兼容标识暂不变，避免破坏已有调用方。商标、域名和公司名称尚未完成正式检索。
 
-主 Control Plane 是 Java 17、无运行时第三方依赖的本地分析切片。它登记 JAR/WAR/CLASS、计算 SHA-256、校验扫描策略，并以有界 classfile 解析识别常见 Spring MVC 与权限注解。另有独立 JVM Agent、OpenSandbox Worker 适配器和仓库内受控 Spring fixture；普通 runc 只允许该 fixture，绝不执行用户导入制品。
+主 Control Plane 是 Java 17 本地分析服务，使用 SQLite JDBC 持久化并以 AES-256-GCM 加密 Provider 凭据。它登记 JAR/WAR/CLASS、计算 SHA-256、校验扫描策略，并以有界 classfile 解析识别 Spring MVC/权限注解以及方法、字段、调用点和保守调用边。另有独立 JVM Agent、OpenSandbox Worker 适配器和仓库内受控 Spring fixture；普通 runc 只允许该 fixture，绝不执行用户导入制品。
 M0 使用受控目录中的原文件并在分析前复核摘要；生产版需要改为内容寻址的只读制品存储。
 
 ## 构建
@@ -17,7 +17,7 @@ Windows 本地开发可在仓库根目录一键启动后端和 Vite 前端：
 .\Start-Veyrion.ps1
 ```
 
-脚本会创建 `samples/`、按需安装前端依赖、编译 Java、创建本地项目并启动两个 loopback 服务。默认 GUI 为 `http://127.0.0.1:5173`，Control Plane 为 `http://127.0.0.1:8080/api/v1`；按 `Ctrl+C` 一并停止。可用 `-Artifacts`、`-BackendPort`、`-FrontendPort` 覆盖默认值，但制品目录必须位于工作区内。
+脚本会创建 `samples/`、按需安装前端依赖、解析运行时 classpath、编译 Java、初始化/恢复 SQLite、复用本地项目并启动两个 loopback 服务。默认 GUI 为 `http://127.0.0.1:5173`，Control Plane 为 `http://127.0.0.1:18080/api/v1`；按 `Ctrl+C` 一并停止。可用 `-Artifacts`、`-BackendPort`、`-FrontendPort` 覆盖默认值，但制品目录必须位于工作区内。状态默认保存在 `<Artifacts>/.veyrion/`。
 
 如果系统默认 `java` 低于 17，可直接指定 JDK，不需要手工修改 PowerShell 环境变量：
 
@@ -26,17 +26,16 @@ Windows 本地开发可在仓库根目录一键启动后端和 Vite 前端：
 ```
 
 ```powershell
-mvn -q '-Dmaven.repo.local=.m2' '-Dmaven.test.skip=true' package
-mvn -q '-Dmaven.repo.local=.m2' test-compile
-java -ea -cp 'target/test-classes;target/classes' com.aq.jvmsentinel.AcceptanceTest
-java -ea -cp 'target/test-classes;target/classes' com.aq.jvmsentinel.ClassfileAnnotationAcceptanceTest
-java -ea -cp 'target/test-classes;target/classes' com.aq.jvmsentinel.ControlPlaneAcceptanceTest
-java -ea -cp 'target/test-classes;target/classes' com.aq.jvmsentinel.FixtureDynamicLoopAcceptanceTest
-java -ea -cp 'target/test-classes;target/classes' com.aq.jvmsentinel.DynamicTraceProjectionAcceptanceTest
+mvn '-Dmaven.repo.local=.m2' test
+mvn -q '-Dmaven.repo.local=.m2' dependency:build-classpath '-Dmdep.outputFile=target/runtime-classpath.txt'
+$cp = 'target/test-classes;target/classes;' + (Get-Content -Raw target/runtime-classpath.txt).Trim()
+java -ea -cp $cp com.aq.jvmsentinel.ManagementConfigurationAcceptanceTest
+java -ea -cp $cp com.aq.jvmsentinel.ControlPlanePersistenceAcceptanceTest
+java -ea -cp $cp com.aq.jvmsentinel.BytecodeFactIndexAcceptanceTest
+java -ea -cp $cp com.aq.jvmsentinel.ControlPlaneAcceptanceTest
 ```
 
-当前测试使用依赖无关的可执行检查（Maven 负责编译，避免引入测试运行时依赖）。
-如果本机 Surefire 缓存目录权限正常，也可以额外运行 `mvn test`；它不是当前验收检查的唯一入口。
+`mvn test` 负责完整编译，但当前 main-style 验收类仍需显式运行其 `main` 方法。
 
 ## CLI
 
@@ -52,20 +51,20 @@ java -cp target/classes com.aq.jvmsentinel.cli.Main C:\path\to\sample.jar --auth
 
 解析边界为：单 class 最大 4 MiB、class 总读取量最大 64 MiB、最多 20,000 个 class 条目、最多 100,000 个归档文件条目；另有常量池、成员、属性、注解和值数量/深度上限。超限会受控拒绝，局部畸形 class 会安全降级为旧类名规则。已成功解析但没有有效映射的类不会因名称含 `Controller` 被制造成入口。
 
-## Control Plane REST/SSE MVP
+## Control Plane REST/SSE
 
-Control Plane 已完成一个本地、内存存储的 MVP slice，路由前缀为 `/api/v1`。静态扫描不会执行 JAR/WAR/CLASS。动态入口只会排队代码白名单中的 digest-pinned fixture；执行由独立 Linux Worker 经 OpenSandbox 完成。
+Control Plane 已完成本地 SQLite 首版，路由前缀为 `/api/v1`。静态扫描不会执行 JAR/WAR/CLASS。动态入口只会排队代码白名单中的 digest-pinned fixture；执行由独立 Linux Worker 经 OpenSandbox 完成。
 
 启动：
 
 ```powershell
-java -cp target/classes com.aq.jvmsentinel.control.ControlPlaneMain --root C:\path\to\authorized-artifacts --port 8080 --token local-demo
+java -cp "<target/classes + Maven runtime dependencies>" com.aq.jvmsentinel.control.ControlPlaneMain --root C:\path\to\authorized-artifacts --port 18080 --token local-demo
 ```
 
 主要路由：
 
-- `GET /api/v1/health`：返回 `persistenceMode=IN_MEMORY_MVP`、`analysisMode=STATIC_METADATA_ONLY` 和 `dependencyMode=MOCK`。
-- `POST /api/v1/projects`、`GET /api/v1/projects/{projectId}`：创建/查询项目。
+- `GET /api/v1/health`：默认返回 `persistenceMode=SQLITE`、`analysisMode=STATIC_METADATA_ONLY` 和动态能力边界。
+- `GET|POST /api/v1/projects`、`GET|PATCH|DELETE /api/v1/projects/{projectId}`：项目列表、创建、更新和软删除。
 - `POST|GET /api/v1/projects/{projectId}/artifacts`：登记或列出受控根目录内的制品。
 - `GET /api/v1/projects/{projectId}/entries`：查询入口清单。
 - `POST|GET /api/v1/projects/{projectId}/scans`：创建或列出静态前置分析扫描。
@@ -74,6 +73,10 @@ java -cp target/classes com.aq.jvmsentinel.control.ControlPlaneMain --root C:\pa
 - `POST /api/v1/scans/{scanId}/dynamic-tasks`：显式授权排队受控 fixture；请求不能提供镜像、命令、路径或能力。
 - `GET /api/v1/projects/{projectId}/dashboard`、`GET /api/v1/projects/{projectId}/evidence`、`GET /api/v1/scans/{scanId}/evidence`：仪表盘和证据。
 - `GET /api/v1/findings/{findingId}`、`POST /api/v1/findings/{findingId}/replay`、`GET /api/v1/attack-chains`：当前静态发现/演示链查询；replay 仍是受限的元数据重放语义。
+- `GET|POST /api/v1/providers`、`PATCH|DELETE /api/v1/providers/{providerId}`：管理 Provider；API Key 只以加密形式保存在后端，响应不返回明文或密文。
+- `GET|PATCH|DELETE /api/v1/projects/{projectId}/role-assignments[/role]`：为预分析、路径探索、漏洞研判和报告生成分配 Provider/模型。
+- `GET|POST /api/v1/projects/{projectId}/ai-jobs`、`GET|PATCH|DELETE /api/v1/ai-jobs/{jobId}`：展示版本化 AI 数据流；真实调用尚未启用，任务固定为 `BLOCKED / PROVIDER_EXECUTION_DISABLED`。
+- `GET|POST /api/v1/operators`、`PATCH /api/v1/operators/{operatorId}`、`GET /api/v1/audit-events`：本地 PAT、RBAC 和脱敏审计。
 
 最小调用顺序是“创建项目 → 登记制品 → 显式授权创建扫描”；制品路径只对 Control Plane 可见，浏览器不会读取文件内容：
 
@@ -98,9 +101,9 @@ Idempotency-Key: scan-demo-1
 
 SSE 客户端通过 `Last-Event-ID` 请求头断线续接。事件包含 `id`、`event`、`data`，并携带项目/制品/扫描上下文、`schemaVersion`、`verificationStatus`、`dependencyMode` 和 `evidenceRefs`。SSE 仅作增量提示，断线或终态后必须以 `GET /api/v1/scans/{scanId}` 等幂等查询为准；终态事件包括 `ScanCompleted` 或 `TaskStopped`。
 
-当前限制：默认启动器只绑定 loopback；数据、任务和 trace 仅在进程内存中；无多租户/RBAC/持久化、真实字节码调用图、LLM 或真实依赖连接。动态闭环目前仅为受控 Spring fixture，结论固定为 `DYNAMIC_SUSPECTED`；没有已发布镜像，真实 OpenSandbox 运行仍需运维方构建并配置仓库 digest。外部制品动态执行保持禁用。
+当前限制：默认启动器只绑定 loopback；项目、制品元数据、扫描结果、Provider、角色、AI job 和审计已进入 SQLite，但幂等窗口、SSE 历史、Worker 任务和动态 trace 仍是进程内状态。操作员是本地 PAT/RBAC，尚无 SSO、HttpOnly session 或多租户隔离。字节码调用边是无 classpath 展开的保守事实，不是完整数据流。真实 LLM 调用和真实依赖连接保持禁用。动态闭环目前仅为受控 Spring fixture，结论固定为 `DYNAMIC_SUSPECTED`；外部制品动态执行保持禁用。
 
-GUI 采用独立的 React/TypeScript 前端，已支持真实 Control Plane DTO/SSE 和显式 DEMO/MOCK 两种模式；设计和接口约束见 [docs/GUI_DESIGN.md](docs/GUI_DESIGN.md)。
+GUI 采用 React/TypeScript，默认亮色并支持持久化暗色主题，已接通项目选择/创建/删除、制品登记、扫描策略、执行时间线、结果、Provider、AI 四角色和阻断态 AI job；真实模式失败不会伪造成功或回退 Demo。
 
 前端原型位于 `frontend/`：
 
@@ -110,7 +113,7 @@ npm install
 npm run build
 ```
 
-默认建议在本地演示时显式设置 `VITE_DEMO_MODE=true`。接入真实 Control Plane 时设置：
+仅在明确需要演示数据时设置 `VITE_DEMO_MODE=true`。接入真实 Control Plane 时设置：
 
 ```dotenv
 VITE_DEMO_MODE=false
@@ -121,11 +124,19 @@ VITE_API_TOKEN=local-demo
 
 真实模式连接失败不会静默回退到 Mock；浏览器只访问 Control Plane，不直接读取制品、数据库、沙箱或模型。
 
+## 打包方向
+
+最终交付采用“各平台自包含 Desktop Core + 可选 Sandbox Pack”，而不是要求所有用户安装 Docker：
+
+- Desktop Core 使用 `jlink + jpackage`，分别构建 Windows EXE/MSI、macOS DMG/PKG、Linux DEB/RPM/便携包；内置 Java runtime，React 构建产物由本地 Control Plane 提供。
+- Sandbox Pack 使用 Docker Compose 提供可选 Linux Worker/OpenSandbox；缺少 Docker 时静态审计仍可用，动态能力保持 disabled。
+- GraalVM Native Image 待 DTO、反射和插件边界稳定后再评估，不作为首发唯一产物。
+
 ## 明确未实现
 
 - 没有用户导入制品的动态执行、强化运行时发布认证、数据库/HTTP 真实替身或真实漏洞利用；
-- 没有 LLM 调用；前置分析仅为受限 classfile 注解解析和确定性辅助规则，不是完整框架建模；
-- GUI 的真实 DTO/SSE 接入已完成 MVP slice，但尚未达到生产级身份、持久化、多租户和审计要求；
+- 没有真实 LLM 调用；当前 AI job 只展示受证据约束的数据流并明确阻断；
+- 没有生产级 SSO/session、多租户隔离、Worker/trace 持久化或完整审计防篡改链；
 - 注解入口和类名推断的入口/sink 均为 `STATIC_INFERRED`；权限只作为前置条件保留，不能据此声称匿名可达、权限绕过或漏洞已验证。
 
 ## 受控动态 Fixture

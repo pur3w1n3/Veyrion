@@ -195,3 +195,27 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 新增 `DevLauncherMain` 与根目录 `Start-Veyrion.ps1`：自动创建工作区内 `samples/`、生成进程内随机 mutation token、启动 loopback Control Plane、创建本地项目并以环境变量启动 Vite。
 - 启动器只直接执行仓库前端的 `npm run dev`，不经过 shell，不执行导入制品，也不属于 Worker fallback；前端退出时后端随之关闭，JVM 关闭钩子负责清理子进程。
 - 制品目录必须位于工作区内，前后端端口必须不同；实际冒烟已验证后端 health 与 Vite 首页均可访问。
+
+## 17. 本地首版管理与分析闭环（2026-07-24，根 Agent 审计通过）
+
+- 本地默认 Store 改为 SQLite/plain JDBC，使用 V001/V002 有序迁移和历史 checksum 校验；项目、制品元数据、扫描、证据、发现、攻击链、Provider、AI 角色绑定、阻断态 AI job、操作员 PAT 和审计事件可跨重启恢复。数据库与密钥路径必须留在授权根目录下。
+- Provider API Key 只进入专用请求字段，使用后端文件根密钥与 AES-256-GCM 加密；AAD 绑定 workspace/provider/credential/version，数据库、响应、异常和审计不返回明文或密文。远程 Provider 只接受无 userinfo/query/fragment 的 HTTPS；LOCAL 只接受 loopback。真实 Provider 请求仍未启用。
+- 操作员 PAT 只保存 SHA-256 hash，写操作按本地 RBAC 默认拒绝；Worker token/header 不能进入操作员权限域。当前仍是 loopback 单 workspace 首版，没有 SSO、HttpOnly session、多租户或生产读权限；为兼容 SSE，既有结果 GET 仍未全部要求操作员认证。
+- AI 角色固定为 `PRE_ANALYSIS`、`PATH_EXPLORATION`、`VULNERABILITY_TRIAGE`、`REPORT_GENERATION`。创建 AI job 只生成四阶段数据流并固定 `BLOCKED / PROVIDER_EXECUTION_DISABLED`，不得伪造模型输出或生成 `VERIFIED`。
+- classfile 事实层新增类层次、字段/方法、字段读写、`invoke*`、`invokedynamic`、直接/保守 CHA/未解析动态边；保留字节码 offset/ordinal 证据和事实预算。它不加载类、不展开完整 classpath、不做跨方法数据流，反编译器仍未进入 Control Plane 进程。
+- GUI 改为默认亮色、可持久化暗色，并接通项目 CRUD、制品登记、扫描策略、执行时间线、结果、Provider、AI 四角色和 AI job。失败状态明确显示，不创建本地替代成功数据，也不把 API Key 写入 Web Storage。
+- 根 Agent 修正持久化启动器的运行时 classpath、SQLite 接入、开发项目复用和 bootstrap token 跨重启轮换；活动管理员不能自我撤销或降权。真实 Chrome 已验证项目/设置 API 均为 200、默认亮色、主题持久化且无失败请求。
+- 分阶段 Git 备份：`40e500f`（受限字节码事实索引）、`da644e4`（SQLite、安全管理与启动器）。
+
+## 18. 最终打包决策（2026-07-24）
+
+- 默认产物采用按平台构建的自包含 Desktop Core：`jlink + jpackage` 生成 Windows EXE/MSI、macOS DMG/PKG、Linux DEB/RPM/便携包。不存在可同时运行于三个操作系统的单一 EXE，CI 必须在对应 OS/架构构建和签名。
+- React 生产产物应嵌入 Java 应用并由 loopback Control Plane 提供，安装后打开系统浏览器；最终用户不需要预装 Java、Node 或 Docker。当前 Vite 双进程启动器仅用于开发。
+- Docker Compose 作为可选 Sandbox Pack，提供 Linux Worker/OpenSandbox 动态能力；缺少 Docker 时 Desktop Core 的静态审计和管理能力仍可用，动态能力保持 disabled，绝不回退到宿主 Java 进程执行外部制品。
+- GraalVM Native Image 技术上可作为后续便携版 PoC，但在 SQLite JNI、Jackson DTO、反射资源和插件边界稳定前不作为首发唯一产物。
+
+## 19. 本轮剩余边界
+
+- 幂等窗口、SSE 历史、Worker 任务、租约和动态 trace 仍为内存状态；SQLite 是本地单节点，不是生产多租户数据库。
+- 审计事件已持久化且脱敏，但尚无独立签名 checkpoint、禁止 UPDATE/DELETE 的数据库门禁或远端不可变归档。
+- 真实 LLM、反编译隔离 Worker、完整调用图/污点、内容寻址对象存储、生产 SSO/session、真实 OpenSandbox 部署和用户制品强化沙箱仍未完成；这些能力不得在 UI 或文档中标记为已验证。

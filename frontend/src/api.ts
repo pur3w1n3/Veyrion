@@ -206,6 +206,69 @@ export type CreateScanRequest = {
   policy?: Record<string, unknown>
 }
 
+export type UpdateProjectRequest = { name: string }
+export type UpdateArtifactRequest = { label?: string }
+export type UpdateScanRequest = { action: 'cancel' | 'resume' }
+
+export type ProviderKind = 'OPENAI_COMPATIBLE' | 'AZURE_OPENAI' | 'LOCAL'
+export type ProviderDto = {
+  schemaVersion: number
+  providerId: string
+  name: string
+  kind: ProviderKind
+  baseUrl?: string
+  model?: string
+  enabled: boolean
+  hasCredential: boolean
+  updatedAt?: string
+}
+export type SaveProviderRequest = {
+  name: string
+  kind: ProviderKind
+  baseUrl?: string
+  model?: string
+  apiKey?: string
+  enabled?: boolean
+}
+
+export type AiRole = 'PRE_ANALYSIS' | 'PATH_EXPLORATION' | 'VULNERABILITY_TRIAGE' | 'REPORT_GENERATION'
+export type RoleAssignmentDto = {
+  schemaVersion: number
+  projectId: string
+  role: AiRole
+  providerId: string
+  model?: string
+  updatedAt?: string
+}
+export type SaveRoleAssignmentRequest = {
+  providerId: string
+  model?: string
+}
+
+export type AiJobDto = {
+  schemaVersion: number
+  aiJobId: string
+  projectId: string
+  role: AiRole
+  status: string
+  createdAt: string
+  updatedAt?: string
+  errorCode?: string
+}
+export type CreateAiJobRequest = {
+  role: AiRole
+  scanId?: string
+  artifactId?: string
+  instruction?: string
+}
+
+export class ApiUnavailableError extends Error {
+  constructor(operation: string, status?: number, options?: ErrorOptions) {
+    super(`${operation} unavailable${status ? ` (${status})` : ''}`, options)
+    this.name = 'ApiUnavailableError'
+  }
+}
+
 export type ScanEventType =
   | 'ScanCreated'
   | 'TaskLeased'
@@ -240,10 +303,32 @@ export type SubscribeOptions = {
 
 export interface SentinelApi {
   readonly mode: ApiMode
-  loadDashboard(): Promise<DashboardSnapshot>
+  loadDashboard(projectId?: string): Promise<DashboardSnapshot>
+  listProjects(): Promise<ProjectDto[]>
+  getProject(projectId: string): Promise<ProjectDto>
   createProject(request: CreateProjectRequest | string): Promise<ProjectDto>
+  updateProject(projectId: string, request: UpdateProjectRequest): Promise<ProjectDto>
+  deleteProject(projectId: string): Promise<void>
+  listArtifacts(projectId: string): Promise<ArtifactDto[]>
   registerArtifact(request: RegisterArtifactRequest | string, projectId?: string): Promise<ArtifactDto>
+  updateArtifact(projectId: string, artifactId: string, request: UpdateArtifactRequest): Promise<ArtifactDto>
+  deleteArtifact(projectId: string, artifactId: string): Promise<void>
+  listScans(projectId: string): Promise<ScanDto[]>
   createScan(request?: CreateScanRequest | string, projectId?: string): Promise<ScanDto>
+  updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto>
+  deleteScan(scanId: string): Promise<void>
+  listProviders(): Promise<ProviderDto[]>
+  createProvider(request: SaveProviderRequest): Promise<ProviderDto>
+  updateProvider(providerId: string, request: Partial<SaveProviderRequest>): Promise<ProviderDto>
+  deleteProvider(providerId: string): Promise<void>
+  listRoleAssignments(projectId: string): Promise<RoleAssignmentDto[]>
+  saveRoleAssignment(projectId: string, role: AiRole, request: SaveRoleAssignmentRequest): Promise<RoleAssignmentDto>
+  deleteRoleAssignment(projectId: string, role: AiRole): Promise<void>
+  listAiJobs(projectId: string): Promise<AiJobDto[]>
+  createAiJob(projectId: string, request: CreateAiJobRequest): Promise<AiJobDto>
+  getAiJob(aiJobId: string): Promise<AiJobDto>
+  updateAiJob(aiJobId: string, action: 'cancel' | 'retry'): Promise<AiJobDto>
+  deleteAiJob(aiJobId: string): Promise<void>
   getEntries(projectId?: string, scanId?: string): Promise<EntryDto[]>
   getScan(scanId: string): Promise<ScanDto>
   getEvidence(evidenceId: string): Promise<EvidenceDto>
@@ -589,6 +674,64 @@ export const parseEvidence = (value: unknown): EvidenceDto => {
   }
 }
 
+const parseList = <T>(value: unknown, key: string, parser: (item: unknown) => T): T[] => {
+  const body = isRecord(value) && value[key] !== undefined ? value[key] : value
+  if (!Array.isArray(body)) throw new Error(`invalid ${key} response`)
+  return body.map(parser)
+}
+
+export const parseProvider = (value: unknown): ProviderDto => {
+  const body = unwrap(value, 'provider')
+  if (!isRecord(body)) throw new Error('invalid provider response')
+  const kind = asText(body.kind, 'provider.kind') as ProviderKind
+  if (!['OPENAI_COMPATIBLE', 'AZURE_OPENAI', 'LOCAL'].includes(kind)) {
+    throw new Error('invalid provider.kind')
+  }
+  return {
+    schemaVersion: schemaVersion(isRecord(value) ? value.schemaVersion : body.schemaVersion, 'provider.schemaVersion', false),
+    providerId: asText(body.providerId ?? body.id, 'provider.providerId'),
+    name: asText(body.name, 'provider.name'),
+    kind,
+    baseUrl: optionalText(body.baseUrl),
+    model: optionalText(body.model),
+    enabled: body.enabled === undefined ? true : asBoolean(body.enabled, 'provider.enabled'),
+    hasCredential: body.hasCredential === undefined ? false : asBoolean(body.hasCredential, 'provider.hasCredential'),
+    updatedAt: optionalText(body.updatedAt)
+  }
+}
+
+export const parseRoleAssignment = (value: unknown): RoleAssignmentDto => {
+  const body = unwrap(value, 'roleAssignment')
+  if (!isRecord(body)) throw new Error('invalid role assignment response')
+  const role = asText(body.role, 'roleAssignment.role') as AiRole
+  if (!['PRE_ANALYSIS', 'PATH_EXPLORATION', 'VULNERABILITY_TRIAGE', 'REPORT_GENERATION'].includes(role)) throw new Error('invalid roleAssignment.role')
+  return {
+    schemaVersion: schemaVersion(isRecord(value) ? value.schemaVersion : body.schemaVersion, 'roleAssignment.schemaVersion', false),
+    projectId: asText(body.projectId, 'roleAssignment.projectId'),
+    role,
+    providerId: asText(body.providerId, 'roleAssignment.providerId'),
+    model: optionalText(body.model),
+    updatedAt: optionalText(body.updatedAt)
+  }
+}
+
+export const parseAiJob = (value: unknown): AiJobDto => {
+  const body = unwrap(value, 'aiJob')
+  if (!isRecord(body)) throw new Error('invalid ai job response')
+  const role = asText(body.role, 'aiJob.role') as AiRole
+  if (!['PRE_ANALYSIS', 'PATH_EXPLORATION', 'VULNERABILITY_TRIAGE', 'REPORT_GENERATION'].includes(role)) throw new Error('invalid aiJob.role')
+  return {
+    schemaVersion: schemaVersion(isRecord(value) ? value.schemaVersion : body.schemaVersion, 'aiJob.schemaVersion', false),
+    aiJobId: asText(body.aiJobId ?? body.id, 'aiJob.aiJobId'),
+    projectId: asText(body.projectId, 'aiJob.projectId'),
+    role,
+    status: asText(body.status, 'aiJob.status'),
+    createdAt: asText(body.createdAt, 'aiJob.createdAt'),
+    updatedAt: optionalText(body.updatedAt),
+    errorCode: optionalText(body.errorCode)
+  }
+}
+
 export const parseScanEvent = (value: unknown, eventName?: string): ScanEvent => {
   if (!isRecord(value)) throw new Error('invalid scan event')
   const eventType = value.eventType ?? eventName
@@ -686,7 +829,11 @@ export class HttpSentinelApi implements SentinelApi {
 
   constructor(private readonly baseUrl: string, private readonly projectId: string, options: { token?: string; fetchFn?: FetchLike; fetch?: FetchLike } = {}) {
     if (!baseUrl || !projectId) throw new Error('Control Plane baseUrl and projectId are required')
-    this.fetchFn = options.fetchFn ?? options.fetch ?? fetch
+    const fetchFn = options.fetchFn ?? options.fetch ?? fetch
+    // Keep native fetch detached from this API instance. Calling a stored
+    // browser fetch as this.fetchFn(...) gives it the wrong receiver and
+    // Chrome rejects the call before any network request is sent.
+    this.fetchFn = (input, init) => fetchFn(input, init)
     this.token = options.token ?? import.meta.env.VITE_API_TOKEN
   }
 
@@ -699,11 +846,12 @@ export class HttpSentinelApi implements SentinelApi {
     try {
       response = await this.fetchFn(this.url(path), init)
     } catch (error) {
-      throw new Error(`${operation} failed: network error`, { cause: error })
+      throw new ApiUnavailableError(operation, undefined, { cause: error })
     }
     if (response.ok === false || (typeof response.status === 'number' && response.status >= 400)) {
       // Do not include response bodies: they may contain source, credentials or
       // unsanitized model output. Status is enough for the UI and audit log.
+      if ([404, 405, 501, 502, 503, 504].includes(response.status)) throw new ApiUnavailableError(operation, response.status)
       throw new Error(`${operation} failed: ${response.status}`)
     }
     if (response.status === 204) return {}
@@ -714,12 +862,22 @@ export class HttpSentinelApi implements SentinelApi {
     }
   }
 
-  async loadDashboard(): Promise<DashboardSnapshot> {
-    const body = await this.request(`projects/${encodeURIComponent(this.projectId)}/dashboard`, {
+  async loadDashboard(projectId = this.projectId): Promise<DashboardSnapshot> {
+    const body = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/dashboard`, {
       credentials: 'include',
       headers: jsonHeaders(this.token)
     }, 'dashboard request')
     return parseDashboard(body)
+  }
+
+  async listProjects(): Promise<ProjectDto[]> {
+    const response = await this.request('projects', { credentials: 'include', headers: jsonHeaders(this.token) }, 'list projects')
+    return parseList(response, 'projects', parseProject)
+  }
+
+  async getProject(projectId: string): Promise<ProjectDto> {
+    const response = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}`, { credentials: 'include', headers: jsonHeaders(this.token) }, 'get project')
+    return parseProject(response)
   }
 
   async createProject(request: CreateProjectRequest | string): Promise<ProjectDto> {
@@ -733,6 +891,24 @@ export class HttpSentinelApi implements SentinelApi {
     return parseProject(response)
   }
 
+  async updateProject(projectId: string, request: UpdateProjectRequest): Promise<ProjectDto> {
+    const response = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}`, {
+      method: 'PATCH', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(request)
+    }, 'update project')
+    return parseProject(response)
+  }
+
+  async deleteProject(projectId: string): Promise<void> {
+    await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}`, {
+      method: 'DELETE', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey())
+    }, 'delete project')
+  }
+
+  async listArtifacts(projectId: string): Promise<ArtifactDto[]> {
+    const response = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/artifacts`, { credentials: 'include', headers: jsonHeaders(this.token) }, 'list artifacts')
+    return parseList(response, 'artifacts', parseArtifact)
+  }
+
   async registerArtifact(request: RegisterArtifactRequest | string, projectId = this.projectId): Promise<ArtifactDto> {
     const body: RegisterArtifactRequest = typeof request === 'string' ? { path: request } : request
     if (!body || typeof body.path !== 'string' || body.path.trim() === '') throw new Error('artifact path is required')
@@ -742,6 +918,24 @@ export class HttpSentinelApi implements SentinelApi {
       method: 'POST', credentials: 'include', headers: mutationHeaders(this.token, requestKey), body: JSON.stringify(wireBody)
     }, 'register artifact')
     return parseArtifact(response)
+  }
+
+  async updateArtifact(projectId: string, artifactId: string, request: UpdateArtifactRequest): Promise<ArtifactDto> {
+    const response = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/artifacts/${encodeURIComponent(asText(artifactId, 'artifactId'))}`, {
+      method: 'PATCH', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(request)
+    }, 'update artifact')
+    return parseArtifact(response)
+  }
+
+  async deleteArtifact(projectId: string, artifactId: string): Promise<void> {
+    await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/artifacts/${encodeURIComponent(asText(artifactId, 'artifactId'))}`, {
+      method: 'DELETE', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey())
+    }, 'delete artifact')
+  }
+
+  async listScans(projectId: string): Promise<ScanDto[]> {
+    const response = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/scans`, { credentials: 'include', headers: jsonHeaders(this.token) }, 'list scans')
+    return parseList(response, 'scans', parseScan)
   }
 
   async createScan(request: CreateScanRequest | string = {}, projectId = this.projectId): Promise<ScanDto> {
@@ -760,6 +954,92 @@ export class HttpSentinelApi implements SentinelApi {
       method: 'POST', credentials: 'include', headers: mutationHeaders(this.token, requestKey), body: JSON.stringify(body)
     }, 'create scan')
     return parseScan(response)
+  }
+
+  async updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto> {
+    const response = await this.request(`scans/${encodeURIComponent(asText(scanId, 'scanId'))}`, {
+      method: 'PATCH', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(request)
+    }, 'update scan')
+    return parseScan(response)
+  }
+
+  async deleteScan(scanId: string): Promise<void> {
+    await this.request(`scans/${encodeURIComponent(asText(scanId, 'scanId'))}`, {
+      method: 'DELETE', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey())
+    }, 'delete scan')
+  }
+
+  async listProviders(): Promise<ProviderDto[]> {
+    const response = await this.request('providers', { credentials: 'include', headers: jsonHeaders(this.token) }, 'list providers')
+    return parseList(response, 'providers', parseProvider)
+  }
+
+  async createProvider(request: SaveProviderRequest): Promise<ProviderDto> {
+    const response = await this.request('providers', {
+      method: 'POST', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(request)
+    }, 'create provider')
+    return parseProvider(response)
+  }
+
+  async updateProvider(providerId: string, request: Partial<SaveProviderRequest>): Promise<ProviderDto> {
+    const response = await this.request(`providers/${encodeURIComponent(asText(providerId, 'providerId'))}`, {
+      method: 'PATCH', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(request)
+    }, 'update provider')
+    return parseProvider(response)
+  }
+
+  async deleteProvider(providerId: string): Promise<void> {
+    await this.request(`providers/${encodeURIComponent(asText(providerId, 'providerId'))}`, {
+      method: 'DELETE', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey())
+    }, 'delete provider')
+  }
+
+  async listRoleAssignments(projectId: string): Promise<RoleAssignmentDto[]> {
+    const response = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/role-assignments`, { credentials: 'include', headers: jsonHeaders(this.token) }, 'list role assignments')
+    return parseList(response, 'roleAssignments', parseRoleAssignment)
+  }
+
+  async saveRoleAssignment(projectId: string, role: AiRole, request: SaveRoleAssignmentRequest): Promise<RoleAssignmentDto> {
+    const response = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/role-assignments/${encodeURIComponent(role)}`, {
+      method: 'PATCH', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(request)
+    }, 'save role assignment')
+    return parseRoleAssignment(response)
+  }
+
+  async deleteRoleAssignment(projectId: string, role: AiRole): Promise<void> {
+    await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/role-assignments/${encodeURIComponent(role)}`, {
+      method: 'DELETE', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey())
+    }, 'delete role assignment')
+  }
+
+  async listAiJobs(projectId: string): Promise<AiJobDto[]> {
+    const response = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/ai-jobs`, { credentials: 'include', headers: jsonHeaders(this.token) }, 'list ai jobs')
+    return parseList(response, 'aiJobs', parseAiJob)
+  }
+
+  async createAiJob(projectId: string, request: CreateAiJobRequest): Promise<AiJobDto> {
+    const response = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/ai-jobs`, {
+      method: 'POST', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(request)
+    }, 'create ai job')
+    return parseAiJob(response)
+  }
+
+  async getAiJob(aiJobId: string): Promise<AiJobDto> {
+    const response = await this.request(`ai-jobs/${encodeURIComponent(asText(aiJobId, 'aiJobId'))}`, { credentials: 'include', headers: jsonHeaders(this.token) }, 'get ai job')
+    return parseAiJob(response)
+  }
+
+  async updateAiJob(aiJobId: string, action: 'cancel' | 'retry'): Promise<AiJobDto> {
+    const response = await this.request(`ai-jobs/${encodeURIComponent(asText(aiJobId, 'aiJobId'))}`, {
+      method: 'PATCH', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify({ action })
+    }, 'update ai job')
+    return parseAiJob(response)
+  }
+
+  async deleteAiJob(aiJobId: string): Promise<void> {
+    await this.request(`ai-jobs/${encodeURIComponent(asText(aiJobId, 'aiJobId'))}`, {
+      method: 'DELETE', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey())
+    }, 'delete ai job')
   }
 
   async getEntries(projectId = this.projectId, scanId?: string): Promise<EntryDto[]> {
@@ -866,9 +1146,22 @@ export class HttpSentinelApi implements SentinelApi {
 
 export class MockSentinelApi implements SentinelApi {
   readonly mode: ApiMode = 'demo'
+  private unavailable(operation: string): never {
+    throw new ApiUnavailableError(`${operation} (demo adapter)`)
+  }
 
   async loadDashboard(): Promise<DashboardSnapshot> {
     return structuredClone(demoSnapshot)
+  }
+
+  async listProjects(): Promise<ProjectDto[]> {
+    return [{ schemaVersion: 1, projectId: 'project-01', name: 'Demo workspace', createdAt: new Date(0).toISOString() }]
+  }
+
+  async getProject(projectId: string): Promise<ProjectDto> {
+    const project = (await this.listProjects()).find((item) => item.projectId === projectId)
+    if (!project) return this.unavailable('get project')
+    return project
   }
 
   async createProject(request: CreateProjectRequest | string): Promise<ProjectDto> {
@@ -876,14 +1169,37 @@ export class MockSentinelApi implements SentinelApi {
     return { schemaVersion: 1, projectId: 'demo-project', name, createdAt: new Date(0).toISOString() }
   }
 
+  async updateProject(): Promise<ProjectDto> { return this.unavailable('update project') }
+  async deleteProject(): Promise<void> { return this.unavailable('delete project') }
+  async listArtifacts(): Promise<ArtifactDto[]> { return [] }
+
   async registerArtifact(request: RegisterArtifactRequest | string, _projectId?: string): Promise<ArtifactDto> {
     const path = typeof request === 'string' ? request : request.path
     return { schemaVersion: 1, artifactId: 'demo-artifact', type: 'JAR', artifactDigest: '0'.repeat(64), sizeBytes: 0, staticOnly: true, verificationStatus: 'STATIC_INFERRED', registeredAt: new Date(0).toISOString(), projectId: 'project-01' }
   }
 
+  async updateArtifact(): Promise<ArtifactDto> { return this.unavailable('update artifact') }
+  async deleteArtifact(): Promise<void> { return this.unavailable('delete artifact') }
+  async listScans(): Promise<ScanDto[]> { return [] }
+
   async createScan(_request: CreateScanRequest | string = {}, _projectId?: string): Promise<ScanDto> {
     return { schemaVersion: 1, scanId: 'scan-07f2', projectId: 'project-01', artifactDigest: '0'.repeat(64), status: 'COMPLETED', verificationStatus: 'STATIC_INFERRED', dependencyMode: 'MOCK', createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), evidenceRefs: [] }
   }
+
+  async updateScan(): Promise<ScanDto> { return this.unavailable('update scan') }
+  async deleteScan(): Promise<void> { return this.unavailable('delete scan') }
+  async listProviders(): Promise<ProviderDto[]> { return [] }
+  async createProvider(): Promise<ProviderDto> { return this.unavailable('create provider') }
+  async updateProvider(): Promise<ProviderDto> { return this.unavailable('update provider') }
+  async deleteProvider(): Promise<void> { return this.unavailable('delete provider') }
+  async listRoleAssignments(): Promise<RoleAssignmentDto[]> { return [] }
+  async saveRoleAssignment(): Promise<RoleAssignmentDto> { return this.unavailable('save role assignment') }
+  async deleteRoleAssignment(): Promise<void> { return this.unavailable('delete role assignment') }
+  async listAiJobs(): Promise<AiJobDto[]> { return [] }
+  async createAiJob(): Promise<AiJobDto> { return this.unavailable('create ai job') }
+  async getAiJob(): Promise<AiJobDto> { return this.unavailable('get ai job') }
+  async updateAiJob(): Promise<AiJobDto> { return this.unavailable('update ai job') }
+  async deleteAiJob(): Promise<void> { return this.unavailable('delete ai job') }
 
   async getEntries(): Promise<EntryDto[]> {
     return (await this.loadDashboard()).entries
