@@ -294,3 +294,12 @@ Agent Gateway 对模型、工具和提示模板做版本登记；模型输出必
 Windows 可作为 Control Plane 和开发宿主，动态任务运行在 OpenSandbox 管理的 Linux Worker。普通 Docker/runc 不能作为恶意闭源制品的安全边界；只有强化运行时完成网络/DNS、宿主路径、非 root、只读根、资源耗尽和逃逸测试后，才允许外部制品执行。在此之前 health 必须报告 `DYNAMIC_DISABLED`，失败时退回静态分析而不是降级到不安全执行。
 
 Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约、checkpoint 和 trace chunk 都绑定 `projectId`、`artifactDigest`、`scanId`、`taskId`，运行时轨迹以 SHA-256 前序摘要链追加提交。GUI token、Worker token、OpenSandbox API key 和沙箱内凭据相互隔离；任何来自制品、模型或前端的字段都不能修改运行时能力等级、网络策略或挂载范围。
+
+### 13.1 已实现的受控 Fixture 切片
+
+- Public API 只能按代码白名单 fixture ID 排队任务；镜像、命令、路径、能力和预算均不能由浏览器提供。镜像默认指向 `registry.invalid`，运维覆盖必须是实际仓库的 `@sha256:` 引用。
+- execute-one Worker 从内部认证任务快照读取预算和网络策略，经 OpenSandbox 执行固定命令；不存在宿主 Java、shell 或 Docker fallback。Worker token 不能自行创建 `FIXTURE_RUNC` 任务。
+- Agent JSONL 在 Worker 侧按 UTF-8、字段、事件、序列、行数和字节预算严格验证，再转换为带前序摘要的不可变 trace chunk。显式探针属于 `APPLICATION_REPORTED`，所有动态结果固定为 `DYNAMIC_SUSPECTED`。
+- 只有 `COMPLETED + fixtureOnly + FIXTURE_RUNC` 且摘要链复验通过的任务才投影到 dashboard/path/evidence；公共证据只返回摘要和 task/digest/sequence 引用，不返回原始 detail。
+- 受控 Spring Boot fixture 不监听 HTTP，直接调用真实 controller 映射一次；JDBC/FILE/PROCESS 只上报 `executed=false` 的无害意图，不产生真实外部操作。
+- runc 部署还必须由运维方声明 deny network、资源预算、非 root、只读根和 `writable-tmp-v1`。当前验收使用 mock OpenSandbox；仓库没有发布镜像，不能据此宣称真实部署或外部制品运行已验证。

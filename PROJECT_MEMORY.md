@@ -146,7 +146,7 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - README、PRD、技术架构、MVP backlog、GUI 规范和文档审计摘要已同步 Control Plane REST/SSE 的实际完成状态、静态分析边界、真实 GUI 配置和未完成能力。
 - 验证结果：使用 IntelliJ JBR 21 按 Java 17 编译，`mvn -Dmaven.repo.local=.m2 test`、`AcceptanceTest`、`ControlPlaneAcceptanceTest` 均通过；在 `frontend/` 执行 `npm run build` 通过，`npm audit --audit-level=high` 为 0 vulnerabilities。系统默认 Maven 缓存下的 `mvn test` 仍可能因 Surefire 目录权限失败，属于环境问题。
 
-当前未完成工作：扩大真实授权 Spring 制品的入口召回基准、受控 fixture 动态路径/依赖替身、持久化和租户授权，最后才接入受证据约束的 AI Gateway。
+当前未完成工作：扩大真实授权 Spring 制品的入口召回基准、真实 OpenSandbox 部署验收、持久化和租户授权，最后才接入受证据约束的 AI Gateway。
 
 ## 12. 受限 classfile 注解切片（2026-07-24，根 Agent 审计通过）
 
@@ -178,3 +178,14 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - JVM Agent 不是安全边界。类加载等 Agent 自有事件标为 `RUNTIME_OBSERVED`；显式探针可被应用调用，必须标为 `APPLICATION_REPORTED`。两者当前都只能是 `DYNAMIC_SUSPECTED`，不得生成 `VERIFIED`。
 - 根 Agent 已逐文件审阅三个并行实现轨并修正显式探针证据来源；使用 JBR 21 复验根 Maven、六个 main-style 验收类、Agent Maven test/package 和真实 `-javaagent` 子进程，全部通过。
 - Git 审计备份：`94d55fb`（OpenSandbox 适配器）、`1108a98`（Worker Control Plane API）、`41d36a9`（JVM Agent）。下一步只接通仓库内受控 fixture；普通 runc 仍禁止执行用户导入制品。
+
+## 15. 受控 Spring Fixture 动态闭环（2026-07-24，根 Agent 审计通过）
+
+- 已接通 public 动态任务排队、独立 Worker HTTP 客户端、execute-one 启动器、OpenSandbox 固定执行模板、Agent JSONL 转换、不可变 trace 链以及 dashboard/path/evidence 投影。
+- Public 请求只接受 `authorized` 和 fixture ID；镜像 URI、main class、命令、路径、预算和能力由 Control Plane 白名单与内部任务快照决定。Worker token 不能创建 `FIXTURE_RUNC` 任务。
+- `fixtures/http-entry/` 是 Spring Boot 4.1.0 一次性 fixture：启动 Spring context、直接调用真实 controller mapping 后退出；HTTP/JDBC/FILE/PROCESS 均为无害显式 intent，依赖操作标记 `executed=false`。
+- 镜像默认使用 `registry.invalid`；运维方只能以 digest-pinned 环境配置覆盖。仓库提供显式 push 后读取真实 repository digest 的脚本，但本轮未运行 Docker、未发布镜像，也未完成真实 OpenSandbox 部署验收。
+- runc fixture 要求 deny-all 网络、非 root、只读根、资源预算和 `writable-tmp-v1` attestation；Agent trace 统一写入 `/tmp/veyrion-trace`。任何能力缺失均 fail-closed。
+- 动态证据仅为 `DYNAMIC_SUSPECTED`。Agent 自有事件保留 `RUNTIME_OBSERVED`，显式探针为 `APPLICATION_REPORTED`；trace 摘要不能把应用上报升级为 `VERIFIED`。
+- 根 Agent 修正了 public 预算信任、Worker 任意 fixture 入队、清理后置、静态 GUI provenance、跨项目 evidence ID 和只读根写目录等边界；mock OpenSandbox 全链路、真实 `-javaagent` fixture 冒烟、Maven/GUI 回归均通过。
+- 分阶段 Git 备份：`04d314f`、`a54fdb7`、`a39a88d`、`b76c155`、`7b6ef23`、`fb82aa3`、`c624e74`。这些提交证明受控切片可测试，不代表生产沙箱或外部制品动态执行可用。

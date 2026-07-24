@@ -4,7 +4,7 @@ JVM 应用安全验证平台（M0/M1 与 Control Plane MVP slice）
 
 产品正式名称为 **溯脉 · Veyrion**（英文：**Veyrion**）。现有 `com.aq.jvmsentinel` 包名、Maven artifactId、内部 service name 和 API 兼容标识暂不变，避免破坏已有调用方。商标、域名和公司名称尚未完成正式检索。
 
-这是一个 Java 17、无运行时第三方依赖的本地静态元数据分析切片。它只登记 JAR/WAR/CLASS、计算 SHA-256、校验扫描策略，并以有界 classfile 解析识别常见 Spring MVC 与权限注解；不会加载、启动、上传或执行被测类，也不会连接网络。
+主 Control Plane 是 Java 17、无运行时第三方依赖的本地分析切片。它登记 JAR/WAR/CLASS、计算 SHA-256、校验扫描策略，并以有界 classfile 解析识别常见 Spring MVC 与权限注解。另有独立 JVM Agent、OpenSandbox Worker 适配器和仓库内受控 Spring fixture；普通 runc 只允许该 fixture，绝不执行用户导入制品。
 M0 使用受控目录中的原文件并在分析前复核摘要；生产版需要改为内容寻址的只读制品存储。
 
 ## 构建
@@ -17,6 +17,8 @@ mvn -q '-Dmaven.repo.local=.m2' test-compile
 java -ea -cp 'target/test-classes;target/classes' com.aq.jvmsentinel.AcceptanceTest
 java -ea -cp 'target/test-classes;target/classes' com.aq.jvmsentinel.ClassfileAnnotationAcceptanceTest
 java -ea -cp 'target/test-classes;target/classes' com.aq.jvmsentinel.ControlPlaneAcceptanceTest
+java -ea -cp 'target/test-classes;target/classes' com.aq.jvmsentinel.FixtureDynamicLoopAcceptanceTest
+java -ea -cp 'target/test-classes;target/classes' com.aq.jvmsentinel.DynamicTraceProjectionAcceptanceTest
 ```
 
 当前测试使用依赖无关的可执行检查（Maven 负责编译，避免引入测试运行时依赖）。
@@ -38,7 +40,7 @@ java -cp target/classes com.aq.jvmsentinel.cli.Main C:\path\to\sample.jar --auth
 
 ## Control Plane REST/SSE MVP
 
-Control Plane 已完成一个本地、内存存储的 MVP slice，路由前缀为 `/api/v1`。它只做静态元数据登记、有界 classfile 注解解析和辅助类名/配置规则，不执行 JAR/WAR/CLASS，不运行字节码，不连接数据库或外网。
+Control Plane 已完成一个本地、内存存储的 MVP slice，路由前缀为 `/api/v1`。静态扫描不会执行 JAR/WAR/CLASS。动态入口只会排队代码白名单中的 digest-pinned fixture；执行由独立 Linux Worker 经 OpenSandbox 完成。
 
 启动：
 
@@ -55,6 +57,7 @@ java -cp target/classes com.aq.jvmsentinel.control.ControlPlaneMain --root C:\pa
 - `POST|GET /api/v1/projects/{projectId}/scans`：创建或列出静态前置分析扫描。
 - `GET /api/v1/scans/{scanId}`、`GET /api/v1/scans/{scanId}/paths`、`GET /api/v1/scans/{scanId}/paths/{pathId}`、`GET /api/v1/scans/{scanId}/findings`：查询扫描、路径、发现和静态证据。
 - `GET /api/v1/scans/{scanId}/events`：SSE 事件流。
+- `POST /api/v1/scans/{scanId}/dynamic-tasks`：显式授权排队受控 fixture；请求不能提供镜像、命令、路径或能力。
 - `GET /api/v1/projects/{projectId}/dashboard`、`GET /api/v1/projects/{projectId}/evidence`、`GET /api/v1/scans/{scanId}/evidence`：仪表盘和证据。
 - `GET /api/v1/findings/{findingId}`、`POST /api/v1/findings/{findingId}/replay`、`GET /api/v1/attack-chains`：当前静态发现/演示链查询；replay 仍是受限的元数据重放语义。
 
@@ -81,7 +84,7 @@ Idempotency-Key: scan-demo-1
 
 SSE 客户端通过 `Last-Event-ID` 请求头断线续接。事件包含 `id`、`event`、`data`，并携带项目/制品/扫描上下文、`schemaVersion`、`verificationStatus`、`dependencyMode` 和 `evidenceRefs`。SSE 仅作增量提示，断线或终态后必须以 `GET /api/v1/scans/{scanId}` 等幂等查询为准；终态事件包括 `ScanCompleted` 或 `TaskStopped`。
 
-当前 Control Plane 的限制：默认启动器只绑定 loopback；数据仅在进程内存中，重启即丢失；无多租户/RBAC/持久化、无真实字节码调用图、无动态执行/JVM Agent/沙箱、无 LLM、无真实依赖连接。静态解析不解析自定义组合/元注解、继承或接口映射、运行时条件注册，也不覆盖 Spring 的全部条件属性。可注入的非 loopback 构造器尚未提供生产级读权限控制。API 返回的 `STATIC_INFERRED`、`MOCK` 和静态证据不得当作已验证漏洞。
+当前限制：默认启动器只绑定 loopback；数据、任务和 trace 仅在进程内存中；无多租户/RBAC/持久化、真实字节码调用图、LLM 或真实依赖连接。动态闭环目前仅为受控 Spring fixture，结论固定为 `DYNAMIC_SUSPECTED`；没有已发布镜像，真实 OpenSandbox 运行仍需运维方构建并配置仓库 digest。外部制品动态执行保持禁用。
 
 GUI 采用独立的 React/TypeScript 前端，已支持真实 Control Plane DTO/SSE 和显式 DEMO/MOCK 两种模式；设计和接口约束见 [docs/GUI_DESIGN.md](docs/GUI_DESIGN.md)。
 
@@ -106,7 +109,11 @@ VITE_API_TOKEN=local-demo
 
 ## 明确未实现
 
-- 没有沙箱、JVM Agent、动态路径执行、数据库/HTTP 替身或真实漏洞利用；
+- 没有用户导入制品的动态执行、强化运行时发布认证、数据库/HTTP 真实替身或真实漏洞利用；
 - 没有 LLM 调用；前置分析仅为受限 classfile 注解解析和确定性辅助规则，不是完整框架建模；
 - GUI 的真实 DTO/SSE 接入已完成 MVP slice，但尚未达到生产级身份、持久化、多租户和审计要求；
 - 注解入口和类名推断的入口/sink 均为 `STATIC_INFERRED`；权限只作为前置条件保留，不能据此声称匿名可达、权限绕过或漏洞已验证。
+
+## 受控动态 Fixture
+
+`fixtures/http-entry/` 提供 Spring Boot 4.1.0 一次性 fixture、容器构建脚本和镜像配置说明。默认 catalog 使用 `registry.invalid`；只有运维方显式配置真实、digest-pinned 的 `VEYRION_HTTP_ENTRY_SMOKE_V1_IMAGE_URI` 后才可能执行。Worker 还要求 `FIXTURE_RUNC`、deny-all 网络、非 root、只读根和 `writable-tmp-v1` attestation。完整命令见 [fixture README](fixtures/http-entry/README.md)。
