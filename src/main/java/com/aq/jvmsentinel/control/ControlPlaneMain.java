@@ -1,5 +1,7 @@
 package com.aq.jvmsentinel.control;
 
+import com.aq.jvmsentinel.fixture.TrustedFixtureCatalog;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
@@ -32,7 +34,9 @@ public final class ControlPlaneMain {
             }
         }
         if (root == null || !Files.isDirectory(root)) usage();
-        try (ControlPlaneServer server = new ControlPlaneServer("127.0.0.1", port, root, token).start()) {
+        TrustedFixtureCatalog fixtureCatalog = TrustedFixtureCatalog.fromEnvironment(System.getenv());
+        try (ControlPlaneServer server =
+                     new ControlPlaneServer("127.0.0.1", port, root, token, fixtureCatalog).start()) {
             System.out.println("Control Plane listening at " + server.baseUri());
             System.out.println("Mutation token is configured locally; imported artifacts are metadata-only in this MVP.");
             new CountDownLatch(1).await();

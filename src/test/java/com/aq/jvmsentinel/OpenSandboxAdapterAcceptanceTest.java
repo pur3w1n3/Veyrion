@@ -85,7 +85,8 @@ public final class OpenSandboxAdapterAcceptanceTest {
                 new RuntimeAttestation("0.1.0", WorkerCapability.FIXTURE_RUNC, "runc",
                         true, true, true, Set.of(
                         "lifecycle-v1", "execd-command-v1", "network-deny-v1",
-                        "resource-budget-v1", "non-root-v1", "read-only-rootfs-v1"))));
+                        "resource-budget-v1", "non-root-v1", "read-only-rootfs-v1",
+                        "writable-tmp-v1"))));
     }
 
     private static SandboxRequest request(String image, boolean fixtureOnly, WorkerCapability capability) {

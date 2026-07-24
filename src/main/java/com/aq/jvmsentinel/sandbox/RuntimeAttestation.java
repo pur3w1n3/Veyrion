@@ -14,7 +14,8 @@ public record RuntimeAttestation(String protocolVersion, WorkerCapability capabi
                                  Set<String> serverCapabilities) {
     private static final Set<String> REQUIRED = Set.of(
             "lifecycle-v1", "execd-command-v1", "network-deny-v1",
-            "resource-budget-v1", "non-root-v1", "read-only-rootfs-v1");
+            "resource-budget-v1", "non-root-v1", "read-only-rootfs-v1",
+            "writable-tmp-v1");
 
     public RuntimeAttestation {
         protocolVersion = SandboxContracts.text(protocolVersion, "protocolVersion", 32);

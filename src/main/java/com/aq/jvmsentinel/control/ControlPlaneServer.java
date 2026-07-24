@@ -134,9 +134,24 @@ public final class ControlPlaneServer implements AutoCloseable {
                 new ControlPlaneStore(), new SseHub());
     }
 
+    public ControlPlaneServer(String host, int port, Path allowedRoot, String mutationToken,
+                              TrustedFixtureCatalog fixtureCatalog) {
+        this(new InetSocketAddress(Objects.requireNonNull(host, "host"), port),
+                new ArtifactRegistry(allowedRoot),
+                mutationToken == null || mutationToken.isBlank() ? DEFAULT_TOKEN : mutationToken,
+                Clock.systemUTC(), new ControlPlaneStore(), new SseHub(), fixtureCatalog);
+    }
+
     public ControlPlaneServer(InetSocketAddress bindAddress, ArtifactRegistry artifactRegistry,
                               String mutationToken, Clock clock, ControlPlaneStore store,
                               SseHub sseHub) {
+        this(bindAddress, artifactRegistry, mutationToken, clock, store, sseHub,
+                new TrustedFixtureCatalog());
+    }
+
+    public ControlPlaneServer(InetSocketAddress bindAddress, ArtifactRegistry artifactRegistry,
+                              String mutationToken, Clock clock, ControlPlaneStore store,
+                              SseHub sseHub, TrustedFixtureCatalog fixtureCatalog) {
         this.bindAddress = Objects.requireNonNull(bindAddress, "bindAddress");
         this.artifactRegistry = Objects.requireNonNull(artifactRegistry, "artifactRegistry");
         this.mutationToken = requireToken(mutationToken);
@@ -144,7 +159,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         this.store = Objects.requireNonNull(store, "store");
         this.sseHub = Objects.requireNonNull(sseHub, "sseHub");
         this.workerToken = newWorkerToken(this.mutationToken);
-        this.fixtureCatalog = new TrustedFixtureCatalog();
+        this.fixtureCatalog = Objects.requireNonNull(fixtureCatalog, "fixtureCatalog");
         this.traceStore = new InMemoryTraceStore(this.clock);
         this.taskCoordinator = new InMemoryTaskCoordinator(this.clock, this.traceStore);
         this.traceProjectionService = new TraceProjectionService(this.traceStore);

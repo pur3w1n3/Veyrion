@@ -244,7 +244,8 @@ public final class FixtureDynamicLoopAcceptanceTest {
         RuntimeAttestation attestation = new RuntimeAttestation(
                 "0.1.0", WorkerCapability.FIXTURE_RUNC, "runc", true, true, true,
                 Set.of("lifecycle-v1", "execd-command-v1", "network-deny-v1",
-                        "resource-budget-v1", "non-root-v1", "read-only-rootfs-v1"));
+                        "resource-budget-v1", "non-root-v1", "read-only-rootfs-v1",
+                        "writable-tmp-v1"));
         return new OpenSandboxClient(new OpenSandboxConfig(
                 mock.baseUri().resolve("v1/"), API_KEY, EXECD_TOKEN,
                 Duration.ofSeconds(2), "0.1.0", attestation));
@@ -414,6 +415,7 @@ public final class FixtureDynamicLoopAcceptanceTest {
             check("deny".equals(network.get("defaultAction")), "sandbox network deny");
             check("true".equals(extensions.get("veyrion.nonRoot")), "sandbox non-root");
             check("true".equals(extensions.get("veyrion.readOnlyRootFilesystem")), "read-only root");
+            check("true".equals(extensions.get("veyrion.writableTmp")), "bounded writable tmp");
             check(request.containsKey("resourceLimits"), "sandbox resource limits");
             check(!request.containsKey("volumes") && !request.containsKey("env"), "no host paths or environment");
 
@@ -421,7 +423,7 @@ public final class FixtureDynamicLoopAcceptanceTest {
             check(commands.size() >= 2, "run and trace-read commands");
             Map<String, Object> run = JsonCodec.parseObject(commands.get(0).body());
             String command = (String) run.get("command");
-            check(command.contains("-Dveyrion.sandbox.traceDir=/sandbox/trace")
+            check(command.contains("-Dveyrion.sandbox.traceDir=/tmp/veyrion-trace")
                             && command.contains("-Dveyrion.sandbox.traceDir.authorized=true")
                             && command.contains("-javaagent:/opt/veyrion/agent/veyrion-agent.jar")
                             && command.endsWith("'com.aq.jvmsentinel.fixture.HttpEntryFixture'"),
@@ -431,7 +433,7 @@ public final class FixtureDynamicLoopAcceptanceTest {
                             && ((Number) run.get("gid")).intValue() > 0,
                     "execd command is non-root");
             Map<String, Object> read = JsonCodec.parseObject(commands.get(1).body());
-            check("/bin/cat /sandbox/trace/agent-events.jsonl".equals(read.get("command")),
+            check("/bin/cat /tmp/veyrion-trace/agent-events.jsonl".equals(read.get("command")),
                     "fixed trace read command");
             for (Observed value : observed) {
                 check(!value.body().contains(API_KEY) && !value.body().contains(EXECD_TOKEN),

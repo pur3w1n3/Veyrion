@@ -21,7 +21,8 @@ public final class FixtureWorkerMainAcceptanceTest {
     private static final String DIGEST = "a".repeat(64);
     private static final String FEATURES = String.join(",",
             "lifecycle-v1", "execd-command-v1", "network-deny-v1",
-            "resource-budget-v1", "non-root-v1", "read-only-rootfs-v1");
+            "resource-budget-v1", "non-root-v1", "read-only-rootfs-v1",
+            "writable-tmp-v1");
 
     private FixtureWorkerMainAcceptanceTest() { }
 

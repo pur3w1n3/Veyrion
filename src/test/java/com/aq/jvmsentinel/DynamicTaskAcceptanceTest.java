@@ -16,6 +16,17 @@ import java.util.Map;
 /** End-to-end checks for the public trusted-fixture queue boundary and shared Worker runtime. */
 public final class DynamicTaskAcceptanceTest {
     public static void main(String[] args) throws Exception {
+        String operatorDigest = "c".repeat(64);
+        String operatorImage = "registry.example.com/veyrion/fixture-http-entry@sha256:" + operatorDigest;
+        TrustedFixtureCatalog operatorCatalog = TrustedFixtureCatalog.fromEnvironment(Map.of(
+                TrustedFixtureCatalog.HTTP_ENTRY_SMOKE_V1_IMAGE_ENV, operatorImage));
+        check(operatorImage.equals(operatorCatalog.require(TrustedFixtureCatalog.HTTP_ENTRY_SMOKE_V1).imageUri())
+                        && operatorDigest.equals(operatorCatalog.require(
+                        TrustedFixtureCatalog.HTTP_ENTRY_SMOKE_V1).fixtureDigest()),
+                "operator image override remains digest pinned");
+        reject(() -> new TrustedFixtureCatalog("registry.example.com/veyrion/fixture-http-entry:latest"),
+                "mutable image tag");
+
         Path root = Files.createTempDirectory("dynamic-task-acceptance");
         Path artifact = root.resolve("FixtureController.class");
         Files.writeString(artifact, "intentionally malformed metadata-only fixture descriptor");
@@ -175,5 +186,14 @@ public final class DynamicTaskAcceptanceTest {
 
     private static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
+    }
+
+    private static void reject(Runnable action, String message) {
+        try {
+            action.run();
+        } catch (IllegalArgumentException expected) {
+            return;
+        }
+        throw new AssertionError("expected rejection: " + message);
     }
 }

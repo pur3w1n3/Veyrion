@@ -133,6 +133,7 @@ public final class OpenSandboxClient {
                 "veyrion.maxCpuMillis", Long.toString(budget.maxCpuMillis()),
                 "veyrion.maxTraceBytes", Long.toString(budget.maxTraceBytes()),
                 "veyrion.readOnlyRootFilesystem", "true",
+                "veyrion.writableTmp", "true",
                 "veyrion.nonRoot", "true"));
         return body;
     }

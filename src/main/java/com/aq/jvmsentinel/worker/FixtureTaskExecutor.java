@@ -17,7 +17,7 @@ import java.util.Set;
  * Executes one catalog-owned fixture task through OpenSandbox. It never launches a host process.
  */
 public final class FixtureTaskExecutor {
-    static final String TRACE_DIRECTORY = "/sandbox/trace";
+    static final String TRACE_DIRECTORY = "/tmp/veyrion-trace";
     static final String TRACE_FILE = TRACE_DIRECTORY + "/agent-events.jsonl";
     static final String AGENT_PATH = "/opt/veyrion/agent/veyrion-agent.jar";
     static final String FIXTURE_CLASSPATH = "/opt/veyrion/fixture/fixture.jar";

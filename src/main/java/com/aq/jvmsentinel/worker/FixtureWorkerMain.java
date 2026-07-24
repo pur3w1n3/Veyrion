@@ -29,7 +29,8 @@ public final class FixtureWorkerMain {
     private static final int MAX_TRACE_CHUNK_BYTES = 256 * 1024;
     private static final Set<String> REQUIRED_FEATURES = Set.of(
             "lifecycle-v1", "execd-command-v1", "network-deny-v1",
-            "resource-budget-v1", "non-root-v1", "read-only-rootfs-v1");
+            "resource-budget-v1", "non-root-v1", "read-only-rootfs-v1",
+            "writable-tmp-v1");
 
     private FixtureWorkerMain() { }
 
