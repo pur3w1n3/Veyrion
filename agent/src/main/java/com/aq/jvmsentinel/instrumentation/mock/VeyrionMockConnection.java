@@ -1,0 +1,310 @@
+package com.aq.jvmsentinel.instrumentation.mock;
+
+import com.aq.jvmsentinel.instrumentation.AgentRuntime;
+
+import java.sql.Array;
+import java.sql.Blob;
+import java.sql.CallableStatement;
+import java.sql.Clob;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.NClob;
+import java.sql.PreparedStatement;
+import java.sql.SQLClientInfoException;
+import java.sql.SQLException;
+import java.sql.SQLWarning;
+import java.sql.SQLXML;
+import java.sql.Savepoint;
+import java.sql.Statement;
+import java.sql.Struct;
+import java.util.Map;
+import java.util.Properties;
+import java.util.concurrent.Executor;
+
+/** Minimal Connection that records SQL and returns empty results (MOCK / RULE_GENERATED). */
+final class VeyrionMockConnection implements Connection {
+    private final String url;
+    private boolean closed;
+    private boolean autoCommit = true;
+
+    VeyrionMockConnection(String url) {
+        this.url = url;
+        AgentRuntime.recordJdbc(getClass().getName(), "connect",
+                Map.of("captureMode", "DEPENDENCY_MOCK",
+                        "dependencyMode", "MOCK",
+                        "provenance", "RULE_GENERATED",
+                        "url", truncate(url)));
+    }
+
+    @Override
+    public Statement createStatement() {
+        return new VeyrionMockStatement(this);
+    }
+
+    @Override
+    public PreparedStatement prepareStatement(String sql) {
+        return new VeyrionMockPreparedStatement(this, sql);
+    }
+
+    @Override
+    public CallableStatement prepareCall(String sql) throws SQLException {
+        throw new SQLException("callable statements are not mocked");
+    }
+
+    @Override
+    public String nativeSQL(String sql) {
+        return sql;
+    }
+
+    @Override
+    public void setAutoCommit(boolean autoCommit) {
+        this.autoCommit = autoCommit;
+    }
+
+    @Override
+    public boolean getAutoCommit() {
+        return autoCommit;
+    }
+
+    @Override
+    public void commit() {
+    }
+
+    @Override
+    public void rollback() {
+    }
+
+    @Override
+    public void close() {
+        closed = true;
+    }
+
+    @Override
+    public boolean isClosed() {
+        return closed;
+    }
+
+    @Override
+    public DatabaseMetaData getMetaData() {
+        return VeyrionMockDatabaseMetaData.create(url, this);
+    }
+
+    @Override
+    public void setReadOnly(boolean readOnly) {
+    }
+
+    @Override
+    public boolean isReadOnly() {
+        return true;
+    }
+
+    @Override
+    public void setCatalog(String catalog) {
+    }
+
+    @Override
+    public String getCatalog() {
+        return "veyrion_mock";
+    }
+
+    @Override
+    public void setTransactionIsolation(int level) {
+    }
+
+    @Override
+    public int getTransactionIsolation() {
+        return Connection.TRANSACTION_READ_COMMITTED;
+    }
+
+    @Override
+    public SQLWarning getWarnings() {
+        return null;
+    }
+
+    @Override
+    public void clearWarnings() {
+    }
+
+    @Override
+    public Statement createStatement(int resultSetType, int resultSetConcurrency) {
+        return createStatement();
+    }
+
+    @Override
+    public PreparedStatement prepareStatement(String sql, int resultSetType, int resultSetConcurrency) {
+        return prepareStatement(sql);
+    }
+
+    @Override
+    public CallableStatement prepareCall(String sql, int resultSetType, int resultSetConcurrency)
+            throws SQLException {
+        return prepareCall(sql);
+    }
+
+    @Override
+    public Map<String, Class<?>> getTypeMap() {
+        return Map.of();
+    }
+
+    @Override
+    public void setTypeMap(Map<String, Class<?>> map) {
+    }
+
+    @Override
+    public void setHoldability(int holdability) {
+    }
+
+    @Override
+    public int getHoldability() {
+        return 0;
+    }
+
+    @Override
+    public Savepoint setSavepoint() throws SQLException {
+        throw new SQLException("savepoints are not mocked");
+    }
+
+    @Override
+    public Savepoint setSavepoint(String name) throws SQLException {
+        throw new SQLException("savepoints are not mocked");
+    }
+
+    @Override
+    public void rollback(Savepoint savepoint) {
+    }
+
+    @Override
+    public void releaseSavepoint(Savepoint savepoint) {
+    }
+
+    @Override
+    public Statement createStatement(int resultSetType, int resultSetConcurrency, int resultSetHoldability) {
+        return createStatement();
+    }
+
+    @Override
+    public PreparedStatement prepareStatement(String sql, int resultSetType, int resultSetConcurrency,
+                                              int resultSetHoldability) {
+        return prepareStatement(sql);
+    }
+
+    @Override
+    public CallableStatement prepareCall(String sql, int resultSetType, int resultSetConcurrency,
+                                         int resultSetHoldability) throws SQLException {
+        return prepareCall(sql);
+    }
+
+    @Override
+    public PreparedStatement prepareStatement(String sql, int autoGeneratedKeys) {
+        return prepareStatement(sql);
+    }
+
+    @Override
+    public PreparedStatement prepareStatement(String sql, int[] columnIndexes) {
+        return prepareStatement(sql);
+    }
+
+    @Override
+    public PreparedStatement prepareStatement(String sql, String[] columnNames) {
+        return prepareStatement(sql);
+    }
+
+    @Override
+    public Clob createClob() throws SQLException {
+        throw new SQLException("unsupported");
+    }
+
+    @Override
+    public Blob createBlob() throws SQLException {
+        throw new SQLException("unsupported");
+    }
+
+    @Override
+    public NClob createNClob() throws SQLException {
+        throw new SQLException("unsupported");
+    }
+
+    @Override
+    public SQLXML createSQLXML() throws SQLException {
+        throw new SQLException("unsupported");
+    }
+
+    @Override
+    public boolean isValid(int timeout) {
+        return !closed;
+    }
+
+    @Override
+    public void setClientInfo(String name, String value) {
+    }
+
+    @Override
+    public void setClientInfo(Properties properties) throws SQLClientInfoException {
+    }
+
+    @Override
+    public String getClientInfo(String name) {
+        return null;
+    }
+
+    @Override
+    public Properties getClientInfo() {
+        return new Properties();
+    }
+
+    @Override
+    public Array createArrayOf(String typeName, Object[] elements) throws SQLException {
+        throw new SQLException("unsupported");
+    }
+
+    @Override
+    public Struct createStruct(String typeName, Object[] attributes) throws SQLException {
+        throw new SQLException("unsupported");
+    }
+
+    @Override
+    public void setSchema(String schema) {
+    }
+
+    @Override
+    public String getSchema() {
+        return "public";
+    }
+
+    @Override
+    public void abort(Executor executor) {
+        closed = true;
+    }
+
+    @Override
+    public void setNetworkTimeout(Executor executor, int milliseconds) {
+    }
+
+    @Override
+    public int getNetworkTimeout() {
+        return 0;
+    }
+
+    @Override
+    public <T> T unwrap(Class<T> iface) throws SQLException {
+        if (iface.isInstance(this)) return iface.cast(this);
+        throw new SQLException("not a wrapper");
+    }
+
+    @Override
+    public boolean isWrapperFor(Class<?> iface) {
+        return iface.isInstance(this);
+    }
+
+    void observeSql(String sql) {
+        AgentRuntime.recordJdbc(getClass().getName(), "execute",
+                Map.of("captureMode", "DEPENDENCY_MOCK",
+                        "dependencyMode", "MOCK",
+                        "provenance", "RULE_GENERATED",
+                        "sql", truncate(sql == null ? "" : sql)));
+    }
+
+    private static String truncate(String value) {
+        return value.length() <= 256 ? value : value.substring(0, 256);
+    }
+}

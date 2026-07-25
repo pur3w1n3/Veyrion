@@ -21,7 +21,14 @@ $requiredFeatures = @(
 
 function Invoke-Docker {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
-    & docker @Arguments
+    # Docker progress goes to stderr; do not let PowerShell NativeCommandError abort the script.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & docker @Arguments
+    } finally {
+        $ErrorActionPreference = $previous
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "docker $($Arguments[0]) failed with exit code $LASTEXITCODE"
     }

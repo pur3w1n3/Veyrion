@@ -72,6 +72,8 @@ public final class TraceProjectionService {
         List<ApiDtos.PathStepDto> steps = new ArrayList<>(events.size());
         List<String> refs = new ArrayList<>(events.size());
         Map<String, ApiDtos.EvidenceDto> projectedEvidence = new LinkedHashMap<>();
+        Map<String, List<ApiDtos.PathStepDto>> routeSteps = new LinkedHashMap<>();
+        Map<String, List<String>> routeRefs = new LinkedHashMap<>();
         String scopeDigest = WorkerContracts.sha256((snapshot.scope().projectId() + "\n"
                 + snapshot.scope().artifactDigest() + "\n" + snapshot.scope().scanId() + "\n"
                 + snapshot.scope().taskId()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -89,7 +91,14 @@ public final class TraceProjectionService {
                     : event.method().isBlank() ? event.className()
                     : event.className() + "#" + event.method();
             if (symbol.isBlank()) symbol = event.eventType();
+            String route = event.detail().getOrDefault("route", "");
+            String httpMethod = event.detail().getOrDefault("httpMethod", "");
             String summary = event.eventType() + " observed by veyrion-agent at " + symbol;
+            if ("HTTP".equals(event.eventType()) && !route.isBlank()) {
+                summary = httpMethod.isBlank()
+                        ? "HTTP probe observed " + route + " at " + symbol
+                        : "HTTP probe observed " + httpMethod + " " + route + " at " + symbol;
+            }
             String snapshotRef = "task:" + snapshot.scope().taskId()
                     + ";digest:" + item.chunkDigest() + ";sequence:" + event.sequence();
             ApiDtos.EvidenceDto evidenceDto = new ApiDtos.EvidenceDto(
@@ -100,9 +109,15 @@ public final class TraceProjectionService {
                     "none", snapshotRef, ApiDtos.MOCK, "DYNAMIC_SUSPECTED");
             projectedEvidence.put(evidenceId, evidenceDto);
             refs.add(evidenceId);
-            steps.add(new ApiDtos.PathStepDto(
+            ApiDtos.PathStepDto step = new ApiDtos.PathStepDto(
                     event.eventType(), symbol, kind, "done", List.of(evidenceId),
-                    "DYNAMIC_SUSPECTED", event.provenanceKind(), event.eventType(), event.sequence()));
+                    "DYNAMIC_SUSPECTED", event.provenanceKind(), event.eventType(), event.sequence());
+            steps.add(step);
+            if ("HTTP".equals(event.eventType()) && !route.isBlank()) {
+                String routeKey = (httpMethod.isBlank() ? "GET" : httpMethod) + " " + route;
+                routeSteps.computeIfAbsent(routeKey, ignored -> new ArrayList<>()).add(step);
+                routeRefs.computeIfAbsent(routeKey, ignored -> new ArrayList<>()).add(evidenceId);
+            }
         }
         ApiDtos.PathDto path = new ApiDtos.PathDto(
                 ApiDtos.SCHEMA_VERSION, snapshot.scope().projectId(),
@@ -112,7 +127,24 @@ public final class TraceProjectionService {
                 refs, steps, snapshot.scope().taskId(), false,
                 snapshot.spec().requiredCapability().name(),
                 snapshot.spec().requiredCapability().name() + "_COMPLETED");
-        return new Projection(snapshot.scope(), path, projectedEvidence, snapshot.updatedAt().toString());
+        List<ApiDtos.PathDto> paths = new ArrayList<>();
+        paths.add(path);
+        int routeIndex = 0;
+        for (Map.Entry<String, List<ApiDtos.PathStepDto>> entry : routeSteps.entrySet()) {
+            String routeKey = entry.getKey();
+            String pathId = "path-dynamic-" + snapshot.scope().taskId() + "-route-" + routeIndex++;
+            paths.add(new ApiDtos.PathDto(
+                    ApiDtos.SCHEMA_VERSION, snapshot.scope().projectId(),
+                    snapshot.scope().artifactDigest(), snapshot.scope().scanId(),
+                    pathId, snapshot.spec().targetEntryId(),
+                    "DYNAMIC_SUSPECTED", ApiDtos.MOCK, List.of(routeKey), "COMPLETED",
+                    List.copyOf(routeRefs.getOrDefault(routeKey, List.of())),
+                    List.copyOf(entry.getValue()), snapshot.scope().taskId(), false,
+                    snapshot.spec().requiredCapability().name(),
+                    snapshot.spec().requiredCapability().name() + "_COMPLETED"));
+        }
+        return new Projection(snapshot.scope(), path, List.copyOf(paths), projectedEvidence,
+                snapshot.updatedAt().toString());
     }
 
     public List<ApiDtos.PathDto> pathsForScan(String projectId, String artifactDigest, String scanId) {
@@ -121,7 +153,7 @@ public final class TraceProjectionService {
                         && value.scope().artifactDigest().equals(artifactDigest)
                         && value.scope().scanId().equals(scanId))
                 .sorted(Comparator.comparing(Projection::completedAt).thenComparing(x -> x.scope().taskId()))
-                .map(Projection::path)
+                .flatMap(value -> value.paths().stream())
                 .toList();
     }
 
@@ -223,11 +255,12 @@ public final class TraceProjectionService {
 
     private record EventWithDigest(AgentJsonlTraceConverter.AgentEvent event, String chunkDigest) { }
 
-    public record Projection(TaskScope scope, ApiDtos.PathDto path,
+    public record Projection(TaskScope scope, ApiDtos.PathDto path, List<ApiDtos.PathDto> paths,
                              Map<String, ApiDtos.EvidenceDto> evidence, String completedAt) {
         public Projection {
             Objects.requireNonNull(scope, "scope");
             Objects.requireNonNull(path, "path");
+            paths = List.copyOf(paths == null || paths.isEmpty() ? List.of(path) : paths);
             evidence = Map.copyOf(evidence);
             Objects.requireNonNull(completedAt, "completedAt");
         }

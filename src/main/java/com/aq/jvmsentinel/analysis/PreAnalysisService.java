@@ -67,7 +67,7 @@ public final class PreAnalysisService {
             }
             if (!metadata.annotationMetadataValid()) continue;
             classesWithValidAnnotationMetadata.add(metadata.className());
-            index = discoverAnnotatedEntries(metadata, evidence, entries, permissions, index);
+            index = discoverAnnotatedEntries(metadata, evidence, entries, sinks, permissions, index);
             if (entries.size() > MAX_DISCOVERED_ENTRIES) {
                 throw new IllegalArgumentException("annotation metadata produced too many entrypoints");
             }
@@ -111,6 +111,11 @@ public final class PreAnalysisService {
                 sinks.add(new Sink("sink-" + index, "COMMAND", limit(className), "class-name rule", 0.66,
                         List.of(evidenceId), VerificationStatus.STATIC_INFERRED));
             }
+            if (lower.contains("jwt") || lower.contains("jsonwebtoken") || lower.contains("tokenutil")) {
+                sinks.add(new Sink("sink-" + index, "JWT", limit(className),
+                        "class-name rule; JWT utility presence only, no bypass proof", 0.60,
+                        List.of(evidenceId), VerificationStatus.STATIC_INFERRED));
+            }
         }
         for (String line : input.configurationLines()) {
             if (line == null || line.isBlank()) continue;
@@ -122,6 +127,18 @@ public final class PreAnalysisService {
                 dependencies.add(new DependencyAccess("dep-" + index, "DATABASE", safeLine, "configured", "MOCK",
                         List.of(), List.of(id), 1.0, VerificationStatus.STATIC_INFERRED));
             }
+            if (lower.contains("jwt") && (lower.contains("secret") || lower.contains("key")
+                    || lower.contains("signing") || lower.contains("token"))) {
+                if (sinks.size() >= MAX_DISCOVERED_SINKS) {
+                    throw new IllegalArgumentException("classfile metadata produced too many sink candidates");
+                }
+                String id = "cfg-" + (++index);
+                String safeLine = limit(redactConfiguration(line));
+                evidence.add(new Evidence(id, ProvenanceKind.FACT, "configuration", 1.0, safeLine));
+                sinks.add(new Sink("sink-cfg-" + index, "JWT", safeLine,
+                        "configuration JWT secret/key material reference; strength and verification not proven",
+                        0.70, List.of(id), VerificationStatus.STATIC_INFERRED));
+            }
         }
         BytecodeFactIndex factIndex = new BytecodeFactIndex(classFacts, fieldFacts, methodFacts,
                 memberAccessFacts, callEdges, unresolvedDynamics);
@@ -130,7 +147,7 @@ public final class PreAnalysisService {
     }
 
     private int discoverAnnotatedEntries(ClassMetadata metadata, List<Evidence> evidence,
-                                         List<Entrypoint> entries,
+                                         List<Entrypoint> entries, List<Sink> sinks,
                                          List<PermissionRequirement> permissions, int index) {
         if (!hasAnnotation(metadata.annotations(), CONTROLLER)
                 && !hasAnnotation(metadata.annotations(), REST_CONTROLLER)) {
@@ -175,6 +192,17 @@ public final class PreAnalysisService {
                     if (permissionEvidenceId != null) {
                         permissions.add(new PermissionRequirement(entryId, combinedPermission.roles(),
                                 List.of(), combinedPermission.states(), List.of(permissionEvidenceId), 1.0));
+                    } else if (sinks.size() < MAX_DISCOVERED_SINKS) {
+                        // Mapped entry without recognizable auth annotation — gap signal only.
+                        String gapEvidenceId = "auth-gap-" + index;
+                        evidence.add(new Evidence(gapEvidenceId, ProvenanceKind.FACT,
+                                "classfile-annotation:" + metadata.className() + "#" + safeSymbol(method.name()),
+                                0.72, "HTTP mapping present without PreAuthorize/Secured/RolesAllowed/Blade auth annotation"));
+                        sinks.add(new Sink("sink-auth-gap-" + index, "AUTH_GAP",
+                                limit(metadata.className() + "#" + method.name() + " " + httpMethod + " " + route),
+                                "auth annotation absent on mapped entry; anonymous reachability not proven",
+                                0.62, List.of(gapEvidenceId, mappingEvidenceId),
+                                VerificationStatus.STATIC_INFERRED));
                     }
                 }
             }
@@ -296,21 +324,47 @@ public final class PreAnalysisService {
         List<String> states = new ArrayList<>();
         for (ClassMetadata.AnnotationMetadata annotation : annotations) {
             String type = annotation.typeName();
-            if (type.equals("org.springframework.security.access.prepost.PreAuthorize")) {
+            String simple = simpleName(type);
+            if (type.equals("org.springframework.security.access.prepost.PreAuthorize")
+                    || type.equals("org.springframework.security.access.prepost.PostAuthorize")) {
                 for (String expression : annotation.values("value")) {
                     String safe = limit(expression);
-                    preconditions.add("PreAuthorize(" + safe + ")");
+                    preconditions.add(simple + "(" + safe + ")");
                     states.add("EXPR:" + safe);
                 }
             } else if (type.equals("org.springframework.security.access.annotation.Secured")
                     || type.equals("javax.annotation.security.RolesAllowed")
                     || type.equals("jakarta.annotation.security.RolesAllowed")) {
-                String label = simpleName(type);
                 for (String role : annotation.values("value")) {
                     String safe = limit(role);
-                    preconditions.add(label + "(" + safe + ")");
+                    preconditions.add(simple + "(" + safe + ")");
                     roles.add(safe);
                 }
+            } else if (type.startsWith("org.springblade.core.secure.annotation.")
+                    || type.equals("org.springblade.core.secure.annotation.PreAuth")
+                    || "PreAuth".equals(simple) || "IsAdmin".equals(simple)
+                    || "isAuth".equals(simple) || "IsAuth".equals(simple)) {
+                List<String> values = annotation.values("value");
+                if (values.isEmpty()) values = annotation.values("role");
+                if (values.isEmpty()) {
+                    preconditions.add(simple);
+                    states.add("BLADE:" + simple);
+                } else {
+                    for (String value : values) {
+                        String safe = limit(value);
+                        preconditions.add(simple + "(" + safe + ")");
+                        if (safe.startsWith("hasRole") || safe.startsWith("ROLE_")) roles.add(safe);
+                        else states.add("BLADE:" + safe);
+                    }
+                }
+            } else if (type.equals("javax.annotation.security.PermitAll")
+                    || type.equals("jakarta.annotation.security.PermitAll")) {
+                preconditions.add("PermitAll");
+                states.add("PERMIT_ALL");
+            } else if (type.equals("javax.annotation.security.DenyAll")
+                    || type.equals("jakarta.annotation.security.DenyAll")) {
+                preconditions.add("DenyAll");
+                states.add("DENY_ALL");
             }
         }
         return new PermissionData(List.copyOf(preconditions), List.copyOf(roles), List.copyOf(states));

@@ -56,6 +56,12 @@ public final class AgentRuntime {
                 Map.of("captureMode", captureMode, "operation", methodName));
     }
 
+    /** Instrumented observation with additional sanitized detail fields (route, SQL, etc.). */
+    public static void recordTransformedDetail(String eventType, String className, String methodName,
+                                               Map<String, String> detail) {
+        recordInstrumented(eventType, className, methodName, detail);
+    }
+
     private static void recordInstrumented(String eventType, String className, String methodName,
                                            Map<String, String> detail) {
         EventWriter current = writer;

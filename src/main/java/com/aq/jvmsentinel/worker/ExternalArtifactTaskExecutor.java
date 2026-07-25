@@ -25,6 +25,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Executes a catalog-owned executable JAR only after a fresh digest check.
@@ -294,19 +295,33 @@ public final class ExternalArtifactTaskExecutor {
         long maxBytes = Math.min(MAX_TRACE_BYTES, budget.maxTraceBytes());
         long maxEvents = Math.max(1, Math.min(100_000, maxBytes / 256));
         long runSeconds = Math.max(1, budget.maxWallClockSeconds() - 15);
-        long startupSeconds = Math.min(30, Math.max(10, runSeconds / 2));
+        long startupSeconds = Math.min(45, Math.max(15, runSeconds / 3));
+        String businessProbes = registration.probePlan().stream()
+                .map(target -> "java -cp " + AGENT_PATH
+                        + " com.aq.jvmsentinel.agent.LoopbackHttpProbe "
+                        + target.method() + " '" + target.route() + "' || true")
+                .collect(Collectors.joining("; "));
+        if (businessProbes.isBlank()) {
+            businessProbes = "java -cp " + AGENT_PATH
+                    + " com.aq.jvmsentinel.agent.LoopbackHttpProbe "
+                    + registration.probeMethod() + " '" + registration.probeRoute() + "' || true";
+        }
         return "java"
                 + " -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
                 + " -Dveyrion.sandbox.traceDir.authorized=true"
+                + " -Dveyrion.sandbox.dependencyMock=true"
                 + " -Djava.io.tmpdir=" + TRACE_DIRECTORY
                 + " -javaagent:" + AGENT_PATH + "=maxBytes=" + maxBytes + ",maxEvents=" + maxEvents
+                + ",dependencyMock=true"
                 + (registration.classPrefix().isEmpty()
                 ? "" : ",classPrefix=" + registration.classPrefix())
                 + " -jar " + ARTIFACT_PATH
                 + " --server.address=127.0.0.1 --server.port=8080"
-                // Fail-open common Spring Boot DB/cache pools under deny-all network so the loopback
-                // probe can run. Still MOCK/DYNAMIC_SUSPECTED only — not JDBC protocol substitution.
+                // Fail-open pools + protocol mock URL so deny-all jars can bind loopback for probes.
                 + " --spring.main.lazy-initialization=true"
+                + " --spring.datasource.url=jdbc:veyrion-mock:mem:veyrion"
+                + " --spring.datasource.driver-class-name="
+                + "com.aq.jvmsentinel.instrumentation.mock.VeyrionMockDriver"
                 + " --spring.datasource.hikari.initialization-fail-timeout=-1"
                 + " --spring.datasource.hikari.connection-timeout=1000"
                 + " --spring.datasource.druid.initial-size=0"
@@ -321,34 +336,25 @@ public final class ExternalArtifactTaskExecutor {
                 + " --spring.sql.init.mode=never"
                 + " --spring.jpa.hibernate.ddl-auto=none"
                 + " --spring.data.redis.repositories.enabled=false"
+                + " --spring.redis.host=127.0.0.1"
+                + " --spring.redis.port=6379"
                 + " --spring.redis.timeout=500ms"
                 + " --spring.data.redis.timeout=500ms"
                 + " --management.health.redis.enabled=false"
                 + " > " + TRACE_DIRECTORY + "/application.log 2>&1"
                 + " & pid=$!; elapsed=0; probe_status=1"
-                // Ready when loopback accepts any HTTP response on /. Target-entry probe is best-effort
-                // stimulus for agent traces and must not be the sole readiness gate (DB/Flowable routes
-                // often hang or tear down the process under deny-all network).
                 + "; while kill -0 \"$pid\" 2>/dev/null"
                 + " && [ \"$elapsed\" -lt " + startupSeconds + " ]"
                 + "; do sleep 1; elapsed=$((elapsed+1)); done"
                 + "; if kill -0 \"$pid\" 2>/dev/null && java -cp " + AGENT_PATH
                 + " com.aq.jvmsentinel.agent.LoopbackHttpProbe GET '/'"
-                + "; then probe_status=0"
-                + "; java -cp " + AGENT_PATH
-                + " com.aq.jvmsentinel.agent.LoopbackHttpProbe "
-                + registration.probeMethod() + " '" + registration.probeRoute() + "' || true"
-                + "; fi"
+                + "; then probe_status=0; " + businessProbes + "; fi"
                 + "; while kill -0 \"$pid\" 2>/dev/null && [ \"$probe_status\" -ne 0 ]"
                 + " && [ \"$elapsed\" -lt " + runSeconds + " ]"
                 + "; do sleep 3; elapsed=$((elapsed+3))"
                 + "; if java -cp " + AGENT_PATH
                 + " com.aq.jvmsentinel.agent.LoopbackHttpProbe GET '/'"
-                + "; then probe_status=0"
-                + "; java -cp " + AGENT_PATH
-                + " com.aq.jvmsentinel.agent.LoopbackHttpProbe "
-                + registration.probeMethod() + " '" + registration.probeRoute() + "' || true"
-                + "; fi; done"
+                + "; then probe_status=0; " + businessProbes + "; fi; done"
                 + "; while kill -0 \"$pid\" 2>/dev/null && [ \"$elapsed\" -lt " + runSeconds + " ]"
                 + "; do sleep 1; elapsed=$((elapsed+1)); done"
                 + "; if kill -0 \"$pid\" 2>/dev/null; then kill -TERM \"$pid\""
@@ -418,19 +424,41 @@ public final class ExternalArtifactTaskExecutor {
         ArtifactRegistration require(TaskScope scope);
     }
 
+    /** One bounded HTTP stimulus inside the deny-all container. */
+    public record ProbeTarget(String method, String route) {
+        public ProbeTarget {
+            method = Objects.requireNonNull(method, "method").toUpperCase(java.util.Locale.ROOT);
+            if (!Set.of("GET", "POST", "PUT", "PATCH", "DELETE").contains(method)
+                    || route == null
+                    || !route.matches("/[A-Za-z0-9_./{}:-]{0,1023}")) {
+                throw new IllegalArgumentException("artifact probe target is invalid");
+            }
+        }
+    }
+
     public record ArtifactRegistration(String projectId, String sha256, Path path, long sizeBytes,
                                        boolean executableSpringBootJar, String probeMethod,
-                                       String probeRoute, String classPrefix) {
+                                       String probeRoute, String classPrefix,
+                                       List<ProbeTarget> probePlan) {
         public ArtifactRegistration(String projectId, String sha256, Path path, long sizeBytes,
                                     boolean executableSpringBootJar) {
-            this(projectId, sha256, path, sizeBytes, executableSpringBootJar, "GET", "/", "");
+            this(projectId, sha256, path, sizeBytes, executableSpringBootJar, "GET", "/", "",
+                    List.of(new ProbeTarget("GET", "/")));
         }
 
         public ArtifactRegistration(String projectId, String sha256, Path path, long sizeBytes,
                                     boolean executableSpringBootJar, String probeMethod,
                                     String probeRoute) {
             this(projectId, sha256, path, sizeBytes, executableSpringBootJar,
-                    probeMethod, probeRoute, "");
+                    probeMethod, probeRoute, "", List.of(new ProbeTarget(probeMethod, probeRoute)));
+        }
+
+        public ArtifactRegistration(String projectId, String sha256, Path path, long sizeBytes,
+                                    boolean executableSpringBootJar, String probeMethod,
+                                    String probeRoute, String classPrefix) {
+            this(projectId, sha256, path, sizeBytes, executableSpringBootJar,
+                    probeMethod, probeRoute, classPrefix,
+                    List.of(new ProbeTarget(probeMethod, probeRoute)));
         }
 
         public ArtifactRegistration {
@@ -454,6 +482,14 @@ public final class ExternalArtifactTaskExecutor {
             if (!classPrefix.isEmpty()
                     && !classPrefix.matches("[A-Za-z_$][A-Za-z0-9_$.]{0,254}")) {
                 throw new IllegalArgumentException("artifact class prefix is invalid");
+            }
+            if (probePlan == null || probePlan.isEmpty()) {
+                probePlan = List.of(new ProbeTarget(probeMethod, probeRoute));
+            } else {
+                if (probePlan.size() > 128) {
+                    throw new IllegalArgumentException("probe plan exceeds limit");
+                }
+                probePlan = List.copyOf(probePlan);
             }
         }
     }

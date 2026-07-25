@@ -48,6 +48,10 @@ public final class JvmSinkSignaturesAcceptanceTest {
                 "(Ljava/lang/String;)Ljava/lang/Object;"), "SSRF");
         expected.put(new Target("jakarta.servlet.http.HttpServletResponse", "sendRedirect",
                 "(Ljava/lang/String;)V"), "REDIRECT");
+        expected.put(new Target("io.jsonwebtoken.JwtParser", "parseClaimsJws",
+                "(Ljava/lang/String;)Lio/jsonwebtoken/Jws;"), "JWT");
+        expected.put(new Target("com.nimbusds.jwt.SignedJWT", "parse",
+                "(Ljava/lang/String;)Lcom/nimbusds/jwt/SignedJWT;"), "JWT");
 
         int ordinal = 0;
         for (Map.Entry<Target, String> entry : expected.entrySet()) {

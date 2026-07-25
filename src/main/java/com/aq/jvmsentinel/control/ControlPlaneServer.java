@@ -113,6 +113,8 @@ public final class ControlPlaneServer implements AutoCloseable {
     private final Map<String, String> idempotentScans = new ConcurrentHashMap<>();
     private final Map<String, AuditRunReplay> idempotentAuditRuns = new ConcurrentHashMap<>();
     private final Map<String, DynamicTaskReplay> idempotentDynamicTasks = new ConcurrentHashMap<>();
+    /** Scan-scoped UNREACHED dynamic path placeholders for entries beyond the probe budget. */
+    private final Map<String, List<ApiDtos.PathDto>> unreachedDynamicPaths = new ConcurrentHashMap<>();
     private final String mutationToken;
     private final String workerToken;
     private final InMemoryTraceStore traceStore;
@@ -1210,11 +1212,12 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (artifact.type() != com.aq.jvmsentinel.model.ArtifactType.JAR) {
             throw new ApiException(409, "JAR_REQUIRED", "Docker dynamic execution currently requires a JAR");
         }
-        String targetEntryId = scan.dto().entries().stream().map(ApiDtos.EntryDto::id).findFirst().orElse(null);
-        if (targetEntryId == null) {
+        ProbePlan plan = buildProbePlan(scan, null);
+        if (plan.primary() == null) {
             throw new ApiException(409, "TARGET_ENTRY_NOT_IN_SCAN",
                     "the scan has no entrypoint to observe");
         }
+        unreachedDynamicPaths.put(scanId, plan.unreachedPaths());
         String taskId = "task-dynamic-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         WorkerTaskSpec spec = new WorkerTaskSpec(
                 WorkerControlPlaneApi.CONTRACT_VERSION,
@@ -1222,7 +1225,7 @@ public final class ControlPlaneServer implements AutoCloseable {
                 scan.dto().artifactDigest(),
                 scanId,
                 taskId,
-                targetEntryId,
+                plan.primary().id(),
                 true,
                 // Large Spring Boot JARs often need >60s cold start under deny-all before loopback probe.
                 new ResourceBudget(180, 180_000, 2L * 1024 * 1024 * 1024,
@@ -1233,7 +1236,9 @@ public final class ControlPlaneServer implements AutoCloseable {
                 "pipeline-dynamic-" + UUID.randomUUID().toString().replace("-", ""));
         store.auditChange(scan.dto().projectId(), actorId, "dynamic-task.enqueue",
                 "worker-task", taskId,
-                "{\"capability\":\"TRUSTED_DOCKER\",\"networkMode\":\"DENY\",\"source\":\"PIPELINE\"}",
+                "{\"capability\":\"TRUSTED_DOCKER\",\"networkMode\":\"DENY\",\"source\":\"PIPELINE\","
+                        + "\"probeCount\":" + plan.probes().size()
+                        + ",\"unreachedCount\":" + plan.unreachedPaths().size() + "}",
                 Instant.now(clock).toString());
         return snapshot;
     }
@@ -1279,14 +1284,105 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (!hasExecutableMainClass(path)) {
             throw new SecurityException("registered JAR has no executable Main-Class");
         }
-        ApiDtos.EntryDto entry = scan.dto().entries().stream().findFirst()
-                .orElseThrow(() -> new SecurityException("scan has no bounded HTTP probe target"));
+        ProbePlan plan = buildProbePlan(scan, scope.taskId());
+        if (plan.primary() == null) {
+            throw new SecurityException("scan has no bounded HTTP probe target");
+        }
+        unreachedDynamicPaths.put(scope.scanId(), plan.unreachedPaths());
+        ApiDtos.EntryDto entry = plan.primary();
         int packageSeparator = entry.declaringClass().lastIndexOf('.');
         String classPrefix = packageSeparator > 0
                 ? entry.declaringClass().substring(0, packageSeparator) : entry.declaringClass();
         return new ExternalArtifactTaskExecutor.ArtifactRegistration(
                 scope.projectId(), scope.artifactDigest(), path, artifact.sizeBytes(), true,
-                entry.method(), entry.route(), classPrefix);
+                entry.method(), entry.route(), classPrefix, plan.probes());
+    }
+
+    /**
+     * Builds a budgeted multi-entry probe plan for one TRUSTED_DOCKER task.
+     * Entries beyond the budget become UNREACHED path placeholders (not silently dropped).
+     */
+    private ProbePlan buildProbePlan(ControlPlaneStore.ScanRecord scan, String taskIdHint) {
+        List<ApiDtos.EntryDto> httpEntries = scan.dto().entries().stream()
+                .filter(entry -> "HTTP".equalsIgnoreCase(entry.protocol()))
+                .filter(entry -> entry.route() != null
+                        && entry.route().matches("/[A-Za-z0-9_./{}:-]{0,1023}"))
+                .filter(entry -> entry.method() != null
+                        && Set.of("GET", "POST", "PUT", "PATCH", "DELETE")
+                        .contains(entry.method().toUpperCase(Locale.ROOT)))
+                .toList();
+        if (httpEntries.isEmpty()) {
+            return new ProbePlan(null, List.of(), List.of());
+        }
+        int maxProbes = Math.min(80, Math.max(8, httpEntries.size()));
+        LinkedHashSet<String> selectedIds = new LinkedHashSet<>();
+        List<ExternalArtifactTaskExecutor.ProbeTarget> probes = new ArrayList<>();
+        // Prefer the worker task's target entry when present in the scan.
+        if (taskIdHint != null) {
+            workerApi.snapshots(scan.dto().projectId(), scan.dto().scanId()).stream()
+                    .filter(snapshot -> snapshot.scope().taskId().equals(taskIdHint))
+                    .map(snapshot -> snapshot.spec().targetEntryId())
+                    .findFirst()
+                    .flatMap(targetId -> httpEntries.stream().filter(entry -> entry.id().equals(targetId)).findFirst())
+                    .ifPresent(entry -> {
+                        selectedIds.add(entry.id());
+                        probes.add(new ExternalArtifactTaskExecutor.ProbeTarget(entry.method(), entry.route()));
+                    });
+        }
+        // Prefer entries named by PATH_EXPLORATION / plan_propose inferences (untrusted hints only).
+        String explorationHint = pathExplorationHintText(scan);
+        if (!explorationHint.isBlank()) {
+            for (ApiDtos.EntryDto entry : httpEntries) {
+                if (probes.size() >= maxProbes) break;
+                if (!(explorationHint.contains(entry.id()) || explorationHint.contains(entry.route()))) {
+                    continue;
+                }
+                if (!selectedIds.add(entry.id())) continue;
+                probes.add(new ExternalArtifactTaskExecutor.ProbeTarget(entry.method(), entry.route()));
+            }
+        }
+        for (ApiDtos.EntryDto entry : httpEntries) {
+            if (probes.size() >= maxProbes) break;
+            if (!selectedIds.add(entry.id())) continue;
+            probes.add(new ExternalArtifactTaskExecutor.ProbeTarget(entry.method(), entry.route()));
+        }
+        ApiDtos.EntryDto primary = httpEntries.stream()
+                .filter(entry -> selectedIds.contains(entry.id()))
+                .findFirst()
+                .orElse(httpEntries.get(0));
+        List<ApiDtos.PathDto> unreached = new ArrayList<>();
+        for (ApiDtos.EntryDto entry : httpEntries) {
+            if (selectedIds.contains(entry.id())) continue;
+            unreached.add(new ApiDtos.PathDto(
+                    ApiDtos.SCHEMA_VERSION, scan.dto().projectId(), scan.dto().artifactDigest(),
+                    scan.dto().scanId(),
+                    "path-unreached-" + scan.dto().scanId() + "-" + entry.id(),
+                    entry.id(), ApiDtos.UNREACHED, ApiDtos.MOCK,
+                    entry.preconditions(), "PROBE_BUDGET_EXHAUSTED", List.of(),
+                    List.of(new ApiDtos.PathStepDto(entry.method() + " " + entry.route(),
+                            "超出本次断网探针预算，未动态刺激", "entry", "blocked", entry.evidenceRefs()))));
+        }
+        return new ProbePlan(primary, List.copyOf(probes), List.copyOf(unreached));
+    }
+
+    private record ProbePlan(ApiDtos.EntryDto primary,
+                             List<ExternalArtifactTaskExecutor.ProbeTarget> probes,
+                             List<ApiDtos.PathDto> unreachedPaths) {
+    }
+
+    /** Untrusted PATH_EXPLORATION conclusion text used only to prioritize probe order. */
+    private String pathExplorationHintText(ControlPlaneStore.ScanRecord scan) {
+        try {
+            return store.aiJobs(scan.dto().projectId()).stream()
+                    .filter(job -> scan.dto().scanId().equals(job.scanId()))
+                    .filter(job -> job.role() == com.aq.jvmsentinel.provider.AgentRole.PATH_EXPLORATION)
+                    .filter(job -> "COMPLETED".equals(job.status()) && job.conclusionJson() != null)
+                    .map(job -> job.conclusionJson())
+                    .findFirst()
+                    .orElse("");
+        } catch (RuntimeException ignored) {
+            return "";
+        }
     }
 
     private static boolean hasExecutableMainClass(Path path) {
@@ -1451,7 +1547,11 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private List<ApiDtos.PathDto> dynamicPaths(ControlPlaneStore.ScanRecord scan) {
         ApiDtos.ScanDto dto = scan.dto();
-        return traceProjectionService.pathsForScan(dto.projectId(), dto.artifactDigest(), dto.scanId());
+        List<ApiDtos.PathDto> projected = new ArrayList<>(traceProjectionService.pathsForScan(
+                dto.projectId(), dto.artifactDigest(), dto.scanId()));
+        List<ApiDtos.PathDto> unreached = unreachedDynamicPaths.getOrDefault(dto.scanId(), List.of());
+        if (!unreached.isEmpty()) projected.addAll(unreached);
+        return List.copyOf(projected);
     }
 
     private List<ApiDtos.EvidenceDto> dynamicEvidence(ControlPlaneStore.ScanRecord scan) {
@@ -1664,6 +1764,8 @@ public final class ControlPlaneServer implements AutoCloseable {
             case "PATH_TRAVERSAL", "FILE" -> "文件路径穿越";
             case "EXPRESSION", "SSTI", "TEMPLATE" -> "表达式/模板注入";
             case "REFLECTION", "CLASSLOADER" -> "反射/类加载";
+            case "JWT" -> "JWT/令牌处理";
+            case "AUTH", "AUTH_GAP" -> "鉴权缺口";
             default -> category;
         };
     }
@@ -1753,7 +1855,8 @@ public final class ControlPlaneServer implements AutoCloseable {
                     "EXPRESSION", "TEMPLATE", "JNDI" -> "medium";
             case "SQL", "NOSQL", "LDAP", "XPATH", "XML", "XSLT", "SSRF",
                     "FILE_READ", "FILE_WRITE", "FILE_DELETE", "ARCHIVE", "REDIRECT",
-                    "REFLECTION", "FILE" -> "low";
+                    "REFLECTION", "FILE", "JWT", "AUTH" -> "low";
+            case "AUTH_GAP" -> "info";
             default -> "info";
         };
     }

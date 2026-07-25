@@ -405,17 +405,16 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
             check(lastCreate.containsKey("tmpfs") && !lastCreate.containsKey("volumes")
                     && !lastCreate.containsKey("env"), "controlled writable surface");
             String command = (String) lastCommand.get("command");
-            check(command.startsWith(
-                    "java -Dveyrion.sandbox.traceDir=/tmp/veyrion-trace"
-                            + " -Dveyrion.sandbox.traceDir.authorized=true"
-                            + " -Djava.io.tmpdir=/tmp/veyrion-trace"
-                            + " -javaagent:/opt/veyrion/agent/veyrion-agent.jar"
-                            + "=maxBytes=1048576,maxEvents=4096"
-                            + " -jar /opt/veyrion/artifact/application.jar")
+            check(command.contains("java -Dveyrion.sandbox.traceDir=/tmp/veyrion-trace")
+                    && command.contains("-Dveyrion.sandbox.traceDir.authorized=true")
+                    && command.contains("-Dveyrion.sandbox.dependencyMock=true")
+                    && command.contains("dependencyMock=true")
+                    && command.contains("-javaagent:/opt/veyrion/agent/veyrion-agent.jar")
                     && command.contains("com.aq.jvmsentinel.agent.LoopbackHttpProbe GET '/'")
                     && command.contains("com.aq.jvmsentinel.agent.LoopbackHttpProbe"
                             + " POST '/sample/http-entry'")
                     && command.contains("--spring.main.lazy-initialization=true")
+                    && command.contains("jdbc:veyrion-mock:mem:veyrion")
                     && command.contains("--spring.datasource.hikari.initialization-fail-timeout=-1")
                     && command.contains("--spring.datasource.druid.initial-size=0")
                     && command.contains("--spring.flyway.enabled=false")

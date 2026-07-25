@@ -173,7 +173,22 @@ final class JvmSinkSignatures {
             exact("servlet-redirect", "REDIRECT", "javax.servlet.http.HttpServletResponse", 0.84,
                     "sendRedirect"),
             exact("jakarta-servlet-redirect", "REDIRECT", "jakarta.servlet.http.HttpServletResponse", 0.84,
-                    "sendRedirect")
+                    "sendRedirect"),
+
+            // JWT / token APIs — presence only; not proof of missing verification or exploitability.
+            exact("jjwt-parser-parse", "JWT", "io.jsonwebtoken.JwtParser", 0.88,
+                    "parse", "parseClaimsJws", "parseClaimsJwt", "parseSignedClaims"),
+            exact("jjwt-parser-builder", "JWT", "io.jsonwebtoken.JwtParserBuilder", 0.80, "build"),
+            exact("jjwt-jwts-parser", "JWT", "io.jsonwebtoken.Jwts", 0.82, "parser", "parserBuilder"),
+            exact("nimbus-signed-jwt-parse", "JWT", "com.nimbusds.jwt.SignedJWT", 0.88, "parse"),
+            exact("nimbus-jwt-processor", "JWT", "com.nimbusds.jwt.proc.DefaultJWTProcessor", 0.86,
+                    "process", "processToClaims"),
+            exact("auth0-jwt-decode", "JWT", "com.auth0.jwt.JWT", 0.84, "decode", "require"),
+            exact("auth0-jwt-verifier", "JWT", "com.auth0.jwt.interfaces.JWTVerifier", 0.86, "verify"),
+            prefix("blade-jwt", "JWT", "org.springblade.core.jwt.", 0.84,
+                    "parse", "parseToken", "getToken", "createToken", "createAuthInfo"),
+            prefix("blade-secure-token", "AUTH", "org.springblade.core.secure.", 0.78,
+                    "getUser", "getUserId", "getClientId", "parseToken")
     );
 
     private JvmSinkSignatures() {

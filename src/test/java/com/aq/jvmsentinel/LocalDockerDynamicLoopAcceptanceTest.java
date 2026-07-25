@@ -132,7 +132,8 @@ public final class LocalDockerDynamicLoopAcceptanceTest {
                         role + " exposes provider, tool, and inference events: " + events);
             }
         } finally {
-            deleteTree(root);
+            // Docker bind mounts can briefly keep the managed JAR locked on Windows.
+            deleteTreeBestEffort(root);
         }
         System.out.println("LocalDockerDynamicLoopAcceptanceTest: PASS");
     }
@@ -211,11 +212,23 @@ public final class LocalDockerDynamicLoopAcceptanceTest {
         return text;
     }
 
-    private static void deleteTree(Path root) throws Exception {
-        if (!Files.exists(root)) return;
-        try (var paths = Files.walk(root)) {
-            for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {
-                Files.deleteIfExists(path);
+    private static void deleteTreeBestEffort(Path root) {
+        if (root == null || !Files.exists(root)) return;
+        for (int attempt = 0; attempt < 8; attempt++) {
+            try {
+                try (var paths = Files.walk(root)) {
+                    for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                        Files.deleteIfExists(path);
+                    }
+                }
+                if (!Files.exists(root)) return;
+            } catch (Exception ignored) {
+            }
+            try {
+                Thread.sleep(250L * (attempt + 1));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
             }
         }
     }

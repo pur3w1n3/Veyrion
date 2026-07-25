@@ -65,19 +65,18 @@
 
 ## 5. 当前实施顺序
 
-第一条垂直切片固定为：
+第一条垂直切片固定为 **JAR 优先**（WAR/CLASS 后置）：
 
 ```text
-Spring Boot JAR/WAR
-  → 制品登记与入口清单
-  → 前置 AI 结构化建模（可先用可替换的规则/Stub）
-  → 隔离运行画像
-  → HTTP 单入口路径追踪
-  → JDBC/文件依赖观测
-  → 结构化证据与 GUI/API 展示
+Spring Boot JAR
+  → 制品登记与入口清单（含 JWT/鉴权静态信号）
+  → 前置 AI 结构化建模
+  → 断网 TRUSTED_DOCKER：多入口预算探针 + JDBC/Redis MOCK 替身
+  → 动态证据投影与动态验证对照（DYNAMIC_SUSPECTED / INFERENCE）
+  → 后续：更深 sink、组合链、可重放门禁后的 VERIFIED
 ```
 
-在这条链路可重放之前，不扩展到多语言、复杂分布式真实连接或自动破坏性利用。
+在这条 JAR 链路可重放之前，不扩展到多语言、复杂分布式真实连接或自动破坏性利用。
 
 ## 6. 实现约束
 
@@ -387,8 +386,35 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 ## 38. 断网容器 exit 70 与启动期数据库依赖（2026-07-25）
 
 - `EXTERNAL_ARTIFACT_EXIT_NONZERO` + exit **70** 表示容器内 loopback HTTP 探针从未成功，不是 Docker 本身坏了。
-- 对 `task-dynamic-8a294cfed7264e43`（baldex）：应用在 `--network none` 下启动时 Hikari/MySQL 连接被拒绝，进程起不来 → 探针失败。协议级 JDBC 替身仍未接入 `TRUSTED_DOCKER`；Agent 只观测 `Statement.execute*`，不拦截建连。
-- 对 baldex（SpringBlade + Druid `initial-size:5` + Redis/Redisson + Flowable）仅设 Hikari 无效；沙箱启动追加：`lazy-initialization`、Druid 零初始连接/`fail-fast=false`、Hikari fail-open、短 Redis 超时并关闭 Redis health（保留 Redis 自动配置，因 Blade JWT 需要 `RedisConnectionFactory`）。就绪探针改为先打 `/`，业务入口探针尽力触发以采集 Agent 轨迹。流水线动态任务墙钟 180s、内存 2GiB。结果仍为 `MOCK` / `DYNAMIC_SUSPECTED`。启动强制连 Redis/DB 的应用仍可能失败，需后续协议级替身。
+- 对 `task-dynamic-8a294cfed7264e43`（baldex）：应用在 `--network none` 下启动时 Hikari/MySQL 连接被拒绝，进程起不来 → 探针失败。
+- 对 baldex（SpringBlade + Druid `initial-size:5` + Redis/Redisson + Flowable）仅设 Hikari 无效；沙箱启动追加：`lazy-initialization`、Druid 零初始连接/`fail-fast=false`、Hikari fail-open、短 Redis 超时并关闭 Redis health（保留 Redis 自动配置，因 Blade JWT 需要 `RedisConnectionFactory`）。就绪探针改为先打 `/`，业务入口探针尽力触发以采集 Agent 轨迹。流水线动态任务墙钟 180s、内存 2GiB。结果仍为 `MOCK` / `DYNAMIC_SUSPECTED`。
+
+## 39. JAR 链路 A+B+静态鉴权补漏（2026-07-26）
+
+本轮把 Spring Boot JAR 垂直切片继续做透，**不**一次覆盖全部 CWE，也**不**在无重放门禁时标 `VERIFIED`。
+
+### 39.1 产品顺序确认
+
+```text
+静态尽量不漏（含 JWT/鉴权）
+  → 多入口预算内洪水探针（超限 UNREACHED）
+  → 断网依赖替身（JDBC/Redis MOCK）
+  → 多链路推测与动态验证对照
+  → 后续再谈 WAR/CLASS 与更深 sink
+```
+
+### 39.2 已落地能力
+
+- **静态 C**：`Jwt/AUTH` sink 规则、Blade `@PreAuth` 等与 `@PreAuthorize` 对齐进权限前置条件；映射入口无鉴权注解产出低置信度 `AUTH_GAP`（仅 `STATIC_INFERRED`）；中文标签。baldex 实扫静态：`JWT=1`、`AUTH=6`、`AUTH_GAP=156`（可选 `AuthJwtStaticBaldexSmoke` + `VEYRION_BALDEX_JAR`）。
+- **动态 A**：单 scan 仍一个 `TRUSTED_DOCKER` 任务；`buildProbePlan` 对 HTTP 入口做最多 80 条探针计划，优先任务目标与 `PATH_EXPLORATION` 结论点名入口，其余补齐；超预算写 `UNREACHED`/`PROBE_BUDGET_EXHAUSTED`。`requireLocalArtifact` 按 plan 解析，不再盲 `findFirst()`。Worker `fixedCommand` 就绪 `GET /` 后按 plan 循环 `LoopbackHttpProbe`（单条失败不拖死任务）。
+- **动态 B**：Agent `dependencyMock=true` 注册 in-JVM JDBC mock driver、loopback Redis RESP stub；容器命令注入 mock JDBC URL/驱动与 Redis host/port。事件 provenance=`MOCK`/`RULE_GENERATED`，轨迹仍只标 `DYNAMIC_SUSPECTED`。主机侧 `DependencySubstitutionEngine` **不**接入 Docker。
+- **投影**：Servlet HTTP 事件带 `httpMethod`/`route`；`TraceProjectionService` 除聚合路径外按路由拆分多条动态路径。
+
+### 39.3 验收与边界
+
+- 相关验收：`JvmSinkSignaturesAcceptanceTest`、`ExternalArtifactTaskExecutorAcceptanceTest`、`DynamicTraceProjectionAcceptanceTest`、`ClassfileAnnotationAcceptanceTest`、Agent `package`、重建 artifact-runtime 镜像后的 `LocalDockerDynamicLoopAcceptanceTest`（`aaaaa.jar`）。
+- 仍禁止：无重放的 `VERIFIED`、真实外连 DB/Redis、破坏性 payload、宣称「所有路径 100%」或一次实现全部 CWE。
+- 启动强依赖专用协议（如 Redisson 非 RESP、Flowable 强制 schema）的应用仍可能失败；后续按 AUTH → 注入/sink → 组合链连续加深。
 
 ## 37. 动态验证角色迁移登记遗漏（2026-07-25）
 

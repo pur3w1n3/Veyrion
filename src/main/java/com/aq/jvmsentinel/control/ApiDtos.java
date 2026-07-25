@@ -9,6 +9,8 @@ public final class ApiDtos {
     /** Event envelopes currently share the v1 wire contract; scope is still carried explicitly. */
     public static final int EVENT_SCHEMA_VERSION = SCHEMA_VERSION;
     public static final String STATIC_INFERRED = "STATIC_INFERRED";
+    public static final String DYNAMIC_SUSPECTED = "DYNAMIC_SUSPECTED";
+    public static final String UNREACHED = "UNREACHED";
     public static final String MOCK = "MOCK";
 
     private ApiDtos() { }

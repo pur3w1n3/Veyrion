@@ -28,14 +28,16 @@ final class AgentConfig {
     final int maxEvents;
     final String classPrefix;
     final List<String> excludedPrefixes;
+    final boolean dependencyMock;
 
     private AgentConfig(Path traceFile, long maxBytes, int maxEvents, String classPrefix,
-                        List<String> excludedPrefixes) {
+                        List<String> excludedPrefixes, boolean dependencyMock) {
         this.traceFile = traceFile;
         this.maxBytes = maxBytes;
         this.maxEvents = maxEvents;
         this.classPrefix = classPrefix;
         this.excludedPrefixes = excludedPrefixes;
+        this.dependencyMock = dependencyMock;
     }
 
     static AgentConfig parse(String arguments) {
@@ -84,7 +86,10 @@ final class AgentConfig {
                 && (!Files.isRegularFile(traceFile, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(traceFile))) {
             throw new IllegalArgumentException("trace output must be a regular non-link file");
         }
-        return new AgentConfig(traceFile, maxBytes, maxEvents, classPrefix, List.copyOf(excludedPrefixes));
+        boolean dependencyMock = "true".equalsIgnoreCase(values.getOrDefault("dependencyMock", "false"))
+                || "true".equalsIgnoreCase(System.getProperty("veyrion.sandbox.dependencyMock", "false"));
+        return new AgentConfig(traceFile, maxBytes, maxEvents, classPrefix, List.copyOf(excludedPrefixes),
+                dependencyMock);
     }
 
     boolean includes(String binaryName) {
@@ -108,7 +113,7 @@ final class AgentConfig {
             String key = entry.substring(0, separator);
             String value = entry.substring(separator + 1);
             if (!key.equals("maxBytes") && !key.equals("maxEvents") && !key.equals("classPrefix")
-                    && !key.equals("excludePrefixes")) {
+                    && !key.equals("excludePrefixes") && !key.equals("dependencyMock")) {
                 throw new IllegalArgumentException("unsupported agent argument: " + key);
             }
             if (values.putIfAbsent(key, value) != null) {

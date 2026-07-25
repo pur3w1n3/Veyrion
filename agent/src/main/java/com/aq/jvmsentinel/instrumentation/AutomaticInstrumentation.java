@@ -111,9 +111,33 @@ final class AutomaticInstrumentation {
 
         @Advice.OnMethodEnter(suppress = Throwable.class)
         public static void enter(@Advice.Origin("#t") String className,
-                                 @Advice.Origin("#m") String methodName) {
-            AgentRuntime.recordTransformedMethod(
-                    "HTTP", className, methodName, "SERVLET_METHOD");
+                                 @Advice.Origin("#m") String methodName,
+                                 @Advice.AllArguments Object[] args) {
+            String httpMethod = "";
+            String route = "";
+            if (args != null) {
+                for (Object arg : args) {
+                    if (arg == null) continue;
+                    try {
+                        Object methodValue = arg.getClass().getMethod("getMethod").invoke(arg);
+                        Object uriValue = arg.getClass().getMethod("getRequestURI").invoke(arg);
+                        if (methodValue instanceof String text) httpMethod = text;
+                        if (uriValue instanceof String text) route = text;
+                        if (!httpMethod.isBlank() || !route.isBlank()) break;
+                    } catch (Throwable ignored) {
+                        // Not a servlet request argument.
+                    }
+                }
+            }
+            AgentRuntime.recordTransformedDetail("HTTP", className, methodName,
+                    Map.of("captureMode", "SERVLET_METHOD",
+                            "httpMethod", truncate(httpMethod, 16),
+                            "route", truncate(route, 512)));
+        }
+
+        private static String truncate(String value, int max) {
+            if (value == null) return "";
+            return value.length() <= max ? value : value.substring(0, max);
         }
     }
 
