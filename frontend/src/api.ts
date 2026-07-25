@@ -1164,7 +1164,8 @@ const safeErrorField = (value: unknown, maxLength: number): string | undefined =
 }
 
 const parseAllowlistedError = async (response: Response): Promise<{ code?: string; message?: string; requestId?: string }> => {
-  if (response.status !== 422 || !response.headers.get('content-type')?.toLowerCase().includes('application/json')) return {}
+  if (response.status < 400 || response.status >= 500
+      || !response.headers.get('content-type')?.toLowerCase().includes('application/json')) return {}
   const text = await boundedErrorText(response)
   if (!text) return {}
   try {
@@ -1214,8 +1215,9 @@ export class HttpSentinelApi implements SentinelApi {
       throw new ApiUnavailableError(operation, undefined, { cause: error })
     }
     if (response.ok === false || (typeof response.status === 'number' && response.status >= 400)) {
-      // Only a small, allowlisted JSON shape from validation failures is safe
-      // to render. HTML and arbitrary response fields are never propagated.
+      // Only a small, allowlisted JSON shape from client/validation failures is
+      // safe to render. HTML, 5xx diagnostics, and arbitrary fields are never
+      // propagated.
       const detail = await parseAllowlistedError(response)
       if ([404, 405, 501, 502, 503, 504].includes(response.status)) throw new ApiUnavailableError(operation, response.status)
       const requestSuffix = detail.requestId ? `（请求 ${detail.requestId}）` : ''

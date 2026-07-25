@@ -332,3 +332,10 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 修复静态路径错误投影：不再把全部 dependency/sink 追加到每个入口。入口 annotation evidence 的 `class#method` 与调用 evidence 的 caller `class#method` 精确匹配后，才把该 sink 放入对应路径；同类不同 handler 不互相继承 sink。
 - 静态攻击链只在同一已绑定 handler 至少有两个候选时生成，并明确命名为 “flow not verified”；unbound 候选不形成攻击链，链证据只包含该组 finding 的引用。
 - 合成回归覆盖 12 个类别、同类 safe/danger 两个 handler、框架噪声抑制和 API 路径映射。`aaaaa.jar` 复核结果为 5 个入口、3 个应用调用候选：`/debug-resource → SSRF`、`POST /parse → Fastjson DESERIALIZATION`、`/debug-cl → SSRF`；原先 24 条 Spring Boot loader 调用不再污染结果。
+
+## 32. 二次审计与前后端版本错位诊断（2026-07-25）
+
+- Vite 热更新后会发送新增的 `outputLanguage`，但已经运行的 Java Control Plane 不会热加载；若后端仍是旧进程，会以 `AUDIT_RUN_FIELD_REJECTED` 返回 400。更新 Java 合约后必须重启本地启动器，不能只依赖前端 HMR。
+- 前端现在对所有 JSON 4xx 响应只读取 allowlist 的 `code/message/requestId`，不再把具体校验错误隐藏成泛化的 `start audit failed: 400`；HTML、任意字段和 5xx 诊断仍不传播到页面。
+- `AuditRunAcceptanceTest` 新增同项目、同已登记制品、相同策略但不同 Idempotency-Key 的二次审计：必须创建不同的不可变 scan/PRE_ANALYSIS Job，语言快照均为 `ZH_CN`；原 key 重放仍返回首个任务且不重复创建。
+- 当前本地 18084/15177 栈已重启并加载最新 Java/前端代码，SQLite 状态与 Provider 配置保留。

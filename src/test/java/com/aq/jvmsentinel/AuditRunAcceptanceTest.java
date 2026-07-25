@@ -69,6 +69,19 @@ public final class AuditRunAcceptanceTest {
             check("COMPLETED".equals(awaitJob(client, server, jobId, token).get("status")),
                     "PRE_ANALYSIS completes");
 
+            HttpResponse<String> secondResponse = send(
+                    client, auditRuns, "POST", body, token, "audit-twice");
+            check(secondResponse.statusCode() == 202,
+                    "the same registered artifact accepts a distinct second audit");
+            Map<String, Object> second = ok(secondResponse);
+            String secondScanId = text(second, "scanId");
+            String secondJobId = text(object(second, "preAnalysisJob"), "aiJobId");
+            check(!scanId.equals(secondScanId) && !jobId.equals(secondJobId)
+                            && "ZH_CN".equals(object(second, "preAnalysisJob").get("outputLanguage")),
+                    "a new idempotency key creates a new immutable scan and language-bound job");
+            check("COMPLETED".equals(awaitJob(client, server, secondJobId, token).get("status")),
+                    "second PRE_ANALYSIS completes");
+
             HttpResponse<String> replayResponse = send(
                     client, auditRuns, "POST", body, token, "audit-once");
             check(replayResponse.statusCode() == 200, "audit run replay is idempotent");
@@ -78,8 +91,8 @@ public final class AuditRunAcceptanceTest {
                     "replay returns the original scan and job");
             Map<String, Object> jobs = ok(send(client,
                     uri(server, "/projects/" + projectId + "/ai-jobs"), "GET", "", token, null));
-            check(jobs.get("aiJobs") instanceof List<?> values && values.size() == 1,
-                    "idempotent replay does not duplicate PRE_ANALYSIS");
+            check(jobs.get("aiJobs") instanceof List<?> values && values.size() == 2,
+                    "idempotent replay does not duplicate either PRE_ANALYSIS job");
 
             check(send(client, auditRuns, "POST",
                     body.replace("\"DENY\"", "\"ALLOWLIST\""), token, "audit-once").statusCode() == 409,
