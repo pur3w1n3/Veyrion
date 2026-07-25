@@ -10,7 +10,7 @@
 export type VerificationStatus = 'VERIFIED' | 'DYNAMIC_SUSPECTED' | 'STATIC_INFERRED' | 'UNREACHED'
 
 export type DependencyMode = 'MOCK' | 'REPLAY' | 'LIVE_DISABLED' | 'LIVE' | string
-export type ProvenanceKind = 'FACT' | 'INFERENCE' | 'SIMULATION' | 'RUNTIME_OBSERVED' | 'APPLICATION_REPORTED'
+export type ProvenanceKind = 'FACT' | 'INFERENCE' | 'SIMULATION' | 'RUNTIME_OBSERVED' | 'AGENT_INSTRUMENTED' | 'APPLICATION_REPORTED'
 export type WorkerCapability = 'STATIC_ONLY' | 'TRUSTED_DOCKER' | 'HARDENED_GVISOR' | 'HARDENED_KATA'
 
 export type EvidenceRef = string | {
@@ -420,7 +420,7 @@ export interface SentinelApi {
 }
 
 const statuses = new Set<VerificationStatus>(['VERIFIED', 'DYNAMIC_SUSPECTED', 'STATIC_INFERRED', 'UNREACHED'])
-const provenanceKinds = new Set<ProvenanceKind>(['FACT', 'INFERENCE', 'SIMULATION', 'RUNTIME_OBSERVED', 'APPLICATION_REPORTED'])
+const provenanceKinds = new Set<ProvenanceKind>(['FACT', 'INFERENCE', 'SIMULATION', 'RUNTIME_OBSERVED', 'AGENT_INSTRUMENTED', 'APPLICATION_REPORTED'])
 const workerCapabilities = new Set<WorkerCapability>(['STATIC_ONLY', 'TRUSTED_DOCKER', 'HARDENED_GVISOR', 'HARDENED_KATA'])
 const supportedSchemaVersion = 1
 const supportedEventSchemaVersions = new Set([1, 2])

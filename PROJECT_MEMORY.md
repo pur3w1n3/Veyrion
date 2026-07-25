@@ -280,6 +280,7 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - AI 数据发送确认只在当前浏览器页面会话首次创建 Job 时弹出一次，不写入持久存储；每个后端 Job 请求仍必须单独携带 `authorized=true` 并通过权限校验。Provider 返回 2xx 但协议解析失败时，仅持久化代码生成的协议名与解析规则诊断（不保存响应正文），用于区分缺少 `choices`、`finish_reason`、assistant message 等兼容性问题。
 - 全局设置中的单角色操作合并为“保存分配并创建 AI Job”：先等待角色绑定持久化成功，再基于该绑定创建任务，避免用户对每个角色连续点击两个按钮；任一步失败均显示后端错误且不伪造任务成功。
 - 左侧导航拆分独立“模型服务”和“AI 审计过程”：模型服务承载 Provider、模型清单和四角色绑定，AI 审计过程承载 Job 队列、Provider/工具事件与清理操作；“审计执行”只保留扫描策略和 Docker 动态时间线，“全局设置”只保留外观与固定安全默认值。
+- 修复 dashboard 前后端 provenance 枚举漂移：Agent/Worker 会产生 `AGENT_INSTRUMENTED`，前端此前遗漏该合法值并以 `invalid path.provenanceKind` 拒绝整个 dashboard。前端现与 Agent JSONL 合约一致接受该值；本机真实 dashboard 已确认包含 `RUNTIME_OBSERVED` 与 `AGENT_INSTRUMENTED/HTTP`，Java AI 编排、动态投影验收及前端生产构建通过。
 
 ## 27. 受控 Fixture 样例退役（2026-07-25）
 
