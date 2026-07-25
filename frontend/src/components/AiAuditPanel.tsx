@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, type AiJobDto, type AiJobEventDto, type OutputLanguage } from '../api'
+import { jobStatusLabel, roleLabel } from '../labels'
 import { errorMessage, Notice } from './Common'
 
 const flowForStage = (stage: string, english: boolean): string => {
@@ -134,7 +135,7 @@ export function AiAuditPanel({ projectId, scanId, language }: { projectId: strin
     const removable = jobs.filter((job) => ['FAILED', 'BLOCKED', 'CANCELLED'].includes(job.status))
     if (removable.length === 0 || !window.confirm(english
       ? `Delete ${removable.length} failed, blocked, or cancelled AI jobs and their events?`
-      : `删除 ${removable.length} 条失败、阻断或取消的 AI Job 及其事件？`)) return
+      : `删除 ${removable.length} 条失败、阻断或取消的模型任务及其事件？`)) return
     setDeleting(true)
     setError(undefined)
     void Promise.allSettled(removable.map((job) => api.deleteAiJob(job.aiJobId)))
@@ -152,27 +153,27 @@ export function AiAuditPanel({ projectId, scanId, language }: { projectId: strin
 
   return <article className="panel section-gap">
     <div className="panel-head">
-      <div><p className="eyebrow">AI AUDIT PROCESS</p><h2>{english ? 'AI execution and tool flow' : 'AI 执行与工具过程'}</h2></div>
+      <div><p className="eyebrow">{english ? 'MODEL AUDIT' : '模型审计'}</p><h2>{english ? 'Model execution and tool flow' : '模型执行与工具过程'}</h2></div>
       <div className="button-row">
         <button className="text-button" type="button" disabled={deleting || !jobs.some((job) => ['FAILED', 'BLOCKED', 'CANCELLED'].includes(job.status))} onClick={deleteUnsuccessful}>{deleting ? (english ? 'Deleting…' : '删除中…') : (english ? 'Clear failed records' : '清理失败记录')}</button>
         <button className="text-button" type="button" disabled={loading || !projectId} onClick={refresh}>{loading ? (english ? 'Refreshing…' : '刷新中…') : (english ? 'Refresh' : '刷新')}</button>
       </div>
     </div>
-    <p className="form-help">{english ? 'Only persisted stages, provider metadata, tool calls/results, and inference summaries are shown. Hidden chain-of-thought is neither stored nor reconstructed.' : '仅展示后端持久化的执行阶段、Provider 元数据、工具调用/结果与模型推断摘要；不会记录或还原模型隐藏思维链。'}</p>
-    {!scanId && <Notice kind="info">{english ? 'Start an audit first; AI jobs are created by the staged audit workflow.' : '请先在“审计执行”启动审计；AI Job 会按审计阶段自动或经计划评审创建。'}</Notice>}
+    <p className="form-help">{english ? 'Only persisted stages, provider metadata, tool calls/results, and inference summaries are shown. Hidden chain-of-thought is neither stored nor reconstructed.' : '仅展示后端持久化的执行阶段、模型服务元数据、工具调用/结果与模型推断摘要；不会记录或还原模型隐藏思维链。'}</p>
+    {!scanId && <Notice kind="info">{english ? 'Start an audit first; model jobs are created by the staged audit workflow.' : '请先在“审计执行”启动审计；模型任务会按审计阶段自动或经计划评审创建。'}</Notice>}
     {error && <Notice kind="error">{error}</Notice>}
     {jobs.some((job) => job.status === 'FAILED' && job.errorCode === 'HTTP_400') && <Notice kind="info">{english
       ? 'HTTP_400 entries are immutable historical jobs. They are not rewritten or retried automatically; clear them and create a new authorized job from the audit workflow.'
       : '列表中的 HTTP_400 是修复前已终止的历史任务，状态不会被后台改写或自动重试；请清理失败记录后，从审计流程重新创建已授权任务。'}</Notice>}
     <div className="card-list">
       {jobs.map((job) => <div className="list-card" key={job.aiJobId}>
-        <div><strong>{job.role}</strong><small>{job.aiJobId} · {job.createdAt}{job.outputLanguage ? ` · ${job.outputLanguage}` : ''}{job.errorCode ? ` · ${job.errorCode}` : ''}</small></div>
-        <div className="button-row"><span className="locked-tag">{job.status}</span><button className="text-button" type="button" onClick={() => inspect(job.aiJobId)}>{english ? 'Inspect audit flow' : '查看审计过程'}</button></div>
+        <div><strong>{english ? job.role : roleLabel(job.role)}</strong><small>{job.aiJobId} · {job.createdAt}{job.outputLanguage ? ` · ${job.outputLanguage === 'ZH_CN' ? '简体中文' : job.outputLanguage}` : ''}{job.errorCode ? ` · ${job.errorCode}` : ''}</small></div>
+        <div className="button-row"><span className="locked-tag">{english ? job.status : jobStatusLabel(job.status)}</span><button className="text-button" type="button" onClick={() => inspect(job.aiJobId)}>{english ? 'Inspect audit flow' : '查看审计过程'}</button></div>
       </div>)}
-      {!loading && jobs.length === 0 && <p className="empty-state">{english ? 'No AI jobs. Configure roles, then start an audit.' : '暂无 AI Job；请先配置角色，然后在“审计执行”开始审计。'}</p>}
+      {!loading && jobs.length === 0 && <p className="empty-state">{english ? 'No model jobs. Configure roles, then start an audit.' : '暂无模型任务；请先配置角色，然后在“审计执行”开始审计。'}</p>}
     </div>
     {selectedJobId && <div className="section-gap">
-      <div className="panel-head"><div><p className="eyebrow">AI JOB AUDIT</p><h2>{english ? 'Execution events' : '执行事件'}</h2></div><span>{selectedJobId}</span></div>
+      <div className="panel-head"><div><p className="eyebrow">{english ? 'JOB AUDIT' : '任务审计'}</p><h2>{english ? 'Execution events' : '执行事件'}</h2></div><span>{selectedJobId}</span></div>
       {loadingEvents
         ? <p className="empty-state">{english ? 'Loading audit events…' : '加载审计事件…'}</p>
         : <div className="audit-flow-list">{events.map((event) =>

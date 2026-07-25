@@ -1,22 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, type DashboardSnapshot, type OutputLanguage, type ProjectDto } from './api'
-import { AiAuditPage } from './components/AiAuditPage'
 import { AuditPage } from './components/AuditPage'
 import { BoundaryLegend, Notice, errorMessage } from './components/Common'
 import { ProviderPage } from './components/ProviderPage'
 import { ResultsPage } from './components/ResultsPage'
 import { SettingsPage } from './components/SettingsPage'
 import { WorkspaceSwitcher } from './components/WorkspaceSwitcher'
+import { dependencyModeLabel } from './labels'
 
-type View = 'audit' | 'results' | 'providers' | 'ai-audit' | 'settings'
+type View = 'audit' | 'results' | 'providers' | 'settings'
 type Theme = 'light' | 'dark'
 
 const nav: Array<{ id: View; label: string; description: string; icon: string }> = [
-  { id: 'audit', label: '审计执行', description: 'Artifact, static facts & AI', icon: '◎' },
-  { id: 'results', label: '审计结果', description: 'Evidence & findings', icon: '◇' },
-  { id: 'providers', label: '模型服务', description: 'Saved APIs & AI roles', icon: '◈' },
-  { id: 'ai-audit', label: 'AI 审计过程', description: 'Requests & tool events', icon: '≋' },
-  { id: 'settings', label: '全局设置', description: 'Appearance & safety', icon: '⚙' }
+  { id: 'audit', label: '审计执行', description: '流水线、对话过程与实时动向', icon: '◎' },
+  { id: 'results', label: '审计结果', description: '证据、发现与报告', icon: '◇' },
+  { id: 'providers', label: '模型服务', description: '接口配置与五个角色', icon: '◈' },
+  { id: 'settings', label: '全局设置', description: '外观与安全默认值', icon: '⚙' }
 ]
 
 const initialTheme = (): Theme => {
@@ -82,20 +81,19 @@ export default function App() {
   const apiError = projectApiError ?? dashboardApiError
   return <div className="app-shell">
     <aside className="sidebar">
-      <div className="brand"><div className="brand-mark">V</div><div><strong>VEYRION</strong><small>溯脉 · JVM SECURITY</small></div></div>
+      <div className="brand"><div className="brand-mark">V</div><div><strong>溯脉 · Veyrion</strong><small>闭源 JVM 安全验证</small></div></div>
       <WorkspaceSwitcher projects={projects} projectId={projectId} onSelect={setProjectId} onProjectsChanged={refreshProjects} />
       <nav aria-label="主导航">{nav.map((item) => <button key={item.id} className={`nav-item ${view === item.id ? 'active' : ''}`} aria-current={view === item.id ? 'page' : undefined} onClick={() => setView(item.id)}><span className="nav-icon">{item.icon}</span><span><strong>{item.label}</strong><small>{item.description}</small></span></button>)}</nav>
-      <div className="sidebar-foot"><span className={`connection-dot ${apiError ? 'offline' : ''}`} /><div><strong>{api.mode === 'demo' ? '显式 Demo 模式' : apiError ? '部分 API unavailable' : 'Control Plane 可响应'}</strong><small>{apiError ? '无静默回退' : snapshot?.dependencyMode ?? '等待项目数据'}</small></div></div>
+      <div className="sidebar-foot"><span className={`connection-dot ${apiError ? 'offline' : ''}`} /><div><strong>{api.mode === 'demo' ? '显式演示模式' : apiError ? '部分接口不可用' : '控制面可响应'}</strong><small>{apiError ? '无静默回退' : snapshot?.dependencyMode ? dependencyModeLabel(snapshot.dependencyMode) : '等待项目数据'}</small></div></div>
     </aside>
     <main className="main-content">
-      <header className="topbar"><button className="mobile-brand" onClick={() => setView('audit')} aria-label="返回审计执行">V</button><div><span>{currentProject?.name ?? '未选择工作区'} / </span><strong>{nav.find((item) => item.id === view)?.label}</strong></div><div className="top-actions"><span className="mode-tag">{api.mode === 'demo' ? 'DEMO DATA' : 'CONTROL PLANE'}</span><button className="icon-button" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} aria-label={`切换到${theme === 'light' ? '暗色' : '亮色'}主题`}>{theme === 'light' ? '☾' : '☀'}</button></div></header>
+      <header className="topbar"><button className="mobile-brand" onClick={() => setView('audit')} aria-label="返回审计执行">V</button><div><span>{currentProject?.name ?? '未选择工作区'} / </span><strong>{nav.find((item) => item.id === view)?.label}</strong></div><div className="top-actions"><span className="mode-tag">{api.mode === 'demo' ? '演示数据' : '控制面'}</span><button className="icon-button" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} aria-label={`切换到${theme === 'light' ? '暗色' : '亮色'}主题`}>{theme === 'light' ? '☾' : '☀'}</button></div></header>
       <BoundaryLegend />
       <div className="page-container">
-        {apiError && <Notice kind="error">{apiError}。未连接的能力显示为 unavailable，不会回退到演示成功。</Notice>}
+        {apiError && <Notice kind="error">{apiError}。未连接的能力显示为不可用，不会回退到演示成功。</Notice>}
         {view === 'audit' && <AuditPage projectId={projectId} snapshot={snapshot} onRefresh={refreshDashboard} language={language} />}
         {view === 'results' && <ResultsPage projectId={projectId} snapshot={snapshot} language={language} />}
         {view === 'providers' && <ProviderPage projectId={projectId} />}
-        {view === 'ai-audit' && <AiAuditPage projectId={projectId} snapshot={snapshot} language={language} />}
         {view === 'settings' && <SettingsPage theme={theme} onTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} language={language} onLanguage={setLanguage} />}
       </div>
       <nav className="mobile-nav" aria-label="移动端主导航">{nav.map((item) => <button key={item.id} className={view === item.id ? 'active' : ''} onClick={() => setView(item.id)}><span>{item.icon}</span>{item.label}</button>)}</nav>

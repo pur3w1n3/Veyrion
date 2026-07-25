@@ -290,7 +290,12 @@ export type ProviderModelInventoryDto = {
   models: ProviderInventoryModelDto[]
 }
 
-export type AiRole = 'PRE_ANALYSIS' | 'PATH_EXPLORATION' | 'VULNERABILITY_TRIAGE' | 'REPORT_GENERATION'
+export type AiRole =
+  | 'PRE_ANALYSIS'
+  | 'PATH_EXPLORATION'
+  | 'DYNAMIC_VERIFICATION'
+  | 'VULNERABILITY_TRIAGE'
+  | 'REPORT_GENERATION'
 export type RoleAssignmentDto = {
   schemaVersion: number
   projectId: string
@@ -875,7 +880,7 @@ export const parseRoleAssignment = (value: unknown): RoleAssignmentDto => {
   const body = unwrap(value, 'roleAssignment')
   if (!isRecord(body)) throw new Error('invalid role assignment response')
   const role = asText(body.role, 'roleAssignment.role') as AiRole
-  if (!['PRE_ANALYSIS', 'PATH_EXPLORATION', 'VULNERABILITY_TRIAGE', 'REPORT_GENERATION'].includes(role)) throw new Error('invalid roleAssignment.role')
+  if (!['PRE_ANALYSIS', 'PATH_EXPLORATION', 'DYNAMIC_VERIFICATION', 'VULNERABILITY_TRIAGE', 'REPORT_GENERATION'].includes(role)) throw new Error('invalid roleAssignment.role')
   return {
     schemaVersion: schemaVersion(isRecord(value) ? value.schemaVersion : body.schemaVersion, 'roleAssignment.schemaVersion', false),
     projectId: asText(body.projectId, 'roleAssignment.projectId'),
@@ -890,7 +895,7 @@ export const parseAiJob = (value: unknown): AiJobDto => {
   const body = unwrap(value, 'aiJob')
   if (!isRecord(body)) throw new Error('invalid ai job response')
   const role = asText(body.role, 'aiJob.role') as AiRole
-  if (!['PRE_ANALYSIS', 'PATH_EXPLORATION', 'VULNERABILITY_TRIAGE', 'REPORT_GENERATION'].includes(role)) throw new Error('invalid aiJob.role')
+  if (!['PRE_ANALYSIS', 'PATH_EXPLORATION', 'DYNAMIC_VERIFICATION', 'VULNERABILITY_TRIAGE', 'REPORT_GENERATION'].includes(role)) throw new Error('invalid aiJob.role')
   let policySnapshot: Record<string, unknown> | undefined
   if (body.policySnapshot !== undefined) {
     if (isRecord(body.policySnapshot)) {

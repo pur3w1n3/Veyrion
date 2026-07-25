@@ -32,4 +32,4 @@ export function Notice({ kind = 'info', children }: { kind?: 'info' | 'error' | 
   return <div className={`notice notice-${kind}`} role={kind === 'error' ? 'alert' : 'status'}>{children}</div>
 }
 
-export const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'request unavailable'
+export const errorMessage = (error: unknown) => error instanceof Error ? error.message : '请求不可用'
