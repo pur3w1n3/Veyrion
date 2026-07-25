@@ -230,6 +230,21 @@ export type CreateScanRequest = {
   policy?: Record<string, unknown>
 }
 
+export type StartAuditRequest = CreateScanRequest & {
+  aiAuthorized: boolean
+}
+
+export type AuditRunDto = {
+  schemaVersion: number
+  auditRunId: string
+  projectId: string
+  artifactDigest: string
+  scanId: string
+  status: string
+  scan: ScanDto
+  preAnalysisJob: AiJobDto
+}
+
 export type UpdateProjectRequest = { name: string }
 export type UpdateArtifactRequest = { label?: string }
 export type UpdateScanRequest = { action: 'cancel' | 'resume' }
@@ -399,6 +414,7 @@ export interface SentinelApi {
   deleteArtifact(projectId: string, artifactId: string): Promise<void>
   listScans(projectId: string): Promise<ScanDto[]>
   createScan(request?: CreateScanRequest | string, projectId?: string): Promise<ScanDto>
+  startAudit(projectId: string, request: StartAuditRequest): Promise<AuditRunDto>
   createDynamicTask(scanId: string): Promise<DynamicTaskDto>
   listDynamicTasks(scanId: string): Promise<DynamicTaskDto[]>
   updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto>
@@ -883,6 +899,31 @@ export const parseAiJob = (value: unknown): AiJobDto => {
   }
 }
 
+export const parseAuditRun = (value: unknown): AuditRunDto => {
+  if (!isRecord(value)) throw new Error('invalid audit run response')
+  const version = schemaVersion(value.schemaVersion, 'auditRun.schemaVersion')
+  const scan = parseScan(value.scan)
+  const preAnalysisJob = parseAiJob(value.preAnalysisJob)
+  const projectId = asText(value.projectId, 'auditRun.projectId')
+  const scanId = asText(value.scanId, 'auditRun.scanId')
+  const artifactDigest = asText(value.artifactDigest, 'auditRun.artifactDigest')
+  if (scan.projectId !== projectId || scan.scanId !== scanId || scan.artifactDigest !== artifactDigest
+      || preAnalysisJob.projectId !== projectId || preAnalysisJob.scanId !== scanId
+      || preAnalysisJob.role !== 'PRE_ANALYSIS') {
+    throw new Error('invalid audit run scope')
+  }
+  return {
+    schemaVersion: version,
+    auditRunId: asText(value.auditRunId, 'auditRun.auditRunId'),
+    projectId,
+    artifactDigest,
+    scanId,
+    status: asText(value.status, 'auditRun.status'),
+    scan,
+    preAnalysisJob
+  }
+}
+
 export const parseAiJobEvent = (value: unknown): AiJobEventDto => {
   if (!isRecord(value)) throw new Error('invalid AI job event response')
   const sequence = asSafeInteger(value.sequence, 'aiJobEvent.sequence', 1, 128)
@@ -1327,6 +1368,22 @@ export class HttpSentinelApi implements SentinelApi {
     return parseScan(response)
   }
 
+  async startAudit(projectId: string, request: StartAuditRequest): Promise<AuditRunDto> {
+    const { policy, idempotencyKey, ...auditFields } = request
+    const body: Record<string, unknown> = { ...auditFields }
+    if (policy) {
+      const policyKeys = ['authorized', 'networkMode', 'dangerousActionMode', 'networkAllowlist', 'maxWallClockSeconds', 'maxMemoryBytes', 'maxDiskBytes'] as const
+      for (const key of policyKeys) if (body[key] === undefined && policy[key] !== undefined) body[key] = policy[key]
+    }
+    const response = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/audit-runs`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: mutationHeaders(this.token, idempotencyKeyFor(idempotencyKey)),
+      body: JSON.stringify(body)
+    }, 'start audit')
+    return parseAuditRun(response)
+  }
+
   async createDynamicTask(scanId: string): Promise<DynamicTaskDto> {
     const response = await this.request(`scans/${encodeURIComponent(asText(scanId, 'scanId'))}/dynamic-tasks`, {
       method: 'POST',
@@ -1594,6 +1651,30 @@ export class MockSentinelApi implements SentinelApi {
 
   async createScan(_request: CreateScanRequest | string = {}, _projectId?: string): Promise<ScanDto> {
     return { schemaVersion: 1, scanId: 'scan-07f2', projectId: 'project-01', artifactDigest: '0'.repeat(64), status: 'COMPLETED', verificationStatus: 'STATIC_INFERRED', dependencyMode: 'MOCK', createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), evidenceRefs: [] }
+  }
+
+  async startAudit(projectId: string, _request: StartAuditRequest): Promise<AuditRunDto> {
+    const scan = await this.createScan({}, projectId)
+    return {
+      schemaVersion: 1,
+      auditRunId: 'audit-07f2',
+      projectId,
+      artifactDigest: scan.artifactDigest,
+      scanId: scan.scanId,
+      status: 'PRE_ANALYSIS_BLOCKED',
+      scan,
+      preAnalysisJob: {
+        schemaVersion: 1,
+        aiJobId: 'ai-job-demo',
+        projectId,
+        scanId: scan.scanId,
+        artifactDigest: scan.artifactDigest,
+        role: 'PRE_ANALYSIS',
+        status: 'BLOCKED',
+        createdAt: new Date(0).toISOString(),
+        errorCode: 'DEMO_MODE_UNAVAILABLE'
+      }
+    }
   }
 
   async createDynamicTask(): Promise<DynamicTaskDto> { return this.unavailable('create dynamic artifact task') }

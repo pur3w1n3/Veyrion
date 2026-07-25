@@ -77,6 +77,7 @@ GUI 在静态扫描后可显式授权执行该 scan 对应的后端管理 JAR。
 - `POST|GET /api/v1/projects/{projectId}/artifacts`：登记或列出受控根目录内的制品。
 - `GET /api/v1/projects/{projectId}/entries`：查询入口清单。
 - `POST|GET /api/v1/projects/{projectId}/scans`：创建或列出静态前置分析扫描。
+- `POST /api/v1/projects/{projectId}/audit-runs`：推荐的主流程入口；同一请求内完成静态扫描并创建绑定该不可变 `scanId` 的 `PRE_ANALYSIS` Job。必须分别提交 `authorized:true` 与 `aiAuthorized:true`，并携带 `Idempotency-Key`。
 - `GET /api/v1/scans/{scanId}`、`GET /api/v1/scans/{scanId}/paths`、`GET /api/v1/scans/{scanId}/paths/{pathId}`、`GET /api/v1/scans/{scanId}/findings`：查询扫描、路径、发现和静态证据。
 - `GET /api/v1/scans/{scanId}/events`：SSE 事件流。
 - `POST /api/v1/scans/{scanId}/dynamic-tasks`：显式授权排队当前 scan 的后端管理可执行 JAR；body 只接受 `authorized`，不能提供镜像、命令、路径、挂载或能力。
@@ -102,15 +103,15 @@ X-Sentinel-Authorization: local-demo
 Idempotency-Key: artifact-demo-1
 {"path":"C:\\authorized-artifacts\\sample.jar"}
 
-POST /api/v1/projects/{projectId}/scans
+POST /api/v1/projects/{projectId}/audit-runs
 X-Sentinel-Authorization: local-demo
-Idempotency-Key: scan-demo-1
-{"artifactDigest":"<sha256>","authorized":true,"networkMode":"DENY","dangerousActionMode":"DRY_RUN"}
+Idempotency-Key: audit-demo-1
+{"artifactDigest":"<sha256>","authorized":true,"aiAuthorized":true,"networkMode":"DENY","dangerousActionMode":"DRY_RUN"}
 ```
 
 浏览器上传协议为 `POST /projects/{projectId}/artifact-uploads` 初始化、带 `offset` 与 `X-Chunk-SHA256` 的顺序 `PUT` 分块、`POST .../{uploadId}/complete` 完成或 `DELETE` 取消。后端限制会话、声明总量、TTL 和单块 4 MiB，复核扩展名、大小、每块摘要、完整 SHA-256 与 JAR/WAR ZIP 结构，然后原子安装到 `.veyrion/artifacts/sha256/<prefix>/<digest>.<ext>`；项目和后续扫描只引用该受控副本。上传会话是进程内临时状态，重启会清除残留 `.part`，不会删除已安装内容。
 
-写操作要求 `X-Sentinel-Authorization: <token>`，也接受 `Authorization: Bearer <token>`。扫描请求必须在 body 中显式 `authorized: true`；制品登记可选传入 `authorized`，但显式 `false` 会拒绝。令牌认证不等于授权同意。写操作建议携带 `Idempotency-Key`，项目、制品和扫描创建会在内存窗口内按作用域去重；非法、空白或超过 256 字符的键会被拒绝。每类幂等键最多保留 50,000 个，达到上限会 fail-closed 返回 429。
+写操作要求 `X-Sentinel-Authorization: <token>`，也接受 `Authorization: Bearer <token>`。扫描请求必须在 body 中显式 `authorized: true`；组合审计还必须独立提交 `aiAuthorized:true`，令牌认证不等于扫描或远端 AI 授权同意。制品登记可选传入 `authorized`，但显式 `false` 会拒绝。写操作建议携带 `Idempotency-Key`，项目、制品、扫描和组合审计会在内存窗口内按作用域去重；组合审计重放返回原始 scan/job，不会重复创建 PRE_ANALYSIS，不同 payload 复用同一键返回 409。非法、空白或超过 256 字符的键会被拒绝。每类幂等键最多保留 50,000 个，达到上限会 fail-closed 返回 429。
 
 SSE 客户端通过 `Last-Event-ID` 请求头断线续接。事件包含 `id`、`event`、`data`，并携带项目/制品/扫描上下文、`schemaVersion`、`verificationStatus`、`dependencyMode` 和 `evidenceRefs`。SSE 仅作增量提示，断线或终态后必须以 `GET /api/v1/scans/{scanId}` 等幂等查询为准；终态事件包括 `ScanCompleted` 或 `TaskStopped`。
 

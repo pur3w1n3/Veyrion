@@ -102,22 +102,21 @@ export function AuditPage({ projectId, snapshot, onRefresh }: { projectId: strin
     }
     if (!confirmAiAuthorization()) return
     setBusy(true); setError(undefined); setMessage(undefined)
-    void api.createScan({
+    void api.startAudit(projectId, {
       artifactId: String(data.get('artifactId')),
       authorized: true,
+      aiAuthorized: true,
       dependencyMode: String(data.get('dependencyMode')),
       networkMode: 'DENY',
       dangerousActionMode: 'DRY_RUN',
       maxWallClockSeconds: Number(data.get('timeout')),
       maxMemoryBytes: Number(data.get('memory')) * 1024 * 1024
-    }, projectId).then(async (created) => {
-      setScan(created)
-      const job = await api.createAiJob(projectId, {
-        role: 'PRE_ANALYSIS',
-        scanId: created.scanId,
-        authorized: true
-      })
-      setJobs((current) => [job, ...current])
+    }).then(async (created) => {
+      setScan(created.scan)
+      setJobs((current) => [
+        created.preAnalysisJob,
+        ...current.filter((job) => job.aiJobId !== created.preAnalysisJob.aiJobId)
+      ])
       setMessage('静态事实与入口已建立，PRE_ANALYSIS 前置 AI 已进入执行队列')
       await onRefresh()
     }).catch((cause) => setError(`审计启动未完整完成：${errorMessage(cause)}`)).finally(() => setBusy(false))

@@ -123,6 +123,7 @@ Java/Kotlin Control Plane
 - `POST /api/v1/projects`
 - `POST /api/v1/projects/{id}/artifacts`
 - `GET /api/v1/projects/{id}/entries`
+- `POST /api/v1/projects/{id}/audit-runs`（静态扫描 + PRE_ANALYSIS 组合主入口）
 - `POST /api/v1/projects/{id}/scans`
 - `GET /api/v1/scans/{id}`
 - `GET /api/v1/scans/{id}/events`（SSE）
@@ -131,14 +132,14 @@ Java/Kotlin Control Plane
 - `POST /api/v1/findings/{id}/replay`
 - `GET /api/v1/attack-chains`
 
-Control Plane 当前是本地内存 MVP：`GET /api/v1/health` 会返回 `persistenceMode=IN_MEMORY_MVP`、`analysisMode=STATIC_METADATA_ONLY`、`dependencyMode=MOCK`。完整路由以实现为准，另包括：
+Control Plane 当前使用本地 SQLite 保存项目、制品元数据、scan、Provider、角色、AI Job/Event 和审计记录；幂等窗口、SSE 历史、Worker 任务与动态 trace 仍是进程内有界状态。完整路由以实现为准，另包括：
 
 - `GET /api/v1/projects/{id}/dashboard`、`GET /api/v1/projects/{id}/evidence`；
 - `GET /api/v1/scans/{id}/paths`、`GET /api/v1/scans/{id}/evidence`、`GET /api/v1/scans/{id}/findings`；
 - `GET /api/v1/evidence/{id}`；
 - `POST /api/v1/findings/{id}/replay`（当前仅受限的静态元数据重放，不执行制品）。
 
-写操作（创建项目、登记制品、创建扫描、replay）要求 `X-Sentinel-Authorization: <token>`，也接受 `Authorization: Bearer <token>`。扫描 body 必须显式带 `authorized: true`；制品登记可选传入 `authorized`，但显式 `false` 会拒绝。令牌只完成本地调用认证，不代替授权同意。项目、制品和扫描创建使用 `Idempotency-Key` 去重（非空、无空白、最多 256 字符）；每类最多保留 50,000 个键，MVP 仅在进程内存中保存键和记录。
+写操作（创建项目、登记制品、创建扫描、组合审计、replay）要求 `X-Sentinel-Authorization: <token>`，也接受 `Authorization: Bearer <token>`。扫描 body 必须显式带 `authorized: true`；组合审计还必须独立带 `aiAuthorized:true`，并通过服务端一次编排创建 scan 与 PRE_ANALYSIS。令牌只完成本地调用认证，不代替授权同意。项目、制品、扫描和组合审计使用 `Idempotency-Key` 去重（非空、无空白、最多 256 字符）；每类最多保留 50,000 个键，幂等索引当前仅在进程内存中保存。
 
 SSE 路由 `GET /api/v1/scans/{id}/events` 支持 `Last-Event-ID` 续接。客户端必须处理 `ScanCreated`、`TaskLeased`、`FindingUpdated`、`ScanCompleted`、`TaskStopped` 等事件，并在断线、事件窗口不足或收到终态后调用幂等 GET 进行补偿。SSE 是增量通知，不是事实来源；最终状态以 `GET /api/v1/scans/{id}` 为准。事件 DTO 带 `schemaVersion`、`projectId`、`artifactDigest`、`scanId`、`verificationStatus`、`dependencyMode` 和 `evidenceRefs`。
 

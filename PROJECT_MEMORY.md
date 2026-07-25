@@ -296,8 +296,9 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 ## 28. 工作区与审计主流程信息架构重构（2026-07-25）
 
 - 工作区是全局上下文，不再是左侧主流程页面。左上角“当前工作区”可直接切换、创建和删除授权工作区；切换后 dashboard、制品、角色绑定和 AI 事件全部按项目重新加载。
-- “审计执行”成为默认首页并承载制品导入、策略、阶段推进和时间线。用户点击“开始审计”后，Control Plane 先完成静态 classfile/配置事实与入口发现，再由 GUI 将同一不可变 `scanId` 显式绑定到 `PRE_ANALYSIS` AI Job；未配置前置 AI 时不启动一个残缺流程。
+- “审计执行”成为默认首页并承载制品导入、策略、阶段推进和时间线。用户点击“开始审计”后，GUI 只调用 `POST /projects/{id}/audit-runs`；Control Plane 在同一编排中完成静态 classfile/配置事实与入口发现，并创建绑定到同一不可变 `scanId` 的 `PRE_ANALYSIS` AI Job。请求分别要求 `authorized:true` 与 `aiAuthorized:true`，且必须提供幂等键；重放返回原始 scan/job，不重复创建任务，不同 payload 复用键返回 409。
 - 主流程固定为：`制品摘要复核 → 静态事实/入口发现 → PRE_ANALYSIS 业务建模 → 人工计划评审 → PATH_EXPLORATION → 断网动态观察 → VULNERABILITY_TRIAGE → REPORT_GENERATION`。后续阶段只能在前置阶段完成后由审计页推进；AI 不能改写静态事实，也不能单独生成 `VERIFIED`。
 - “模型服务”只负责 Provider/API 密钥、模型清单和项目角色绑定。页面左侧显示并选择后端已保存的 API，右侧编辑连接与模型；保存角色绑定不再顺带创建 Job，避免配置动作绕开审计上下文与阶段顺序。
 - “AI 审计过程”只展示当前扫描的 Provider、工具、推断摘要和失败事件，并可清理失败历史，不再提供脱离审计流程的“四角色任务”批量创建入口。
 - AI Orchestrator 使用按角色固定的服务端任务说明：`PRE_ANALYSIS` 必须先查询静态入口、依赖、sink 和证据事实，再解释业务模块、参数/权限前置条件与探索优先级，并引用返回的 evidence reference；其他角色分别限定为非执行路径计划、证据研判和状态分级报告。模型不得发明路由或改写事实层。
+- 组合入口只覆盖“静态扫描 + PRE_ANALYSIS”这条不可分割的起始动作；后续路径计划、Docker 动态观察、漏洞研判和报告仍按阶段单独授权。SQLite 保存 scan/job 事实，首版组合幂等索引仍为进程内有界窗口，重启后的跨进程重放尚未实现。

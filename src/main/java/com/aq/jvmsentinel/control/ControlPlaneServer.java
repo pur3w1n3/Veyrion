@@ -107,6 +107,7 @@ public final class ControlPlaneServer implements AutoCloseable {
     private final Map<String, String> idempotentProjects = new ConcurrentHashMap<>();
     private final Map<String, String> idempotentArtifacts = new ConcurrentHashMap<>();
     private final Map<String, String> idempotentScans = new ConcurrentHashMap<>();
+    private final Map<String, AuditRunReplay> idempotentAuditRuns = new ConcurrentHashMap<>();
     private final Map<String, DynamicTaskReplay> idempotentDynamicTasks = new ConcurrentHashMap<>();
     private final String mutationToken;
     private final String workerToken;
@@ -386,6 +387,13 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (path.size() == 3 && "projects".equals(path.get(0)) && "entries".equals(path.get(2))
                 && "GET".equals(method)) {
             listEntries(exchange, path.get(1));
+            return;
+        }
+        if (path.size() == 3 && "projects".equals(path.get(0)) && "audit-runs".equals(path.get(2))
+                && "POST".equals(method)) {
+            requirePermission(exchange, Permission.RUN_SCANS);
+            requirePermission(exchange, Permission.RUN_AI_JOBS);
+            startAudit(exchange, path.get(1));
             return;
         }
         if (path.size() == 3 && "projects".equals(path.get(0)) && "scans".equals(path.get(2))) {
@@ -951,15 +959,86 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, result);
     }
 
+    private synchronized void startAudit(HttpExchange exchange, String projectId) throws IOException {
+        String key = requireIdempotencyKey(exchange);
+        String replayKey = projectId + ":" + key;
+        ensureIdempotencyCapacity(idempotentAuditRuns, replayKey);
+        Map<String, Object> body = readObject(exchange);
+        Set<String> allowed = Set.of(
+                "artifactDigest", "artifactId", "artifact", "authorized", "aiAuthorized", "dependencyMode",
+                "networkMode", "dangerousActionMode", "networkAllowlist",
+                "maxWallClockSeconds", "maxMemoryBytes", "maxDiskBytes");
+        for (String field : body.keySet()) {
+            if (!allowed.contains(field)) {
+                throw new ApiException(400, "AUDIT_RUN_FIELD_REJECTED",
+                        "audit run body contains an unsupported field");
+            }
+        }
+        if (!requiredBoolean(body, "authorized")) {
+            throw new ApiException(403, "AUTHORIZATION_REQUIRED",
+                    "explicit scan authorization is required");
+        }
+        if (!requiredBoolean(body, "aiAuthorized")) {
+            throw new ApiException(403, "AI_AUTHORIZATION_REQUIRED",
+                    "explicit PRE_ANALYSIS authorization is required");
+        }
+        String payload = JsonCodec.stringify(body);
+        AuditRunReplay replay = idempotentAuditRuns.get(replayKey);
+        if (replay != null) {
+            if (!replay.payload().equals(payload)) {
+                throw new ApiException(409, "IDEMPOTENCY_CONFLICT",
+                        "Idempotency-Key was already used with a different audit request");
+            }
+            ControlPlaneStore.ScanRecord scan = store.requireScan(replay.scanId());
+            var job = store.requireAiJob(replay.preAnalysisJobId());
+            sendJson(exchange, 200, auditRunMap(scan.dto(), job));
+            return;
+        }
+
+        String operatorId = actor(exchange).operatorId();
+        Map<String, Object> scanBody = new LinkedHashMap<>(body);
+        scanBody.remove("aiAuthorized");
+        ScanStart started = createOrReplayScan(projectId, scanBody, "audit-run-" + key, operatorId);
+        var job = store.createAiJob(projectId, AgentRole.PRE_ANALYSIS,
+                started.scan().dto().scanId(), true, operatorId, Instant.now(clock).toString());
+        aiJobOrchestrator.submit(job, operatorId);
+        idempotentAuditRuns.put(replayKey,
+                new AuditRunReplay(payload, started.scan().dto().scanId(), job.aiJobId()));
+        sendJson(exchange, 202, auditRunMap(started.scan().dto(), job));
+    }
+
+    private static Map<String, Object> auditRunMap(
+            ApiDtos.ScanDto scan,
+            com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.AiJobData job) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", 1);
+        result.put("auditRunId", "audit-" + scan.scanId().substring("scan-".length()));
+        result.put("projectId", scan.projectId());
+        result.put("artifactDigest", scan.artifactDigest());
+        result.put("scanId", scan.scanId());
+        result.put("status", "COMPLETED".equals(job.status())
+                ? "PRE_ANALYSIS_COMPLETED"
+                : "BLOCKED".equals(job.status()) ? "PRE_ANALYSIS_BLOCKED" : "PRE_ANALYSIS_QUEUED");
+        result.put("scan", scanMap(scan));
+        result.put("preAnalysisJob", aiJobMap(job));
+        return result;
+    }
+
     private synchronized void createScan(HttpExchange exchange, String projectId) throws IOException {
+        Map<String, Object> body = readObject(exchange);
+        ScanStart started = createOrReplayScan(projectId, body, requestIdempotencyKey(exchange),
+                actor(exchange).operatorId());
+        sendJson(exchange, started.replayed() ? 200 : 202, scanMap(started.scan().dto()));
+    }
+
+    private ScanStart createOrReplayScan(String projectId, Map<String, Object> body,
+                                         String idempotencyHeader, String operatorId) throws IOException {
         ControlPlaneStore.ProjectRecord project = store.requireProject(projectId);
-        String idempotencyHeader = requestIdempotencyKey(exchange);
         ensureIdempotencyCapacity(idempotentScans,
                 idempotencyHeader == null ? null : projectId + ":" + idempotencyHeader);
         // Parse and validate the consent flag before serving an idempotent
         // replay.  Reusing a key must not turn an omitted authorization field
         // into an implicit permission to analyze an artifact.
-        Map<String, Object> body = readObject(exchange);
         if (body.containsKey("authorized") && !requiredBoolean(body, "authorized")) {
             throw new ApiException(403, "AUTHORIZATION_REQUIRED", "scan authorization was denied");
         }
@@ -971,8 +1050,7 @@ public final class ControlPlaneServer implements AutoCloseable {
                 }
                 ControlPlaneStore.ScanRecord existing = store.scan(existingId);
                 if (existing != null) {
-                    sendJson(exchange, 200, scanMap(existing.dto()));
-                    return;
+                    return new ScanStart(existing, true);
                 }
             }
         }
@@ -1013,8 +1091,9 @@ public final class ControlPlaneServer implements AutoCloseable {
                     "status", "STOPPED", "reason", "STATIC_ANALYSIS_FAILED"));
             throw new ApiException(422, "ANALYSIS_FAILED", "static metadata analysis could not complete");
         }
-        store.saveScan(new ControlPlaneStore.ScanRecord(build.scan(), build.evidence(), build.findings(), build.chains()),
-                actor(exchange).operatorId());
+        ControlPlaneStore.ScanRecord scanRecord =
+                new ControlPlaneStore.ScanRecord(build.scan(), build.evidence(), build.findings(), build.chains());
+        store.saveScan(scanRecord, operatorId);
         if (idempotencyHeader != null) {
             idempotentScans.putIfAbsent(projectId + ":" + idempotencyHeader, scanId);
         }
@@ -1026,7 +1105,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         publishEvent(scanId, context, "ScanCompleted", "completed", Map.of(
                 "status", "COMPLETED", "verificationStatus", ApiDtos.STATIC_INFERRED,
                 "dependencyMode", ApiDtos.MOCK, "evidenceRefs", build.scan().evidenceRefs()));
-        sendJson(exchange, 202, scanMap(build.scan()));
+        return new ScanStart(scanRecord, false);
     }
 
     private void sendScan(HttpExchange exchange, String scanId) throws IOException {
@@ -2075,7 +2154,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         return value;
     }
 
-    private static void ensureIdempotencyCapacity(Map<String, String> keys, String key) {
+    private static void ensureIdempotencyCapacity(Map<String, ?> keys, String key) {
         if (key != null && !keys.containsKey(key) && keys.size() >= MAX_IDEMPOTENCY_KEYS) {
             throw new ApiException(429, "IDEMPOTENCY_LIMIT", "idempotency key store is full");
         }
@@ -2191,6 +2270,8 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private record ScanBuild(ApiDtos.ScanDto scan, Map<String, ApiDtos.EvidenceDto> evidence,
                              List<ApiDtos.FindingDto> findings, List<ApiDtos.AttackChainDto> chains) { }
+    private record ScanStart(ControlPlaneStore.ScanRecord scan, boolean replayed) { }
+    private record AuditRunReplay(String payload, String scanId, String preAnalysisJobId) { }
     private record DynamicTaskPayload(String scanId, String artifactDigest, String targetEntryId) { }
     private record DynamicTaskReplay(DynamicTaskPayload payload, TaskSnapshot snapshot) { }
 
