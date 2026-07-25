@@ -1227,6 +1227,14 @@ export class HttpSentinelApi implements SentinelApi {
       if ([404, 405, 501, 502, 503, 504].includes(response.status)) throw new ApiUnavailableError(operation, response.status)
       const requestSuffix = detail.requestId ? `（请求 ${detail.requestId}）` : ''
       const codeSuffix = detail.code ? ` [${detail.code}]` : ''
+      if (detail.code === 'AUTHORIZATION_REQUIRED') {
+        throw new ApiRequestError(
+          `本地授权令牌缺失或已失效${codeSuffix}${requestSuffix}。请用 Start-Veyrion.ps1 同时重启控制面与界面（不要只开前端）；启动器会把令牌写入 frontend/.env.local。`,
+          response.status,
+          detail.code,
+          detail.requestId
+        )
+      }
       throw new ApiRequestError(detail.message ? `${detail.message}${codeSuffix}${requestSuffix}` : `${operation} failed: ${response.status}`, response.status, detail.code, detail.requestId)
     }
     if (response.status === 204) return {}

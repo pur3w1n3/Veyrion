@@ -377,3 +377,9 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 
 - 默认进入「工作区」主页面，用小格子展示全部工作区；点击格子切换当前上下文并可直接进入审计执行；提供新建与删除按钮，删除仍走后端权限校验。
 - 侧栏顺序固定为工作区、审计执行、审计过程、审计结果、模型服务、全局设置；侧栏芯片仅显示当前工作区并返回首页，不再用下拉菜单管理。
+
+## 36. 本地 GUI 授权令牌同步（2026-07-25）
+
+- 写操作需要浏览器携带与控制面一致的本地授权令牌。若只重启前端、或旧 Vite 进程仍持有过期令牌，会出现 `AUTHORIZATION_REQUIRED`（“a local authorization token is required”）。
+- `DevLauncherMain` 将令牌持久化到 `samples/.veyrion/mutation.token`（跨重启复用），并同步写入 `frontend/.env.local`；同时仍通过进程环境变量注入 Vite。该文件已被 gitignore，仅用于本机 loopback 开发。
+- 前端对 `AUTHORIZATION_REQUIRED` 给出可操作提示：必须用 `Start-Veyrion.ps1` 同时重启控制面与界面。
