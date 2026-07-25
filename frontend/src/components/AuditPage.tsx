@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { api, type AiJobDto, type ArtifactDto, type DashboardSnapshot, type DynamicTaskDto, type OutputLanguage, type RoleAssignmentDto, type ScanDto } from '../api'
 import { confirmAiAuthorization } from '../aiAuthorization'
 import { dependencyModeLabel, jobStatusLabel, roleLabel, timelineStateLabel } from '../labels'
 import { AI_ROLES } from '../labels'
 import { ArtifactImportPanel } from './ArtifactImportPanel'
-import { AuditDialogue } from './AuditDialogue'
 import { errorMessage, Notice, PageHeader, StatusPill } from './Common'
 
 export function AuditPage({ projectId, snapshot, onRefresh, language }: { projectId: string; snapshot: DashboardSnapshot | null; onRefresh: () => Promise<void>; language: OutputLanguage }) {
@@ -151,30 +150,13 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
     ['报告生成', jobState(reportJob), jobDetail(reportJob, '研判完成后自动汇总')]
   ] as const
 
-  const activityLines = useMemo(() => {
-    const lines: string[] = []
-    if (!activeScanId || activeScanId === 'unscanned') return ['尚未启动审计']
-    lines.push(`当前扫描 ${activeScanId}`)
-    for (const role of AI_ROLES) {
-      const job = roleJob(role)
-      if (!job) continue
-      lines.push(`${roleLabel(role)}：${jobStatusLabel(job.status)}${job.errorCode ? `（${job.errorCode}）` : ''}`)
-    }
-    const active = scanJobs.find((job) => job.status === 'QUEUED' || job.status === 'RUNNING')
-    if (active) lines.push(`正在执行：${roleLabel(active.role)}`)
-    else if (reportJob?.status === 'COMPLETED') lines.push('流水线已完成，可在审计结果查看报告')
-    else if (scanJobs.some((job) => job.status === 'FAILED' || job.status === 'BLOCKED')) lines.push('流水线已停止：存在失败或阻断的模型任务')
-    else if (preAnalysisJob) lines.push('流水线推进中，无需人工逐步确认')
-    return lines
-  }, [activeScanId, scanJobs, preAnalysisJob, reportJob, jobs, dynamicTask])
-
   return <section>
     <PageHeader eyebrow="审计编排" title="审计执行">
-      导入制品并开始审计后，系统按流水线自动推进全部阶段；下方以对话形式展示提示词、思考与输出，最底部显示实时动向。
+      导入制品并开始审计后，系统按流水线自动推进全部阶段。提示词、思考与输出请到左侧「审计过程」查看。
     </PageHeader>
     {error && <Notice kind="error">{error}。请求未回退到演示数据或伪造任务。</Notice>}
     {message && <Notice kind="success">{message}</Notice>}
-    {!projectId && <Notice kind="info">请点击左上角“当前工作区”创建或选择授权工作区。</Notice>}
+    {!projectId && <Notice kind="info">请先在「工作区」首页选择或创建授权工作区。</Notice>}
     <div className="audit-grid">
       <ArtifactImportPanel projectId={projectId} artifacts={artifacts} onArtifactsChanged={async () => {
         setLoadingArtifacts(true)
@@ -198,15 +180,8 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
       <article className="panel audit-timeline-panel">
         <div className="panel-head"><div><p className="eyebrow">执行过程</p><h2>阶段进度</h2></div>{(scan?.verificationStatus ?? snapshot?.verificationStatus) && <StatusPill status={(scan?.verificationStatus ?? snapshot?.verificationStatus)!} />}</div>
         <ol className="workflow-timeline">{steps.map(([title, state, detail], index) => <li className={`timeline-${state}`} key={title}><span>{index + 1}</span><div><strong>{title}</strong><small>{detail}</small></div><b>{timelineStateLabel(state)}</b></li>)}</ol>
-        <p className="form-help">无需逐步点击批准。任一步失败会停止后续自动推进；修复角色绑定或环境后，请重新开始一次审计。</p>
+        <p className="form-help">无需逐步点击批准。任一步失败会停止后续自动推进；模型对话细节请在「审计过程」页查看。</p>
       </article>
     </div>
-    <AuditDialogue
-      projectId={projectId}
-      scanId={activeScanId === 'unscanned' ? undefined : activeScanId}
-      jobs={jobs}
-      dynamicTask={dynamicTask}
-      activityLines={activityLines}
-    />
   </section>
 }

@@ -14,7 +14,7 @@ export function SettingsPage({
 }) {
   return <section>
     <PageHeader eyebrow="全局设置" title="全局设置">
-      管理本地界面与固定安全默认值；模型服务在左侧独立入口，审计对话过程在「审计执行」页内。
+      管理本地界面与固定安全默认值；工作区、审计执行、审计过程与模型服务均在左侧导航。
     </PageHeader>
     <article className="panel">
       <div className="panel-head"><div><p className="eyebrow">通用</p><h2>通用</h2></div></div>
