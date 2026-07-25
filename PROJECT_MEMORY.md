@@ -284,6 +284,7 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 完整用户路径回归扩展为同一隔离 Control Plane 内执行：真实后端管理 JAR 静态扫描、`TRUSTED_DOCKER` 断网运行、Agent HTTP trace、dashboard 投影、四角色绑定、OpenAI Chat 两轮工具调用，以及 Provider/工具/推断事件读取。回归使用合约一致的受控 Chat transport，不声明用户实际 Provider 网关兼容性；2026-07-25 本机真实 Docker 与全部四角色均通过。
 - 修复首次启动项目选择：GUI 不再假定不存在的 `default` 项目；项目列表返回后保留仍存在的选择，否则自动选择首个项目或明确保持未选择，避免启动即请求 `/projects/default/dashboard`。
 - “模型服务”中的“保存分配并创建 AI Job”现在必须取得并显式提交当前 dashboard `scanId`；没有静态扫描时按钮禁用且显示说明，不再依赖后端 latest-scan 回退或创建 `SCAN_REQUIRED` 任务。
+- Windows 启动器会在启动 Sandbox Pack 或执行 Maven 前预占测试 backend/frontend loopback 端口；旧实例占用时返回明确端口错误，避免最后以 `BindException` 失败。Sandbox Pack 的 Compose 启动使用 `--remove-orphans`，自动清理已退役的 OpenSandbox service 容器。
 
 ## 27. 受控 Fixture 样例退役（2026-07-25）
 

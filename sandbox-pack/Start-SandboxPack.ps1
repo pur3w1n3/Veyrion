@@ -33,7 +33,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
-Invoke-Docker @('compose', '-f', $composeFile, 'up', '-d', 'registry')
+Invoke-Docker @('compose', '-f', $composeFile, 'up', '-d', '--remove-orphans', 'registry')
 
 if (-not $SkipRuntimeBuild) {
     Invoke-Docker @(

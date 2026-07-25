@@ -50,6 +50,31 @@ if ($BackendPort -eq $FrontendPort) {
     throw 'BackendPort and FrontendPort must be different.'
 }
 
+function Assert-LoopbackPortAvailable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Port,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+    $listener = [System.Net.Sockets.TcpListener]::new(
+        [System.Net.IPAddress]::Loopback, $Port)
+    try {
+        $listener.Start()
+    }
+    catch {
+        throw "$Name port $Port is already in use. Stop the old Veyrion process or choose another port."
+    }
+    finally {
+        $listener.Stop()
+    }
+}
+
+# Fail before starting Docker or rebuilding the application when an old
+# development instance is still listening.
+Assert-LoopbackPortAvailable -Port $BackendPort -Name 'Backend'
+Assert-LoopbackPortAvailable -Port $FrontendPort -Name 'Frontend'
+
 $workspace = (Resolve-Path $PSScriptRoot).Path
 $artifactPath = [System.IO.Path]::GetFullPath($Artifacts)
 $workspacePrefix = $workspace.TrimEnd('\') + '\'
