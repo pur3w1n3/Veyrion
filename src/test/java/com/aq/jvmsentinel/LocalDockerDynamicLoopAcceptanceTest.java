@@ -111,7 +111,7 @@ public final class LocalDockerDynamicLoopAcceptanceTest {
                             "baseUrl", "http://127.0.0.1:3000", "model", "e2e-model",
                             "apiKey", "e2e-provider-secret", "enabled", true), token), "providerId");
             for (String role : List.of("PRE_ANALYSIS", "PATH_EXPLORATION",
-                    "VULNERABILITY_TRIAGE", "REPORT_GENERATION")) {
+                    "DYNAMIC_VERIFICATION", "VULNERABILITY_TRIAGE", "REPORT_GENERATION")) {
                 patch(http, URI.create(server.baseUri() + "/projects/" + projectId
                                 + "/role-assignments/" + role),
                         Map.of("providerId", providerId, "model", "e2e-model"), token);

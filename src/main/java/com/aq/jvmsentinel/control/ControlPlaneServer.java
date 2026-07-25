@@ -4,6 +4,7 @@ import com.aq.jvmsentinel.analysis.PreAnalysisResult;
 import com.aq.jvmsentinel.analysis.PreAnalysisInput;
 import com.aq.jvmsentinel.analysis.ArtifactMetadataReader;
 import com.aq.jvmsentinel.ai.AiJobOrchestrator;
+import com.aq.jvmsentinel.ai.AuditPipelineCoordinator;
 import com.aq.jvmsentinel.artifact.ArtifactRegistry;
 import com.aq.jvmsentinel.artifact.ArtifactUploadService;
 import com.aq.jvmsentinel.artifact.ArtifactValidationException;
@@ -41,6 +42,7 @@ import com.aq.jvmsentinel.worker.InMemoryTraceStore;
 import com.aq.jvmsentinel.worker.ExternalArtifactTaskExecutor;
 import com.aq.jvmsentinel.worker.NetworkPolicy;
 import com.aq.jvmsentinel.worker.ResourceBudget;
+import com.aq.jvmsentinel.worker.TaskLifecycle;
 import com.aq.jvmsentinel.worker.TaskScope;
 import com.aq.jvmsentinel.worker.TaskSnapshot;
 import com.aq.jvmsentinel.worker.TraceProjectionService;
@@ -119,6 +121,7 @@ public final class ControlPlaneServer implements AutoCloseable {
     private final WorkerControlPlaneApi workerApi;
     private final ProviderInventoryService providerInventoryService;
     private final AiJobOrchestrator aiJobOrchestrator;
+    private final AuditPipelineCoordinator auditPipeline;
     private final Clock clock;
     private final Authorizer authorizer = new Authorizer();
     private volatile HttpServer server;
@@ -232,6 +235,41 @@ public final class ControlPlaneServer implements AutoCloseable {
         this.aiJobOrchestrator = new AiJobOrchestrator(this.store,
                 Objects.requireNonNull(chatTransport, "chatTransport"), this.clock,
                 this.traceProjectionService::evidenceForScan);
+        this.auditPipeline = new AuditPipelineCoordinator(new AuditPipelineCoordinator.Actions() {
+            @Override
+            public boolean hasRoleJob(String projectId, String scanId, AgentRole role) {
+                return store.aiJobs(projectId).stream()
+                        .anyMatch(AuditPipelineCoordinator.busyOrDoneFor(scanId, role));
+            }
+
+            @Override
+            public boolean hasBusyDynamicTask(String scanId) {
+                return workerApi.snapshots(store.requireScan(scanId).dto().projectId(), scanId).stream()
+                        .anyMatch(snapshot -> snapshot.lifecycle() == TaskLifecycle.QUEUED
+                                || snapshot.lifecycle() == TaskLifecycle.LEASED
+                                || snapshot.lifecycle() == TaskLifecycle.RUNNING
+                                || snapshot.lifecycle() == TaskLifecycle.PAUSED
+                                || snapshot.lifecycle() == TaskLifecycle.COMPLETED);
+            }
+
+            @Override
+            public void enqueueRole(String projectId, String scanId, AgentRole role,
+                                    AiOutputLanguage language, String actorId) {
+                var job = store.createAiJob(projectId, role, scanId, language, true, actorId,
+                        Instant.now(clock).toString());
+                aiJobOrchestrator.submit(job, actorId);
+                store.auditChange(projectId, actorId, "audit-pipeline.enqueue-role", "ai-job",
+                        job.aiJobId(), "{\"role\":\"" + role.name() + "\",\"scanId\":\"" + scanId + "\"}",
+                        Instant.now(clock).toString());
+            }
+
+            @Override
+            public void enqueueDynamic(String scanId, String actorId) {
+                enqueueDynamicForPipeline(scanId, actorId);
+            }
+        });
+        this.aiJobOrchestrator.setTerminalListener(auditPipeline::onAiJobFinished);
+        this.workerApi.setTerminalListener(auditPipeline::onDynamicTaskFinished);
     }
 
     /** Starts listening; calling start more than once is idempotent. */
@@ -1011,6 +1049,8 @@ public final class ControlPlaneServer implements AutoCloseable {
         var job = store.createAiJob(projectId, AgentRole.PRE_ANALYSIS,
                 started.scan().dto().scanId(), outputLanguage, true, operatorId,
                 Instant.now(clock).toString());
+        auditPipeline.arm(new AuditPipelineCoordinator.Arm(
+                started.scan().dto().scanId(), projectId, operatorId, outputLanguage));
         aiJobOrchestrator.submit(job, operatorId);
         idempotentAuditRuns.put(replayKey,
                 new AuditRunReplay(payload, started.scan().dto().scanId(), job.aiJobId()));
@@ -1140,6 +1180,27 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (!body.containsKey("authorized") || !requiredBoolean(body, "authorized")) {
             throw new ApiException(403, "AUTHORIZATION_REQUIRED", "dynamic task authorization is required");
         }
+        String operatorId = actor(exchange).operatorId();
+        DynamicTaskReplay existing = idempotentDynamicTasks.get(replayKey);
+        TaskSnapshot snapshot;
+        if (existing != null) {
+            snapshot = existing.snapshot();
+            sendJson(exchange, 200, dynamicTaskMap(snapshot));
+            return;
+        }
+        snapshot = enqueueDynamicForPipeline(scanId, operatorId);
+        DynamicTaskPayload payload = new DynamicTaskPayload(
+                scanId, snapshot.spec().artifactDigest(), snapshot.spec().targetEntryId());
+        DynamicTaskReplay conflict = idempotentDynamicTasks.putIfAbsent(
+                replayKey, new DynamicTaskReplay(payload, snapshot));
+        if (conflict != null) {
+            sendJson(exchange, 200, dynamicTaskMap(conflict.snapshot()));
+            return;
+        }
+        sendJson(exchange, 202, dynamicTaskMap(snapshot));
+    }
+
+    private synchronized TaskSnapshot enqueueDynamicForPipeline(String scanId, String actorId) {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         ControlPlaneStore.ProjectRecord project = store.requireProject(scan.dto().projectId());
         ArtifactDescriptor artifact = store.artifact(project, scan.dto().artifactDigest());
@@ -1154,18 +1215,6 @@ public final class ControlPlaneServer implements AutoCloseable {
             throw new ApiException(409, "TARGET_ENTRY_NOT_IN_SCAN",
                     "the scan has no entrypoint to observe");
         }
-
-        DynamicTaskPayload payload = new DynamicTaskPayload(scanId, scan.dto().artifactDigest(), targetEntryId);
-        DynamicTaskReplay replay = idempotentDynamicTasks.get(replayKey);
-        if (replay != null) {
-            if (!replay.payload().equals(payload)) {
-                throw new ApiException(409, "IDEMPOTENCY_CONFLICT",
-                        "Idempotency-Key was already used with a different payload");
-            }
-            sendJson(exchange, 200, dynamicTaskMap(replay.snapshot()));
-            return;
-        }
-
         String taskId = "task-dynamic-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         WorkerTaskSpec spec = new WorkerTaskSpec(
                 WorkerControlPlaneApi.CONTRACT_VERSION,
@@ -1180,13 +1229,12 @@ public final class ControlPlaneServer implements AutoCloseable {
                 NetworkPolicy.denyAll(),
                 WorkerCapability.TRUSTED_DOCKER);
         TaskSnapshot snapshot = workerApi.enqueueFromControlPlane(spec,
-                "public-dynamic-" + UUID.randomUUID().toString().replace("-", ""));
-        store.auditChange(scan.dto().projectId(), actor(exchange).operatorId(), "dynamic-task.enqueue",
+                "pipeline-dynamic-" + UUID.randomUUID().toString().replace("-", ""));
+        store.auditChange(scan.dto().projectId(), actorId, "dynamic-task.enqueue",
                 "worker-task", taskId,
-                "{\"capability\":\"TRUSTED_DOCKER\",\"networkMode\":\"DENY\"}",
+                "{\"capability\":\"TRUSTED_DOCKER\",\"networkMode\":\"DENY\",\"source\":\"PIPELINE\"}",
                 Instant.now(clock).toString());
-        idempotentDynamicTasks.put(replayKey, new DynamicTaskReplay(payload, snapshot));
-        sendJson(exchange, 202, dynamicTaskMap(snapshot));
+        return snapshot;
     }
 
     private void listDynamicTasks(HttpExchange exchange, String scanId) throws IOException {
@@ -1593,8 +1641,7 @@ public final class ControlPlaneServer implements AutoCloseable {
             // particular, an unbound sink has no demonstrated path from an entrypoint.
             String severity = linkedEntry == null ? "info"
                     : staticSinkSeverity(sink.category(), sink.confidence());
-            String title = "Potential " + sink.category().toLowerCase(Locale.ROOT)
-                    + " signal (static inference)";
+            String title = "静态推断的" + sinkCategoryLabel(sink.category()) + "信号";
             List<String> refs = sink.evidenceRefs();
             findings.add(new ApiDtos.FindingDto(ApiDtos.SCHEMA_VERSION, projectId, descriptor.sha256(), scanId,
                     "finding-" + scanId + "-" + (++index), title, severity, ApiDtos.STATIC_INFERRED,
@@ -1602,6 +1649,22 @@ public final class ControlPlaneServer implements AutoCloseable {
                     refs.size(), sink.confidence(), ApiDtos.MOCK));
         }
         return findings;
+    }
+
+    private static String sinkCategoryLabel(String category) {
+        if (category == null || category.isBlank()) return "敏感调用";
+        return switch (category.toUpperCase(Locale.ROOT)) {
+            case "SSRF" -> "服务端请求伪造";
+            case "DESERIALIZATION" -> "反序列化";
+            case "COMMAND_EXECUTION", "RCE", "COMMAND" -> "命令执行";
+            case "SQL_INJECTION", "SQLi", "SQL" -> "SQL 注入";
+            case "JNDI" -> "JNDI 注入";
+            case "XXE" -> "XML 外部实体";
+            case "PATH_TRAVERSAL", "FILE" -> "文件路径穿越";
+            case "EXPRESSION", "SSTI", "TEMPLATE" -> "表达式/模板注入";
+            case "REFLECTION", "CLASSLOADER" -> "反射/类加载";
+            default -> category;
+        };
     }
 
     private List<ApiDtos.PathDto> buildPaths(String projectId, ArtifactDescriptor descriptor, String scanId,
@@ -1613,11 +1676,11 @@ public final class ControlPlaneServer implements AutoCloseable {
             List<ApiDtos.PathStepDto> steps = new ArrayList<>();
             LinkedHashSet<String> pathEvidence = new LinkedHashSet<>(entry.evidenceRefs());
             steps.add(new ApiDtos.PathStepDto(entry.method() + " " + entry.route(),
-                    "entrypoint=" + entry.declaringClass() + " · static metadata", "entry", "done", entry.evidenceRefs()));
+                    "入口类=" + entry.declaringClass() + " · 静态元数据", "entry", "done", entry.evidenceRefs()));
             for (ApiDtos.SinkDto sink : sinks) {
                 if (!entryBindingKey(entry, evidence).equals(sinkBindingKey(sink, evidence))) continue;
-                steps.add(new ApiDtos.PathStepDto(sink.symbol(), "category=" + sink.category()
-                        + " · same classfile handler method; taint and runtime execution not proven",
+                steps.add(new ApiDtos.PathStepDto(sink.symbol(), "类别=" + sinkCategoryLabel(sink.category())
+                        + " · 同一处理函数内的字节码调用候选；污点与运行时执行尚未证明",
                         "sink", "blocked", sink.evidenceRefs()));
                 pathEvidence.addAll(sink.evidenceRefs());
             }
@@ -1647,7 +1710,7 @@ public final class ControlPlaneServer implements AutoCloseable {
                     .mapToDouble(ApiDtos.FindingDto::confidence).min().orElse(0);
             result.add(new ApiDtos.AttackChainDto(ApiDtos.SCHEMA_VERSION, projectId, artifactDigest, scanId,
                     "chain-" + scanId + "-" + (++index),
-                    "Potential combined sink candidates at one static entry class (flow not verified)",
+                    "同一静态入口处理类上的多个敏感调用候选（数据流尚未验证）",
                     confidence, ApiDtos.STATIC_INFERRED, findingRefs, List.copyOf(groupEvidence)));
         }
         return List.copyOf(result);

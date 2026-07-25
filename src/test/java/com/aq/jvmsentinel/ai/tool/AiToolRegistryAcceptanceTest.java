@@ -64,6 +64,9 @@ public final class AiToolRegistryAcceptanceTest {
         check(names(registry, AgentRole.PATH_EXPLORATION)
                         .equals(Set.of("facts_search", "evidence_get", "plan_propose")),
                 "path-exploration allowlist");
+        check(names(registry, AgentRole.DYNAMIC_VERIFICATION)
+                        .equals(Set.of("facts_search", "evidence_get", "plan_propose")),
+                "dynamic-verification allowlist");
         check(names(registry, AgentRole.VULNERABILITY_TRIAGE)
                         .equals(Set.of("facts_search", "evidence_get", "plan_propose")),
                 "vulnerability-triage allowlist");

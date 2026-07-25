@@ -107,7 +107,7 @@ public final class BytecodeSinkAcceptanceTest {
                     uri(server, "/attack-chains?projectId=" + projectId), "GET", "", token));
             check(array(chains, "attackChains").stream().allMatch(value ->
                             value instanceof Map<?, ?> item
-                                    && String.valueOf(item.get("title")).contains("flow not verified")),
+                                    && String.valueOf(item.get("title")).contains("尚未验证")),
                     "combined static candidates never claim a verified cross-sink flow");
         }
     }

@@ -44,6 +44,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 
 /**
  * Versioned, in-memory Worker contract endpoint. This component coordinates task state and
@@ -69,6 +70,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
     private final Map<TaskScope, Boolean> scopes = new ConcurrentHashMap<>();
     private final Map<TaskScope, String> failureDiagnostics = new ConcurrentHashMap<>();
     private final Map<String, Boolean> publishedEvents = new ConcurrentHashMap<>();
+    private volatile Consumer<TaskSnapshot> terminalListener = snapshot -> { };
 
     WorkerControlPlaneApi(String token, Clock clock, ControlPlaneStore store, SseHub sseHub) {
         this(token, clock, store, sseHub, new InMemoryTraceStore(clock));
@@ -95,6 +97,10 @@ final class WorkerControlPlaneApi implements HttpHandler {
         this.traceStore = Objects.requireNonNull(traceStore, "traceStore");
         this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
         this.projectionService = Objects.requireNonNull(projectionService, "projectionService");
+    }
+
+    void setTerminalListener(Consumer<TaskSnapshot> listener) {
+        this.terminalListener = listener == null ? snapshot -> { } : listener;
     }
 
     @Override
@@ -249,7 +255,14 @@ final class WorkerControlPlaneApi implements HttpHandler {
                 // Execution completion remains authoritative; an invalid or over-budget trace is omitted.
             }
         }
-        if (isTerminal(snapshot.lifecycle())) publishTerminal(snapshot, key);
+        if (isTerminal(snapshot.lifecycle())) {
+            publishTerminal(snapshot, key);
+            try {
+                terminalListener.accept(snapshot);
+            } catch (RuntimeException ignored) {
+                // Pipeline faults must not rewrite worker terminal state.
+            }
+        }
         sendJson(exchange, 200, snapshotMap(snapshot));
     }
 

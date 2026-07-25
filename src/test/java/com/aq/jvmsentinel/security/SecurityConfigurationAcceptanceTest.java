@@ -115,8 +115,9 @@ public final class SecurityConfigurationAcceptanceTest {
         }
         check(EnumSet.allOf(AgentRole.class).equals(EnumSet.of(
                 AgentRole.PRE_ANALYSIS, AgentRole.PATH_EXPLORATION,
-                AgentRole.VULNERABILITY_TRIAGE, AgentRole.REPORT_GENERATION)),
-                "agent roles are the fixed four-role set");
+                AgentRole.DYNAMIC_VERIFICATION, AgentRole.VULNERABILITY_TRIAGE,
+                AgentRole.REPORT_GENERATION)),
+                "agent roles are the fixed five-role set");
     }
 
     private static void rbacMatrixIsDefaultDeny() {
