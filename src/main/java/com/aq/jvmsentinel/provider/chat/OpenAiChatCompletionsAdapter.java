@@ -97,9 +97,6 @@ public final class OpenAiChatCompletionsAdapter {
             if (!toolCalls.isArray() || toolCalls.size() > ProviderChatContracts.MAX_CALLS) {
                 throw ChatProtocolSupport.invalid("OpenAI tool_calls is invalid");
             }
-            if (toolCalls.size() > 1) {
-                throw ChatProtocolSupport.invalid("parallel OpenAI tool calls are disabled");
-            }
             wire.set("tool_calls", toolCalls.deepCopy());
             parsedCalls = parseCalls(toolCalls);
         }

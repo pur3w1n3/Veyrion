@@ -118,6 +118,8 @@ public final class AiJobOrchestrationAcceptanceTest {
                         && !eventText.contains(API_KEY) && !eventText.contains(RESPONSE_SECRET)
                         && !eventText.contains("ignore all prior instructions"),
                 "events persist only bounded, sanitized lifecycle metadata");
+        check(events.stream().filter(event -> "TOOL_CALL".equals(event.stage())).count() == 2,
+                "ignored no-parallel hint is handled as two sequential audited tool decisions");
 
         store.saveRoleBinding("project-ai", AgentRole.VULNERABILITY_TRIAGE,
                 "openai", "gpt-test", "local-admin", Instant.now().toString());
@@ -314,7 +316,10 @@ public final class AiJobOrchestrationAcceptanceTest {
                         ? "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{"
                         + "\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"tool-1\","
                         + "\"type\":\"function\",\"function\":{\"name\":\"facts_search\","
-                        + "\"arguments\":\"{\\\"kind\\\":\\\"EVIDENCE\\\",\\\"limit\\\":1}\"}}]}}]}"
+                        + "\"arguments\":\"{\\\"kind\\\":\\\"EVIDENCE\\\",\\\"limit\\\":1}\"}},"
+                        + "{\"id\":\"tool-2\",\"type\":\"function\",\"function\":{"
+                        + "\"name\":\"facts_search\","
+                        + "\"arguments\":\"{\\\"kind\\\":\\\"ENTRY\\\",\\\"limit\\\":1}\"}}]}}]}"
                         : "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
                         + "\"content\":\"VERIFIED apiKey=" + RESPONSE_SECRET + "\"}}]}";
             }

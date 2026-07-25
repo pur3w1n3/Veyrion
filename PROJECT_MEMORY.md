@@ -285,6 +285,7 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 修复首次启动项目选择：GUI 不再假定不存在的 `default` 项目；项目列表返回后保留仍存在的选择，否则自动选择首个项目或明确保持未选择，避免启动即请求 `/projects/default/dashboard`。
 - “模型服务”中的“保存分配并创建 AI Job”现在必须取得并显式提交当前 dashboard `scanId`；没有静态扫描时按钮禁用且显示说明，不再依赖后端 latest-scan 回退或创建 `SCAN_REQUIRED` 任务。
 - Windows 启动器会在启动 Sandbox Pack 或执行 Maven 前预占测试 backend/frontend loopback 端口；旧实例占用时返回明确端口错误，避免最后以 `BindException` 失败。Sandbox Pack 的 Compose 启动使用 `--remove-orphans`，自动清理已退役的 OpenSandbox service 容器。
+- 部分 OpenAI-compatible 网关会忽略请求中的 `parallel_tool_calls=false`。适配器接受协议上限内的多个调用，但 Orchestrator 只按返回顺序执行，仍受固定角色 allowlist、总调用预算、参数/结果字节和截止时间限制；每个调用都产生独立审计事件，超预算调用由 Registry 返回 `NOT_EXECUTED`，不并行执行也不扩大模型权限。
 
 ## 27. 受控 Fixture 样例退役（2026-07-25）
 

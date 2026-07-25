@@ -28,7 +28,7 @@ public final class ProviderToolProtocolAcceptanceTest {
         requestsFixToolSafetyControls();
         openAiToolRoundTripAndServerErrors();
         anthropicToolRoundTripAndOrdering();
-        parallelCallsAndDuplicateIdsAreRejected();
+        parallelOpenAiCallsAreBoundedAndDuplicateIdsAreRejected();
         stopReasonsNeverExposePartialCalls();
         malformedAndUnboundedContentFailsClosed();
         modelAuthorityFieldsReachRegistryAndAreDenied();
@@ -124,15 +124,31 @@ public final class ProviderToolProtocolAcceptanceTest {
                 "unresolved Anthropic tool_use cannot be continued without tool_result");
     }
 
-    private static void parallelCallsAndDuplicateIdsAreRejected() {
+    private static void parallelOpenAiCallsAreBoundedAndDuplicateIdsAreRejected() {
         String openAiParallel = """
                 {"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,
                 "tool_calls":[
                   {"id":"a","type":"function","function":{"name":"facts_search","arguments":"{\\"kind\\":\\"METHOD\\"}"}},
                   {"id":"b","type":"function","function":{"name":"facts_search","arguments":"{\\"kind\\":\\"FIELD\\"}"}}
                 ]}}]}""";
-        expect(IllegalArgumentException.class, () -> OPENAI.parseResponse(bytes(openAiParallel)),
-                "OpenAI parallel calls are rejected even if provider ignores request flag");
+        ProviderChatContracts.ParsedResponse parallel = OPENAI.parseResponse(bytes(openAiParallel));
+        check(parallel.executableCalls().size() == 2,
+                "OpenAI-compatible providers may ignore the no-parallel hint");
+        ProviderChatContracts.ToolResultsTurn parallelResults = OPENAI.toolResults(
+                parallel.assistant(), parallel.executableCalls().stream()
+                        .map(call -> error(call, ToolStatus.NOT_EXECUTED, "SERVER_BUDGET"))
+                        .toList());
+        check(parallelResults.results().size() == 2,
+                "every bounded provider call receives an ordered server-owned result");
+
+        String openAiDuplicate = """
+                {"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,
+                "tool_calls":[
+                  {"id":"same","type":"function","function":{"name":"facts_search","arguments":"{\\"kind\\":\\"METHOD\\"}"}},
+                  {"id":"same","type":"function","function":{"name":"facts_search","arguments":"{\\"kind\\":\\"FIELD\\"}"}}
+                ]}}]}""";
+        expect(IllegalArgumentException.class, () -> OPENAI.parseResponse(bytes(openAiDuplicate)),
+                "duplicate OpenAI call ids remain invalid");
 
         String anthropicParallel = """
                 {"role":"assistant","stop_reason":"tool_use","content":[

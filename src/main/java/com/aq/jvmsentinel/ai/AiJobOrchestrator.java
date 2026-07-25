@@ -244,23 +244,26 @@ public final class AiJobOrchestrator implements AutoCloseable {
                             "toolCallCount", parsed.executableCalls().size())),
                     null, null, null, null, null);
             if (parsed.stopReason() == ProviderChatContracts.StopReason.TOOL_USE) {
-                var call = parsed.executableCalls().get(0);
-                ToolResult result = registry.execute(call, context);
-                Map<String, Object> summary = new LinkedHashMap<>();
-                summary.put("tool", call.toolName());
-                summary.put("status", result.status().name());
-                if (result.errorCode() != null) summary.put("errorCode", result.errorCode());
-                summary.put("truncated", result.truncated());
-                toolSummary.add(summary);
-                appendEvent(initial, "TOOL_CALL", "RUNNING", null, null,
-                        safeToolName(call.toolName()), argumentSummary(call.arguments()),
-                        result.status().name(), null, null);
-                store.auditChange(initial.projectId(), actorId, "ai-job.tool-decision", "ai-job",
-                        initial.aiJobId(), encode(summary), clock.instant().toString());
+                List<ToolResult> results = new ArrayList<>();
+                for (var call : parsed.executableCalls()) {
+                    ToolResult result = registry.execute(call, context);
+                    results.add(result);
+                    Map<String, Object> summary = new LinkedHashMap<>();
+                    summary.put("tool", call.toolName());
+                    summary.put("status", result.status().name());
+                    if (result.errorCode() != null) summary.put("errorCode", result.errorCode());
+                    summary.put("truncated", result.truncated());
+                    toolSummary.add(summary);
+                    appendEvent(initial, "TOOL_CALL", "RUNNING", null, null,
+                            safeToolName(call.toolName()), argumentSummary(call.arguments()),
+                            result.status().name(), null, null);
+                    store.auditChange(initial.projectId(), actorId, "ai-job.tool-decision", "ai-job",
+                            initial.aiJobId(), encode(summary), clock.instant().toString());
+                }
                 turns.add(parsed.assistant());
                 turns.add(protocol == ProviderProtocol.OPENAI_CHAT
-                        ? openAi.toolResults(parsed.assistant(), List.of(result))
-                        : anthropic.toolResults(parsed.assistant(), List.of(result)));
+                        ? openAi.toolResults(parsed.assistant(), results)
+                        : anthropic.toolResults(parsed.assistant(), results));
                 continue;
             }
             if (parsed.stopReason() == ProviderChatContracts.StopReason.FILTERED
