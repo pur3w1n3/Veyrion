@@ -36,10 +36,13 @@ public final class AnthropicMessagesAdapter {
         }
         appendTurns(request.putArray("messages"),
                 List.copyOf(Objects.requireNonNull(turns, "turns")));
-        appendTools(request.putArray("tools"), definitions);
-        ObjectNode toolChoice = request.putObject("tool_choice");
-        toolChoice.put("type", "auto");
-        toolChoice.put("disable_parallel_tool_use", true);
+        Objects.requireNonNull(definitions, "definitions");
+        if (!definitions.isEmpty()) {
+            appendTools(request.putArray("tools"), definitions);
+            ObjectNode toolChoice = request.putObject("tool_choice");
+            toolChoice.put("type", "auto");
+            toolChoice.put("disable_parallel_tool_use", true);
+        }
         return ChatProtocolSupport.boundedRequest(request);
     }
 

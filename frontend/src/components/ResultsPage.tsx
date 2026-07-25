@@ -1,9 +1,41 @@
-import type { DashboardSnapshot } from '../api'
-import { PageHeader, StatusPill } from './Common'
+import { useEffect, useState } from 'react'
+import { api, type AiJobDto, type DashboardSnapshot } from '../api'
+import { errorMessage, Notice, PageHeader, StatusPill } from './Common'
 
-export function ResultsPage({ snapshot }: { snapshot: DashboardSnapshot | null }) {
+export function ResultsPage({ projectId, snapshot }: { projectId: string; snapshot: DashboardSnapshot | null }) {
   const findings = snapshot?.findings ?? []
   const entries = snapshot?.entries ?? []
+  const [reportJob, setReportJob] = useState<AiJobDto>()
+  const [reportSummary, setReportSummary] = useState<string>()
+  const [reportError, setReportError] = useState<string>()
+  const [reportLoading, setReportLoading] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    setReportJob(undefined)
+    setReportSummary(undefined)
+    setReportError(undefined)
+    if (!projectId || !snapshot?.scanId || snapshot.scanId === 'unscanned') return () => { active = false }
+    setReportLoading(true)
+    void api.listAiJobs(projectId).then(async (jobs) => {
+      const report = jobs
+        .filter((job) => job.scanId === snapshot.scanId && job.role === 'REPORT_GENERATION')
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
+      if (!active || !report) return
+      setReportJob(report)
+      if (report.status !== 'COMPLETED') return
+      const events = await api.listAiJobEvents(report.aiJobId)
+      if (!active) return
+      setReportSummary([...events].reverse().find((event) =>
+        event.stage === 'MODEL_INFERENCE' && event.status === 'COMPLETED')?.modelInferenceSummary)
+    }).catch((cause) => {
+      if (active) setReportError(errorMessage(cause))
+    }).finally(() => {
+      if (active) setReportLoading(false)
+    })
+    return () => { active = false }
+  }, [projectId, snapshot?.scanId])
+
   return <section>
     <PageHeader eyebrow={`RESULTS / ${snapshot?.scanId ?? 'NO SCAN'}`} title="审计结果">
       每项结论保留独立证据状态；无动态证据时不得将静态命中描述为可利用漏洞。
@@ -14,6 +46,19 @@ export function ResultsPage({ snapshot }: { snapshot: DashboardSnapshot | null }
       <article className="metric"><span>动态疑似</span><strong>{findings.filter((item) => item.status === 'DYNAMIC_SUSPECTED').length}</strong><small>需可重放验证</small></article>
       <article className="metric"><span>已验证</span><strong>{findings.filter((item) => item.status === 'VERIFIED').length}</strong><small>证据边界最高等级</small></article>
     </div>
+    <article className="panel section-gap">
+      <div className="panel-head"><div><p className="eyebrow">AI FINAL REPORT</p><h2>最终报告</h2></div><span className="inference-badge">AI INFERENCE</span></div>
+      {reportError && <Notice kind="error">{reportError}</Notice>}
+      {reportLoading && <p className="empty-state">正在加载当前扫描的报告事件…</p>}
+      {!reportLoading && reportSummary && <>
+        <div className="ai-report">{reportSummary}</div>
+        <p className="form-help">{reportJob?.aiJobId} · {reportJob?.providerId} · {reportJob?.model}。该内容是受证据约束的模型推断，不等于 VERIFIED。</p>
+      </>}
+      {!reportLoading && !reportSummary && reportJob && <p className="empty-state">
+        报告任务 {reportJob.aiJobId} 当前为 {reportJob.status}{reportJob.errorCode ? ` · ${reportJob.errorCode}` : ''}，尚无最终推断摘要。
+      </p>}
+      {!reportLoading && !reportSummary && !reportJob && !reportError && <p className="empty-state">当前扫描尚未生成报告。</p>}
+    </article>
     <div className="result-grid">
       <article className="panel">
         <div className="panel-head"><div><p className="eyebrow">FINDINGS</p><h2>发现</h2></div><span>{findings.length}</span></div>

@@ -19,10 +19,17 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
     private static final ObjectMapper JSON = new ObjectMapper();
     private final ControlPlaneStore store;
     private final String scanId;
+    private final DynamicEvidenceSource dynamicEvidenceSource;
 
     public ControlPlaneToolDataSource(ControlPlaneStore store, String scanId) {
+        this(store, scanId, (projectId, artifactDigest, scopedScanId) -> List.of());
+    }
+
+    public ControlPlaneToolDataSource(ControlPlaneStore store, String scanId,
+                                      DynamicEvidenceSource dynamicEvidenceSource) {
         this.store = Objects.requireNonNull(store, "store");
         this.scanId = Objects.requireNonNull(scanId, "scanId");
+        this.dynamicEvidenceSource = Objects.requireNonNull(dynamicEvidenceSource, "dynamicEvidenceSource");
     }
 
     @Override
@@ -32,6 +39,10 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         String requested = kind.toUpperCase(Locale.ROOT);
         String needle = query == null ? "" : query.toLowerCase(Locale.ROOT);
         List<FactRecord> result = new ArrayList<>();
+        if ("SCAN".equals(requested) || "METADATA".equals(requested) || "ANY".equals(requested)) {
+            addIfMatching(result, scope, "scan:" + scan.dto().scanId(),
+                    JSON.valueToTree(scan.dto()), needle, limit);
+        }
         if ("ENTRY".equals(requested) || "ENTRYPOINT".equals(requested) || "ANY".equals(requested)) {
             for (ApiDtos.EntryDto value : scan.dto().entries()) {
                 addIfMatching(result, scope, "entry:" + value.id(), JSON.valueToTree(value), needle, limit);
@@ -51,6 +62,14 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
             for (ApiDtos.EvidenceDto value : scan.evidence().values()) {
                 addIfMatching(result, scope, value.evidenceId(), safeEvidence(value), needle, limit);
             }
+            for (ApiDtos.EvidenceDto value : dynamicEvidence(scan)) {
+                addIfMatching(result, scope, value.evidenceId(), safeEvidence(value), needle, limit);
+            }
+        }
+        if ("DYNAMIC_EVIDENCE".equals(requested) || "RUNTIME_EVIDENCE".equals(requested)) {
+            for (ApiDtos.EvidenceDto value : dynamicEvidence(scan)) {
+                addIfMatching(result, scope, value.evidenceId(), safeEvidence(value), needle, limit);
+            }
         }
         return List.copyOf(result);
     }
@@ -61,6 +80,11 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         ApiDtos.EvidenceDto value = scan.evidence().get(evidenceRef);
         if (value != null) {
             return Optional.of(new FactRecord(scope, value.evidenceId(), safeEvidence(value)));
+        }
+        Optional<ApiDtos.EvidenceDto> dynamic = dynamicEvidence(scan).stream()
+                .filter(item -> item.evidenceId().equals(evidenceRef)).findFirst();
+        if (dynamic.isPresent()) {
+            return Optional.of(new FactRecord(scope, evidenceRef, safeEvidence(dynamic.get())));
         }
         if (evidenceRef.startsWith("entry:")) {
             String id = evidenceRef.substring("entry:".length());
@@ -79,10 +103,26 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         return scan;
     }
 
+    private List<ApiDtos.EvidenceDto> dynamicEvidence(ControlPlaneStore.ScanRecord scan) {
+        ApiDtos.ScanDto dto = scan.dto();
+        List<ApiDtos.EvidenceDto> values = List.copyOf(dynamicEvidenceSource.evidenceForScan(
+                dto.projectId(), dto.artifactDigest(), dto.scanId()));
+        if (values.size() > 10_000 || values.stream().anyMatch(value ->
+                !dto.projectId().equals(value.projectId())
+                        || !dto.artifactDigest().equals(value.artifactDigest())
+                        || !dto.scanId().equals(value.scanId()))) {
+            throw new SecurityException("dynamic evidence scope mismatch");
+        }
+        return values;
+    }
+
     private static JsonNode safeEvidence(ApiDtos.EvidenceDto value) {
         // Only the bounded evidence summary and provenance metadata cross the tool boundary.
         return JSON.createObjectNode()
                 .put("evidenceId", value.evidenceId())
+                .put("projectId", value.projectId())
+                .put("artifactDigest", value.artifactDigest())
+                .put("scanId", value.scanId())
                 .put("provenanceKind", value.provenanceKind())
                 .put("source", value.source())
                 .put("summary", value.summary())
@@ -97,5 +137,11 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         if (needle.isEmpty() || searchable.contains(needle)) {
             result.add(new FactRecord(scope, reference, value));
         }
+    }
+
+    @FunctionalInterface
+    public interface DynamicEvidenceSource {
+        List<ApiDtos.EvidenceDto> evidenceForScan(
+                String projectId, String artifactDigest, String scanId);
     }
 }

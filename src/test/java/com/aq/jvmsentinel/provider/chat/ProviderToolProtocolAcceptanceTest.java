@@ -46,6 +46,10 @@ public final class ProviderToolProtocolAcceptanceTest {
         check(function.at("/parameters/required").size()
                         == function.at("/parameters/properties").size(),
                 "OpenAI strict schema requires every declared property");
+        JsonNode openAiFinal = OPENAI.buildRequest("gpt-test", "bounded system",
+                List.of(new ProviderChatContracts.UserTurn("return final")), List.of());
+        check(!openAiFinal.has("tools") && !openAiFinal.has("parallel_tool_calls"),
+                "OpenAI final-only request exposes no tools");
 
         JsonNode anthropic = ANTHROPIC.buildRequest("claude-test", 1024, "bounded system",
                 List.of(new ProviderChatContracts.UserTurn("inspect facts")), definitions());
@@ -53,12 +57,17 @@ public final class ProviderToolProtocolAcceptanceTest {
                 "Anthropic parallel tools are disabled");
         check("object".equals(anthropic.at("/tools/0/input_schema/type").asText()),
                 "Anthropic uses input_schema");
+        JsonNode anthropicFinal = ANTHROPIC.buildRequest("claude-test", 1024, "bounded system",
+                List.of(new ProviderChatContracts.UserTurn("return final")), List.of());
+        check(!anthropicFinal.has("tools") && !anthropicFinal.has("tool_choice"),
+                "Anthropic final-only request exposes no tools");
     }
 
     private static void openAiToolRoundTripAndServerErrors() throws Exception {
         String response = """
                 {"choices":[{"finish_reason":"tool_calls","message":{
                   "role":"assistant","content":null,
+                  "reasoning_content":"opaque thinking token",
                   "tool_calls":[{"id":"call-1","type":"function","provider_extension":"kept",
                     "function":{"name":"facts_search","arguments":"{\\"kind\\":\\"METHOD\\"}"}}]
                 }}]}""";
@@ -75,6 +84,8 @@ public final class ProviderToolProtocolAcceptanceTest {
                         parsed.assistant(), results), definitions());
         check(request.at("/messages/1/tool_calls/0/provider_extension").asText().equals("kept"),
                 "OpenAI assistant tool_calls are passed through unchanged");
+        check(request.at("/messages/1/reasoning_content").asText().equals("opaque thinking token"),
+                "OpenAI-compatible reasoning token is echoed only in the in-memory assistant turn");
         check(request.at("/messages/2/role").asText().equals("tool")
                         && request.at("/messages/2/tool_call_id").asText().equals("call-1"),
                 "OpenAI tool result uses role=tool and matching call id");

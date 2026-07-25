@@ -123,6 +123,8 @@ OpenAI/Anthropic Provider 接受显式 `http://` 或 `https://` Base URL，便�
 
 首轮真实 Provider 工具调用失败的根因是带点号的函数名被 Provider 拒绝。内置工具现统一使用兼容的 snake_case 名称：`facts_search`、`evidence_get`、`plan_propose`；改名不扩大服务端 allowlist、作用域或权限。AI Job event 只保存 Provider 请求/结果元数据、工具参数形状与字节数、工具结果状态、脱敏截断的最终模型摘要和失败诊断；不保存 Provider 原始响应、秘密、隐藏推理或 chain-of-thought。
 
+OpenAI-compatible 思考模型可能要求在工具后续轮次回传专用 `reasoning_content`。该字段只作为有界、不可信的内存 wire token 原样回传给同一 Provider，不进入工具、事件、数据库或最终报告。工具阶段最多 16 次只读调用；进入收束阶段后请求不再携带工具定义，只允许模型基于已返回的静态/动态安全摘要生成最终 `INFERENCE`。结果页展示当前 scan 的报告摘要，但不会渲染模型 HTML 或把它升级为 `VERIFIED`。
+
 GUI 采用 React/TypeScript，默认亮色并支持持久化暗色主题。左上角全局工作区控件直接完成项目选择/创建/删除；“审计执行”统一承载制品导入、静态事实、PRE_ANALYSIS 和后续阶段时间线；“模型服务”通过已保存 API 侧边栏管理 Provider、模型清单和四角色绑定，但不直接创建任务；“AI 审计过程”只展示当前扫描的有界执行事件。真实模式失败不会伪造成功或回退 Demo。
 
 前端原型位于 `frontend/`：

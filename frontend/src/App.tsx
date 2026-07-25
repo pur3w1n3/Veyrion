@@ -83,7 +83,7 @@ export default function App() {
       <div className="page-container">
         {apiError && <Notice kind="error">{apiError}。未连接的能力显示为 unavailable，不会回退到演示成功。</Notice>}
         {view === 'audit' && <AuditPage projectId={projectId} snapshot={snapshot} onRefresh={refreshDashboard} />}
-        {view === 'results' && <ResultsPage snapshot={snapshot} />}
+        {view === 'results' && <ResultsPage projectId={projectId} snapshot={snapshot} />}
         {view === 'providers' && <ProviderPage projectId={projectId} />}
         {view === 'ai-audit' && <AiAuditPage projectId={projectId} snapshot={snapshot} />}
         {view === 'settings' && <SettingsPage theme={theme} onTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />}

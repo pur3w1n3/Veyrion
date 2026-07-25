@@ -302,3 +302,13 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - “AI 审计过程”只展示当前扫描的 Provider、工具、推断摘要和失败事件，并可清理失败历史，不再提供脱离审计流程的“四角色任务”批量创建入口。
 - AI Orchestrator 使用按角色固定的服务端任务说明：`PRE_ANALYSIS` 必须先查询静态入口、依赖、sink 和证据事实，再解释业务模块、参数/权限前置条件与探索优先级，并引用返回的 evidence reference；其他角色分别限定为非执行路径计划、证据研判和状态分级报告。模型不得发明路由或改写事实层。
 - 组合入口只覆盖“静态扫描 + PRE_ANALYSIS”这条不可分割的起始动作；后续路径计划、Docker 动态观察、漏洞研判和报告仍按阶段单独授权。SQLite 保存 scan/job 事实，首版组合幂等索引仍为进程内有界窗口，重启后的跨进程重放尚未实现。
+
+## 29. aaaaa.jar 真实全流程回归与思考模型互操作（2026-07-25）
+
+- 使用根目录 `aaaaa.jar`（SHA-256 `190a206da4767a39cb68ac22e63ab8dca729a448e9f37fc5611dd990064fc4ca`）通过真实 GUI 新建 `aaaaa.jar full-flow 20260725-1635` 工作区、浏览器分块上传，并将四角色绑定到 `api3 / OPENAI_CHAT / deepseek-v4-pro`。
+- DeepSeek 思考模式要求工具轮次把响应中的 `reasoning_content` 原样回传。OpenAI 适配器现在只在当前 Job 的有界内存 wire turn 中保留并回传该不可信字段；不会把它映射为模型摘要、工具输入、AI Job event、审计记录或数据库字段。
+- 真实模型会在多个轮次批量查询事实。AI Job 仍保持有界，但调整为最多 5 轮、16 次只读工具、单请求 90 秒和 Job 工具期限 300 秒；达到 12 次工具调用或进入倒数轮次后，服务端关闭工具阶段，后续请求不再发送工具定义，并要求模型仅基于已有证据形成最终推断。
+- “审计结果”页新增当前 scan 的 `REPORT_GENERATION` 最终摘要，只按纯文本显示并标记 `AI INFERENCE`，不渲染模型 HTML，也不提升为 `VERIFIED`。前端 AI event 校验允许摘要中的 TAB/LF/CR，其他控制字符和 16 KiB 上限继续拒绝。
+- AI 工具事实源新增 `SCAN`、`DYNAMIC_EVIDENCE`/`RUNTIME_EVIDENCE`，并将同一 Control Plane 内的动态投影以只读安全摘要注入；每条动态记录必须再次匹配 project/artifact/scan，工具只获得摘要、来源、状态和作用域，不获得原始 trace 或执行权限。
+- 最终真实回归 `scan-cf2a6763368f4c7a` 完成 PRE_ANALYSIS、PATH_EXPLORATION、TRUSTED_DOCKER、VULNERABILITY_TRIAGE 和 REPORT_GENERATION；报告正确识别 7 条 `DYNAMIC_SUSPECTED` Agent 记录。
+- 该回归同时确认当前动态能力仍只观察到 `AGENT_STARTED`、插桩能力和应用类 `CLASS_LOAD`；没有 HTTP 入口调用、参数绑定、sink 或副作用事件，5 个入口覆盖率仍为 0，所有静态路径仍以 `STATIC_ONLY_NOT_EXECUTED` 停止。任务容器“COMPLETED”只表示受控运行/探针流程结束，不等于入口已执行或漏洞已验证。

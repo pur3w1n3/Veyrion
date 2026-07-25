@@ -954,7 +954,12 @@ export const parseAiJobEvent = (value: unknown): AiJobEventDto => {
   const toolCallName = boundedOptionalText('toolCallName', 128)
   const toolArgumentsSummary = boundedOptionalText('toolArgumentsSummary', 1024)
   const toolResultStatus = boundedOptionalText('toolResultStatus', 64)
-  const modelInferenceSummary = boundedOptionalText('modelInferenceSummary', 16_384)
+  const modelInferenceSummary = strictOptionalText(value.modelInferenceSummary, 'aiJobEvent.modelInferenceSummary')
+  if (modelInferenceSummary !== undefined
+      && (modelInferenceSummary.length > 16_384
+        || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(modelInferenceSummary))) {
+    throw new Error('invalid aiJobEvent.modelInferenceSummary')
+  }
   const failureDiagnostic = boundedOptionalText('failureDiagnostic', 1024)
   if (toolCallName !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(toolCallName)
       || toolResultStatus !== undefined && !/^[A-Z0-9_]{1,64}$/.test(toolResultStatus)

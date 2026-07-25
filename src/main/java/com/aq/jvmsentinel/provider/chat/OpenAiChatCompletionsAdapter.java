@@ -34,8 +34,11 @@ public final class OpenAiChatCompletionsAdapter {
                     systemPrompt, "system prompt", ProviderChatContracts.MAX_TEXT_BYTES, true));
         }
         appendTurns(messages, List.copyOf(Objects.requireNonNull(turns, "turns")));
-        appendTools(request.putArray("tools"), definitions);
-        request.put("parallel_tool_calls", false);
+        Objects.requireNonNull(definitions, "definitions");
+        if (!definitions.isEmpty()) {
+            appendTools(request.putArray("tools"), definitions);
+            request.put("parallel_tool_calls", false);
+        }
         return ChatProtocolSupport.boundedRequest(request);
     }
 
@@ -79,6 +82,21 @@ public final class OpenAiChatCompletionsAdapter {
             wire.set("content", content.deepCopy());
         } else {
             throw ChatProtocolSupport.invalid("unknown OpenAI assistant content block");
+        }
+
+        // DeepSeek-style thinking models require their opaque reasoning token
+        // field to be echoed with the assistant tool-call message on the next
+        // request. Keep it only in this bounded in-memory wire turn: it is not
+        // exposed as canonical text, persisted, audited, or sent to tools.
+        JsonNode reasoningContent = message.get("reasoning_content");
+        if (reasoningContent != null && !reasoningContent.isNull()) {
+            if (!reasoningContent.isTextual()
+                    || reasoningContent.textValue().getBytes(StandardCharsets.UTF_8).length
+                    > ProviderChatContracts.MAX_TEXT_BYTES
+                    || reasoningContent.textValue().indexOf('\0') >= 0) {
+                throw ChatProtocolSupport.invalid("OpenAI reasoning_content exceeds bounds");
+            }
+            wire.set("reasoning_content", reasoningContent.deepCopy());
         }
 
         boolean refused = false;

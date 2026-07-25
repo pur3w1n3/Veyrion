@@ -275,11 +275,11 @@ public class ControlPlaneStore {
         String stagesJson = JsonCodec.stringify(stages);
         Map<String, Object> policySnapshot = new LinkedHashMap<>();
         policySnapshot.put("schemaVersion", 1);
-        policySnapshot.put("maxRounds", 4);
-        policySnapshot.put("maxToolCalls", 4);
+        policySnapshot.put("maxRounds", 5);
+        policySnapshot.put("maxToolCalls", 16);
         policySnapshot.put("maxOutputTokens", 2048);
         policySnapshot.put("maxResponseBytes", 1_048_576);
-        policySnapshot.put("requestTimeoutSeconds", 15);
+        policySnapshot.put("requestTimeoutSeconds", 90);
         policySnapshot.put("parallelToolCalls", false);
         if (binding != null) {
             policySnapshot.put("providerId", binding.providerId());

@@ -228,7 +228,8 @@ public final class ControlPlaneServer implements AutoCloseable {
             this.store.bootstrapOperator(this.mutationToken, Instant.now(this.clock).toString());
         }
         this.aiJobOrchestrator = new AiJobOrchestrator(this.store,
-                Objects.requireNonNull(chatTransport, "chatTransport"), this.clock);
+                Objects.requireNonNull(chatTransport, "chatTransport"), this.clock,
+                this.traceProjectionService::evidenceForScan);
     }
 
     /** Starts listening; calling start more than once is idempotent. */
