@@ -1,6 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { api, type ArtifactDto, type DashboardSnapshot, type DynamicTaskDto, type ScanDto } from '../api'
-import { AiAuditPanel } from './AiAuditPanel'
 import { errorMessage, Notice, PageHeader, StatusPill } from './Common'
 
 export function AuditPage({ projectId, snapshot, onRefresh }: { projectId: string; snapshot: DashboardSnapshot | null; onRefresh: () => Promise<void> }) {
@@ -128,6 +127,5 @@ export function AuditPage({ projectId, snapshot, onRefresh }: { projectId: strin
         <p className="form-help">SSE 仅作增量通知；最终状态始终以 GET scan/dashboard 为准。</p>
       </article>
     </div>
-    <AiAuditPanel projectId={projectId} scanId={activeScanId} />
   </section>
 }

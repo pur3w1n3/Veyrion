@@ -1,19 +1,23 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, type DashboardSnapshot, type ProjectDto } from './api'
+import { AiAuditPage } from './components/AiAuditPage'
 import { AuditPage } from './components/AuditPage'
 import { BoundaryLegend, Notice, errorMessage } from './components/Common'
+import { ProviderPage } from './components/ProviderPage'
 import { ResultsPage } from './components/ResultsPage'
 import { SettingsPage } from './components/SettingsPage'
 import { WorkspacePage } from './components/WorkspacePage'
 
-type View = 'workspace' | 'audit' | 'results' | 'settings'
+type View = 'workspace' | 'audit' | 'results' | 'providers' | 'ai-audit' | 'settings'
 type Theme = 'light' | 'dark'
 
 const nav: Array<{ id: View; label: string; description: string; icon: string }> = [
   { id: 'workspace', label: '工作区', description: 'Projects & artifacts', icon: '⌂' },
   { id: 'audit', label: '审计执行', description: 'Policy & timeline', icon: '◎' },
   { id: 'results', label: '审计结果', description: 'Evidence & findings', icon: '◇' },
-  { id: 'settings', label: '全局设置', description: 'Provider & AI roles', icon: '⚙' }
+  { id: 'providers', label: '模型服务', description: 'Provider & AI roles', icon: '◈' },
+  { id: 'ai-audit', label: 'AI 审计过程', description: 'Requests & tool events', icon: '≋' },
+  { id: 'settings', label: '全局设置', description: 'Appearance & safety', icon: '⚙' }
 ]
 
 const initialTheme = (): Theme => {
@@ -78,7 +82,9 @@ export default function App() {
         {view === 'workspace' && <WorkspacePage projects={projects} projectId={projectId} onSelect={setProjectId} onProjectsChanged={refreshProjects} />}
         {view === 'audit' && <AuditPage projectId={projectId} snapshot={snapshot} onRefresh={refreshDashboard} />}
         {view === 'results' && <ResultsPage snapshot={snapshot} />}
-        {view === 'settings' && <SettingsPage projectId={projectId} theme={theme} onTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />}
+        {view === 'providers' && <ProviderPage projectId={projectId} />}
+        {view === 'ai-audit' && <AiAuditPage projectId={projectId} snapshot={snapshot} />}
+        {view === 'settings' && <SettingsPage theme={theme} onTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />}
       </div>
       <nav className="mobile-nav" aria-label="移动端主导航">{nav.map((item) => <button key={item.id} className={view === item.id ? 'active' : ''} onClick={() => setView(item.id)}><span>{item.icon}</span>{item.label}</button>)}</nav>
     </main>
