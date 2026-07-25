@@ -301,6 +301,11 @@ public final class AiJobOrchestrationAcceptanceTest {
             check(request.toString().contains("untrusted data")
                             && !request.toString().contains(API_KEY),
                     "system prompt fixes prompt-injection boundary and excludes credentials");
+            if (provider.kind() == ProviderKind.OPENAI_CHAT) {
+                check(request.toString().contains("external entry catalog")
+                                && request.toString().contains("Do not invent routes"),
+                        "PRE_ANALYSIS receives its evidence-first entry-modeling instruction");
+            }
             int round = requests.computeIfAbsent(provider.providerId(), ignored -> new AtomicInteger())
                     .incrementAndGet();
             String body;

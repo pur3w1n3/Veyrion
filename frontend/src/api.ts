@@ -291,7 +291,11 @@ export type AiJobDto = {
   schemaVersion: number
   aiJobId: string
   projectId: string
+  scanId?: string
+  artifactDigest?: string
   role: AiRole
+  providerId?: string
+  model?: string
   status: string
   createdAt: string
   updatedAt?: string
@@ -867,7 +871,11 @@ export const parseAiJob = (value: unknown): AiJobDto => {
     schemaVersion: schemaVersion(isRecord(value) ? value.schemaVersion : body.schemaVersion, 'aiJob.schemaVersion', false),
     aiJobId: asText(body.aiJobId ?? body.id, 'aiJob.aiJobId'),
     projectId: asText(body.projectId, 'aiJob.projectId'),
+    scanId: optionalText(body.scanId),
+    artifactDigest: optionalText(body.artifactDigest),
     role,
+    providerId: optionalText(body.providerId),
+    model: optionalText(body.model),
     status: asText(body.status, 'aiJob.status'),
     createdAt: asText(body.createdAt, 'aiJob.createdAt'),
     updatedAt: optionalText(body.updatedAt),

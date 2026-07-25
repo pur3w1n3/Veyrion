@@ -6,16 +6,15 @@ import { BoundaryLegend, Notice, errorMessage } from './components/Common'
 import { ProviderPage } from './components/ProviderPage'
 import { ResultsPage } from './components/ResultsPage'
 import { SettingsPage } from './components/SettingsPage'
-import { WorkspacePage } from './components/WorkspacePage'
+import { WorkspaceSwitcher } from './components/WorkspaceSwitcher'
 
-type View = 'workspace' | 'audit' | 'results' | 'providers' | 'ai-audit' | 'settings'
+type View = 'audit' | 'results' | 'providers' | 'ai-audit' | 'settings'
 type Theme = 'light' | 'dark'
 
 const nav: Array<{ id: View; label: string; description: string; icon: string }> = [
-  { id: 'workspace', label: '工作区', description: 'Projects & artifacts', icon: '⌂' },
-  { id: 'audit', label: '审计执行', description: 'Policy & timeline', icon: '◎' },
+  { id: 'audit', label: '审计执行', description: 'Artifact, static facts & AI', icon: '◎' },
   { id: 'results', label: '审计结果', description: 'Evidence & findings', icon: '◇' },
-  { id: 'providers', label: '模型服务', description: 'Provider & AI roles', icon: '◈' },
+  { id: 'providers', label: '模型服务', description: 'Saved APIs & AI roles', icon: '◈' },
   { id: 'ai-audit', label: 'AI 审计过程', description: 'Requests & tool events', icon: '≋' },
   { id: 'settings', label: '全局设置', description: 'Appearance & safety', icon: '⚙' }
 ]
@@ -25,7 +24,7 @@ const initialTheme = (): Theme => {
 }
 
 export default function App() {
-  const [view, setView] = useState<View>('workspace')
+  const [view, setView] = useState<View>('audit')
   const [theme, setTheme] = useState<Theme>(initialTheme)
   const [projects, setProjects] = useState<ProjectDto[]>([])
   const [projectId, setProjectId] = useState(import.meta.env.VITE_PROJECT_ID || '')
@@ -74,19 +73,18 @@ export default function App() {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark">V</div><div><strong>VEYRION</strong><small>溯脉 · JVM SECURITY</small></div></div>
-      <div className="workspace-chip"><span /><div><small>当前项目</small><strong>{currentProject?.name ?? (projectId || '未选择')}</strong></div></div>
+      <WorkspaceSwitcher projects={projects} projectId={projectId} onSelect={setProjectId} onProjectsChanged={refreshProjects} />
       <nav aria-label="主导航">{nav.map((item) => <button key={item.id} className={`nav-item ${view === item.id ? 'active' : ''}`} aria-current={view === item.id ? 'page' : undefined} onClick={() => setView(item.id)}><span className="nav-icon">{item.icon}</span><span><strong>{item.label}</strong><small>{item.description}</small></span></button>)}</nav>
       <div className="sidebar-foot"><span className={`connection-dot ${apiError ? 'offline' : ''}`} /><div><strong>{api.mode === 'demo' ? '显式 Demo 模式' : apiError ? '部分 API unavailable' : 'Control Plane 可响应'}</strong><small>{apiError ? '无静默回退' : snapshot?.dependencyMode ?? '等待项目数据'}</small></div></div>
     </aside>
     <main className="main-content">
-      <header className="topbar"><button className="mobile-brand" onClick={() => setView('workspace')} aria-label="返回工作区">V</button><div><span>VEYRION / </span><strong>{nav.find((item) => item.id === view)?.label}</strong></div><div className="top-actions"><span className="mode-tag">{api.mode === 'demo' ? 'DEMO DATA' : 'CONTROL PLANE'}</span><button className="icon-button" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} aria-label={`切换到${theme === 'light' ? '暗色' : '亮色'}主题`}>{theme === 'light' ? '☾' : '☀'}</button></div></header>
+      <header className="topbar"><button className="mobile-brand" onClick={() => setView('audit')} aria-label="返回审计执行">V</button><div><span>{currentProject?.name ?? '未选择工作区'} / </span><strong>{nav.find((item) => item.id === view)?.label}</strong></div><div className="top-actions"><span className="mode-tag">{api.mode === 'demo' ? 'DEMO DATA' : 'CONTROL PLANE'}</span><button className="icon-button" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} aria-label={`切换到${theme === 'light' ? '暗色' : '亮色'}主题`}>{theme === 'light' ? '☾' : '☀'}</button></div></header>
       <BoundaryLegend />
       <div className="page-container">
         {apiError && <Notice kind="error">{apiError}。未连接的能力显示为 unavailable，不会回退到演示成功。</Notice>}
-        {view === 'workspace' && <WorkspacePage projects={projects} projectId={projectId} onSelect={setProjectId} onProjectsChanged={refreshProjects} />}
         {view === 'audit' && <AuditPage projectId={projectId} snapshot={snapshot} onRefresh={refreshDashboard} />}
         {view === 'results' && <ResultsPage snapshot={snapshot} />}
-        {view === 'providers' && <ProviderPage projectId={projectId} scanId={snapshot?.scanId} />}
+        {view === 'providers' && <ProviderPage projectId={projectId} />}
         {view === 'ai-audit' && <AiAuditPage projectId={projectId} snapshot={snapshot} />}
         {view === 'settings' && <SettingsPage theme={theme} onTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />}
       </div>

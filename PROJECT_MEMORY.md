@@ -240,7 +240,7 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 
 - 在 SQLite V004 上实现 `QUEUED/RUNNING/COMPLETED/FAILED/CANCELLED/BLOCKED` 状态与 workspace/project/scan/artifact/role/provider/model/policy 快照；中断进程遗留的排队或运行任务重启后 fail-closed 为 `PROCESS_RESTARTED`。
 - 只有显式 `authorized=true`、启用且有凭据的角色绑定，以及 `OPENAI_CHAT`、`ANTHROPIC_MESSAGES` 或旧 `OPENAI_COMPATIBLE` 才可进入异步编排；`AZURE_OPENAI`、`LOCAL` 和缺失配置保持阻断。GET 不触发 Provider 清单或聊天出站。
-- 生产聊天传输使用 Java `HttpClient`、HTTP(S) 固定协议路径、禁止重定向，并限制连接/请求/响应/轮次/token/工具调用和响应读取时间。明文 HTTP 仅用于兼容用户明确配置的受信网关，不提供凭据或模型数据机密性。工具执行仍由代码侧 `AiToolRegistry` 决定，parallel 禁用，每轮最多一个调用。
+- 生产聊天传输使用 Java `HttpClient`、HTTP(S) 固定协议路径、禁止重定向，并限制连接/请求/响应/轮次/token/工具调用和响应读取时间。明文 HTTP 仅用于兼容用户明确配置的受信网关，不提供凭据或模型数据机密性。工具执行仍由代码侧 `AiToolRegistry` 决定；请求要求 Provider 禁用 parallel，若兼容网关忽略该提示，则后端在固定总预算内顺序处理并逐条审计。
 - 模型、制品文本和工具结果固定标记为不可信数据；最终仅持久化经截断和脱敏的 `INFERENCE` 摘要、最小运行元数据与工具决策摘要，不生成 `VERIFIED`。
 - 根 Agent 补强 OpenAI strict schema、未完成工具结果顺序、未知/越权调用预算、迭代 JSON 深度、运行任务删除竞态、创建字段 allowlist、Provider/角色绑定/scan 配置漂移复核和响应临时字节清零。
 - mock 传输验收覆盖 OpenAI/Anthropic 各一次工具循环、无授权/绑定、429/500/超时、取消、重启恢复、配置漂移、提示注入、越权、预算、截断、畸形响应与敏感内容不落 AI job/审计；9 个相关 Java main-style 验收及 GUI 生产构建通过。
@@ -292,3 +292,12 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 删除 `fixtures/http-entry/`、旧 `FIXTURE_RUNC` public/Worker/OpenSandbox 专用验收以及 Fixture Worker/本地 Fixture sandbox 验收。
 - 本地真实 Docker 动态回归不再依赖仓库样例；测试操作者必须显式设置 `VEYRION_TEST_ARTIFACT_JAR`，指向后端可登记并复核摘要的 executable Spring Boot 测试 JAR。
 - 删除 `-WithDockerFixture`、`-RebuildFixtureImage`、`-SkipFixtureBuild` 兼容 alias。保留 `TRUSTED_DOCKER` 安全边界和 AI 审计文档，不将普通 Docker 描述为强化恶意代码隔离。
+
+## 28. 工作区与审计主流程信息架构重构（2026-07-25）
+
+- 工作区是全局上下文，不再是左侧主流程页面。左上角“当前工作区”可直接切换、创建和删除授权工作区；切换后 dashboard、制品、角色绑定和 AI 事件全部按项目重新加载。
+- “审计执行”成为默认首页并承载制品导入、策略、阶段推进和时间线。用户点击“开始审计”后，Control Plane 先完成静态 classfile/配置事实与入口发现，再由 GUI 将同一不可变 `scanId` 显式绑定到 `PRE_ANALYSIS` AI Job；未配置前置 AI 时不启动一个残缺流程。
+- 主流程固定为：`制品摘要复核 → 静态事实/入口发现 → PRE_ANALYSIS 业务建模 → 人工计划评审 → PATH_EXPLORATION → 断网动态观察 → VULNERABILITY_TRIAGE → REPORT_GENERATION`。后续阶段只能在前置阶段完成后由审计页推进；AI 不能改写静态事实，也不能单独生成 `VERIFIED`。
+- “模型服务”只负责 Provider/API 密钥、模型清单和项目角色绑定。页面左侧显示并选择后端已保存的 API，右侧编辑连接与模型；保存角色绑定不再顺带创建 Job，避免配置动作绕开审计上下文与阶段顺序。
+- “AI 审计过程”只展示当前扫描的 Provider、工具、推断摘要和失败事件，并可清理失败历史，不再提供脱离审计流程的“四角色任务”批量创建入口。
+- AI Orchestrator 使用按角色固定的服务端任务说明：`PRE_ANALYSIS` 必须先查询静态入口、依赖、sink 和证据事实，再解释业务模块、参数/权限前置条件与探索优先级，并引用返回的 evidence reference；其他角色分别限定为非执行路径计划、证据研判和状态分级报告。模型不得发明路由或改写事实层。
