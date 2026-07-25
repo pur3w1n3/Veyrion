@@ -128,7 +128,7 @@ export function AiAuditPanel({ projectId, scanId }: { projectId: string; scanId?
     <p className="form-help">仅展示后端持久化的执行阶段、Provider 元数据、工具调用/结果与模型推断摘要；不会记录或还原模型隐藏思维链。</p>
     {!scanId && <Notice kind="info">请先创建静态扫描，AI Job 必须显式绑定一个不可变扫描快照。</Notice>}
     {error && <Notice kind="error">{error}</Notice>}
-    {jobs.some((job) => job.status === 'FAILED' && job.errorCode === 'HTTP_400') && <Notice kind="info">列表中的 HTTP_400 是修复前已终止的历史任务，状态不会被后台改写或自动重试；请在全局设置重新创建对应角色任务。</Notice>}
+    {jobs.some((job) => job.status === 'FAILED' && job.errorCode === 'HTTP_400') && <Notice kind="info">列表中的 HTTP_400 是修复前已终止的历史任务，状态不会被后台改写或自动重试；请清理失败记录后，在“模型服务”或本页重新创建任务。</Notice>}
     <div className="card-list">
       {jobs.map((job) => <div className="list-card" key={job.aiJobId}>
         <div><strong>{job.role}</strong><small>{job.aiJobId} · {job.createdAt}{job.errorCode ? ` · ${job.errorCode}` : ''}</small></div>

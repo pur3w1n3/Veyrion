@@ -28,7 +28,7 @@ export default function App() {
   const [view, setView] = useState<View>('workspace')
   const [theme, setTheme] = useState<Theme>(initialTheme)
   const [projects, setProjects] = useState<ProjectDto[]>([])
-  const [projectId, setProjectId] = useState(import.meta.env.VITE_PROJECT_ID || 'default')
+  const [projectId, setProjectId] = useState(import.meta.env.VITE_PROJECT_ID || '')
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null)
   const [projectApiError, setProjectApiError] = useState<string>()
   const [dashboardApiError, setDashboardApiError] = useState<string>()
@@ -45,11 +45,15 @@ export default function App() {
       const next = await api.listProjects()
       setProjects(next)
       setProjectApiError(undefined)
-      if (!projectId && next[0]) setProjectId(next[0].projectId)
+      setProjectId((current) =>
+        current && next.some((project) => project.projectId === current)
+          ? current
+          : (next[0]?.projectId ?? '')
+      )
     } catch (cause) {
       setProjectApiError(errorMessage(cause))
     }
-  }, [projectId])
+  }, [])
 
   const refreshDashboard = useCallback(async () => {
     if (!projectId) { setSnapshot(null); return }
@@ -82,7 +86,7 @@ export default function App() {
         {view === 'workspace' && <WorkspacePage projects={projects} projectId={projectId} onSelect={setProjectId} onProjectsChanged={refreshProjects} />}
         {view === 'audit' && <AuditPage projectId={projectId} snapshot={snapshot} onRefresh={refreshDashboard} />}
         {view === 'results' && <ResultsPage snapshot={snapshot} />}
-        {view === 'providers' && <ProviderPage projectId={projectId} />}
+        {view === 'providers' && <ProviderPage projectId={projectId} scanId={snapshot?.scanId} />}
         {view === 'ai-audit' && <AiAuditPage projectId={projectId} snapshot={snapshot} />}
         {view === 'settings' && <SettingsPage theme={theme} onTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />}
       </div>

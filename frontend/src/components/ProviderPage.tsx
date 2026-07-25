@@ -17,7 +17,7 @@ const providerKindLabel = (kind: ProviderKind) => {
   return kind
 }
 
-export function ProviderPage({ projectId }: { projectId: string }) {
+export function ProviderPage({ projectId, scanId }: { projectId: string; scanId?: string }) {
   const [providers, setProviders] = useState<ProviderDto[]>([])
   const [assignments, setAssignments] = useState<RoleAssignmentDto[]>([])
   const [inventories, setInventories] = useState<Record<string, ProviderModelInventoryDto>>({})
@@ -77,10 +77,10 @@ export function ProviderPage({ projectId }: { projectId: string }) {
   }
 
   const assignAndStart = (role: AiRole, providerId: string, providerModelName: string) => {
-    if (!projectId || !providerId || !providerModelName || !confirmAiAuthorization()) return
+    if (!projectId || !scanId || !providerId || !providerModelName || !confirmAiAuthorization()) return
     setError(undefined); setMessage(undefined); setRoleBusy(role)
     void api.saveRoleAssignment(projectId, role, { providerId, model: providerModelName })
-      .then(() => api.createAiJob(projectId, { role, authorized: true }))
+      .then(() => api.createAiJob(projectId, { role, scanId, authorized: true }))
       .then(async (job) => {
         setMessage(`${role} 已保存分配并创建任务 ${job.aiJobId}`)
         await refresh()
@@ -108,6 +108,7 @@ export function ProviderPage({ projectId }: { projectId: string }) {
     </article>
     <article className="panel section-gap">
       <div className="panel-head"><div><p className="eyebrow">ROLE ASSIGNMENTS</p><h2>AI 四角色分配</h2></div><span>{projectId || 'NO PROJECT'}</span></div>
+      {!scanId && <Notice kind="info">请先在“审计执行”创建静态扫描；AI Job 必须显式绑定当前不可变扫描快照。</Notice>}
       <div className="role-grid">{roles.map((role) => {
         const assignment = assignments.find((item) => item.role === role.id)
         const selectedProvider = roleProviders[role.id] ?? assignment?.providerId ?? ''
@@ -127,7 +128,7 @@ export function ProviderPage({ projectId }: { projectId: string }) {
           }}><option value="">未分配</option>{providers.map((item) => <option value={item.providerId} key={item.providerId}>{item.name} · {providerKindLabel(item.kind)}</option>)}</select></label>
           <label className="field"><span>providerModelName（可搜索或输入）</span><input list={listId} value={modelDraft} disabled={!projectId || !selectedProvider} placeholder={inventoryModels.length ? '搜索模型名称' : '输入 Provider 模型名称'} onChange={(event) => setRoleModels((current) => ({ ...current, [role.id]: event.target.value }))} /></label>
           <datalist id={listId}>{availableModels.map((model) => <option value={model} key={model} />)}</datalist>
-          <button className="secondary-button" disabled={!projectId || !selectedProvider || !modelDraft.trim() || roleBusy !== undefined} onClick={() => assignAndStart(role.id, selectedProvider, modelDraft.trim())}>{roleBusy === role.id ? '保存并创建中…' : '保存分配并创建 AI Job'}</button>
+          <button className="secondary-button" disabled={!projectId || !scanId || !selectedProvider || !modelDraft.trim() || roleBusy !== undefined} onClick={() => assignAndStart(role.id, selectedProvider, modelDraft.trim())}>{roleBusy === role.id ? '保存并创建中…' : '保存分配并创建 AI Job'}</button>
         </article>
       })}</div>
     </article>

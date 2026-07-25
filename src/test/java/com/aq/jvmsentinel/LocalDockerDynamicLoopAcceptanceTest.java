@@ -2,10 +2,14 @@ package com.aq.jvmsentinel;
 
 import com.aq.jvmsentinel.control.ControlPlaneServer;
 import com.aq.jvmsentinel.control.JsonCodec;
+import com.aq.jvmsentinel.provider.ProviderContracts.ProviderDefinition;
+import com.aq.jvmsentinel.provider.chat.ChatTransport;
+import com.aq.jvmsentinel.provider.chat.ProviderChatTransport;
 import com.aq.jvmsentinel.sandbox.LocalDockerTrustedSandboxClient;
 import com.aq.jvmsentinel.worker.LocalArtifactWorkerLoop;
 import com.aq.jvmsentinel.worker.TaskLifecycle;
 import com.aq.jvmsentinel.worker.WorkerControlPlaneClient;
+import com.fasterxml.jackson.databind.JsonNode;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -16,6 +20,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -39,7 +44,9 @@ public final class LocalDockerDynamicLoopAcceptanceTest {
         HttpClient http = HttpClient.newHttpClient();
 
         try (ControlPlaneServer server = new ControlPlaneServer(
-                "127.0.0.1", 0, root, token, root.resolve("control.db")).start();
+                root, 0, token, root.resolve("control.db"),
+                (provider, credential) -> { throw new AssertionError("inventory is not used"); },
+                new ControlledOpenAiTransport()).start();
              LocalArtifactWorkerLoop worker = new LocalArtifactWorkerLoop(
                      server.baseUri().resolve("/internal/worker/v1/"), server.workerToken(),
                      new LocalDockerTrustedSandboxClient(), server::requireLocalArtifact, image)) {
@@ -94,8 +101,36 @@ public final class LocalDockerDynamicLoopAcceptanceTest {
                 Thread.sleep(100);
             }
             check(dashboard.toString().contains("DYNAMIC_SUSPECTED")
-                            && dashboard.toString().contains(taskId),
+                            && dashboard.toString().contains(taskId)
+                            && dashboard.toString().contains("AGENT_INSTRUMENTED")
+                            && dashboard.toString().contains("HTTP"),
                     "dynamic trace is projected to the dashboard: " + dashboard);
+
+            String providerId = text(post(http, URI.create(server.baseUri() + "/providers"),
+                    Map.of("name", "E2E OpenAI", "kind", "OPENAI_CHAT",
+                            "baseUrl", "http://127.0.0.1:3000", "model", "e2e-model",
+                            "apiKey", "e2e-provider-secret", "enabled", true), token), "providerId");
+            for (String role : List.of("PRE_ANALYSIS", "PATH_EXPLORATION",
+                    "VULNERABILITY_TRIAGE", "REPORT_GENERATION")) {
+                patch(http, URI.create(server.baseUri() + "/projects/" + projectId
+                                + "/role-assignments/" + role),
+                        Map.of("providerId", providerId, "model", "e2e-model"), token);
+                String jobId = text(post(http, URI.create(server.baseUri() + "/projects/"
+                                + projectId + "/ai-jobs"),
+                        Map.of("role", role, "scanId", scanId, "authorized", true), token), "aiJobId");
+                Map<String, Object> job = awaitJob(http, server.baseUri(), jobId, token);
+                check("COMPLETED".equals(job.get("status")),
+                        role + " AI job completes: " + job);
+                Map<String, Object> events = operatorGet(http,
+                        URI.create(server.baseUri() + "/ai-jobs/" + jobId + "/events"), token);
+                String eventText = events.toString();
+                check(eventText.contains("PROVIDER_REQUEST")
+                                && eventText.contains("PROVIDER_RESPONSE")
+                                && eventText.contains("TOOL_CALL")
+                                && eventText.contains("facts_search")
+                                && eventText.contains("MODEL_INFERENCE"),
+                        role + " exposes provider, tool, and inference events: " + events);
+            }
         } finally {
             deleteTree(root);
         }
@@ -120,6 +155,43 @@ public final class LocalDockerDynamicLoopAcceptanceTest {
                 HttpRequest.newBuilder(uri).GET().build(), HttpResponse.BodyHandlers.ofString());
         check(response.statusCode() == 200, "GET succeeds");
         return JsonCodec.parseObject(response.body());
+    }
+
+    private static Map<String, Object> patch(HttpClient client, URI uri,
+                                             Map<String, Object> body, String token) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(uri)
+                .header("Content-Type", "application/json")
+                .header("X-Sentinel-Authorization", token)
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .method("PATCH", HttpRequest.BodyPublishers.ofString(JsonCodec.stringify(body))).build();
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        check(response.statusCode() >= 200 && response.statusCode() < 300,
+                "PATCH succeeds: HTTP " + response.statusCode() + " " + response.body());
+        return JsonCodec.parseObject(response.body());
+    }
+
+    private static Map<String, Object> operatorGet(HttpClient client, URI uri, String token)
+            throws Exception {
+        HttpResponse<String> response = client.send(HttpRequest.newBuilder(uri)
+                        .header("X-Sentinel-Authorization", token).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        check(response.statusCode() == 200,
+                "operator GET succeeds: HTTP " + response.statusCode() + " " + response.body());
+        return JsonCodec.parseObject(response.body());
+    }
+
+    private static Map<String, Object> awaitJob(
+            HttpClient client, URI baseUri, String jobId, String token) throws Exception {
+        long deadline = System.nanoTime() + Duration.ofSeconds(15).toNanos();
+        Map<String, Object> job = Map.of();
+        while (System.nanoTime() < deadline) {
+            job = operatorGet(client, URI.create(baseUri + "/ai-jobs/" + jobId), token);
+            if (List.of("COMPLETED", "FAILED", "BLOCKED", "CANCELLED").contains(job.get("status"))) {
+                return job;
+            }
+            Thread.sleep(50);
+        }
+        throw new AssertionError("AI job did not finish: " + job);
     }
 
     private static Map<String, Object> workerGet(HttpClient client, URI uri, String token)
@@ -150,5 +222,30 @@ public final class LocalDockerDynamicLoopAcceptanceTest {
 
     private static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
+    }
+
+    private static final class ControlledOpenAiTransport implements ChatTransport {
+        @Override
+        public ProviderChatTransport.Response send(
+                ProviderDefinition provider, byte[] credential, JsonNode request,
+                ProviderChatTransport.Limits limits) {
+            check("e2e-provider-secret".equals(
+                            new String(credential, java.nio.charset.StandardCharsets.UTF_8)),
+                    "AI transport receives the configured credential");
+            String requestText = request.toString();
+            check(requestText.contains("\"facts_search\"")
+                            && requestText.contains("untrusted data")
+                            && !requestText.contains("e2e-provider-secret"),
+                    "AI request includes fixed tools and excludes credentials");
+            String body = requestText.contains("\"role\":\"tool\"")
+                    ? "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{"
+                    + "\"role\":\"assistant\",\"content\":\"bounded end-to-end inference\"}}]}"
+                    : "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{"
+                    + "\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"tool-e2e\","
+                    + "\"type\":\"function\",\"function\":{\"name\":\"facts_search\","
+                    + "\"arguments\":\"{\\\"kind\\\":\\\"EVIDENCE\\\",\\\"limit\\\":1}\"}}]}}]}";
+            return new ProviderChatTransport.Response(200,
+                    body.getBytes(java.nio.charset.StandardCharsets.UTF_8), "request-e2e", 1);
+        }
     }
 }
