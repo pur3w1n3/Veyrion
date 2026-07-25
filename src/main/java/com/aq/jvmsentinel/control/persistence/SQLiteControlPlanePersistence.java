@@ -50,7 +50,8 @@ public final class SQLiteControlPlanePersistence {
             "db/migration/V002__management_configuration.sql",
             "db/migration/V003__provider_protocols.sql",
             "db/migration/V004__bounded_ai_jobs.sql",
-            "db/migration/V005__bounded_ai_job_events.sql");
+            "db/migration/V005__bounded_ai_job_events.sql",
+            "db/migration/V006__dynamic_verification_role.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 
@@ -649,13 +650,19 @@ public final class SQLiteControlPlanePersistence {
             }
             if (current == SCHEMA_VERSION) return;
             for (int migration = current; migration < SCHEMA_VERSION; migration++) {
+                // SQLite ignores PRAGMA foreign_keys inside an open transaction; disable first.
+                try (Statement statement = connection.createStatement()) {
+                    statement.execute("PRAGMA foreign_keys=OFF");
+                    requirePragma(statement, "foreign_keys", "0");
+                }
                 connection.setAutoCommit(false);
                 try {
-                    for (String statementSql : sql.get(migration).split(";")) {
-                        if (!statementSql.isBlank()) {
-                            try (Statement statement = connection.createStatement()) {
-                                statement.execute(statementSql);
-                            }
+                    for (String statementSql : splitMigrationStatements(sql.get(migration))) {
+                        if (isForeignKeysPragma(statementSql)) {
+                            continue;
+                        }
+                        try (Statement statement = connection.createStatement()) {
+                            statement.execute(statementSql);
                         }
                     }
                     update(connection, "INSERT INTO schema_migrations(version,name,checksum,applied_at) VALUES(?,?,?,?)",
@@ -666,6 +673,10 @@ public final class SQLiteControlPlanePersistence {
                     throw new MigrationException("database migration failed", failure);
                 } finally {
                     connection.setAutoCommit(true);
+                    try (Statement statement = connection.createStatement()) {
+                        statement.execute("PRAGMA foreign_keys=ON");
+                        requirePragma(statement, "foreign_keys", "1");
+                    }
                 }
             }
         } catch (SQLException failure) {
@@ -700,6 +711,28 @@ public final class SQLiteControlPlanePersistence {
                 throw new SQLException("required SQLite PRAGMA was not applied: " + name);
             }
         }
+    }
+
+    /** Split migration SQL on semicolons after stripping line comments (so `-- ...; ...` cannot break DDL). */
+    static List<String> splitMigrationStatements(String migrationSql) {
+        StringBuilder withoutComments = new StringBuilder(migrationSql.length());
+        for (String line : migrationSql.split("\n", -1)) {
+            int commentAt = line.indexOf("--");
+            withoutComments.append(commentAt >= 0 ? line.substring(0, commentAt) : line).append('\n');
+        }
+        List<String> statements = new ArrayList<>();
+        for (String statementSql : withoutComments.toString().split(";")) {
+            String trimmed = statementSql.trim();
+            if (!trimmed.isEmpty()) {
+                statements.add(trimmed);
+            }
+        }
+        return statements;
+    }
+
+    private static boolean isForeignKeysPragma(String statementSql) {
+        String normalized = statementSql.replaceAll("\\s+", " ").trim();
+        return normalized.regionMatches(true, 0, "PRAGMA foreign_keys", 0, "PRAGMA foreign_keys".length());
     }
 
     private void executeUpdate(String sql, Object... values) {

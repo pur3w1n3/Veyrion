@@ -147,8 +147,8 @@ public final class ManagementConfigurationAcceptanceTest {
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + database);
              var statement = connection.createStatement()) {
             statement.executeUpdate("DROP TABLE ai_job_events");
-            check(statement.executeUpdate("DELETE FROM schema_migrations WHERE version=5") == 1,
-                    "V005 is removed to emulate an existing V004 installation");
+            check(statement.executeUpdate("DELETE FROM schema_migrations WHERE version>=5") == 2,
+                    "V005/V006 are removed to emulate an existing V004 installation");
             check(statement.executeUpdate("UPDATE ai_jobs SET status='FAILED', stop_reason='HTTP_500'") == 1,
                     "legacy fixture represents a failed job without detailed event rows");
         }

@@ -147,6 +147,16 @@ public final class ControlPlanePersistenceAcceptanceTest {
         expect(SQLiteControlPlanePersistence.MigrationException.class,
                 () -> ControlPlaneStore.sqlite(badV5Database, badV5Root),
                 "AI job event migration checksum mismatch must fail closed");
+        Path badV6Root = Files.createTempDirectory("veyrion-bad-v006");
+        Path badV6Database = badV6Root.resolve("bad-v006.db");
+        ControlPlaneStore.sqlite(badV6Database, badV6Root);
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + badV6Database);
+             var statement = connection.createStatement()) {
+            statement.executeUpdate("UPDATE schema_migrations SET checksum='tampered' WHERE version=6");
+        }
+        expect(SQLiteControlPlanePersistence.MigrationException.class,
+                () -> ControlPlaneStore.sqlite(badV6Database, badV6Root),
+                "dynamic verification role migration checksum mismatch must fail closed");
         Path badV1Root = Files.createTempDirectory("veyrion-bad-v001");
         Path badV1Database = badV1Root.resolve("bad-v001.db");
         ControlPlaneStore.sqlite(badV1Database, badV1Root);
@@ -173,7 +183,7 @@ public final class ControlPlanePersistenceAcceptanceTest {
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + upgradeDatabase);
              var statement = connection.createStatement();
              var rows = statement.executeQuery("SELECT count(*) FROM schema_migrations")) {
-            check(rows.next() && rows.getInt(1) == 5, "V001 database upgrades through ordered V005");
+            check(rows.next() && rows.getInt(1) == 6, "V001 database upgrades through ordered V006");
         }
         expect(IllegalArgumentException.class,
                 () -> ControlPlaneStore.sqlite(root.getParent().resolve("outside.db"), root),

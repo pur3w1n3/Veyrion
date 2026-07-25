@@ -1,5 +1,6 @@
 -- Expand fixed agent roles with DYNAMIC_VERIFICATION (sandbox evidence interpretation).
--- SQLite cannot alter CHECK; recreate affected tables.
+-- SQLite cannot alter CHECK constraints in place, so recreate affected tables.
+-- Foreign keys are disabled by the migrator around each migration transaction.
 
 CREATE TABLE project_ai_role_bindings_v006 (
     project_id TEXT NOT NULL,

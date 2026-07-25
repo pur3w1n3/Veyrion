@@ -383,3 +383,10 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 写操作需要浏览器携带与控制面一致的本地授权令牌。若只重启前端、或旧 Vite 进程仍持有过期令牌，会出现 `AUTHORIZATION_REQUIRED`（“a local authorization token is required”）。
 - `DevLauncherMain` 将令牌持久化到 `samples/.veyrion/mutation.token`（跨重启复用），并同步写入 `frontend/.env.local`；同时仍通过进程环境变量注入 Vite。该文件已被 gitignore，仅用于本机 loopback 开发。
 - 前端对 `AUTHORIZATION_REQUIRED` 给出可操作提示：必须用 `Start-Veyrion.ps1` 同时重启控制面与界面。
+
+## 37. 动态验证角色迁移登记遗漏（2026-07-25）
+
+- `V006__dynamic_verification_role.sql` 已存在，但 `SQLiteControlPlanePersistence.MIGRATIONS` 未登记，导致运行中数据库仍只接受四个角色；保存「动态验证」角色绑定时 SQLite CHECK 失败并表现为 500。
+- 已将 V006 纳入迁移列表；重启控制面后会扩展 `project_ai_role_bindings` 与 `ai_jobs` 的角色 CHECK。
+- V006 首版注释含分号（`cannot alter CHECK; recreate`），按 `;` 拆语句时把 DDL 截断，JDBC 报 `prepared statement has been finalized`。迁移执行前先去掉 `--` 行注释再拆分。
+- SQLite 在事务内忽略 `PRAGMA foreign_keys`；若表重建时外键仍开启，`DROP TABLE ai_jobs` 会级联清空 `ai_job_events`。迁移器在每条迁移事务外关闭/恢复外键。
