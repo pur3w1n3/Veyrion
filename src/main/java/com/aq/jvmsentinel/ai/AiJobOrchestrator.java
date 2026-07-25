@@ -123,7 +123,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         : failure instanceof JobFailure jobFailure ? jobFailure.code : "AI_JOB_FAILED";
                 String diagnostic = failure instanceof ProviderChatTransport.TransportException transportFailure
                         ? transportFailure.diagnostic()
-                        : failure instanceof JobFailure ? reason : genericDiagnostic(failure);
+                        : failure instanceof JobFailure jobFailure
+                        ? jobFailure.diagnostic : genericDiagnostic(failure);
                 fail(jobId, reason, diagnostic, actorId, started);
             }
         } finally {
@@ -232,7 +233,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
                 parsed = protocol == ProviderProtocol.OPENAI_CHAT
                         ? openAi.parseResponse(responseBody) : anthropic.parseResponse(responseBody);
             } catch (RuntimeException malformed) {
-                throw new JobFailure("MALFORMED_PROVIDER_RESPONSE");
+                throw new JobFailure("MALFORMED_PROVIDER_RESPONSE",
+                        protocol.name() + ": " + malformed.getMessage());
             } finally {
                 Arrays.fill(responseBody, (byte) 0);
                 response.clear();
@@ -438,9 +440,14 @@ public final class AiJobOrchestrator implements AutoCloseable {
 
     private static final class JobFailure extends RuntimeException {
         private final String code;
+        private final String diagnostic;
         private JobFailure(String code) {
+            this(code, code);
+        }
+        private JobFailure(String code, String diagnostic) {
             super(code, null, false, false);
             this.code = code;
+            this.diagnostic = sanitizeDiagnostic(diagnostic);
         }
     }
 }

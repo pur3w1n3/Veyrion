@@ -163,6 +163,10 @@ public final class AiJobOrchestrationAcceptanceTest {
             check("MALFORMED_PROVIDER_RESPONSE".equals(
                             awaitTerminal(store, job.aiJobId()).stopReason()),
                     "malformed provider JSON fails closed");
+            var malformedEvents = store.aiJobEvents(job.aiJobId());
+            check(malformedEvents.get(malformedEvents.size() - 1).failureDiagnostic()
+                            .contains("OPENAI_CHAT"),
+                    "malformed response retains only bounded protocol parser diagnostics");
         }
 
         ChatTransport blocking = (provider, credential, request, limits) -> {

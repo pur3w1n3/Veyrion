@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, type AiJobDto, type AiJobEventDto } from '../api'
+import { confirmAiAuthorization } from '../aiAuthorization'
 import { errorMessage, Notice } from './Common'
 
 const roles = ['PRE_ANALYSIS', 'PATH_EXPLORATION', 'VULNERABILITY_TRIAGE', 'REPORT_GENERATION'] as const
@@ -85,7 +86,7 @@ export function AiAuditPanel({ projectId, scanId }: { projectId: string; scanId?
   }
 
   const recreateJobs = () => {
-    if (!projectId || !scanId || !window.confirm('为当前项目和页面所示扫描重新创建四个 AI 角色任务？旧失败任务将作为历史记录保留。')) return
+    if (!projectId || !scanId || !confirmAiAuthorization()) return
     setCreating(true)
     setError(undefined)
     void Promise.allSettled(roles.map((role) => api.createAiJob(projectId, { role, scanId, authorized: true })))

@@ -277,6 +277,7 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - GUI 不再把“当前 scan 尚未创建动态任务”误显示为 Worker `UNAVAILABLE`。`GET /api/v1/scans/{scanId}/dynamic-tasks` 返回当前进程内任务状态、停止原因和失败代码，审计页对 `QUEUED/RUNNING` 自动轮询；进程重启后任务协调状态仍不会持久化。历史 AI `FAILED` 状态保持不可变，审计页可显式重新创建四角色任务并自动刷新新任务，不能把旧任务原地改写为成功。
 - AI 审计页创建任务时必须显式提交当前页面 `scanId`，后端复核 scan 属于项目并将其固化到 job 快照，避免依赖隐式“最新扫描”导致 `SCAN_REQUIRED`。Docker Worker 失败现在通过内部合约提交最长 2 KiB 的脱敏诊断，public 动态任务状态可显示该诊断；旧任务在加入该字段前的失败细节无法追溯恢复。
 - AI 审计详情对运行中任务自动轮询，能够在结束前显示 `PROVIDER_REQUEST`、`PROVIDER_RESPONSE` 与后续工具事件；仍不保存隐藏思维链。用户可显式清理 `FAILED/BLOCKED/CANCELLED` job 及其事件。非协议类异常保存脱敏后的异常类型/消息，避免统一 `AI_JOB_FAILED` 丢失可操作原因。TRUSTED_DOCKER 对已限定为 executable Spring Boot JAR 的制品固定追加 `--server.address=127.0.0.1 --server.port=8080`，使容器内 HTTP 探针不受制品自定义监听端口影响；程序化禁用 Web Server 的应用仍会按真实失败报告。
+- AI 数据发送确认只在当前浏览器页面会话首次创建 Job 时弹出一次，不写入持久存储；每个后端 Job 请求仍必须单独携带 `authorized=true` 并通过权限校验。Provider 返回 2xx 但协议解析失败时，仅持久化代码生成的协议名与解析规则诊断（不保存响应正文），用于区分缺少 `choices`、`finish_reason`、assistant message 等兼容性问题。
 
 ## 27. 受控 Fixture 样例退役（2026-07-25）
 

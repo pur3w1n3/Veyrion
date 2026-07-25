@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { api, type AiRole, type ProviderDto, type ProviderKind, type ProviderModelInventoryDto, type RoleAssignmentDto } from '../api'
+import { confirmAiAuthorization } from '../aiAuthorization'
 import { errorMessage, Notice, PageHeader } from './Common'
 
 const roles: Array<{ id: AiRole; name: string; description: string }> = [
@@ -85,7 +86,7 @@ export function SettingsPage({ projectId, theme, onTheme }: { projectId: string;
 
   const startJob = (role: AiRole) => {
     if (!projectId) return
-    if (!window.confirm('确认授权该 AI Job 使用当前项目已持久化、受限且可能发送至远端 Provider 的脱敏事实？')) return
+    if (!confirmAiAuthorization()) return
     setError(undefined)
     void api.createAiJob(projectId, { role, authorized: true }).then(refresh).catch((cause) => setError(errorMessage(cause)))
   }
