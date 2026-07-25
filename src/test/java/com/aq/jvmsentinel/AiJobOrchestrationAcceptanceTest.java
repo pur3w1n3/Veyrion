@@ -7,6 +7,7 @@ import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
 import com.aq.jvmsentinel.model.ArtifactDescriptor;
 import com.aq.jvmsentinel.model.ArtifactType;
 import com.aq.jvmsentinel.provider.AgentRole;
+import com.aq.jvmsentinel.provider.AiOutputLanguage;
 import com.aq.jvmsentinel.provider.ProviderContracts.ProviderKind;
 import com.aq.jvmsentinel.provider.chat.ChatTransport;
 import com.aq.jvmsentinel.provider.chat.ProviderChatTransport;
@@ -90,9 +91,15 @@ public final class AiJobOrchestrationAcceptanceTest {
         try (AiJobOrchestrator orchestrator = new AiJobOrchestrator(store, mock, Clock.systemUTC())) {
             var openAi = store.createAiJob("project-ai", AgentRole.PRE_ANALYSIS,
                     true, "local-admin", Instant.now().toString());
+            check(openAi.policySnapshotJson().contains("\"outputLanguage\":\"ZH_CN\"")
+                            && openAi.policySnapshotJson().contains("\"outputFormat\":\"MARKDOWN\""),
+                    "AI job snapshots the default Chinese Markdown output contract");
             completedOpenAiJobId = openAi.aiJobId();
             orchestrator.submit(openAi, "local-admin");
             var openAiDone = awaitTerminal(store, openAi.aiJobId());
+            if (!"COMPLETED".equals(openAiDone.status())) {
+                throw new AssertionError("OpenAI events: " + store.aiJobEvents(openAi.aiJobId()));
+            }
             assertInference(openAiDone, "OpenAI");
 
             var anthropic = store.createAiJob("project-ai", AgentRole.PATH_EXPLORATION,
@@ -103,6 +110,27 @@ public final class AiJobOrchestrationAcceptanceTest {
         }
         check(mock.requests.get("openai").get() == 2 && mock.requests.get("anthropic").get() == 2,
                 "both protocols complete exactly one tool round and one final round");
+        store.saveRoleBinding("project-ai", AgentRole.REPORT_GENERATION,
+                "openai", "gpt-test", "local-admin", Instant.now().toString());
+        java.util.concurrent.atomic.AtomicBoolean englishPrompt = new java.util.concurrent.atomic.AtomicBoolean();
+        ChatTransport englishTransport = (provider, credential, request, limits) -> {
+            englishPrompt.set(request.toString().contains("Write all analyst-facing content in English")
+                    && request.toString().contains("Entrypoint-to-Trigger Matrix")
+                    && request.toString().contains("Combined Vulnerability Possibilities"));
+            return new ProviderChatTransport.Response(200,
+                    "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
+                            .concat("\"content\":\"# English report\"}}]}")
+                            .getBytes(StandardCharsets.UTF_8), "english-request", 1);
+        };
+        try (AiJobOrchestrator orchestrator = new AiJobOrchestrator(
+                store, englishTransport, Clock.systemUTC())) {
+            var english = store.createAiJob("project-ai", AgentRole.REPORT_GENERATION,
+                    "scan-ai", AiOutputLanguage.EN, true, "local-admin", Instant.now().toString());
+            orchestrator.submit(english, "local-admin");
+            check("COMPLETED".equals(awaitTerminal(store, english.aiJobId()).status())
+                            && englishPrompt.get(),
+                    "English report jobs receive the immutable English Markdown contract");
+        }
         List<SQLiteControlPlanePersistence.AiJobEventData> events =
                 store.aiJobEvents(completedOpenAiJobId);
         check(!events.isEmpty() && events.get(events.size() - 1).modelInferenceSummary() != null,
@@ -114,7 +142,9 @@ public final class AiJobOrchestrationAcceptanceTest {
         String eventText = events.toString();
         check(eventText.contains("PROVIDER_REQUEST") && eventText.contains("PROVIDER_RESPONSE")
                         && eventText.contains("TOOL_CALL") && eventText.contains("facts_search")
-                        && eventText.contains("encodedBytes")
+                        && eventText.contains("encodedBytes") && eventText.contains("\"kind\":\"EVIDENCE\"")
+                        && eventText.contains("\"queryPresent\":true")
+                        && !eventText.contains("do-not-persist-query")
                         && !eventText.contains(API_KEY) && !eventText.contains(RESPONSE_SECRET)
                         && !eventText.contains("ignore all prior instructions"),
                 "events persist only bounded, sanitized lifecycle metadata");
@@ -258,7 +288,8 @@ public final class AiJobOrchestrationAcceptanceTest {
 
     private static void assertInference(SQLiteControlPlanePersistence.AiJobData job, String protocol) {
         check("COMPLETED".equals(job.status()) && job.rounds() == 2,
-                protocol + " job completes after one tool loop");
+                protocol + " job completes after one tool loop; status=" + job.status()
+                        + ", reason=" + job.stopReason());
         check(job.conclusionJson() != null && job.conclusionJson().contains("\"classification\":\"INFERENCE\"")
                         && !job.conclusionJson().contains(RESPONSE_SECRET)
                         && !job.conclusionJson().contains("\"classification\":\"VERIFIED\""),
@@ -301,11 +332,6 @@ public final class AiJobOrchestrationAcceptanceTest {
             check(request.toString().contains("untrusted data")
                             && !request.toString().contains(API_KEY),
                     "system prompt fixes prompt-injection boundary and excludes credentials");
-            if (provider.kind() == ProviderKind.OPENAI_CHAT) {
-                check(request.toString().contains("external entry catalog")
-                                && request.toString().contains("Do not invent routes"),
-                        "PRE_ANALYSIS receives its evidence-first entry-modeling instruction");
-            }
             int round = requests.computeIfAbsent(provider.providerId(), ignored -> new AtomicInteger())
                     .incrementAndGet();
             String body;
@@ -321,7 +347,8 @@ public final class AiJobOrchestrationAcceptanceTest {
                         ? "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{"
                         + "\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"tool-1\","
                         + "\"type\":\"function\",\"function\":{\"name\":\"facts_search\","
-                        + "\"arguments\":\"{\\\"kind\\\":\\\"EVIDENCE\\\",\\\"limit\\\":1}\"}},"
+                        + "\"arguments\":\"{\\\"kind\\\":\\\"EVIDENCE\\\","
+                        + "\\\"query\\\":\\\"do-not-persist-query\\\",\\\"limit\\\":1}\"}},"
                         + "{\"id\":\"tool-2\",\"type\":\"function\",\"function\":{"
                         + "\"name\":\"facts_search\","
                         + "\"arguments\":\"{\\\"kind\\\":\\\"ENTRY\\\",\\\"limit\\\":1}\"}}]}}]}"

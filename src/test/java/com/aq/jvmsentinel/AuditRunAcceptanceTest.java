@@ -52,6 +52,7 @@ public final class AuditRunAcceptanceTest {
             URI auditRuns = uri(server, "/projects/" + projectId + "/audit-runs");
             String body = "{\"artifactId\":\"" + artifactId
                     + "\",\"authorized\":true,\"aiAuthorized\":true,"
+                    + "\"outputLanguage\":\"ZH_CN\","
                     + "\"networkMode\":\"DENY\",\"dangerousActionMode\":\"DRY_RUN\"}";
             HttpResponse<String> createdResponse = send(
                     client, auditRuns, "POST", body, token, "audit-once");
@@ -62,7 +63,8 @@ public final class AuditRunAcceptanceTest {
             String jobId = text(job, "aiJobId");
             check(scanId.equals(object(created, "scan").get("scanId"))
                             && scanId.equals(job.get("scanId"))
-                            && "PRE_ANALYSIS".equals(job.get("role")),
+                            && "PRE_ANALYSIS".equals(job.get("role"))
+                            && "ZH_CN".equals(job.get("outputLanguage")),
                     "scan and PRE_ANALYSIS share one immutable scanId");
             check("COMPLETED".equals(awaitJob(client, server, jobId, token).get("status")),
                     "PRE_ANALYSIS completes");
@@ -85,6 +87,9 @@ public final class AuditRunAcceptanceTest {
             check(send(client, auditRuns, "POST",
                     body.replace(",\"aiAuthorized\":true", ""), token, "audit-missing").statusCode() == 403,
                     "AI authorization is independently required");
+            check(send(client, auditRuns, "POST",
+                    body.replace("\"ZH_CN\"", "\"JA\""), token, "audit-language").statusCode() == 400,
+                    "unsupported report language is rejected");
         } finally {
             deleteTree(root);
         }

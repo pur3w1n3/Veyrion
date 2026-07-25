@@ -8,6 +8,7 @@
  */
 
 export type VerificationStatus = 'VERIFIED' | 'DYNAMIC_SUSPECTED' | 'STATIC_INFERRED' | 'UNREACHED'
+export type OutputLanguage = 'ZH_CN' | 'EN'
 
 export type DependencyMode = 'MOCK' | 'REPLAY' | 'LIVE_DISABLED' | 'LIVE' | string
 export type ProvenanceKind = 'FACT' | 'INFERENCE' | 'SIMULATION' | 'RUNTIME_OBSERVED' | 'AGENT_INSTRUMENTED' | 'APPLICATION_REPORTED'
@@ -232,6 +233,7 @@ export type CreateScanRequest = {
 
 export type StartAuditRequest = CreateScanRequest & {
   aiAuthorized: boolean
+  outputLanguage: OutputLanguage
 }
 
 export type AuditRunDto = {
@@ -315,6 +317,7 @@ export type AiJobDto = {
   createdAt: string
   updatedAt?: string
   errorCode?: string
+  outputLanguage?: OutputLanguage
 }
 export type AiJobEventStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'BLOCKED'
 export type AiJobEventDto = {
@@ -337,8 +340,7 @@ export type CreateAiJobRequest = {
   role: AiRole
   authorized: true
   scanId?: string
-  artifactId?: string
-  instruction?: string
+  outputLanguage: OutputLanguage
 }
 
 export class ApiUnavailableError extends Error {
@@ -442,6 +444,7 @@ export interface SentinelApi {
 const statuses = new Set<VerificationStatus>(['VERIFIED', 'DYNAMIC_SUSPECTED', 'STATIC_INFERRED', 'UNREACHED'])
 const provenanceKinds = new Set<ProvenanceKind>(['FACT', 'INFERENCE', 'SIMULATION', 'RUNTIME_OBSERVED', 'AGENT_INSTRUMENTED', 'APPLICATION_REPORTED'])
 const workerCapabilities = new Set<WorkerCapability>(['STATIC_ONLY', 'TRUSTED_DOCKER', 'HARDENED_GVISOR', 'HARDENED_KATA'])
+const outputLanguages = new Set<OutputLanguage>(['ZH_CN', 'EN'])
 const supportedSchemaVersion = 1
 const supportedEventSchemaVersions = new Set([1, 2])
 
@@ -495,6 +498,11 @@ const provenanceKindOf = (value: unknown, field: string): ProvenanceKind => {
 const workerCapabilityOf = (value: unknown, field: string): WorkerCapability => {
   if (typeof value !== 'string' || !workerCapabilities.has(value as WorkerCapability)) throw new Error(`invalid ${field}`)
   return value as WorkerCapability
+}
+
+const outputLanguageOf = (value: unknown, field: string): OutputLanguage => {
+  if (typeof value !== 'string' || !outputLanguages.has(value as OutputLanguage)) throw new Error(`invalid ${field}`)
+  return value as OutputLanguage
 }
 
 const listOfText = (value: unknown, field: string, optional = false): string[] => {
@@ -883,6 +891,27 @@ export const parseAiJob = (value: unknown): AiJobDto => {
   if (!isRecord(body)) throw new Error('invalid ai job response')
   const role = asText(body.role, 'aiJob.role') as AiRole
   if (!['PRE_ANALYSIS', 'PATH_EXPLORATION', 'VULNERABILITY_TRIAGE', 'REPORT_GENERATION'].includes(role)) throw new Error('invalid aiJob.role')
+  let policySnapshot: Record<string, unknown> | undefined
+  if (body.policySnapshot !== undefined) {
+    if (isRecord(body.policySnapshot)) {
+      policySnapshot = body.policySnapshot
+    } else if (typeof body.policySnapshot === 'string') {
+      try {
+        const decoded: unknown = JSON.parse(body.policySnapshot)
+        if (!isRecord(decoded)) throw new Error('invalid aiJob.policySnapshot')
+        policySnapshot = decoded
+      } catch (cause) {
+        throw new Error('invalid aiJob.policySnapshot', { cause })
+      }
+    } else {
+      throw new Error('invalid aiJob.policySnapshot')
+    }
+  }
+  const directLanguage = body.outputLanguage === undefined ? undefined : outputLanguageOf(body.outputLanguage, 'aiJob.outputLanguage')
+  const snapshotLanguage = policySnapshot?.outputLanguage === undefined ? undefined : outputLanguageOf(policySnapshot.outputLanguage, 'aiJob.policySnapshot.outputLanguage')
+  if (directLanguage !== undefined && snapshotLanguage !== undefined && directLanguage !== snapshotLanguage) {
+    throw new Error('conflicting aiJob.outputLanguage')
+  }
   return {
     schemaVersion: schemaVersion(isRecord(value) ? value.schemaVersion : body.schemaVersion, 'aiJob.schemaVersion', false),
     aiJobId: asText(body.aiJobId ?? body.id, 'aiJob.aiJobId'),
@@ -895,7 +924,8 @@ export const parseAiJob = (value: unknown): AiJobDto => {
     status: asText(body.status, 'aiJob.status'),
     createdAt: asText(body.createdAt, 'aiJob.createdAt'),
     updatedAt: optionalText(body.updatedAt),
-    errorCode: optionalText(body.errorCode)
+    errorCode: optionalText(body.errorCode),
+    outputLanguage: directLanguage ?? snapshotLanguage
   }
 }
 
@@ -1478,8 +1508,14 @@ export class HttpSentinelApi implements SentinelApi {
   }
 
   async createAiJob(projectId: string, request: CreateAiJobRequest): Promise<AiJobDto> {
+    const body: CreateAiJobRequest = {
+      role: request.role,
+      authorized: request.authorized,
+      scanId: request.scanId,
+      outputLanguage: request.outputLanguage
+    }
     const response = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/ai-jobs`, {
-      method: 'POST', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(request)
+      method: 'POST', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(body)
     }, 'create ai job')
     return parseAiJob(response)
   }

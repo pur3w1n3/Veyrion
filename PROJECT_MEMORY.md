@@ -312,3 +312,23 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - AI 工具事实源新增 `SCAN`、`DYNAMIC_EVIDENCE`/`RUNTIME_EVIDENCE`，并将同一 Control Plane 内的动态投影以只读安全摘要注入；每条动态记录必须再次匹配 project/artifact/scan，工具只获得摘要、来源、状态和作用域，不获得原始 trace 或执行权限。
 - 最终真实回归 `scan-cf2a6763368f4c7a` 完成 PRE_ANALYSIS、PATH_EXPLORATION、TRUSTED_DOCKER、VULNERABILITY_TRIAGE 和 REPORT_GENERATION；报告正确识别 7 条 `DYNAMIC_SUSPECTED` Agent 记录。
 - 该回归同时确认当前动态能力仍只观察到 `AGENT_STARTED`、插桩能力和应用类 `CLASS_LOAD`；没有 HTTP 入口调用、参数绑定、sink 或副作用事件，5 个入口覆盖率仍为 0，所有静态路径仍以 `STATIC_ONLY_NOT_EXECUTED` 停止。任务容器“COMPLETED”只表示受控运行/探针流程结束，不等于入口已执行或漏洞已验证。
+
+## 30. 双语 Markdown 报告与可展开 AI 数据流（2026-07-25）
+
+- 全局 AI 输出语言固定为 `ZH_CN` 或 `EN`，默认中文。GUI 偏好只影响新建任务；Control Plane 将 `outputLanguage` 与 `outputFormat=MARKDOWN` 固化到每个 AI Job 的不可变 policy snapshot，旧任务和旧报告不被改写。
+- 四角色提示按语言由服务端生成，模型或前端输入不能覆盖。中文报告必须包含执行摘要与结论边界、入口—触发点矩阵、多条推测链路、组合漏洞可能性、动态证据与覆盖、风险分级、未覆盖区域和下一步验证；证据不足时必须明确写出，不能为满足模板编造 sink 或漏洞。
+- 英文模式使用等价 Markdown 结构。类名、方法、路由、证据 ID 与状态枚举保持原文；所有模型结论仍为 `INFERENCE`，语言和格式选择不能提升验证等级。
+- AI Job event 继续不记录隐藏 chain-of-thought。前端可展开的“可审计决策摘要”只展示持久化的组件流向、Provider 元数据、工具名、白名单参数摘要、工具状态、最终推断或失败诊断。
+- 工具参数审计增加受限字段：事实类别、limit、query 是否存在/字节数、合法 evidence/entrypoint 引用、候选数量和 objective 字节数；不保存原始 query、候选 payload、objective、Provider 原始响应或凭据。
+- 结果页使用 `react-markdown` + `remark-gfm` 渲染表格等 Markdown，固定 `skipHtml`，并按安全化后的 scan ID 下载 `.md`；报告保持 `AI INFERENCE`。浏览器回归确认原始 `<script>` 不进入 DOM、语言偏好跨刷新、事件可展开且下载文件名正确。
+- 修正开发页面 CSP 控制台噪声：移除 Chrome 不接受的 IPv6 wildcard source 和 meta 中不会生效的 `frame-ancestors`，补充 data URI favicon。生产点击劫持防护仍必须由最终 HTTP 响应头提供，不能依赖 meta CSP。
+
+## 31. Java checklist 驱动的字节码 sink 扩展与流向校正（2026-07-25）
+
+- `JAVA checklist.md` 只作为候选目录，静态检测不使用 `parse/read/execute` 等裸关键词。新增规则必须同时约束 JVM target owner 与 method，必要时约束 descriptor；单次命中只证明 classfile 中存在敏感 API 调用。
+- 当前高信号目录覆盖命令/原生库、反序列化、表达式与模板、JNDI、反射/类加载、SQL/NoSQL/LDAP/XPath/XML/XSLT、文件读写删除/归档、SSRF 与重定向。需要常量、版本、安全配置、入参可控性或跨方法数据流才能判断的项目继续标为条件性低置信度候选。
+- 每个调用候选生成 `FACT` classfile-call evidence，但 Sink 和 Finding 保持 `STATIC_INFERRED`；未绑定入口固定为 `info`，已绑定候选最高 `medium`，置信度低于 0.80 时最高 `low`。规则不得生成 `VERIFIED`。
+- Spring Boot 可执行包自带的 `org.springframework.boot.loader.*` 类加载、归档 I/O 与 URL handler 调用被识别为框架启动基础设施，不进入应用 sink，避免所有 Boot 制品重复出现相同噪声。
+- 修复静态路径错误投影：不再把全部 dependency/sink 追加到每个入口。入口 annotation evidence 的 `class#method` 与调用 evidence 的 caller `class#method` 精确匹配后，才把该 sink 放入对应路径；同类不同 handler 不互相继承 sink。
+- 静态攻击链只在同一已绑定 handler 至少有两个候选时生成，并明确命名为 “flow not verified”；unbound 候选不形成攻击链，链证据只包含该组 finding 的引用。
+- 合成回归覆盖 12 个类别、同类 safe/danger 两个 handler、框架噪声抑制和 API 路径映射。`aaaaa.jar` 复核结果为 5 个入口、3 个应用调用候选：`/debug-resource → SSRF`、`POST /parse → Fastjson DESERIALIZATION`、`/debug-cl → SSRF`；原先 24 条 Spring Boot loader 调用不再污染结果。

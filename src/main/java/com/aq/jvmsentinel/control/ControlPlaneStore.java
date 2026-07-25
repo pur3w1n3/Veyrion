@@ -3,6 +3,7 @@ package com.aq.jvmsentinel.control;
 import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
 import com.aq.jvmsentinel.model.ArtifactDescriptor;
 import com.aq.jvmsentinel.provider.AgentRole;
+import com.aq.jvmsentinel.provider.AiOutputLanguage;
 import com.aq.jvmsentinel.provider.ProviderContracts;
 import com.aq.jvmsentinel.security.ProviderSecretCipher;
 import com.aq.jvmsentinel.security.RootKeyStore;
@@ -232,14 +233,23 @@ public class ControlPlaneStore {
 
     public SQLiteControlPlanePersistence.AiJobData createAiJob(
             String projectId, AgentRole requestedRole, boolean authorized, String actorId, String now) {
-        return createAiJob(projectId, requestedRole, null, authorized, actorId, now);
+        return createAiJob(projectId, requestedRole, null, AiOutputLanguage.ZH_CN,
+                authorized, actorId, now);
     }
 
     public SQLiteControlPlanePersistence.AiJobData createAiJob(
             String projectId, AgentRole requestedRole, String requestedScanId,
             boolean authorized, String actorId, String now) {
+        return createAiJob(projectId, requestedRole, requestedScanId, AiOutputLanguage.ZH_CN,
+                authorized, actorId, now);
+    }
+
+    public SQLiteControlPlanePersistence.AiJobData createAiJob(
+            String projectId, AgentRole requestedRole, String requestedScanId,
+            AiOutputLanguage outputLanguage, boolean authorized, String actorId, String now) {
         requireProject(projectId);
         requirePersistentManagement();
+        Objects.requireNonNull(outputLanguage, "outputLanguage");
         if (!authorized) throw new SecurityException("explicit AI job authorization is required");
         String jobId = "ai-job-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         var binding = persistence.findRoleBinding(projectId, requestedRole).orElse(null);
@@ -281,6 +291,8 @@ public class ControlPlaneStore {
         policySnapshot.put("maxResponseBytes", 1_048_576);
         policySnapshot.put("requestTimeoutSeconds", 90);
         policySnapshot.put("parallelToolCalls", false);
+        policySnapshot.put("outputLanguage", outputLanguage.name());
+        policySnapshot.put("outputFormat", "MARKDOWN");
         if (binding != null) {
             policySnapshot.put("providerId", binding.providerId());
             policySnapshot.put("model", binding.model());

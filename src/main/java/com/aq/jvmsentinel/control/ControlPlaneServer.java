@@ -24,6 +24,7 @@ import com.aq.jvmsentinel.policy.PolicyValidator;
 import com.aq.jvmsentinel.policy.PolicyViolationException;
 import com.aq.jvmsentinel.policy.ScanPolicy;
 import com.aq.jvmsentinel.provider.AgentRole;
+import com.aq.jvmsentinel.provider.AiOutputLanguage;
 import com.aq.jvmsentinel.provider.ProviderContracts.ModelInventory;
 import com.aq.jvmsentinel.provider.ProviderContracts.ProviderDefinition;
 import com.aq.jvmsentinel.provider.ProviderContracts.ProviderKind;
@@ -66,6 +67,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -752,19 +754,21 @@ public final class ControlPlaneServer implements AutoCloseable {
     private void createAiJob(HttpExchange exchange, String projectId) throws IOException {
         Map<String, Object> body = readObject(exchange);
         for (String field : body.keySet()) {
-            if (!Set.of("role", "scanId", "authorized").contains(field)) {
+            if (!Set.of("role", "scanId", "authorized", "outputLanguage").contains(field)) {
                 throw new ApiException(400, "AI_JOB_FIELD_REJECTED",
-                        "AI job body only accepts role, scanId and authorized");
+                        "AI job body only accepts role, scanId, authorized and outputLanguage");
             }
         }
         AgentRole role = role(optionalText(body, "role", null));
         String scanId = optionalText(body, "scanId", null);
+        AiOutputLanguage outputLanguage = outputLanguage(optionalText(
+                body, "outputLanguage", AiOutputLanguage.ZH_CN.name()));
         if (!requiredBoolean(body, "authorized")) {
             throw new ApiException(403, "AUTHORIZATION_REQUIRED",
                     "explicit AI job authorization is required");
         }
         String operatorId = actor(exchange).operatorId();
-        var job = store.createAiJob(projectId, role, scanId, true, operatorId,
+        var job = store.createAiJob(projectId, role, scanId, outputLanguage, true, operatorId,
                 Instant.now(clock).toString());
         aiJobOrchestrator.submit(job, operatorId);
         sendJson(exchange, 202, aiJobMap(job));
@@ -967,6 +971,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         Map<String, Object> body = readObject(exchange);
         Set<String> allowed = Set.of(
                 "artifactDigest", "artifactId", "artifact", "authorized", "aiAuthorized", "dependencyMode",
+                "outputLanguage",
                 "networkMode", "dangerousActionMode", "networkAllowlist",
                 "maxWallClockSeconds", "maxMemoryBytes", "maxDiskBytes");
         for (String field : body.keySet()) {
@@ -997,11 +1002,15 @@ public final class ControlPlaneServer implements AutoCloseable {
         }
 
         String operatorId = actor(exchange).operatorId();
+        AiOutputLanguage outputLanguage = outputLanguage(optionalText(
+                body, "outputLanguage", AiOutputLanguage.ZH_CN.name()));
         Map<String, Object> scanBody = new LinkedHashMap<>(body);
         scanBody.remove("aiAuthorized");
+        scanBody.remove("outputLanguage");
         ScanStart started = createOrReplayScan(projectId, scanBody, "audit-run-" + key, operatorId);
         var job = store.createAiJob(projectId, AgentRole.PRE_ANALYSIS,
-                started.scan().dto().scanId(), true, operatorId, Instant.now(clock).toString());
+                started.scan().dto().scanId(), outputLanguage, true, operatorId,
+                Instant.now(clock).toString());
         aiJobOrchestrator.submit(job, operatorId);
         idempotentAuditRuns.put(replayKey,
                 new AuditRunReplay(payload, started.scan().dto().scanId(), job.aiJobId()));
@@ -1467,6 +1476,15 @@ public final class ControlPlaneServer implements AutoCloseable {
         }
     }
 
+    private static AiOutputLanguage outputLanguage(String value) {
+        try {
+            return AiOutputLanguage.parse(value);
+        } catch (IllegalArgumentException invalid) {
+            throw new ApiException(400, "INVALID_OUTPUT_LANGUAGE",
+                    "outputLanguage must be ZH_CN or EN");
+        }
+    }
+
     private static OperatorRole operatorRole(String value) {
         if (value == null) throw new ApiException(400, "INVALID_ROLE", "operator role is required");
         try { return OperatorRole.valueOf(value); }
@@ -1543,10 +1561,13 @@ public final class ControlPlaneServer implements AutoCloseable {
                     source.id(), source.category(), source.symbol(), source.source(), source.status().name(),
                     source.confidence(), prefixRefs(source.evidenceRefs(), evidenceIds)));
         }
-        List<ApiDtos.FindingDto> findings = buildFindings(projectId, descriptor, scanId, entries, dependencies, sinks);
-        List<ApiDtos.PathDto> paths = buildPaths(projectId, descriptor, scanId, entries, dependencies, sinks, evidenceIds);
+        List<ApiDtos.FindingDto> findings = buildFindings(
+                projectId, descriptor, scanId, entries, dependencies, sinks, evidence);
+        List<ApiDtos.PathDto> paths = buildPaths(
+                projectId, descriptor, scanId, entries, sinks, evidence);
         List<String> allEvidence = new ArrayList<>(evidence.keySet());
-        List<ApiDtos.AttackChainDto> chains = buildChains(projectId, descriptor.sha256(), scanId, findings, sinks, allEvidence);
+        List<ApiDtos.AttackChainDto> chains = buildChains(
+                projectId, descriptor.sha256(), scanId, findings);
         ApiDtos.ScanDto scan = new ApiDtos.ScanDto(ApiDtos.SCHEMA_VERSION, projectId, descriptor.sha256(), scanId,
                 "COMPLETED", ApiDtos.STATIC_INFERRED, ApiDtos.MOCK, now, now, allEvidence,
                 entries, dependencies, sinks, findings, paths);
@@ -1555,22 +1576,23 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private List<ApiDtos.FindingDto> buildFindings(String projectId, ArtifactDescriptor descriptor, String scanId,
                                                    List<ApiDtos.EntryDto> entries, List<ApiDtos.DependencyDto> dependencies,
-                                                   List<ApiDtos.SinkDto> sinks) {
+                                                   List<ApiDtos.SinkDto> sinks,
+                                                   Map<String, ApiDtos.EvidenceDto> evidence) {
         List<ApiDtos.FindingDto> findings = new ArrayList<>();
         String dependencyId = dependencies.isEmpty() ? "none" : dependencies.get(0).id();
         String dependency = dependencies.isEmpty() ? "none" : dependencies.get(0).target();
         int index = 0;
         for (ApiDtos.SinkDto sink : sinks) {
+            String sinkBindingKey = sinkBindingKey(sink, evidence);
             ApiDtos.EntryDto linkedEntry = entries.stream()
-                    .filter(entry -> entry.declaringClass().equals(sink.symbol()))
+                    .filter(entry -> entryBindingKey(entry, evidence).equals(sinkBindingKey))
                     .findFirst().orElse(null);
             String entryId = linkedEntry == null ? "entry-unbound" : linkedEntry.id();
             String route = linkedEntry == null ? "UNBOUND" : linkedEntry.route();
             // A class-name/static signal is not an exploitability verdict. In
             // particular, an unbound sink has no demonstrated path from an entrypoint.
             String severity = linkedEntry == null ? "info"
-                    : "COMMAND".equalsIgnoreCase(sink.category()) ? "medium"
-                    : "FILE".equalsIgnoreCase(sink.category()) ? "low" : "info";
+                    : staticSinkSeverity(sink.category(), sink.confidence());
             String title = "Potential " + sink.category().toLowerCase(Locale.ROOT)
                     + " signal (static inference)";
             List<String> refs = sink.evidenceRefs();
@@ -1583,37 +1605,93 @@ public final class ControlPlaneServer implements AutoCloseable {
     }
 
     private List<ApiDtos.PathDto> buildPaths(String projectId, ArtifactDescriptor descriptor, String scanId,
-                                              List<ApiDtos.EntryDto> entries, List<ApiDtos.DependencyDto> dependencies,
-                                              List<ApiDtos.SinkDto> sinks, Map<String, String> evidenceIds) {
+                                              List<ApiDtos.EntryDto> entries,
+                                              List<ApiDtos.SinkDto> sinks,
+                                              Map<String, ApiDtos.EvidenceDto> evidence) {
         List<ApiDtos.PathDto> paths = new ArrayList<>();
         for (ApiDtos.EntryDto entry : entries) {
             List<ApiDtos.PathStepDto> steps = new ArrayList<>();
+            LinkedHashSet<String> pathEvidence = new LinkedHashSet<>(entry.evidenceRefs());
             steps.add(new ApiDtos.PathStepDto(entry.method() + " " + entry.route(),
                     "entrypoint=" + entry.declaringClass() + " · static metadata", "entry", "done", entry.evidenceRefs()));
-            for (ApiDtos.DependencyDto dependency : dependencies) {
-                steps.add(new ApiDtos.PathStepDto(dependency.target(), "mode=" + dependency.mode() + " · fields="
-                        + String.join(",", dependency.fields()), "dependency", "done", dependency.evidenceRefs()));
-            }
             for (ApiDtos.SinkDto sink : sinks) {
+                if (!entryBindingKey(entry, evidence).equals(sinkBindingKey(sink, evidence))) continue;
                 steps.add(new ApiDtos.PathStepDto(sink.symbol(), "category=" + sink.category()
-                        + " · runtime execution not performed", "sink", "blocked", sink.evidenceRefs()));
+                        + " · same classfile handler method; taint and runtime execution not proven",
+                        "sink", "blocked", sink.evidenceRefs()));
+                pathEvidence.addAll(sink.evidenceRefs());
             }
             paths.add(new ApiDtos.PathDto(ApiDtos.SCHEMA_VERSION, projectId, descriptor.sha256(), scanId,
                     "path-" + scanId + "-" + entry.id(), entry.id(), ApiDtos.STATIC_INFERRED, ApiDtos.MOCK,
-                    entry.preconditions(), "STATIC_ONLY_NOT_EXECUTED", entry.evidenceRefs(), steps));
+                    entry.preconditions(), "STATIC_ONLY_NOT_EXECUTED", List.copyOf(pathEvidence), steps));
         }
         return paths;
     }
 
     private List<ApiDtos.AttackChainDto> buildChains(String projectId, String artifactDigest, String scanId,
-                                                      List<ApiDtos.FindingDto> findings,
-                                                      List<ApiDtos.SinkDto> sinks, List<String> evidenceRefs) {
-        if (findings.isEmpty()) return List.of();
-        List<String> refs = findings.stream().map(ApiDtos.FindingDto::findingId).toList();
-        double confidence = findings.stream().mapToDouble(ApiDtos.FindingDto::confidence).min().orElse(0);
-        String title = sinks.size() > 1 ? "Potential cross-sink flow (static inference)" : "Potential sink reachability (static inference)";
-        return List.of(new ApiDtos.AttackChainDto(ApiDtos.SCHEMA_VERSION, projectId, artifactDigest, scanId,
-                "chain-" + scanId + "-1", title, confidence, ApiDtos.STATIC_INFERRED, refs, evidenceRefs));
+                                                      List<ApiDtos.FindingDto> findings) {
+        Map<String, List<ApiDtos.FindingDto>> byEntry = new LinkedHashMap<>();
+        for (ApiDtos.FindingDto finding : findings) {
+            if (!"entry-unbound".equals(finding.entrypointId())) {
+                byEntry.computeIfAbsent(finding.entrypointId(), ignored -> new ArrayList<>()).add(finding);
+            }
+        }
+        List<ApiDtos.AttackChainDto> result = new ArrayList<>();
+        int index = 0;
+        for (Map.Entry<String, List<ApiDtos.FindingDto>> group : byEntry.entrySet()) {
+            if (group.getValue().size() < 2) continue;
+            List<String> findingRefs = group.getValue().stream().map(ApiDtos.FindingDto::findingId).toList();
+            LinkedHashSet<String> groupEvidence = new LinkedHashSet<>();
+            for (ApiDtos.FindingDto finding : group.getValue()) groupEvidence.addAll(finding.evidenceRefs());
+            double confidence = group.getValue().stream()
+                    .mapToDouble(ApiDtos.FindingDto::confidence).min().orElse(0);
+            result.add(new ApiDtos.AttackChainDto(ApiDtos.SCHEMA_VERSION, projectId, artifactDigest, scanId,
+                    "chain-" + scanId + "-" + (++index),
+                    "Potential combined sink candidates at one static entry class (flow not verified)",
+                    confidence, ApiDtos.STATIC_INFERRED, findingRefs, List.copyOf(groupEvidence)));
+        }
+        return List.copyOf(result);
+    }
+
+    private static String sinkDeclaringClass(ApiDtos.SinkDto sink) {
+        int methodSeparator = sink.symbol().indexOf('#');
+        return methodSeparator > 0 ? sink.symbol().substring(0, methodSeparator) : sink.symbol();
+    }
+
+    private static String entryBindingKey(ApiDtos.EntryDto entry,
+                                          Map<String, ApiDtos.EvidenceDto> evidence) {
+        for (String ref : entry.evidenceRefs()) {
+            ApiDtos.EvidenceDto item = evidence.get(ref);
+            if (item != null && item.source().startsWith("classfile-annotation:")) {
+                return item.source().substring("classfile-annotation:".length());
+            }
+        }
+        return entry.declaringClass();
+    }
+
+    private static String sinkBindingKey(ApiDtos.SinkDto sink,
+                                         Map<String, ApiDtos.EvidenceDto> evidence) {
+        for (String ref : sink.evidenceRefs()) {
+            ApiDtos.EvidenceDto item = evidence.get(ref);
+            if (item != null && item.source().startsWith("classfile-call:")) {
+                String location = item.source().substring("classfile-call:".length());
+                int descriptor = location.indexOf('(');
+                return descriptor > 0 ? location.substring(0, descriptor) : location;
+            }
+        }
+        return sinkDeclaringClass(sink);
+    }
+
+    private static String staticSinkSeverity(String category, double confidence) {
+        if (confidence < 0.80) return "low";
+        return switch (category.toUpperCase(Locale.ROOT)) {
+            case "COMMAND", "NATIVE_CODE", "CLASS_LOADING", "DESERIALIZATION",
+                    "EXPRESSION", "TEMPLATE", "JNDI" -> "medium";
+            case "SQL", "NOSQL", "LDAP", "XPATH", "XML", "XSLT", "SSRF",
+                    "FILE_READ", "FILE_WRITE", "FILE_DELETE", "ARCHIVE", "REDIRECT",
+                    "REFLECTION", "FILE" -> "low";
+            default -> "info";
+        };
     }
 
     private void publishEvent(String scanId, EventContext context, String type, String key,
@@ -1950,7 +2028,13 @@ public final class ControlPlaneServer implements AutoCloseable {
         result.put("stopReason", job.stopReason());
         if (!"COMPLETED".equals(job.status())) result.put("errorCode", job.stopReason());
         result.put("stages", JsonCodec.parse(job.stagesJson()));
-        result.put("policySnapshot", JsonCodec.parse(job.policySnapshotJson()));
+        Object policySnapshot = JsonCodec.parse(job.policySnapshotJson());
+        result.put("policySnapshot", policySnapshot);
+        if (policySnapshot instanceof Map<?, ?> policy
+                && policy.get("outputLanguage") instanceof String language
+                && ("ZH_CN".equals(language) || "EN".equals(language))) {
+            result.put("outputLanguage", language);
+        }
         if (job.providerRequestId() != null) result.put("providerRequestId", job.providerRequestId());
         result.put("elapsedMillis", job.elapsedMillis());
         result.put("rounds", job.rounds());

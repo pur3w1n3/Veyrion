@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
-import { api, type AiJobDto, type DashboardSnapshot } from '../api'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { api, type AiJobDto, type DashboardSnapshot, type OutputLanguage } from '../api'
 import { errorMessage, Notice, PageHeader, StatusPill } from './Common'
 
-export function ResultsPage({ projectId, snapshot }: { projectId: string; snapshot: DashboardSnapshot | null }) {
+export function ResultsPage({ projectId, snapshot, language }: { projectId: string; snapshot: DashboardSnapshot | null; language: OutputLanguage }) {
+  const english = language === 'EN'
   const findings = snapshot?.findings ?? []
   const entries = snapshot?.entries ?? []
   const [reportJob, setReportJob] = useState<AiJobDto>()
@@ -36,42 +39,55 @@ export function ResultsPage({ projectId, snapshot }: { projectId: string; snapsh
     return () => { active = false }
   }, [projectId, snapshot?.scanId])
 
+  const downloadReport = () => {
+    if (!reportSummary || !snapshot?.scanId) return
+    const safeScanId = snapshot.scanId.replace(/[^A-Za-z0-9._-]/g, '_')
+    const url = URL.createObjectURL(new Blob([reportSummary], { type: 'text/markdown;charset=utf-8' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `veyrion-report-${safeScanId}.md`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+  }
+
   return <section>
-    <PageHeader eyebrow={`RESULTS / ${snapshot?.scanId ?? 'NO SCAN'}`} title="审计结果">
-      每项结论保留独立证据状态；无动态证据时不得将静态命中描述为可利用漏洞。
+    <PageHeader eyebrow={`RESULTS / ${snapshot?.scanId ?? 'NO SCAN'}`} title={english ? 'Audit results' : '审计结果'}>
+      {english ? 'Every conclusion retains its evidence status. Static signals without runtime evidence must not be described as exploitable vulnerabilities.' : '每项结论保留独立证据状态；无动态证据时不得将静态命中描述为可利用漏洞。'}
     </PageHeader>
     <div className="metrics-grid">
-      <article className="metric"><span>入口</span><strong>{entries.length}</strong><small>{entries.filter((item) => item.status === 'UNREACHED').length} 未覆盖</small></article>
-      <article className="metric"><span>静态推断</span><strong>{findings.filter((item) => item.status === 'STATIC_INFERRED').length}</strong><small>需运行时证据</small></article>
-      <article className="metric"><span>动态疑似</span><strong>{findings.filter((item) => item.status === 'DYNAMIC_SUSPECTED').length}</strong><small>需可重放验证</small></article>
-      <article className="metric"><span>已验证</span><strong>{findings.filter((item) => item.status === 'VERIFIED').length}</strong><small>证据边界最高等级</small></article>
+      <article className="metric"><span>{english ? 'Entries' : '入口'}</span><strong>{entries.length}</strong><small>{entries.filter((item) => item.status === 'UNREACHED').length} {english ? 'uncovered' : '未覆盖'}</small></article>
+      <article className="metric"><span>{english ? 'Static inference' : '静态推断'}</span><strong>{findings.filter((item) => item.status === 'STATIC_INFERRED').length}</strong><small>{english ? 'Runtime evidence required' : '需运行时证据'}</small></article>
+      <article className="metric"><span>{english ? 'Dynamic suspected' : '动态疑似'}</span><strong>{findings.filter((item) => item.status === 'DYNAMIC_SUSPECTED').length}</strong><small>{english ? 'Replayable validation required' : '需可重放验证'}</small></article>
+      <article className="metric"><span>{english ? 'Verified' : '已验证'}</span><strong>{findings.filter((item) => item.status === 'VERIFIED').length}</strong><small>{english ? 'Highest evidence boundary' : '证据边界最高等级'}</small></article>
     </div>
     <article className="panel section-gap">
-      <div className="panel-head"><div><p className="eyebrow">AI FINAL REPORT</p><h2>最终报告</h2></div><span className="inference-badge">AI INFERENCE</span></div>
+      <div className="panel-head"><div><p className="eyebrow">AI FINAL REPORT</p><h2>{english ? 'Final report' : '最终报告'}</h2></div><div className="button-row"><span className="inference-badge">AI INFERENCE</span>{reportSummary && <button type="button" className="secondary-button" onClick={downloadReport}>{english ? 'Download .md' : '下载 .md'}</button>}</div></div>
       {reportError && <Notice kind="error">{reportError}</Notice>}
-      {reportLoading && <p className="empty-state">正在加载当前扫描的报告事件…</p>}
+      {reportLoading && <p className="empty-state">{english ? 'Loading report events for this scan…' : '正在加载当前扫描的报告事件…'}</p>}
       {!reportLoading && reportSummary && <>
-        <div className="ai-report">{reportSummary}</div>
-        <p className="form-help">{reportJob?.aiJobId} · {reportJob?.providerId} · {reportJob?.model}。该内容是受证据约束的模型推断，不等于 VERIFIED。</p>
+        <div className="ai-report"><ReactMarkdown skipHtml remarkPlugins={[remarkGfm]}>{reportSummary}</ReactMarkdown></div>
+        <p className="form-help">{reportJob?.aiJobId} · {reportJob?.providerId} · {reportJob?.model} · {reportJob?.outputLanguage ?? 'UNKNOWN'}。{english ? 'This is evidence-grounded model inference, not VERIFIED evidence.' : '该内容是受证据约束的模型推断，不等于 VERIFIED。'}</p>
       </>}
       {!reportLoading && !reportSummary && reportJob && <p className="empty-state">
-        报告任务 {reportJob.aiJobId} 当前为 {reportJob.status}{reportJob.errorCode ? ` · ${reportJob.errorCode}` : ''}，尚无最终推断摘要。
+        {english ? `Report job ${reportJob.aiJobId} is ${reportJob.status}${reportJob.errorCode ? ` · ${reportJob.errorCode}` : ''}; no final inference summary is available.` : `报告任务 ${reportJob.aiJobId} 当前为 ${reportJob.status}${reportJob.errorCode ? ` · ${reportJob.errorCode}` : ''}，尚无最终推断摘要。`}
       </p>}
-      {!reportLoading && !reportSummary && !reportJob && !reportError && <p className="empty-state">当前扫描尚未生成报告。</p>}
+      {!reportLoading && !reportSummary && !reportJob && !reportError && <p className="empty-state">{english ? 'No report has been generated for this scan.' : '当前扫描尚未生成报告。'}</p>}
     </article>
     <div className="result-grid">
       <article className="panel">
-        <div className="panel-head"><div><p className="eyebrow">FINDINGS</p><h2>发现</h2></div><span>{findings.length}</span></div>
-        <div className="card-list">{findings.map((finding) => <div className="finding-card" key={finding.id}><div className={`severity severity-${finding.severity}`}>{finding.severity}</div><div><strong>{finding.title}</strong><small>{finding.entry} → {finding.sink}</small><small>{finding.evidence} 条证据 · {finding.dependency}</small></div><StatusPill status={finding.status} /></div>)}{findings.length === 0 && <p className="empty-state">后端尚未返回发现。</p>}</div>
+        <div className="panel-head"><div><p className="eyebrow">FINDINGS</p><h2>{english ? 'Findings' : '发现'}</h2></div><span>{findings.length}</span></div>
+        <div className="card-list">{findings.map((finding) => <div className="finding-card" key={finding.id}><div className={`severity severity-${finding.severity}`}>{finding.severity}</div><div><strong>{finding.title}</strong><small>{finding.entry} → {finding.sink}</small><small>{finding.evidence} {english ? 'evidence items' : '条证据'} · {finding.dependency}</small></div><StatusPill status={finding.status} /></div>)}{findings.length === 0 && <p className="empty-state">{english ? 'The backend has returned no findings.' : '后端尚未返回发现。'}</p>}</div>
       </article>
       <article className="panel">
-        <div className="panel-head"><div><p className="eyebrow">ENTRY COVERAGE</p><h2>入口与覆盖</h2></div><span>{snapshot?.dependencyMode ?? 'UNKNOWN'}</span></div>
-        <div className="card-list">{entries.map((entry) => <div className="list-card" key={entry.id}><div><strong>{entry.method} {entry.route}</strong><small>{entry.module} · {entry.precondition} · coverage {entry.coverage}%</small></div><StatusPill status={entry.status} /></div>)}{entries.length === 0 && <p className="empty-state">暂无入口；这不表示攻击面为空。</p>}</div>
+        <div className="panel-head"><div><p className="eyebrow">ENTRY COVERAGE</p><h2>{english ? 'Entries and coverage' : '入口与覆盖'}</h2></div><span>{snapshot?.dependencyMode ?? 'UNKNOWN'}</span></div>
+        <div className="card-list">{entries.map((entry) => <div className="list-card" key={entry.id}><div><strong>{entry.method} {entry.route}</strong><small>{entry.module} · {entry.precondition} · coverage {entry.coverage}%</small></div><StatusPill status={entry.status} /></div>)}{entries.length === 0 && <p className="empty-state">{english ? 'No entries are available; this does not imply an empty attack surface.' : '暂无入口；这不表示攻击面为空。'}</p>}</div>
       </article>
     </div>
     <article className="panel section-gap">
-      <div className="panel-head"><div><p className="eyebrow">EVIDENCE PATH</p><h2>证据时间线</h2></div><span>{snapshot?.path.length ?? 0} steps</span></div>
-      <ol className="evidence-timeline">{snapshot?.path.map((step, index) => <li key={`${step.label}-${index}`}><span>{index + 1}</span><div><strong>{step.label}</strong><small>{step.detail}</small></div>{step.verificationStatus && <StatusPill status={step.verificationStatus} />}</li>)}{!snapshot?.path.length && <p className="empty-state">尚无证据路径。</p>}</ol>
+      <div className="panel-head"><div><p className="eyebrow">EVIDENCE PATH</p><h2>{english ? 'Evidence timeline' : '证据时间线'}</h2></div><span>{snapshot?.path.length ?? 0} steps</span></div>
+      <ol className="evidence-timeline">{snapshot?.path.map((step, index) => <li key={`${step.label}-${index}`}><span>{index + 1}</span><div><strong>{step.label}</strong><small>{step.detail}</small></div>{step.verificationStatus && <StatusPill status={step.verificationStatus} />}</li>)}{!snapshot?.path.length && <p className="empty-state">{english ? 'No evidence path is available.' : '尚无证据路径。'}</p>}</ol>
     </article>
   </section>
 }

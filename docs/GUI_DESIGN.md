@@ -177,4 +177,4 @@ DTO 必须带 `schemaVersion`、`projectId`、`artifactDigest`、`scanId`、`ver
 - 当前本地 MVP 的写操作使用 `VITE_API_TOKEN`；它只适合短期调试并会进入浏览器 bundle。生产级 HttpOnly 会话、CSRF、SSO/RBAC 和 SSE 会话鉴权尚未在 Java Control Plane 实现，不能把该配置说明当作生产安全承诺。
 - 真实模式连接失败时显示错误，不自动回退到 Mock，避免把演示数据误认为扫描事实。
 
-当前完成：React/TypeScript/Vite 原型、全局工作区切换、制品上传、静态扫描与 PRE_ANALYSIS 连续启动、阶段式审计时间线、Provider/角色配置、AI Job 事件审计、当前 scan 的最终 `AI INFERENCE` 报告、真实 API DTO 校验和 SSE 订阅边界。结果页把报告作为纯文本并持续标注推断边界；动态安全摘要按 project/artifact/scan 复核后可供后续 AI 角色只读查询。当前 `TRUSTED_DOCKER` 仅用于本地受信内部 JAR 调试，普通 Docker 不是恶意制品强化隔离；容器任务完成也不表示入口已调用。生产级鉴权、多租户、完整反编译/污点/入口覆盖反馈、gVisor/Kata 验收和真实漏洞 `VERIFIED` 闭环仍未完成。
+当前完成：React/TypeScript/Vite 原型、全局工作区切换、制品上传、静态扫描与 PRE_ANALYSIS 连续启动、阶段式审计时间线、Provider/角色配置、AI Job 事件审计、当前 scan 的最终 `AI INFERENCE` Markdown 报告、真实 API DTO 校验和 SSE 订阅边界。全局设置决定新 AI Job 使用中文或英文，默认中文；旧结果不可变。结果页安全渲染 Markdown 并支持下载，报告要求入口—触发点、多条推测链路和组合漏洞可能性。AI 审计事件可展开查看数据来源、组件流向、白名单工具决策和结果，但明确不记录模型隐藏思维链。动态安全摘要按 project/artifact/scan 复核后可供后续 AI 角色只读查询。当前 `TRUSTED_DOCKER` 仅用于本地受信内部 JAR 调试，普通 Docker 不是恶意制品强化隔离；容器任务完成也不表示入口已调用。生产级鉴权、多租户、完整反编译/污点/入口覆盖反馈、gVisor/Kata 验收和真实漏洞 `VERIFIED` 闭环仍未完成。

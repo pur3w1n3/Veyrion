@@ -792,13 +792,16 @@ public final class SQLiteControlPlanePersistence {
             throw new IllegalArgumentException("AI job event code field is invalid");
         }
         validateMetadataJson(event.providerRequestSummary(),
-                Set.of("protocol", "round", "maxOutputTokens", "toolDefinitionCount"),
+                Set.of("protocol", "round", "maxOutputTokens", "toolDefinitionCount", "outputLanguage"),
                 "providerRequestSummary");
         validateMetadataJson(event.providerResultSummary(),
                 Set.of("httpStatus", "elapsedMillis", "requestId", "stopReason", "toolCallCount"),
                 "providerResultSummary");
         validateMetadataJson(event.toolArgumentsSummary(),
-                Set.of("shape", "fieldCount", "encodedBytes"), "toolArgumentsSummary");
+                Set.of("shape", "fieldCount", "encodedBytes", "kind", "limit",
+                        "queryPresent", "queryBytes", "evidenceRef", "entrypointRef",
+                        "candidateCount", "objectiveBytes"),
+                "toolArgumentsSummary");
     }
 
     private AiJobEventData sanitizedEvent(AiJobEventData event) {

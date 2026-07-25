@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { api, type AiJobDto, type AiRole, type ArtifactDto, type DashboardSnapshot, type DynamicTaskDto, type RoleAssignmentDto, type ScanDto } from '../api'
+import { api, type AiJobDto, type AiRole, type ArtifactDto, type DashboardSnapshot, type DynamicTaskDto, type OutputLanguage, type RoleAssignmentDto, type ScanDto } from '../api'
 import { confirmAiAuthorization } from '../aiAuthorization'
 import { ArtifactImportPanel } from './ArtifactImportPanel'
 import { errorMessage, Notice, PageHeader, StatusPill } from './Common'
 
-export function AuditPage({ projectId, snapshot, onRefresh }: { projectId: string; snapshot: DashboardSnapshot | null; onRefresh: () => Promise<void> }) {
+export function AuditPage({ projectId, snapshot, onRefresh, language }: { projectId: string; snapshot: DashboardSnapshot | null; onRefresh: () => Promise<void>; language: OutputLanguage }) {
   const [artifacts, setArtifacts] = useState<ArtifactDto[]>([])
   const [assignments, setAssignments] = useState<RoleAssignmentDto[]>([])
   const [jobs, setJobs] = useState<AiJobDto[]>([])
@@ -109,6 +109,7 @@ export function AuditPage({ projectId, snapshot, onRefresh }: { projectId: strin
       dependencyMode: String(data.get('dependencyMode')),
       networkMode: 'DENY',
       dangerousActionMode: 'DRY_RUN',
+      outputLanguage: language,
       maxWallClockSeconds: Number(data.get('timeout')),
       maxMemoryBytes: Number(data.get('memory')) * 1024 * 1024
     }).then(async (created) => {
@@ -129,7 +130,7 @@ export function AuditPage({ projectId, snapshot, onRefresh }: { projectId: strin
     }
     if (!confirmAiAuthorization()) return
     setBusy(true); setError(undefined); setMessage(undefined)
-    void api.createAiJob(projectId, { role, scanId: activeScanId, authorized: true })
+    void api.createAiJob(projectId, { role, scanId: activeScanId, authorized: true, outputLanguage: language })
       .then(async (job) => {
         setJobs((current) => [job, ...current])
         setMessage(`${role} 已进入执行队列`)
@@ -194,7 +195,7 @@ export function AuditPage({ projectId, snapshot, onRefresh }: { projectId: strin
             <label className="field"><span>超时（秒）</span><input name="timeout" type="number" min="10" max="3600" defaultValue="300" /></label>
             <label className="field"><span>内存（MiB）</span><input name="memory" type="number" min="128" max="8192" defaultValue="512" /></label>
           </div>
-          <div className="selected-ai"><small>前置 AI</small><strong>{assignments.find((assignment) => assignment.role === 'PRE_ANALYSIS')?.model ?? '未配置 PRE_ANALYSIS'}</strong><span>静态解析器先产出事实与入口，模型只做带证据的业务解释。</span></div>
+          <div className="selected-ai"><small>前置 AI · {language === 'ZH_CN' ? '简体中文输出' : 'English output'}</small><strong>{assignments.find((assignment) => assignment.role === 'PRE_ANALYSIS')?.model ?? '未配置 PRE_ANALYSIS'}</strong><span>{language === 'ZH_CN' ? '静态解析器先产出事实与入口，模型只做带证据的业务解释。' : 'Static parsers produce facts and entries first; the model only provides evidence-grounded interpretation.'}</span></div>
           <label className="check-field"><input type="checkbox" name="authorized" />我确认该制品与范围已获授权，且接受无外网、DRY_RUN 策略。</label>
           <button className="primary-button" disabled={!projectId || busy || artifacts.length === 0}>{busy ? '启动中…' : '开始审计：静态分析 + 前置 AI'}</button>
         </form>

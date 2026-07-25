@@ -344,13 +344,13 @@ Agent 使用 startup-only Byte Buddy 插桩，不修改 bootstrap class：Spring
 ## 18. 有界 AI Job 与工具协议
 
 - Provider 类型显式区分 `OPENAI_CHAT` 与 `ANTHROPIC_MESSAGES`，保留旧 `OPENAI_COMPATIBLE` 读取兼容。模型 inventory 仅表示远端发现结果，不证明工具、上下文窗口或 allowlist 能力，也不自动创建角色绑定。
-- AI Job 创建必须显式 `authorized=true`，并固化项目、扫描、制品摘要、角色、Provider、模型、角色绑定版本、Provider kind/base URL/配置版本和资源预算。执行前再次比对扫描和配置；发生漂移即 fail-closed。
+- AI Job 创建必须显式 `authorized=true`，并固化项目、扫描、制品摘要、角色、Provider、模型、角色绑定版本、Provider kind/base URL/配置版本、`outputLanguage`、`outputFormat=MARKDOWN` 和资源预算。执行前再次比对扫描和配置；发生漂移即 fail-closed。
 - 两类协议先转换为 canonical `ToolCall`。服务端固定注册表再检查角色 allowlist、scope、JSON schema/深度/字节、调用次数、deadline 和结果预算；模型字段不能携带权限、审批、网络、沙箱或租户覆盖。
 - OpenAI 使用 strict function schema、`parallel_tool_calls=false` 和相邻 `role=tool` 结果；Anthropic 使用 `disable_parallel_tool_use=true` 和紧邻 `tool_result`。截断、过滤、拒绝、畸形参数、重复 ID、未知 block 或缺失结果均不执行工具。
 - 生产传输只允许经过 Provider 边界验证的显式 HTTP(S) endpoint，禁止重定向，并限制连接、请求、响应和读取时间。为兼容受信内网网关可使用明文 HTTP，但这会暴露凭据与模型数据，公网部署应强制 HTTPS。凭据只在最短解密作用域内进入 header；响应原始字节在解析后清零。
-- 当前工具只读取已持久化扫描的入口、依赖、sink 和证据摘要，不能执行制品、联网、调用 shell、反编译或创建动态任务。持久化只保留状态、停止原因、请求 ID、耗时、轮次、工具决策摘要和脱敏截断的 `INFERENCE`。
+- 当前工具只读取同一 project/artifact/scan 的入口、依赖、sink、静态证据和动态安全摘要，不能执行制品、联网、调用 shell、反编译或创建动态任务。持久化只保留状态、停止原因、请求 ID、耗时、轮次、工具决策摘要和脱敏截断的 `INFERENCE`。
 - 真实 Provider 首轮互操作失败定位为 dotted function names 被 Provider 拒绝。代码侧名称固定改为 snake_case：`facts_search`、`evidence_get`、`plan_propose`；Provider 不能借此注册新工具或扩大角色 allowlist。
-- SQLite V005 为单个 AI job 最多追加 128 条顺序事件：Provider 请求/结果仅保留协议、轮次、限额、HTTP 状态、耗时、请求 ID、停止原因和工具数等有界元数据；工具参数只保留 shape/field count/encoded bytes，另存工具结果状态、脱敏截断的模型摘要和失败诊断。
+- SQLite V005 为单个 AI job 最多追加 128 条顺序事件：Provider 请求/结果仅保留协议、轮次、输出语言、限额、HTTP 状态、耗时、请求 ID、停止原因和工具数等有界元数据；工具参数只保留 shape/field count/encoded bytes，以及白名单化的事实类别、limit、合法证据引用、候选数量和原始敏感字段的存在/字节数，另存工具结果状态、脱敏截断的模型摘要和失败诊断。
 - 事件接口不保存或返回 Provider 原始响应、API Key、完整工具参数、模型隐藏推理或 chain-of-thought。`modelInferenceSummary` 是经过脱敏和 16 KiB 截断的用户可见模型文本，不是推理轨迹，结论仍固定为 `INFERENCE`。
 - 当前仍是本地单节点、进程内执行器，未完成真实供应商互操作、生产 egress/DNS rebinding 防护、流式协议、成本计量或多租户调度；Azure/LOCAL 聊天保持 disabled。
 

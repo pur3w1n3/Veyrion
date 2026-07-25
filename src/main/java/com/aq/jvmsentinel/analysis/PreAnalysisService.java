@@ -20,6 +20,7 @@ public final class PreAnalysisService {
             "RequestParam", "PathVariable", "RequestBody", "RequestHeader", "CookieValue",
             "RequestPart", "ModelAttribute");
     private static final int MAX_DISCOVERED_ENTRIES = 10_000;
+    private static final int MAX_DISCOVERED_SINKS = 20_000;
     private static final int MAX_MAPPING_PATHS = 64;
     private static final int MAX_PATH_COMBINATIONS = 1_024;
     private static final int MAX_DISPLAY_VALUE = 256;
@@ -45,6 +46,25 @@ public final class PreAnalysisService {
             memberAccessFacts.addAll(metadata.memberAccessFacts());
             callEdges.addAll(metadata.callEdges());
             unresolvedDynamics.addAll(metadata.unresolvedDynamics());
+            for (BytecodeFactIndex.CallEdge edge : metadata.callEdges()) {
+                JvmSinkSignatures.Match match = JvmSinkSignatures.match(edge);
+                if (match == null) continue;
+                if (sinks.size() >= MAX_DISCOVERED_SINKS) {
+                    throw new IllegalArgumentException("classfile metadata produced too many sink candidates");
+                }
+                String evidenceId = "call-" + (++index);
+                String target = edge.targetOwner() + "#" + edge.targetName() + edge.targetDescriptor();
+                String caller = edge.callerOwner() + "#" + edge.callerName() + edge.callerDescriptor();
+                evidence.add(new Evidence(evidenceId, ProvenanceKind.FACT,
+                        "classfile-call:" + limit(edge.evidence().stableKey()), 1.0,
+                        "sensitive API invocation present: " + limit(target)
+                                + "; symbolic edge only; runtime reachability and input control not established"));
+                sinks.add(new Sink("sink-call-" + index, match.category(),
+                        limit(caller + " -> " + target),
+                        "bytecode-invoke:" + match.ruleId() + "; edge=" + edge.kind().name()
+                                + "; no taint or runtime proof",
+                        match.confidence(), List.of(evidenceId), VerificationStatus.STATIC_INFERRED));
+            }
             if (!metadata.annotationMetadataValid()) continue;
             classesWithValidAnnotationMetadata.add(metadata.className());
             index = discoverAnnotatedEntries(metadata, evidence, entries, permissions, index);

@@ -44,7 +44,7 @@ java -ea -cp $cp com.aq.jvmsentinel.ControlPlaneAcceptanceTest
 java -cp target/classes com.aq.jvmsentinel.cli.Main C:\path\to\sample.jar --authorize
 ```
 
-输出包含 artifact、EntryCatalog、DependencyMap、SinkCatalog 和版本化事件/幂等键的 JSON 摘要。JAR/WAR 只在内存中有界读取 ZIP 条目、classfile 注解和配置文本，不解压到磁盘；单独 CLASS 标记为 `staticOnly=true`。Spring Boot 的 `BOOT-INF/classes` 与 WAR 的 `WEB-INF/classes` 会归一化为 JVM 类名。
+输出包含 artifact、EntryCatalog、DependencyMap、SinkCatalog 和版本化事件/幂等键的 JSON 摘要。JAR/WAR 只在内存中有界读取 ZIP 条目、classfile 注解、调用指令和配置文本，不解压到磁盘；单独 CLASS 标记为 `staticOnly=true`。Spring Boot 的 `BOOT-INF/classes` 与 WAR 的 `WEB-INF/classes` 会归一化为 JVM 类名。敏感调用按 target owner + method（必要时 descriptor）匹配，不使用裸 `parse/read/execute` 关键词。
 
 当前注解能力识别 `Controller`、`RestController`、`RequestMapping`、五种 HTTP shortcut mapping，合并类/方法路径并提取 HTTP method；同时提取常见请求参数注解的位置/名称候选，以及 `PreAuthorize`、`Secured`、`RolesAllowed` 前置条件。classfile 中真实存在的注解证据为 `FACT`，入口仍固定为 `STATIC_INFERRED`，因为尚未观察 Spring 运行时注册。
 
@@ -117,13 +117,15 @@ SSE 客户端通过 `Last-Event-ID` 请求头断线续接。事件包含 `id`、
 
 当前限制：默认启动器只绑定 loopback；项目、制品元数据、扫描结果、Provider、角色、AI job、AI job event 和审计已进入 SQLite，但幂等窗口、SSE 历史、Worker 任务和动态 trace 仍是进程内状态。操作员是本地 PAT/RBAC，尚无 SSO、HttpOnly session 或多租户隔离。字节码调用边是无 classpath 展开的保守事实，不是完整数据流。OpenAI Chat/Anthropic Messages 已支持 inventory 与有界工具循环，但仍是本地单节点首版，未完成生产出站网关验收；模型结论只允许 `INFERENCE`。Windows Docker Desktop `TRUSTED_DOCKER` 是显式 runc 调试能力，不是 gVisor/Kata；动态结果固定为 `DYNAMIC_SUSPECTED`，不得用于不受信或恶意制品的生产执行。
 
-静态 class-name 规则只在 classfile 无法正常解析时作为降级信号；有效 Spring Boot loader/framework 类不会再因名称包含 `File`、`Path`、`Exec` 等词生成 sink。静态信号不等于漏洞：未绑定入口的信号为 `info`，绑定入口的 file/command 信号最高分别为 `low`/`medium`，只有后续动态证据才能提高判断等级。
+静态 class-name 规则只在 classfile 无法正常解析时作为降级信号；有效 Spring Boot loader/framework 类不会再因名称包含 `File`、`Path`、`Exec` 等词生成 sink。Java checklist 增量覆盖命令/原生库、反序列化、表达式/模板、JNDI、反射/类加载、SQL/NoSQL/LDAP/XML、文件和 SSRF 等调用，但每项仍只是调用事实。入口与 sink 只有在 annotation 和 call evidence 的 caller `class#method` 一致时才进入同一路径；不会把所有 sink 复制到每个入口。未绑定信号为 `info`，已绑定静态候选最高 `medium`，低置信度条件性 API 最高 `low`。
 
 OpenAI/Anthropic Provider 接受显式 `http://` 或 `https://` Base URL，便于连接本机和内网兼容网关；仍拒绝 userinfo、query、fragment、重定向、链路本地/metadata 和组播目标。非本机 HTTP 会明文传输 API Key、模型输入和结果，只应连接受信内网网关，公网必须优先使用 HTTPS。
 
 首轮真实 Provider 工具调用失败的根因是带点号的函数名被 Provider 拒绝。内置工具现统一使用兼容的 snake_case 名称：`facts_search`、`evidence_get`、`plan_propose`；改名不扩大服务端 allowlist、作用域或权限。AI Job event 只保存 Provider 请求/结果元数据、工具参数形状与字节数、工具结果状态、脱敏截断的最终模型摘要和失败诊断；不保存 Provider 原始响应、秘密、隐藏推理或 chain-of-thought。
 
 OpenAI-compatible 思考模型可能要求在工具后续轮次回传专用 `reasoning_content`。该字段只作为有界、不可信的内存 wire token 原样回传给同一 Provider，不进入工具、事件、数据库或最终报告。工具阶段最多 16 次只读调用；进入收束阶段后请求不再携带工具定义，只允许模型基于已返回的静态/动态安全摘要生成最终 `INFERENCE`。结果页展示当前 scan 的报告摘要，但不会渲染模型 HTML 或把它升级为 `VERIFIED`。
+
+全局设置可选择新 AI Job 使用简体中文或 English，默认 `ZH_CN`；语言与 `MARKDOWN` 输出格式固化在 Job policy snapshot 中，旧报告保持不可变。报告模板要求入口—触发点矩阵、多条证据化推测链路、组合漏洞可能性、动态覆盖与限制。AI 审计页的可展开流向只显示服务端持久化的 Provider/工具决策摘要和结果，不记录或还原隐藏思维链；原始 query、候选 payload、Provider 响应和凭据不会进入审计事件。
 
 GUI 采用 React/TypeScript，默认亮色并支持持久化暗色主题。左上角全局工作区控件直接完成项目选择/创建/删除；“审计执行”统一承载制品导入、静态事实、PRE_ANALYSIS 和后续阶段时间线；“模型服务”通过已保存 API 侧边栏管理 Provider、模型清单和四角色绑定，但不直接创建任务；“AI 审计过程”只展示当前扫描的有界执行事件。真实模式失败不会伪造成功或回退 Demo。
 
@@ -169,4 +171,4 @@ VITE_API_TOKEN=local-demo
 - 没有 gVisor/Kata 强化运行时验收、真实反编译器镜像、协议级数据库替身或真实漏洞利用；当前 `TRUSTED_DOCKER` 仅为显式本地 Docker runc 调试后端；
 - 没有真实供应商互操作、生产出站代理、成本计量或流式聊天验收；当前 AI Job 仅支持 OpenAI Chat/Anthropic Messages 的非流式有界工具循环，Azure/LOCAL 聊天保持阻断；
 - 没有生产级 SSO/session、多租户隔离、Worker/trace 持久化或完整审计防篡改链；
-- 注解入口和类名推断的入口/sink 均为 `STATIC_INFERRED`；权限只作为前置条件保留，不能据此声称匿名可达、权限绕过或漏洞已验证。
+- 注解入口、classfile 调用 sink 和类名降级推断均为 `STATIC_INFERRED`；权限只作为前置条件保留，调用存在也不证明入参可控、运行时可达、配置不安全或漏洞已验证。

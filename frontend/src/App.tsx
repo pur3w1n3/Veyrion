@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, type DashboardSnapshot, type ProjectDto } from './api'
+import { api, type DashboardSnapshot, type OutputLanguage, type ProjectDto } from './api'
 import { AiAuditPage } from './components/AiAuditPage'
 import { AuditPage } from './components/AuditPage'
 import { BoundaryLegend, Notice, errorMessage } from './components/Common'
@@ -23,9 +23,14 @@ const initialTheme = (): Theme => {
   try { return localStorage.getItem('veyrion.theme') === 'dark' ? 'dark' : 'light' } catch { return 'light' }
 }
 
+const initialLanguage = (): OutputLanguage => {
+  try { return localStorage.getItem('veyrion.language') === 'EN' ? 'EN' : 'ZH_CN' } catch { return 'ZH_CN' }
+}
+
 export default function App() {
   const [view, setView] = useState<View>('audit')
   const [theme, setTheme] = useState<Theme>(initialTheme)
+  const [language, setLanguage] = useState<OutputLanguage>(initialLanguage)
   const [projects, setProjects] = useState<ProjectDto[]>([])
   const [projectId, setProjectId] = useState(import.meta.env.VITE_PROJECT_ID || '')
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null)
@@ -38,6 +43,11 @@ export default function App() {
     const color = theme === 'light' ? '#f6f8fc' : '#09111f'
     document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', color)
   }, [theme])
+
+  useEffect(() => {
+    document.documentElement.lang = language === 'ZH_CN' ? 'zh-CN' : 'en'
+    try { localStorage.setItem('veyrion.language', language) } catch { /* Language still applies for this session. */ }
+  }, [language])
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -82,11 +92,11 @@ export default function App() {
       <BoundaryLegend />
       <div className="page-container">
         {apiError && <Notice kind="error">{apiError}。未连接的能力显示为 unavailable，不会回退到演示成功。</Notice>}
-        {view === 'audit' && <AuditPage projectId={projectId} snapshot={snapshot} onRefresh={refreshDashboard} />}
-        {view === 'results' && <ResultsPage projectId={projectId} snapshot={snapshot} />}
+        {view === 'audit' && <AuditPage projectId={projectId} snapshot={snapshot} onRefresh={refreshDashboard} language={language} />}
+        {view === 'results' && <ResultsPage projectId={projectId} snapshot={snapshot} language={language} />}
         {view === 'providers' && <ProviderPage projectId={projectId} />}
-        {view === 'ai-audit' && <AiAuditPage projectId={projectId} snapshot={snapshot} />}
-        {view === 'settings' && <SettingsPage theme={theme} onTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} />}
+        {view === 'ai-audit' && <AiAuditPage projectId={projectId} snapshot={snapshot} language={language} />}
+        {view === 'settings' && <SettingsPage theme={theme} onTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} language={language} onLanguage={setLanguage} />}
       </div>
       <nav className="mobile-nav" aria-label="移动端主导航">{nav.map((item) => <button key={item.id} className={view === item.id ? 'active' : ''} onClick={() => setView(item.id)}><span>{item.icon}</span>{item.label}</button>)}</nav>
     </main>
