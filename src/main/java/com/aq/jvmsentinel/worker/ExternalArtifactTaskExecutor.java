@@ -121,11 +121,11 @@ public final class ExternalArtifactTaskExecutor {
                 CommandResult applicationLog = sandbox.command(sandboxId, new CommandRequest(
                         "tail -c 2048 " + TRACE_DIRECTORY + "/application.log 2>/dev/null || true",
                         WORKING_DIRECTORY, Duration.ofSeconds(10), SANDBOX_UID, SANDBOX_GID));
+                String detail = diagnostic(run.stdout() + "\n" + applicationLog.stdout(),
+                        run.stderr() + "\n" + applicationLog.stderr());
                 throw new ExternalArtifactExecutionException(
                         "EXTERNAL_ARTIFACT_EXIT_NONZERO",
-                        "external artifact returned exit " + run.exitCode() + ": "
-                                + diagnostic(run.stdout() + "\n" + applicationLog.stdout(),
-                                run.stderr() + "\n" + applicationLog.stderr()), null);
+                        exitDiagnostic(run.exitCode(), detail), null);
             }
 
             CommandResult traceRead = sandbox.command(sandboxId, new CommandRequest(
@@ -304,22 +304,51 @@ public final class ExternalArtifactTaskExecutor {
                 ? "" : ",classPrefix=" + registration.classPrefix())
                 + " -jar " + ARTIFACT_PATH
                 + " --server.address=127.0.0.1 --server.port=8080"
+                // Fail-open common Spring Boot DB/cache pools under deny-all network so the loopback
+                // probe can run. Still MOCK/DYNAMIC_SUSPECTED only — not JDBC protocol substitution.
+                + " --spring.main.lazy-initialization=true"
+                + " --spring.datasource.hikari.initialization-fail-timeout=-1"
+                + " --spring.datasource.hikari.connection-timeout=1000"
+                + " --spring.datasource.druid.initial-size=0"
+                + " --spring.datasource.druid.min-idle=0"
+                + " --spring.datasource.druid.max-wait=1000"
+                + " --spring.datasource.druid.fail-fast=false"
+                + " --spring.datasource.druid.connection-error-retry-attempts=0"
+                + " --spring.datasource.druid.break-after-acquire-failure=true"
+                + " --spring.datasource.druid.test-while-idle=false"
+                + " --spring.flyway.enabled=false"
+                + " --spring.liquibase.enabled=false"
+                + " --spring.sql.init.mode=never"
+                + " --spring.jpa.hibernate.ddl-auto=none"
+                + " --spring.data.redis.repositories.enabled=false"
+                + " --spring.redis.timeout=500ms"
+                + " --spring.data.redis.timeout=500ms"
+                + " --management.health.redis.enabled=false"
                 + " > " + TRACE_DIRECTORY + "/application.log 2>&1"
                 + " & pid=$!; elapsed=0; probe_status=1"
+                // Ready when loopback accepts any HTTP response on /. Target-entry probe is best-effort
+                // stimulus for agent traces and must not be the sole readiness gate (DB/Flowable routes
+                // often hang or tear down the process under deny-all network).
                 + "; while kill -0 \"$pid\" 2>/dev/null"
                 + " && [ \"$elapsed\" -lt " + startupSeconds + " ]"
                 + "; do sleep 1; elapsed=$((elapsed+1)); done"
                 + "; if kill -0 \"$pid\" 2>/dev/null && java -cp " + AGENT_PATH
+                + " com.aq.jvmsentinel.agent.LoopbackHttpProbe GET '/'"
+                + "; then probe_status=0"
+                + "; java -cp " + AGENT_PATH
                 + " com.aq.jvmsentinel.agent.LoopbackHttpProbe "
-                + registration.probeMethod() + " '" + registration.probeRoute() + "'"
-                + "; then probe_status=0; fi"
+                + registration.probeMethod() + " '" + registration.probeRoute() + "' || true"
+                + "; fi"
                 + "; while kill -0 \"$pid\" 2>/dev/null && [ \"$probe_status\" -ne 0 ]"
                 + " && [ \"$elapsed\" -lt " + runSeconds + " ]"
                 + "; do sleep 3; elapsed=$((elapsed+3))"
                 + "; if java -cp " + AGENT_PATH
+                + " com.aq.jvmsentinel.agent.LoopbackHttpProbe GET '/'"
+                + "; then probe_status=0"
+                + "; java -cp " + AGENT_PATH
                 + " com.aq.jvmsentinel.agent.LoopbackHttpProbe "
-                + registration.probeMethod() + " '" + registration.probeRoute() + "'"
-                + "; then probe_status=0; fi; done"
+                + registration.probeMethod() + " '" + registration.probeRoute() + "' || true"
+                + "; fi; done"
                 + "; while kill -0 \"$pid\" 2>/dev/null && [ \"$elapsed\" -lt " + runSeconds + " ]"
                 + "; do sleep 1; elapsed=$((elapsed+1)); done"
                 + "; if kill -0 \"$pid\" 2>/dev/null; then kill -TERM \"$pid\""
@@ -364,6 +393,16 @@ public final class ExternalArtifactTaskExecutor {
                 + (stdout == null ? "" : stdout))
                 .replaceAll("[\\p{Cntrl}&&[^\\r\\n\\t]]", "?").strip();
         return value.length() <= 2048 ? value : value.substring(value.length() - 2048);
+    }
+
+    private static String exitDiagnostic(int exitCode, String detail) {
+        String prefix = "external artifact returned exit " + exitCode;
+        if (exitCode == 70) {
+            prefix += " (loopback HTTP probe never succeeded; application likely failed to become ready"
+                    + " under deny-all network — often blocked by unavailable DB/external deps)";
+        }
+        if (detail == null || detail.isBlank()) return prefix;
+        return prefix + ": " + detail;
     }
 
     private static String requireId(String value, String name) {

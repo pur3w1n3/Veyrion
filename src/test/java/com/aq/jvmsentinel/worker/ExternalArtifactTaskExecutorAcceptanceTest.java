@@ -412,8 +412,13 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                             + " -javaagent:/opt/veyrion/agent/veyrion-agent.jar"
                             + "=maxBytes=1048576,maxEvents=4096"
                             + " -jar /opt/veyrion/artifact/application.jar")
+                    && command.contains("com.aq.jvmsentinel.agent.LoopbackHttpProbe GET '/'")
                     && command.contains("com.aq.jvmsentinel.agent.LoopbackHttpProbe"
                             + " POST '/sample/http-entry'")
+                    && command.contains("--spring.main.lazy-initialization=true")
+                    && command.contains("--spring.datasource.hikari.initialization-fail-timeout=-1")
+                    && command.contains("--spring.datasource.druid.initial-size=0")
+                    && command.contains("--spring.flyway.enabled=false")
                     && command.contains("probe_status=1")
                     && command.contains("exit 70")
                     && command.contains("kill -TERM \"$pid\"")

@@ -1224,7 +1224,8 @@ public final class ControlPlaneServer implements AutoCloseable {
                 taskId,
                 targetEntryId,
                 true,
-                new ResourceBudget(60, 30_000, 1024L * 1024 * 1024,
+                // Large Spring Boot JARs often need >60s cold start under deny-all before loopback probe.
+                new ResourceBudget(180, 180_000, 2L * 1024 * 1024 * 1024,
                         64L * 1024 * 1024, 512L * 1024),
                 NetworkPolicy.denyAll(),
                 WorkerCapability.TRUSTED_DOCKER);

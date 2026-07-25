@@ -384,6 +384,12 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - `DevLauncherMain` 将令牌持久化到 `samples/.veyrion/mutation.token`（跨重启复用），并同步写入 `frontend/.env.local`；同时仍通过进程环境变量注入 Vite。该文件已被 gitignore，仅用于本机 loopback 开发。
 - 前端对 `AUTHORIZATION_REQUIRED` 给出可操作提示：必须用 `Start-Veyrion.ps1` 同时重启控制面与界面。
 
+## 38. 断网容器 exit 70 与启动期数据库依赖（2026-07-25）
+
+- `EXTERNAL_ARTIFACT_EXIT_NONZERO` + exit **70** 表示容器内 loopback HTTP 探针从未成功，不是 Docker 本身坏了。
+- 对 `task-dynamic-8a294cfed7264e43`（baldex）：应用在 `--network none` 下启动时 Hikari/MySQL 连接被拒绝，进程起不来 → 探针失败。协议级 JDBC 替身仍未接入 `TRUSTED_DOCKER`；Agent 只观测 `Statement.execute*`，不拦截建连。
+- 对 baldex（SpringBlade + Druid `initial-size:5` + Redis/Redisson + Flowable）仅设 Hikari 无效；沙箱启动追加：`lazy-initialization`、Druid 零初始连接/`fail-fast=false`、Hikari fail-open、短 Redis 超时并关闭 Redis health（保留 Redis 自动配置，因 Blade JWT 需要 `RedisConnectionFactory`）。就绪探针改为先打 `/`，业务入口探针尽力触发以采集 Agent 轨迹。流水线动态任务墙钟 180s、内存 2GiB。结果仍为 `MOCK` / `DYNAMIC_SUSPECTED`。启动强制连 Redis/DB 的应用仍可能失败，需后续协议级替身。
+
 ## 37. 动态验证角色迁移登记遗漏（2026-07-25）
 
 - `V006__dynamic_verification_role.sql` 已存在，但 `SQLiteControlPlanePersistence.MIGRATIONS` 未登记，导致运行中数据库仍只接受四个角色；保存「动态验证」角色绑定时 SQLite CHECK 失败并表现为 500。
