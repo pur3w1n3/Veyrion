@@ -289,7 +289,7 @@ public class ControlPlaneStore {
         policySnapshot.put("maxToolCalls", 16);
         policySnapshot.put("maxOutputTokens", 2048);
         policySnapshot.put("maxResponseBytes", 1_048_576);
-        policySnapshot.put("requestTimeoutSeconds", 90);
+        policySnapshot.put("requestTimeoutSeconds", 120);
         policySnapshot.put("parallelToolCalls", false);
         policySnapshot.put("outputLanguage", outputLanguage.name());
         policySnapshot.put("outputFormat", "MARKDOWN");
@@ -529,6 +529,15 @@ public class ControlPlaneStore {
         for (ApiDtos.EvidenceDto item : record.evidence().values()) evidence.putIfAbsent(item.evidenceId(), item);
         for (ApiDtos.FindingDto item : record.findings()) findings.putIfAbsent(item.findingId(), item);
         for (ApiDtos.AttackChainDto item : record.chains()) chains.putIfAbsent(item.chainId(), item);
+    }
+
+    public List<ScanRecord> scansForProject(String projectId) {
+        requireProject(projectId);
+        return scans.values().stream()
+                .filter(record -> record.dto().projectId().equals(projectId))
+                .sorted(Comparator.comparing((ScanRecord record) -> record.dto().createdAt()).reversed()
+                        .thenComparing(record -> record.dto().scanId()))
+                .toList();
     }
 
     public ScanRecord scan(String scanId) {

@@ -54,6 +54,8 @@ export const jobStatusLabel = (status: string | undefined) => {
   switch (status) {
     case 'QUEUED':
       return '排队中'
+    case 'LEASED':
+      return '已领取'
     case 'RUNNING':
       return '执行中'
     case 'COMPLETED':
@@ -66,6 +68,21 @@ export const jobStatusLabel = (status: string | undefined) => {
       return '已阻断'
     default:
       return status ?? '未知'
+  }
+}
+
+export const stopReasonLabel = (reason: string | undefined) => {
+  switch (reason) {
+    case 'LEASE_EXPIRED':
+      return '租约过期已回收'
+    case 'WORKER_FAILURE':
+      return 'Worker 失败'
+    case 'USER_CANCELLED':
+      return '已取消'
+    case 'COMPLETED':
+      return '已完成'
+    default:
+      return reason
   }
 }
 

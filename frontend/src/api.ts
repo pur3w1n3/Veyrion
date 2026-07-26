@@ -188,6 +188,8 @@ export type DynamicTaskDto = {
   stopReason?: string
   failureCode?: string
   failureDiagnostic?: string
+  /** Latest worker/container step line for the audit timeline. */
+  progressDetail?: string
   updatedAt: string
 }
 
@@ -348,6 +350,32 @@ export type CreateAiJobRequest = {
   outputLanguage: OutputLanguage
 }
 
+export type AuditRetryStage =
+  | 'PRE_ANALYSIS'
+  | 'PATH_EXPLORATION'
+  | 'DYNAMIC_OBSERVATION'
+  | 'DYNAMIC_VERIFICATION'
+  | 'VULNERABILITY_TRIAGE'
+  | 'REPORT_GENERATION'
+
+export type RetryAuditStageRequest = {
+  scanId: string
+  stage: AuditRetryStage
+  authorized: true
+  aiAuthorized?: true
+  outputLanguage?: OutputLanguage
+}
+
+export type RetryAuditStageResult = {
+  schemaVersion: number
+  projectId: string
+  scanId: string
+  stage: string
+  pipelineArmed: boolean
+  aiJob?: AiJobDto
+  dynamicTask?: DynamicTaskDto
+}
+
 export class ApiUnavailableError extends Error {
   constructor(operation: string, status?: number, options?: ErrorOptions) {
     super(`${operation} unavailable${status ? ` (${status})` : ''}`, options)
@@ -408,7 +436,8 @@ export type SubscribeOptions = {
 
 export interface SentinelApi {
   readonly mode: ApiMode
-  loadDashboard(projectId?: string): Promise<DashboardSnapshot>
+  loadDashboard(projectId?: string, scanId?: string): Promise<DashboardSnapshot>
+  retryAuditStage(projectId: string, request: RetryAuditStageRequest): Promise<RetryAuditStageResult>
   listProjects(): Promise<ProjectDto[]>
   getProject(projectId: string): Promise<ProjectDto>
   createProject(request: CreateProjectRequest | string): Promise<ProjectDto>
@@ -787,6 +816,7 @@ export const parseDynamicTask = (value: unknown): DynamicTaskDto => {
     stopReason: optionalText(value.stopReason),
     failureCode: optionalText(value.failureCode),
     failureDiagnostic: optionalText(value.failureDiagnostic),
+    progressDetail: optionalText(value.progressDetail),
     updatedAt: asText(value.updatedAt, 'dynamicTask.updatedAt')
   }
 }
@@ -1197,8 +1227,10 @@ export class HttpSentinelApi implements SentinelApi {
   private readonly fetchFn: FetchLike
   private readonly token?: string
 
-  constructor(private readonly baseUrl: string, private readonly projectId: string, options: { token?: string; fetchFn?: FetchLike; fetch?: FetchLike } = {}) {
-    if (!baseUrl || !projectId) throw new Error('Control Plane baseUrl and projectId are required')
+  constructor(private readonly baseUrl: string, private readonly projectId = '', options: { token?: string; fetchFn?: FetchLike; fetch?: FetchLike } = {}) {
+    // projectId is optional at construction: workspace home can list/create projects
+    // before any workspace is selected. Per-project calls still require an explicit id.
+    if (!baseUrl) throw new Error('Control Plane baseUrl is required')
     const fetchFn = options.fetchFn ?? options.fetch ?? fetch
     // Keep native fetch detached from this API instance. Calling a stored
     // browser fetch as this.fetchFn(...) gives it the wrong receiver and
@@ -1245,12 +1277,41 @@ export class HttpSentinelApi implements SentinelApi {
     }
   }
 
-  async loadDashboard(projectId = this.projectId): Promise<DashboardSnapshot> {
-    const body = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/dashboard`, {
+  async loadDashboard(projectId = this.projectId, scanId?: string): Promise<DashboardSnapshot> {
+    const query = scanId && scanId !== 'unscanned'
+      ? `?scanId=${encodeURIComponent(asText(scanId, 'scanId'))}`
+      : ''
+    const body = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/dashboard${query}`, {
       credentials: 'include',
       headers: jsonHeaders(this.token)
     }, 'dashboard request')
     return parseDashboard(body)
+  }
+
+  async retryAuditStage(projectId: string, request: RetryAuditStageRequest): Promise<RetryAuditStageResult> {
+    const body: Record<string, unknown> = {
+      scanId: request.scanId,
+      stage: request.stage,
+      authorized: true
+    }
+    if (request.aiAuthorized) body.aiAuthorized = true
+    if (request.outputLanguage) body.outputLanguage = request.outputLanguage
+    const response = await this.request(`projects/${encodeURIComponent(asText(projectId, 'projectId'))}/audit-stage-retries`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: mutationHeaders(this.token, generatedIdempotencyKey()),
+      body: JSON.stringify(body)
+    }, 'retry audit stage')
+    if (!isRecord(response)) throw new Error('invalid audit stage retry response')
+    return {
+      schemaVersion: schemaVersion(response.schemaVersion, 'retry.schemaVersion'),
+      projectId: asText(response.projectId, 'retry.projectId'),
+      scanId: asText(response.scanId, 'retry.scanId'),
+      stage: asText(response.stage, 'retry.stage'),
+      pipelineArmed: asBoolean(response.pipelineArmed, 'retry.pipelineArmed'),
+      aiJob: response.aiJob === undefined ? undefined : parseAiJob(response.aiJob),
+      dynamicTask: response.dynamicTask === undefined ? undefined : parseDynamicTask(response.dynamicTask)
+    }
   }
 
   async listProjects(): Promise<ProjectDto[]> {
@@ -1668,8 +1729,12 @@ export class MockSentinelApi implements SentinelApi {
     throw new ApiUnavailableError(`${operation} (demo adapter)`)
   }
 
-  async loadDashboard(): Promise<DashboardSnapshot> {
+  async loadDashboard(_projectId?: string, _scanId?: string): Promise<DashboardSnapshot> {
     return structuredClone(demoSnapshot)
+  }
+
+  async retryAuditStage(): Promise<RetryAuditStageResult> {
+    return this.unavailable('retry audit stage')
   }
 
   async listProjects(): Promise<ProjectDto[]> {
@@ -1774,4 +1839,4 @@ export class MockSentinelApi implements SentinelApi {
 const demoMode = import.meta.env.VITE_DEMO_MODE === 'true'
 export const api: SentinelApi = demoMode
   ? new MockSentinelApi()
-  : new HttpSentinelApi(import.meta.env.VITE_API_BASE_URL || '/api/v1', import.meta.env.VITE_PROJECT_ID || 'default')
+  : new HttpSentinelApi(import.meta.env.VITE_API_BASE_URL || '/api/v1', import.meta.env.VITE_PROJECT_ID || '')

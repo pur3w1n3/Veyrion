@@ -126,6 +126,33 @@ public final class WorkerControlPlaneClient {
         return parseTask(sendLeaseMutation(scope, "start", leaseId, workerId, Map.of()));
     }
 
+    /**
+     * Renews the worker lease and optionally publishes a sanitized step progress line for the GUI.
+     * Each call uses a unique idempotency key so renewals are not replay-suppressed.
+     */
+    public WorkerLease heartbeat(TaskScope scope, String leaseId, String workerId, Duration extension,
+                                 String progressDetail) {
+        WorkerContracts.id(leaseId, "leaseId");
+        WorkerContracts.id(workerId, "workerId");
+        Objects.requireNonNull(extension, "extension");
+        long seconds = extension.toSeconds();
+        if (seconds <= 0 || seconds > 86_400 || !extension.equals(Duration.ofSeconds(seconds))) {
+            throw new IllegalArgumentException("heartbeat extension is invalid");
+        }
+        Map<String, Object> body = scopeBody(scope);
+        body.put("leaseId", leaseId);
+        body.put("workerId", workerId);
+        body.put("extensionSeconds", seconds);
+        if (progressDetail != null && !progressDetail.isBlank()) {
+            String value = progressDetail.replaceAll("[\\p{Cntrl}&&[^\\t]]", " ").strip();
+            if (value.length() > 240) value = value.substring(0, 240);
+            if (!value.isEmpty()) body.put("progressDetail", value);
+        }
+        String key = idempotency(scope, "heartbeat",
+                leaseId + "-" + Long.toHexString(System.nanoTime()));
+        return parseLease(sendMutation(scope, "heartbeat", body, key));
+    }
+
     public TraceCommit commitTrace(TaskScope scope, String leaseId, String workerId, TraceChunk chunk) {
         Objects.requireNonNull(chunk, "chunk");
         if (!scope.equals(chunk.scope())) throw new SecurityException("trace scope mismatch");

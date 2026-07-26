@@ -69,6 +69,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
     private final TraceProjectionService projectionService;
     private final Map<TaskScope, Boolean> scopes = new ConcurrentHashMap<>();
     private final Map<TaskScope, String> failureDiagnostics = new ConcurrentHashMap<>();
+    private final Map<TaskScope, String> progressDetails = new ConcurrentHashMap<>();
     private final Map<String, Boolean> publishedEvents = new ConcurrentHashMap<>();
     private volatile Consumer<TaskSnapshot> terminalListener = snapshot -> { };
 
@@ -189,6 +190,10 @@ final class WorkerControlPlaneApi implements HttpHandler {
         return failureDiagnostics.get(scope);
     }
 
+    String progressDetail(TaskScope scope) {
+        return progressDetails.get(scope);
+    }
+
     private void list(HttpExchange exchange) throws IOException {
         String projectId = query(exchange.getRequestURI(), "projectId");
         String scanId = query(exchange.getRequestURI(), "scanId");
@@ -222,11 +227,16 @@ final class WorkerControlPlaneApi implements HttpHandler {
                 WorkerLease lease = coordinator.heartbeat(scope, requiredText(body, "leaseId"),
                         requiredText(body, "workerId"),
                         Duration.ofSeconds(positiveLong(body, "extensionSeconds", 60)), key);
+                String progress = sanitizeProgress(optionalText(body, "progressDetail", null));
+                if (progress != null) progressDetails.put(scope, progress);
                 sendJson(exchange, 200, leaseMap(lease));
                 return;
             }
-            case "start" -> snapshot = coordinator.start(scope, requiredText(body, "leaseId"),
-                    requiredText(body, "workerId"), key);
+            case "start" -> {
+                snapshot = coordinator.start(scope, requiredText(body, "leaseId"),
+                        requiredText(body, "workerId"), key);
+                progressDetails.putIfAbsent(scope, "任务已开始，准备断网沙箱");
+            }
             case "trace" -> {
                 commitTrace(exchange, scope, body, key);
                 return;
@@ -625,6 +635,15 @@ final class WorkerControlPlaneApi implements HttpHandler {
     private static boolean isTerminal(TaskLifecycle lifecycle) {
         return lifecycle == TaskLifecycle.CANCELLED || lifecycle == TaskLifecycle.COMPLETED
                 || lifecycle == TaskLifecycle.FAILED;
+    }
+
+    private static String sanitizeProgress(String value) {
+        if (value == null || value.isBlank()) return null;
+        String cleaned = value.replaceAll("[\\p{Cntrl}&&[^\\t]]", " ").strip();
+        if (cleaned.isEmpty() || cleaned.length() > 240) {
+            return cleaned.isEmpty() ? null : cleaned.substring(0, 240);
+        }
+        return cleaned;
     }
 
     private static String query(URI uri, String name) {

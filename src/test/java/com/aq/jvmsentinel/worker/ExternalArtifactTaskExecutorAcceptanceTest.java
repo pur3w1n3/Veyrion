@@ -40,6 +40,8 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
             "registry.example/veyrion/external-runtime@sha256:" + "c".repeat(64);
     private static final String FEATURES = String.join(",",
             "lifecycle-v1", "execd-command-v1", "network-deny-v1", "resource-budget-v1",
+            // OpenSandbox hardened attestation still requires non-root-v1; TRUSTED_DOCKER local
+            // Docker uses container-root-v1 separately in LocalDockerTrustedSandboxClient.
             "non-root-v1", "read-only-rootfs-v1", "writable-tmp-v1",
             "controlled-tmpfs-v1", "digest-pinned-readonly-artifact-v1");
 
@@ -219,6 +221,13 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         }
 
         @Override
+        public void uploadFile(String sandboxId, java.nio.file.Path hostFile, String containerPath) {
+            check(created && sandboxId.equals("trusted-sandbox-1"), "known trusted sandbox");
+            check(containerPath.equals("/tmp/veyrion-trace/probe-plan.txt"), "probe plan upload path");
+            check(java.nio.file.Files.isRegularFile(hostFile), "probe plan host file");
+        }
+
+        @Override
         public void delete(String sandboxId) {
             check(created && sandboxId.equals("trusted-sandbox-1"), "trusted sandbox cleanup");
             created = false;
@@ -270,12 +279,14 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
             } else if (path.equals("/proxy/sandboxes/sandbox-1/port/44772/command")) {
                 Map<String, Object> command = JsonCodec.parseObject(body);
                 String commandText = (String) command.get("command");
-                if (commandText.startsWith("java ")) lastCommand = command;
+                boolean artifactRun = commandText.contains(" -jar ")
+                        || commandText.contains("/opt/veyrion/artifact/application.jar");
+                if (artifactRun) lastCommand = command;
                 String stdout = commandText.equals("/bin/cat /tmp/veyrion-trace/agent-events.jsonl")
                         ? agentJsonl() : "";
                 respond(exchange, 200, Map.of(
                         "id", "command-1", "stdout", stdout, "stderr", "",
-                        "exit_code", failCommand && commandText.startsWith("java ") ? 17 : 0));
+                        "exit_code", failCommand && artifactRun ? 17 : 0));
             } else if (path.equals("/v1/sandboxes/sandbox-1")
                     && exchange.getRequestMethod().equals("DELETE")) {
                 deleted++;
@@ -297,6 +308,8 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
             String action = pieces[1];
             if (action.equals("lease")) {
                 states.put(taskId, TaskLifecycle.LEASED);
+                respond(exchange, 200, lease(taskId));
+            } else if (action.equals("heartbeat")) {
                 respond(exchange, 200, lease(taskId));
             } else if (action.equals("start")) {
                 states.put(taskId, TaskLifecycle.RUNNING);
@@ -410,9 +423,10 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     && command.contains("-Dveyrion.sandbox.dependencyMock=true")
                     && command.contains("dependencyMock=true")
                     && command.contains("-javaagent:/opt/veyrion/agent/veyrion-agent.jar")
-                    && command.contains("com.aq.jvmsentinel.agent.LoopbackHttpProbe GET '/'")
-                    && command.contains("com.aq.jvmsentinel.agent.LoopbackHttpProbe"
-                            + " POST '/sample/http-entry'")
+                    && command.contains("com.aq.jvmsentinel.agent.WaitHttpReady")
+                    && command.contains("com.aq.jvmsentinel.agent.LoopbackHttpProbe @")
+                    && command.contains("probe-plan.txt")
+                    && !command.contains("--server.port=")
                     && command.contains("--spring.main.lazy-initialization=true")
                     && command.contains("jdbc:veyrion-mock:mem:veyrion")
                     && command.contains("--spring.datasource.hikari.initialization-fail-timeout=-1")
@@ -420,12 +434,12 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     && command.contains("--spring.flyway.enabled=false")
                     && command.contains("probe_status=1")
                     && command.contains("exit 70")
-                    && command.contains("kill -TERM \"$pid\"")
-                    && command.contains("kill -KILL \"$pid\""),
-                    "fixed command with bounded graceful stop");
-            check(((Number) lastCommand.get("uid")).intValue() == 65532
-                    && ((Number) lastCommand.get("gid")).intValue() == 65532
-                    && !lastCommand.containsKey("envs"), "non-root command without environment");
+                    && command.contains("kill -TERM \"$APP_PID\"")
+                    && command.contains("kill -KILL \"$APP_PID\""),
+                    "fixed command with process listen-port discovery");
+            check(((Number) lastCommand.get("uid")).intValue() == 0
+                    && ((Number) lastCommand.get("gid")).intValue() == 0
+                    && !lastCommand.containsKey("envs"), "container-root command without environment");
         }
 
         private String currentDigest() {

@@ -21,6 +21,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -35,12 +36,15 @@ import java.util.concurrent.TimeUnit;
  * capability, tmpfs and resource policy is inspected before a handle is returned.</p>
  */
 public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClient {
-    private static final int SANDBOX_UID = 65532;
-    private static final int SANDBOX_GID = 65532;
+    /** Container-default identity (root for the trusted runtime image). Privileged listen ports like 80 must work. */
+    private static final int SANDBOX_UID = 0;
+    private static final int SANDBOX_GID = 0;
+    private static final String TRACE_TMP = "/tmp/veyrion-trace";
     private static final int MAX_PROCESS_OUTPUT = 4 * 1024 * 1024;
+    private static final int MAX_PIDS = 1_024;
     private static final Set<String> FEATURES = Set.of(
             "lifecycle-v1", "execd-command-v1", "network-deny-v1",
-            "resource-budget-v1", "non-root-v1", "read-only-rootfs-v1",
+            "resource-budget-v1", "container-root-v1", "read-only-rootfs-v1",
             "writable-tmp-v1", "controlled-tmpfs-v1",
             "digest-pinned-readonly-artifact-v1");
     private static final RuntimeAttestation ATTESTATION = new RuntimeAttestation(
@@ -68,22 +72,24 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
         ReadOnlyArtifactMount mount = requireTrustedRequest(request);
         verifyArtifact(mount);
         String name = "veyrion-trusted-" + UUID.randomUUID().toString().replace("-", "");
+        // Boundary: deny-all egress (--network none) + read-only rootfs + digest-pinned artifact.
+        // Force root inside the container (image defaults to 65532) so JARs can bind privileged
+        // ports like 80; do not strip capabilities for complete startup under loopback probing.
         List<String> command = new ArrayList<>(List.of(
                 dockerExecutable, "run", "--detach", "--name", name,
                 "--label", "com.veyrion.trusted-docker=true",
                 "--network", "none",
                 "--read-only",
+                "--user", SANDBOX_UID + ":" + SANDBOX_GID,
                 "--tmpfs", "/tmp/veyrion-trace:rw,nosuid,nodev,size=" + request.tmpfsBytes()
-                        + ",mode=0700,uid=" + SANDBOX_UID + ",gid=" + SANDBOX_GID,
+                        + ",mode=1777,uid=" + SANDBOX_UID + ",gid=" + SANDBOX_GID,
+                "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
                 "--mount", "type=bind,source=" + mount.source()
                         + ",target=" + mount.destination() + ",readonly",
-                "--cap-drop", "ALL",
-                "--security-opt", "no-new-privileges",
-                "--pids-limit", "128",
+                "--pids-limit", Integer.toString(MAX_PIDS),
                 "--memory", Long.toString(request.resourceBudget().maxMemoryBytes()),
                 "--memory-swap", Long.toString(request.resourceBudget().maxMemoryBytes()),
                 "--cpus", "1.0",
-                "--user", SANDBOX_UID + ":" + SANDBOX_GID,
                 "--entrypoint", request.entrypoint().get(0),
                 request.image()));
         command.addAll(request.entrypoint().subList(1, request.entrypoint().size()));
@@ -114,7 +120,7 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
     public CommandResult command(String sandboxId, CommandRequest request) {
         requireKnown(sandboxId);
         if (request.uid() != SANDBOX_UID || request.gid() != SANDBOX_GID) {
-            throw new SecurityException("trusted Docker commands require UID/GID 65532");
+            throw new SecurityException("trusted Docker commands require UID/GID 0:0");
         }
         ProcessResult result = run(List.of(
                 dockerExecutable, "exec",
@@ -123,6 +129,39 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
                 sandboxId, "/bin/sh", "-c", request.command()),
                 request.timeout().plusSeconds(5));
         return new CommandResult(null, result.stdout(), result.stderr(), result.exitCode());
+    }
+
+    @Override
+    public void uploadFile(String sandboxId, Path hostFile, String containerPath) {
+        requireKnown(sandboxId);
+        Objects.requireNonNull(hostFile, "hostFile");
+        // docker cp cannot write into --read-only rootfs containers even when the destination is
+        // a writable tmpfs; stream bytes through docker exec into /tmp/veyrion-trace instead.
+        if (containerPath == null
+                || !containerPath.matches(TRACE_TMP + "/[A-Za-z0-9._-]{1,200}")
+                || containerPath.contains("..")) {
+            throw new SecurityException("upload path must stay under the sandbox trace tmpfs");
+        }
+        if (!Files.isRegularFile(hostFile, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(hostFile)) {
+            throw new IllegalArgumentException("upload host file must be a regular non-link file");
+        }
+        try {
+            long size = Files.size(hostFile);
+            if (size <= 0 || size > 256 * 1024) {
+                throw new IllegalArgumentException("upload host file size is outside trusted sandbox limits");
+            }
+        } catch (IOException failure) {
+            throw new IllegalStateException("upload host file could not be inspected", failure);
+        }
+        ProcessResult result = runWithInput(List.of(
+                dockerExecutable, "exec", "-i",
+                "--user", SANDBOX_UID + ":" + SANDBOX_GID,
+                sandboxId, "/bin/sh", "-c", "cat > '" + containerPath + "'"),
+                hostFile.toAbsolutePath().normalize(),
+                Duration.ofSeconds(30));
+        if (result.exitCode() != 0) {
+            throw failure("Docker failed to upload a file into the trusted artifact sandbox", result);
+        }
     }
 
     @Override
@@ -154,26 +193,24 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
                                        ReadOnlyArtifactMount mount) {
         ProcessResult result = run(List.of(dockerExecutable, "inspect", "--format",
                 "{{.HostConfig.NetworkMode}}|{{.HostConfig.ReadonlyRootfs}}|{{.Config.User}}|"
-                        + "{{json .HostConfig.CapDrop}}|{{json .HostConfig.SecurityOpt}}|"
                         + "{{json .HostConfig.Tmpfs}}|{{.HostConfig.Memory}}|{{.HostConfig.PidsLimit}}|"
                         + "{{len .Mounts}}|{{(index .Mounts 0).Type}}|"
                         + "{{(index .Mounts 0).Destination}}|{{(index .Mounts 0).RW}}",
                 sandboxId), Duration.ofSeconds(30));
         if (result.exitCode() != 0) throw failure("Docker inspection failed", result);
         String[] fields = result.stdout().strip().split("\\|", -1);
-        if (fields.length != 12
+        boolean rootUser = "0:0".equals(fields[2]) || "0".equals(fields[2]) || "root".equals(fields[2]);
+        if (fields.length != 10
                 || !"none".equals(fields[0])
                 || !"true".equalsIgnoreCase(fields[1])
-                || !(SANDBOX_UID + ":" + SANDBOX_GID).equals(fields[2])
-                || !fields[3].toUpperCase(Locale.ROOT).contains("ALL")
-                || !fields[4].toLowerCase(Locale.ROOT).contains("no-new-privileges")
-                || !fields[5].contains("\"/tmp/veyrion-trace\"")
-                || Long.parseLong(fields[6]) != request.resourceBudget().maxMemoryBytes()
-                || Long.parseLong(fields[7]) <= 0 || Long.parseLong(fields[7]) > 128
-                || !"1".equals(fields[8])
-                || !"bind".equals(fields[9])
-                || !mount.destination().equals(fields[10])
-                || !"false".equalsIgnoreCase(fields[11])) {
+                || !rootUser
+                || !fields[3].contains("\"/tmp/veyrion-trace\"")
+                || Long.parseLong(fields[4]) != request.resourceBudget().maxMemoryBytes()
+                || Long.parseLong(fields[5]) <= 0 || Long.parseLong(fields[5]) > MAX_PIDS
+                || !"1".equals(fields[6])
+                || !"bind".equals(fields[7])
+                || !mount.destination().equals(fields[8])
+                || !"false".equalsIgnoreCase(fields[9])) {
             throw new SecurityException("effective Docker trusted-artifact policy did not match requirements");
         }
     }
@@ -267,9 +304,17 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
     }
 
     private static ProcessResult run(List<String> command, Duration timeout) {
+        return runWithInput(command, null, timeout);
+    }
+
+    private static ProcessResult runWithInput(List<String> command, Path stdinFile, Duration timeout) {
         Process process;
         try {
-            process = new ProcessBuilder(command).start();
+            ProcessBuilder builder = new ProcessBuilder(command);
+            if (stdinFile != null) {
+                builder.redirectInput(stdinFile.toFile());
+            }
+            process = builder.start();
         } catch (IOException failure) {
             throw new IllegalStateException("Docker process could not be started", failure);
         }

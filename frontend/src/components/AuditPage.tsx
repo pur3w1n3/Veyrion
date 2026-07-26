@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { api, type AiJobDto, type ArtifactDto, type DashboardSnapshot, type DynamicTaskDto, type OutputLanguage, type RoleAssignmentDto, type ScanDto } from '../api'
+import { api, type AiJobDto, type ArtifactDto, type AuditRetryStage, type DashboardSnapshot, type DynamicTaskDto, type OutputLanguage, type RoleAssignmentDto, type ScanDto } from '../api'
 import { confirmAiAuthorization } from '../aiAuthorization'
-import { dependencyModeLabel, jobStatusLabel, roleLabel, timelineStateLabel } from '../labels'
+import { dependencyModeLabel, jobStatusLabel, roleLabel, stopReasonLabel, timelineStateLabel } from '../labels'
 import { AI_ROLES } from '../labels'
 import { ArtifactImportPanel } from './ArtifactImportPanel'
 import { errorMessage, Notice, PageHeader, StatusPill } from './Common'
@@ -139,16 +139,55 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
   const jobDetail = (job: AiJobDto | undefined, waiting: string) => job
     ? `${job.aiJobId} · ${jobStatusLabel(job.status)}${job.errorCode ? ` · ${job.errorCode}` : ''}`
     : waiting
-  const steps = [
-    ['目标摘要复核', snapshot?.artifactDigest ? 'completed' : 'waiting', snapshot?.artifactDigest ?? '等待后端摘要'],
-    ['静态事实与入口发现', snapshot?.entries.length ? 'completed' : 'waiting', `${snapshot?.entries.length ?? 0} 个入口；事实层不由模型改写`],
-    ['前置建模', jobState(preAnalysisJob), jobDetail(preAnalysisJob, '流水线自动创建')],
-    ['路径探索', jobState(pathJob), jobDetail(pathJob, '前置建模完成后自动进入')],
-    ['断网容器动态观察', dynamicState, dynamicTask ? `${dynamicTask.taskId} · ${jobStatusLabel(dynamicStatus)}` : '路径探索完成后自动排队'],
-    ['动态验证', jobState(dynamicVerifyJob), jobDetail(dynamicVerifyJob, '容器观察后自动对照路径假设验证')],
-    ['漏洞研判', jobState(triageJob), jobDetail(triageJob, '动态验证后自动进入')],
-    ['报告生成', jobState(reportJob), jobDetail(reportJob, '研判完成后自动汇总')]
-  ] as const
+  const dynamicDetail = dynamicTask
+    ? [
+        dynamicTask.taskId,
+        jobStatusLabel(dynamicStatus),
+        dynamicTask.progressDetail,
+        stopReasonLabel(dynamicTask.stopReason),
+        dynamicTask.failureCode,
+        dynamicTask.failureDiagnostic
+      ].filter(Boolean).join(' · ')
+    : '路径探索完成后自动排队'
+  const retryStage = (stage: AuditRetryStage) => {
+    if (!projectId || !activeScanId || activeScanId === 'unscanned') {
+      setError('没有可重试的扫描')
+      return
+    }
+    if (!confirmAiAuthorization()) return
+    setBusy(true); setError(undefined); setMessage(undefined)
+    void api.retryAuditStage(projectId, {
+      scanId: activeScanId,
+      stage,
+      authorized: true,
+      aiAuthorized: stage === 'DYNAMIC_OBSERVATION' ? undefined : true,
+      outputLanguage: language
+    }).then(async (result) => {
+      if (result.aiJob) {
+        setJobs((current) => [result.aiJob!, ...current.filter((job) => job.aiJobId !== result.aiJob!.aiJobId)])
+      }
+      if (result.dynamicTask) setDynamicTask(result.dynamicTask)
+      const stageLabel = stage === 'DYNAMIC_OBSERVATION' ? '断网容器动态观察' : roleLabel(stage)
+      setMessage(`已重新排队：${stageLabel}。流水线将从该阶段继续自动推进。`)
+      await refreshJobs()
+      await onRefresh()
+    }).catch((cause) => setError(`阶段重试失败：${errorMessage(cause)}`)).finally(() => setBusy(false))
+  }
+  const steps: Array<{
+    title: string
+    state: string
+    detail: string
+    retryStage?: AuditRetryStage
+  }> = [
+    { title: '目标摘要复核', state: snapshot?.artifactDigest ? 'completed' : 'waiting', detail: snapshot?.artifactDigest ?? '等待后端摘要' },
+    { title: '静态事实与入口发现', state: snapshot?.entries.length ? 'completed' : 'waiting', detail: `${snapshot?.entries.length ?? 0} 个入口；事实层不由模型改写` },
+    { title: '前置建模', state: jobState(preAnalysisJob), detail: jobDetail(preAnalysisJob, '流水线自动创建'), retryStage: jobState(preAnalysisJob) === 'unavailable' ? 'PRE_ANALYSIS' : undefined },
+    { title: '路径探索', state: jobState(pathJob), detail: jobDetail(pathJob, '前置建模完成后自动进入'), retryStage: jobState(pathJob) === 'unavailable' ? 'PATH_EXPLORATION' : undefined },
+    { title: '断网容器动态观察', state: dynamicState, detail: dynamicDetail, retryStage: dynamicState === 'unavailable' ? 'DYNAMIC_OBSERVATION' : undefined },
+    { title: '动态验证', state: jobState(dynamicVerifyJob), detail: jobDetail(dynamicVerifyJob, '容器观察后自动对照路径假设验证'), retryStage: jobState(dynamicVerifyJob) === 'unavailable' ? 'DYNAMIC_VERIFICATION' : undefined },
+    { title: '漏洞研判', state: jobState(triageJob), detail: jobDetail(triageJob, '动态验证后自动进入'), retryStage: jobState(triageJob) === 'unavailable' ? 'VULNERABILITY_TRIAGE' : undefined },
+    { title: '报告生成', state: jobState(reportJob), detail: jobDetail(reportJob, '研判完成后自动汇总'), retryStage: jobState(reportJob) === 'unavailable' ? 'REPORT_GENERATION' : undefined }
+  ]
 
   return <section>
     <PageHeader eyebrow="审计编排" title="审计执行">
@@ -167,7 +206,7 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
         <form className="stack-form" onSubmit={submit}>
           <label className="field"><span>目标制品</span><select required name="artifactId" disabled={!projectId || loadingArtifacts}><option value="">{loadingArtifacts ? '正在加载目标' : artifacts.length ? '选择制品' : '当前工作区暂无制品'}</option>{artifacts.map((item) => <option key={item.artifactId} value={item.artifactId}>{item.type} · {item.artifactId}</option>)}</select></label>
           <div className="form-grid">
-            <label className="field"><span>执行模式（外部依赖）</span><select name="dependencyMode"><option value="MOCK">{dependencyModeLabel('MOCK')}：外部依赖用模拟代替</option><option value="REPLAY">{dependencyModeLabel('REPLAY')}：按已有记录重放</option></select></label>
+            <label className="field"><span>执行模式（外部依赖）</span><select name="dependencyMode"><option value="MOCK">{dependencyModeLabel('MOCK')}：外部依赖用规则/协议模拟代替（当前唯一可用）</option></select></label>
             <label className="field"><span>网络策略</span><input value="禁止外网（固定）" readOnly /></label>
             <label className="field"><span>超时（秒）</span><input name="timeout" type="number" min="10" max="3600" defaultValue="300" /></label>
             <label className="field"><span>内存（MiB）</span><input name="memory" type="number" min="128" max="8192" defaultValue="512" /></label>
@@ -179,8 +218,16 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
       </article>
       <article className="panel audit-timeline-panel">
         <div className="panel-head"><div><p className="eyebrow">执行过程</p><h2>阶段进度</h2></div>{(scan?.verificationStatus ?? snapshot?.verificationStatus) && <StatusPill status={(scan?.verificationStatus ?? snapshot?.verificationStatus)!} />}</div>
-        <ol className="workflow-timeline">{steps.map(([title, state, detail], index) => <li className={`timeline-${state}`} key={title}><span>{index + 1}</span><div><strong>{title}</strong><small>{detail}</small></div><b>{timelineStateLabel(state)}</b></li>)}</ol>
-        <p className="form-help">无需逐步点击批准。任一步失败会停止后续自动推进；模型对话细节请在「审计过程」页查看。</p>
+        <ol className="workflow-timeline">{steps.map((step, index) => <li className={`timeline-${step.state}`} key={step.title}>
+          <span>{index + 1}</span>
+          <div>
+            <strong>{step.title}</strong>
+            <small>{step.detail}</small>
+            {step.retryStage && <button type="button" className="secondary-button timeline-retry" disabled={busy || !activeScanId} onClick={() => retryStage(step.retryStage!)}>重试该阶段</button>}
+          </div>
+          <b>{timelineStateLabel(step.state)}</b>
+        </li>)}</ol>
+        <p className="form-help">无需逐步点击批准。任一步失败会停止后续自动推进；可对失败阶段单独重试（新建授权任务并重新武装流水线）。模型对话细节请在「审计过程」页查看。</p>
       </article>
     </div>
   </section>

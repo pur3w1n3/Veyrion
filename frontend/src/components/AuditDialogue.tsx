@@ -200,7 +200,7 @@ export function AuditDialogue({
       <div className="panel-head"><div><p className="eyebrow">实时动向</p><h2>系统当前在做什么</h2></div></div>
       <ul>
         {activityLines.map((line, index) => <li key={`${line}-${index}`}>{line}</li>)}
-        {dynamicTask && <li>断网容器任务 {dynamicTask.taskId}：{jobStatusLabel(dynamicTask.status)}{dynamicTask.failureCode ? ` · ${dynamicTask.failureCode}` : ''}{dynamicTask.stopReason ? ` · ${dynamicTask.stopReason}` : ''}</li>}
+        {dynamicTask && <li>断网容器任务 {dynamicTask.taskId}：{[jobStatusLabel(dynamicTask.status), dynamicTask.progressDetail, dynamicTask.stopReason, dynamicTask.failureCode].filter(Boolean).join(' · ')}</li>}
         {activityLines.length === 0 && !dynamicTask && <li>等待审计启动</li>}
       </ul>
     </div>

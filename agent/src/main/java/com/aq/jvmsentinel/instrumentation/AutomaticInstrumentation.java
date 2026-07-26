@@ -28,6 +28,7 @@ import static net.bytebuddy.matcher.ElementMatchers.nameStartsWith;
 import static net.bytebuddy.matcher.ElementMatchers.named;
 import static net.bytebuddy.matcher.ElementMatchers.namedOneOf;
 import static net.bytebuddy.matcher.ElementMatchers.not;
+import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 /**
  * Startup-only instrumentation. Bootstrap classes are deliberately not transformed; calls into selected JDK
@@ -47,8 +48,10 @@ final class AutomaticInstrumentation {
     }
 
     static void install(Instrumentation instrumentation, AgentConfig config, EventWriter writer) {
+        // CLASS_LOAD stays classPrefix-scoped. Servlet/Filter/Interceptor HTTP capture must ignore
+        // classPrefix, otherwise auth denials never produce HTTP evidence for the target controller.
         AgentBuilder.RawMatcher applicationTypes = (type, loader, module, redefining, domain) ->
-                loader != null && config.includes(type.getName());
+                loader != null && (isHttpObservabilityType(type) || config.includes(type.getName()));
 
         AgentBuilder.Listener listener = new AgentBuilder.Listener.Adapter() {
             @Override
@@ -63,17 +66,115 @@ final class AutomaticInstrumentation {
                 .with(listener)
                 .disableClassFormatChanges()
                 .type(applicationTypes)
-                .transform(AutomaticInstrumentation::instrumentApplicationCalls);
+                .transform((builder0, type, loader, module, domain) -> {
+                    boolean prefixed = config.includes(type.getName());
+                    if (!prefixed && isHttpObservabilityType(type)) {
+                        return instrumentHttpSurface(builder0, type);
+                    }
+                    return instrumentApplicationCalls(builder0, type);
+                });
 
         builder.installOn(instrumentation);
     }
 
+    private static boolean isHttpObservabilityType(TypeDescription type) {
+        if (isInterface().matches(type)) return false;
+        // Prefer hierarchy when the servlet API is visible to ByteBuddy's TypePool.
+        if (hierarchyHttpSurface(type)) return true;
+        // Spring Boot fat JARs often hide javax/jakarta.servlet from TypePool, so hasSuperType
+        // returns false for DispatcherServlet/Filters even though they are HTTP surfaces.
+        return shapedHttpServlet(type) || shapedHttpFilter(type) || shapedHttpInterceptor(type);
+    }
+
+    private static boolean hierarchyHttpSurface(TypeDescription type) {
+        try {
+            return hasSuperType(named("jakarta.servlet.Servlet").or(named("javax.servlet.Servlet"))).matches(type)
+                    || hasSuperType(named("jakarta.servlet.Filter").or(named("javax.servlet.Filter"))).matches(type)
+                    || hasSuperType(named("org.springframework.web.servlet.HandlerInterceptor")).matches(type);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static boolean shapedHttpServlet(TypeDescription type) {
+        String name = type.getName();
+        // Explicit Spring MVC surfaces: service() may be inherited, so do not require a local
+        // declaration (getDeclaredMethods misses FrameworkServlet.service on DispatcherServlet).
+        if (name.equals("org.springframework.web.servlet.DispatcherServlet")
+                || name.equals("org.springframework.web.servlet.FrameworkServlet")
+                || name.endsWith(".DispatcherServlet")) {
+            return true;
+        }
+        if (!(name.endsWith("Servlet") || name.contains("DispatcherServlet"))) return false;
+        return type.getDeclaredMethods().filter(isMethod()
+                .and(namedOneOf("service", "doGet", "doPost", "doPut", "doDelete", "doPatch"))
+                .and(not(isAbstract()))
+                .and(takesArguments(2))).size() > 0;
+    }
+
+    private static boolean shapedHttpFilter(TypeDescription type) {
+        String name = type.getName();
+        if (name.equals("org.springframework.web.filter.OncePerRequestFilter")
+                || name.equals("org.springframework.web.filter.GenericFilterBean")
+                || name.endsWith("OncePerRequestFilter")) {
+            return true;
+        }
+        if (!(name.endsWith("Filter") || name.contains(".filter.") || name.contains(".Filter"))) {
+            return false;
+        }
+        // Subclasses often override doFilterInternal only; parent doFilter stays on OncePerRequestFilter.
+        return type.getDeclaredMethods().filter(isMethod()
+                .and(namedOneOf("doFilter", "doFilterInternal"))
+                .and(not(isAbstract()))).size() > 0;
+    }
+
+    private static boolean shapedHttpInterceptor(TypeDescription type) {
+        String name = type.getName();
+        if (!name.contains("Interceptor")) return false;
+        return type.getDeclaredMethods().filter(isMethod()
+                .and(named("preHandle"))
+                .and(not(isAbstract()))).size() > 0;
+    }
+
+    /** HTTP-only advice for framework types outside classPrefix (no call-site flood). */
+    private static DynamicType.Builder<?> instrumentHttpSurface(
+            DynamicType.Builder<?> builder, TypeDescription type) {
+        DynamicType.Builder<?> instrumented = builder;
+        boolean servlet = false;
+        boolean filter = false;
+        boolean interceptor = false;
+        try {
+            servlet = hasSuperType(named("jakarta.servlet.Servlet")
+                    .or(named("javax.servlet.Servlet"))).matches(type);
+            filter = hasSuperType(named("jakarta.servlet.Filter")
+                    .or(named("javax.servlet.Filter"))).matches(type);
+            interceptor = hasSuperType(named("org.springframework.web.servlet.HandlerInterceptor"))
+                    .matches(type);
+        } catch (Throwable ignored) {
+            // Fall through to shape-based advice selection.
+        }
+        if (servlet || shapedHttpServlet(type)) {
+            instrumented = instrumented.visit(Advice.to(ServletAdvice.class).on(
+                    isMethod().and(namedOneOf("service", "doGet", "doPost", "doPut",
+                            "doDelete", "doPatch", "doHead", "doOptions"))
+                            .and(not(isAbstract()))));
+        }
+        if (filter || shapedHttpFilter(type)) {
+            instrumented = instrumented.visit(Advice.to(FilterAdvice.class).on(
+                    isMethod().and(namedOneOf("doFilter", "doFilterInternal"))
+                            .and(not(isAbstract()))));
+        }
+        if (interceptor || shapedHttpInterceptor(type)) {
+            instrumented = instrumented.visit(Advice.to(InterceptorAdvice.class).on(
+                    isMethod().and(namedOneOf("preHandle", "postHandle", "afterCompletion"))
+                            .and(not(isAbstract()))));
+        }
+        return instrumented;
+    }
+
     private static DynamicType.Builder<?> instrumentApplicationCalls(
             DynamicType.Builder<?> builder,
-            TypeDescription type,
-            ClassLoader loader,
-            JavaModule module,
-            ProtectionDomain domain) {
+            TypeDescription type) {
         DynamicType.Builder<?> instrumented = builder
                 .visit(new DependencyCallSiteVisitor(type.getName()))
                 .visit(Advice.to(SpringHandlerAdvice.class).on(
@@ -83,13 +184,7 @@ final class AutomaticInstrumentation {
             instrumented = instrumented.visit(Advice.to(JdbcAdvice.class).on(
                     isMethod().and(nameStartsWith("execute")).and(not(isAbstract()))));
         }
-        if (hasSuperType(named("jakarta.servlet.Servlet")
-                .or(named("javax.servlet.Servlet"))).matches(type)) {
-            instrumented = instrumented.visit(Advice.to(ServletAdvice.class).on(
-                    isMethod().and(namedOneOf("service", "doGet", "doPost", "doPut",
-                            "doDelete", "doPatch", "doHead", "doOptions"))
-                            .and(not(isAbstract()))));
-        }
+        instrumented = instrumentHttpSurface(instrumented, type);
         return instrumented;
     }
 
@@ -141,15 +236,116 @@ final class AutomaticInstrumentation {
         }
     }
 
+    public static final class FilterAdvice {
+        private FilterAdvice() {
+        }
+
+        @Advice.OnMethodEnter(suppress = Throwable.class)
+        public static void enter(@Advice.Origin("#t") String className,
+                                 @Advice.Origin("#m") String methodName,
+                                 @Advice.AllArguments Object[] args) {
+            String httpMethod = "";
+            String route = "";
+            if (args != null) {
+                for (Object arg : args) {
+                    if (arg == null) continue;
+                    try {
+                        Object methodValue = arg.getClass().getMethod("getMethod").invoke(arg);
+                        Object uriValue = arg.getClass().getMethod("getRequestURI").invoke(arg);
+                        if (methodValue instanceof String text) httpMethod = text;
+                        if (uriValue instanceof String text) route = text;
+                        if (!httpMethod.isBlank() || !route.isBlank()) break;
+                    } catch (Throwable ignored) {
+                        // Not a servlet request argument.
+                    }
+                }
+            }
+            AgentRuntime.recordTransformedDetail("HTTP", className, methodName,
+                    Map.of("captureMode", "SERVLET_FILTER",
+                            "httpMethod", truncate(httpMethod, 16),
+                            "route", truncate(route, 512)));
+        }
+
+        private static String truncate(String value, int max) {
+            if (value == null) return "";
+            return value.length() <= max ? value : value.substring(0, max);
+        }
+    }
+
+    public static final class InterceptorAdvice {
+        private InterceptorAdvice() {
+        }
+
+        @Advice.OnMethodEnter(suppress = Throwable.class)
+        public static void enter(@Advice.Origin("#t") String className,
+                                 @Advice.Origin("#m") String methodName,
+                                 @Advice.AllArguments Object[] args) {
+            String httpMethod = "";
+            String route = "";
+            if (args != null) {
+                for (Object arg : args) {
+                    if (arg == null) continue;
+                    try {
+                        Object methodValue = arg.getClass().getMethod("getMethod").invoke(arg);
+                        Object uriValue = arg.getClass().getMethod("getRequestURI").invoke(arg);
+                        if (methodValue instanceof String text) httpMethod = text;
+                        if (uriValue instanceof String text) route = text;
+                        if (!httpMethod.isBlank() || !route.isBlank()) break;
+                    } catch (Throwable ignored) {
+                        // Not a servlet request argument.
+                    }
+                }
+            }
+            AgentRuntime.recordTransformedDetail("HTTP", className, methodName,
+                    Map.of("captureMode", "SPRING_INTERCEPTOR",
+                            "httpMethod", truncate(httpMethod, 16),
+                            "route", truncate(route, 512)));
+        }
+
+        private static String truncate(String value, int max) {
+            if (value == null) return "";
+            return value.length() <= max ? value : value.substring(0, max);
+        }
+    }
+
     public static final class SpringHandlerAdvice {
         private SpringHandlerAdvice() {
         }
 
         @Advice.OnMethodEnter(suppress = Throwable.class)
         public static void enter(@Advice.Origin("#t") String className,
-                                 @Advice.Origin("#m") String methodName) {
-            AgentRuntime.recordTransformedMethod(
-                    "HTTP", className, methodName, "SPRING_MAPPING_ANNOTATION");
+                                 @Advice.Origin("#m") String methodName,
+                                 @Advice.AllArguments Object[] args) {
+            String httpMethod = "";
+            String route = "";
+            if (args != null) {
+                for (Object arg : args) {
+                    if (arg == null) continue;
+                    try {
+                        Object methodValue = arg.getClass().getMethod("getMethod").invoke(arg);
+                        Object uriValue = arg.getClass().getMethod("getRequestURI").invoke(arg);
+                        if (methodValue instanceof String text) httpMethod = text;
+                        if (uriValue instanceof String text) route = text;
+                        if (!httpMethod.isBlank() || !route.isBlank()) break;
+                    } catch (Throwable ignored) {
+                        // Controller args are often domain types, not the request.
+                    }
+                }
+            }
+            if (route.isBlank()) {
+                AgentRuntime.recordTransformedMethod(
+                        "HTTP", className, methodName, "SPRING_MAPPING_ANNOTATION");
+            } else {
+                AgentRuntime.recordTransformedDetail("HTTP", className, methodName,
+                        Map.of("captureMode", "SPRING_MAPPING_ANNOTATION",
+                                "httpMethod", truncate(httpMethod, 16),
+                                "route", truncate(route, 512)));
+            }
+        }
+
+        private static String truncate(String value, int max) {
+            if (value == null) return "";
+            return value.length() <= max ? value : value.substring(0, max);
         }
     }
 

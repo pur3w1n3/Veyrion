@@ -6,10 +6,11 @@ import { BoundaryLegend, Notice, errorMessage } from './components/Common'
 import { ProviderPage } from './components/ProviderPage'
 import { ResultsPage } from './components/ResultsPage'
 import { SettingsPage } from './components/SettingsPage'
+import { AuditHistoryPage } from './components/AuditHistoryPage'
 import { WorkspacesHomePage } from './components/WorkspacesHomePage'
 import { dependencyModeLabel } from './labels'
 
-type View = 'workspaces' | 'audit' | 'ai-audit' | 'results' | 'providers' | 'settings'
+type View = 'workspaces' | 'audit' | 'history' | 'ai-audit' | 'results' | 'providers' | 'settings'
 type Theme = 'light' | 'dark'
 
 const nav: Array<{ id: View; label: string; description: string; icon: string }> = [
@@ -17,6 +18,7 @@ const nav: Array<{ id: View; label: string; description: string; icon: string }>
   { id: 'audit', label: '审计执行', description: '制品导入与自动流水线', icon: '◎' },
   { id: 'ai-audit', label: '审计过程', description: '提示词、思考与输出对话', icon: '≋' },
   { id: 'results', label: '审计结果', description: '证据、发现与报告', icon: '◇' },
+  { id: 'history', label: '审计历史', description: '本工作区全部扫描记录', icon: '☰' },
   { id: 'providers', label: '模型服务', description: '接口配置与五个角色', icon: '◈' },
   { id: 'settings', label: '全局设置', description: '外观与安全默认值', icon: '⚙' }
 ]
@@ -36,6 +38,7 @@ export default function App() {
   const [projects, setProjects] = useState<ProjectDto[]>([])
   const [projectId, setProjectId] = useState(import.meta.env.VITE_PROJECT_ID || '')
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null)
+  const [focusedScanId, setFocusedScanId] = useState<string>()
   const [projectApiError, setProjectApiError] = useState<string>()
   const [dashboardApiError, setDashboardApiError] = useState<string>()
 
@@ -56,10 +59,9 @@ export default function App() {
       const next = await api.listProjects()
       setProjects(next)
       setProjectApiError(undefined)
+      // Keep an explicit selection only; never auto-switch to the first workspace on load.
       setProjectId((current) =>
-        current && next.some((project) => project.projectId === current)
-          ? current
-          : (next[0]?.projectId ?? '')
+        current && next.some((project) => project.projectId === current) ? current : ''
       )
     } catch (cause) {
       setProjectApiError(errorMessage(cause))
@@ -69,15 +71,16 @@ export default function App() {
   const refreshDashboard = useCallback(async () => {
     if (!projectId) { setSnapshot(null); return }
     try {
-      setSnapshot(await api.loadDashboard(projectId))
+      setSnapshot(await api.loadDashboard(projectId, focusedScanId))
       setDashboardApiError(undefined)
     } catch (cause) {
       setSnapshot(null)
       setDashboardApiError(errorMessage(cause))
     }
-  }, [projectId])
+  }, [projectId, focusedScanId])
 
   useEffect(() => { void refreshProjects() }, [refreshProjects])
+  useEffect(() => { setFocusedScanId(undefined) }, [projectId])
   useEffect(() => { void refreshDashboard() }, [refreshDashboard])
 
   const currentProject = projects.find((project) => project.projectId === projectId)
@@ -105,6 +108,12 @@ export default function App() {
           onProjectsChanged={refreshProjects}
         />}
         {view === 'audit' && <AuditPage projectId={projectId} snapshot={snapshot} onRefresh={refreshDashboard} language={language} />}
+        {view === 'history' && <AuditHistoryPage
+          projectId={projectId}
+          activeScanId={focusedScanId ?? snapshot?.scanId}
+          onOpenScan={(scanId) => { setFocusedScanId(scanId); setView('results') }}
+          onOpenAudit={() => setView('audit')}
+        />}
         {view === 'ai-audit' && <AiAuditPage projectId={projectId} snapshot={snapshot} language={language} onRefresh={refreshDashboard} />}
         {view === 'results' && <ResultsPage projectId={projectId} snapshot={snapshot} language={language} />}
         {view === 'providers' && <ProviderPage projectId={projectId} />}

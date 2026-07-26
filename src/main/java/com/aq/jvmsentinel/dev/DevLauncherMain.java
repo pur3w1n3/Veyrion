@@ -1,20 +1,15 @@
 package com.aq.jvmsentinel.dev;
 
 import com.aq.jvmsentinel.control.ControlPlaneServer;
-import com.aq.jvmsentinel.control.JsonCodec;
 import com.aq.jvmsentinel.sandbox.LocalDockerTrustedSandboxClient;
 import com.aq.jvmsentinel.worker.LocalArtifactWorkerLoop;
 
 import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
-import java.time.Duration;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,9 +24,6 @@ import java.util.concurrent.TimeUnit;
  * worker. The worker still consumes the authenticated contract and has no host JVM fallback.</p>
  */
 public final class DevLauncherMain {
-    private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
-    private static final String DEVELOPMENT_PROJECT_NAME = "Veyrion Local Development";
-
     private DevLauncherMain() { }
 
     public static void main(String[] args) throws Exception {
@@ -51,9 +43,9 @@ public final class DevLauncherMain {
                             server.workerToken(), new LocalDockerTrustedSandboxClient(),
                             server::requireLocalArtifact, requiredRuntimeImage()).start()
                     : null;
-            String projectId = loadOrCreateProject(server.baseUri(), token);
-            syncFrontendEnv(config, server.baseUri(), projectId, token);
-            Process frontend = startFrontend(config, server.baseUri(), projectId, token);
+            // Do not bootstrap or force-select a default workspace; the GUI workspaces home owns that.
+            syncFrontendEnv(config, server.baseUri(), token);
+            Process frontend = startFrontend(config, server.baseUri(), token);
             Runtime.getRuntime().addShutdownHook(new Thread(
                     () -> {
                         stop(frontend);
@@ -62,9 +54,9 @@ public final class DevLauncherMain {
 
             System.out.println("Veyrion Control Plane: " + server.baseUri());
             System.out.println("Veyrion GUI: http://127.0.0.1:" + config.frontendPort());
-            System.out.println("Development project: " + projectId);
             System.out.println("Authorized artifact directory: " + config.artifactRoot());
             System.out.println("Local GUI auth token synced to frontend/.env.local (loopback only)");
+            System.out.println("No default workspace is created; open 工作区 to choose or create one.");
             System.out.println("Trusted internal JAR Docker worker: "
                     + (worker == null ? "disabled" : "enabled (TRUSTED_DOCKER, network none)"));
             System.out.println("Press Ctrl+C to stop both processes.");
@@ -82,105 +74,28 @@ public final class DevLauncherMain {
         }
     }
 
-    static String createProject(URI apiBaseUri, String token) {
-        Objects.requireNonNull(apiBaseUri, "apiBaseUri");
-        Objects.requireNonNull(token, "token");
-        URI endpoint = URI.create(apiBaseUri.toString() + "/projects");
-        HttpRequest request = HttpRequest.newBuilder(endpoint).timeout(HTTP_TIMEOUT)
-                .header("Content-Type", "application/json")
-                .header("X-Sentinel-Authorization", token)
-                .header("Idempotency-Key", "dev-launcher-project")
-                .POST(HttpRequest.BodyPublishers.ofString(
-                        JsonCodec.stringify(Map.of("name", DEVELOPMENT_PROJECT_NAME)),
-                        StandardCharsets.UTF_8))
-                .build();
-        try {
-            HttpResponse<String> response = HttpClient.newBuilder()
-                    .connectTimeout(HTTP_TIMEOUT)
-                    .followRedirects(HttpClient.Redirect.NEVER)
-                    .build()
-                    .send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new IllegalStateException("Control Plane project bootstrap failed with HTTP "
-                        + response.statusCode());
-            }
-            Object value = JsonCodec.parseObject(response.body()).get("projectId");
-            if (!(value instanceof String projectId)
-                    || !projectId.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) {
-                throw new IllegalStateException("Control Plane returned an invalid projectId");
-            }
-            return projectId;
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("project bootstrap interrupted", interrupted);
-        } catch (IOException failure) {
-            throw new IllegalStateException("project bootstrap transport failed", failure);
-        }
-    }
-
-    static String loadOrCreateProject(URI apiBaseUri, String token) {
-        Objects.requireNonNull(apiBaseUri, "apiBaseUri");
-        HttpRequest request = HttpRequest.newBuilder(
-                        URI.create(apiBaseUri.toString() + "/projects"))
-                .timeout(HTTP_TIMEOUT)
-                .header("Accept", "application/json")
-                .GET()
-                .build();
-        try {
-            HttpResponse<String> response = HttpClient.newBuilder()
-                    .connectTimeout(HTTP_TIMEOUT)
-                    .followRedirects(HttpClient.Redirect.NEVER)
-                    .build()
-                    .send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new IllegalStateException("Control Plane project listing failed with HTTP "
-                        + response.statusCode());
-            }
-            Object projects = JsonCodec.parseObject(response.body()).get("projects");
-            if (!(projects instanceof List<?> values)) {
-                throw new IllegalStateException("Control Plane returned an invalid project list");
-            }
-            for (Object value : values) {
-                if (value instanceof Map<?, ?> project
-                        && DEVELOPMENT_PROJECT_NAME.equals(project.get("name"))
-                        && project.get("projectId") instanceof String projectId
-                        && projectId.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) {
-                    return projectId;
-                }
-            }
-            return createProject(apiBaseUri, token);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("project bootstrap interrupted", interrupted);
-        } catch (IOException failure) {
-            throw new IllegalStateException("project bootstrap transport failed", failure);
-        }
-    }
-
-    static Process startFrontend(Configuration config, URI apiBaseUri,
-                                 String projectId, String token) throws IOException {
+    static Process startFrontend(Configuration config, URI apiBaseUri, String token) throws IOException {
         ProcessBuilder builder = new ProcessBuilder(frontendCommand(config));
         builder.directory(config.frontendDirectory().toFile());
         builder.inheritIO();
         Map<String, String> environment = builder.environment();
         environment.put("VITE_DEMO_MODE", "false");
         environment.put("VITE_API_BASE_URL", apiBaseUri.toString());
-        environment.put("VITE_PROJECT_ID", projectId);
         environment.put("VITE_API_TOKEN", token);
+        environment.remove("VITE_PROJECT_ID");
         return builder.start();
     }
 
-    static void syncFrontendEnv(Configuration config, URI apiBaseUri,
-                                String projectId, String token) throws IOException {
+    static void syncFrontendEnv(Configuration config, URI apiBaseUri, String token) throws IOException {
         Path envLocal = config.frontendDirectory().resolve(".env.local");
         String content = """
                 # Generated by DevLauncherMain for loopback development only.
                 # Do not commit. Restart Vite after this file changes.
+                # VITE_PROJECT_ID is intentionally omitted so the GUI does not force a workspace.
                 VITE_DEMO_MODE=false
                 VITE_API_BASE_URL=%s
-                VITE_PROJECT_ID=%s
                 VITE_API_TOKEN=%s
-                """.formatted(apiBaseUri, projectId, token);
+                """.formatted(apiBaseUri, token);
         Files.writeString(envLocal, content, StandardCharsets.UTF_8);
     }
 

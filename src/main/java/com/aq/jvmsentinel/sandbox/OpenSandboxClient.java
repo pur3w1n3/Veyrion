@@ -11,7 +11,11 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -97,6 +101,34 @@ public final class OpenSandboxClient implements SandboxRuntimeClient {
         String contentType = response.contentType().toLowerCase(Locale.ROOT);
         return contentType.contains("text/event-stream") ? parseCommandEvents(response.body())
                 : parseCommandJson(response.body());
+    }
+
+    @Override
+    public void uploadFile(String sandboxId, Path hostFile, String containerPath) {
+        java.util.Objects.requireNonNull(hostFile, "hostFile");
+        if (containerPath == null || !containerPath.startsWith("/tmp/veyrion-trace/")
+                || containerPath.contains("..") || containerPath.length() > 512) {
+            throw new SecurityException("upload path must stay under the sandbox trace directory");
+        }
+        try {
+            if (!Files.isRegularFile(hostFile, LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(hostFile)) {
+                throw new IllegalArgumentException("upload host file must be a regular non-link file");
+            }
+            byte[] bytes = Files.readAllBytes(hostFile);
+            if (bytes.length == 0 || bytes.length > 48_000) {
+                throw new IllegalArgumentException("upload file size is outside OpenSandbox limits");
+            }
+            String b64 = Base64.getEncoder().encodeToString(bytes);
+            CommandResult written = command(sandboxId, new CommandRequest(
+                    "printf '%s' '" + b64 + "' | base64 -d > " + containerPath,
+                    "/sandbox", Duration.ofSeconds(15), 0, 0));
+            if (written.exitCode() != 0) {
+                throw OpenSandboxException.capability("sandbox file upload command failed");
+            }
+        } catch (IOException failure) {
+            throw new IllegalStateException("sandbox file upload could not read host file", failure);
+        }
     }
 
     private SandboxHandle transition(String sandboxId, String action) {

@@ -416,9 +416,27 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 仍禁止：无重放的 `VERIFIED`、真实外连 DB/Redis、破坏性 payload、宣称「所有路径 100%」或一次实现全部 CWE。
 - 启动强依赖专用协议（如 Redisson 非 RESP、Flowable 强制 schema）的应用仍可能失败；后续按 AUTH → 注入/sink → 组合链连续加深。
 
+## 40. 可扩展分析骨架（文档先行，JAR 落地）（2026-07-26）
+
+- 产品文档新增 [docs/EXTENSIBLE_ANALYSIS.md](docs/EXTENSIBLE_ANALYSIS.md)；PRD/技术架构交叉引用。
+- 三轴：`Packager`（制品形态）× `FrameworkAdapter`（入口/屏障发现）× `AnalysisPack`（AuthCoverage 等）。
+- AuthCoverage 五层矩阵；`AUTH_GAP` 只是声明层信号。当前实现仍以 Executable JAR + Spring/Blade 为主，WAR/自研按同一模型增强。
+- GUI：失败阶段可显式重试（新建授权任务并重新武装流水线）；工作区「审计历史」列出全部 scan，不只最新一条。
+- baldex 类大包动态失败根因之一：180s Docker 墙钟不足以覆盖冷启动 + 多入口探针；预算按制品体积上调，探针上限收敛到 24。
+
 ## 37. 动态验证角色迁移登记遗漏（2026-07-25）
 
 - `V006__dynamic_verification_role.sql` 已存在，但 `SQLiteControlPlanePersistence.MIGRATIONS` 未登记，导致运行中数据库仍只接受四个角色；保存「动态验证」角色绑定时 SQLite CHECK 失败并表现为 500。
 - 已将 V006 纳入迁移列表；重启控制面后会扩展 `project_ai_role_bindings` 与 `ai_jobs` 的角色 CHECK。
 - V006 首版注释含分号（`cannot alter CHECK; recreate`），按 `;` 拆语句时把 DDL 截断，JDBC 报 `prepared statement has been finalized`。迁移执行前先去掉 `--` 行注释再拆分。
 - SQLite 在事务内忽略 `PRAGMA foreign_keys`；若表重建时外键仍开启，`DROP TABLE ai_jobs` 会级联清空 `ai_job_events`。迁移器在每条迁移事务外关闭/恢复外键。
+
+## 41. 全量入口批量探针 + 完整 AI 审计闭环（2026-07-26）
+
+对 baldex（~250 HTTP 入口）跑通 `audit-runs` 全链路排错结论：
+
+- **批量探针**：`LoopbackHttpProbe` 支持 `@planFile`；控制面 `maxProbes=min(512, entries)`；墙钟按体积/探针数上调（大包约 420s）。探针计划经 `sandbox.uploadFile` 写入 `/tmp/veyrion-trace`，避免 Windows `docker exec` 超长命令行。
+- **只读根文件系统**：`docker cp` 在 `--read-only` 容器上失败（`container rootfs is marked read-only`）。`LocalDockerTrustedSandboxClient.uploadFile` 改为 `docker exec -i … cat > tmpfs`。
+- **报告超时**：`REPORT_GENERATION` 在注入四角色先验 + 多轮工具上下文后易触发 90s `TRANSPORT_FAILED`。已将单请求超时提到 120s、任务预算到 600s，并将先验摘要截断到每角色 2KiB。
+- **动态证据存活域**：`DYNAMIC_EVIDENCE` 来自进程内 `TraceProjectionService`，控制面重启后不可见；中途重启会使后续 AI 角色误判“无运行时证据”。完整审计须在同一次进程生命周期内跑完。
+- **已验证一次闭环**（`scan` 示例：`scan-*` / 本轮成功跑）：五角色均 `COMPLETED`，动态 `COMPLETED`，`HTTP probe observed` = 250。仍为 `MOCK` / 最多 `DYNAMIC_SUSPECTED`，不得标 `VERIFIED`。

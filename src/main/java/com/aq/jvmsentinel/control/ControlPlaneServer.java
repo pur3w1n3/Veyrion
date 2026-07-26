@@ -439,6 +439,13 @@ public final class ControlPlaneServer implements AutoCloseable {
             startAudit(exchange, path.get(1));
             return;
         }
+        if (path.size() == 3 && "projects".equals(path.get(0)) && "audit-stage-retries".equals(path.get(2))
+                && "POST".equals(method)) {
+            requirePermission(exchange, Permission.RUN_SCANS);
+            requirePermission(exchange, Permission.RUN_AI_JOBS);
+            retryAuditStage(exchange, path.get(1));
+            return;
+        }
         if (path.size() == 3 && "projects".equals(path.get(0)) && "scans".equals(path.get(2))) {
             if ("POST".equals(method)) { requirePermission(exchange, Permission.RUN_SCANS); createScan(exchange, path.get(1)); return; }
             if ("GET".equals(method)) { listScans(exchange, path.get(1)); return; }
@@ -991,16 +998,18 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private void listScans(HttpExchange exchange, String projectId) throws IOException {
         ControlPlaneStore.ProjectRecord project = store.requireProject(projectId);
-        List<Object> scans = new ArrayList<>();
-        String latest = project.latestScanId();
-        if (latest != null) {
-            ControlPlaneStore.ScanRecord scan = store.scan(latest);
-            if (scan != null) scans.add(scanMap(scan.dto()));
+        List<ControlPlaneStore.ScanRecord> records = store.scansForProject(projectId);
+        List<Object> scans = new ArrayList<>(records.size());
+        for (ControlPlaneStore.ScanRecord record : records) {
+            scans.add(scanMap(record.dto()));
         }
         Map<String, Object> result = envelope(projectId, scans);
         result.put("scans", scans);
-        result.put("artifactDigest", scans.isEmpty() ? "unscanned" : ((Map<?, ?>) scans.get(0)).get("artifactDigest"));
-        result.put("scanId", scans.isEmpty() ? "unscanned" : ((Map<?, ?>) scans.get(0)).get("scanId"));
+        String latest = project.latestScanId();
+        ControlPlaneStore.ScanRecord latestRecord = latest == null ? null : store.scan(latest);
+        result.put("artifactDigest", latestRecord == null ? "unscanned" : latestRecord.dto().artifactDigest());
+        result.put("scanId", latestRecord == null ? "unscanned" : latestRecord.dto().scanId());
+        result.put("latestScanId", latestRecord == null ? "unscanned" : latestRecord.dto().scanId());
         sendJson(exchange, 200, result);
     }
 
@@ -1057,6 +1066,95 @@ public final class ControlPlaneServer implements AutoCloseable {
         idempotentAuditRuns.put(replayKey,
                 new AuditRunReplay(payload, started.scan().dto().scanId(), job.aiJobId()));
         sendJson(exchange, 202, auditRunMap(started.scan().dto(), job));
+    }
+
+    /**
+     * Re-arms the scan pipeline and re-enqueues one failed stage. Creates a new authorized
+     * AI job / dynamic task; never mutates the failed record into success.
+     */
+    private synchronized void retryAuditStage(HttpExchange exchange, String projectId) throws IOException {
+        Map<String, Object> body = readObject(exchange);
+        for (String field : body.keySet()) {
+            if (!Set.of("scanId", "stage", "authorized", "aiAuthorized", "outputLanguage").contains(field)) {
+                throw new ApiException(400, "RETRY_FIELD_REJECTED",
+                        "audit stage retry body contains an unsupported field");
+            }
+        }
+        if (!requiredBoolean(body, "authorized")) {
+            throw new ApiException(403, "AUTHORIZATION_REQUIRED",
+                    "explicit authorization is required to retry an audit stage");
+        }
+        String scanId = optionalText(body, "scanId", null);
+        String stageRaw = optionalText(body, "stage", null);
+        if (scanId == null || scanId.isBlank() || stageRaw == null || stageRaw.isBlank()) {
+            throw new ApiException(400, "RETRY_FIELD_REQUIRED", "scanId and stage are required");
+        }
+        String stage = stageRaw.toUpperCase(Locale.ROOT);
+        ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
+        if (!scan.dto().projectId().equals(projectId)) {
+            throw new ApiException(404, "SCAN_NOT_FOUND", "scan not found for project");
+        }
+        String operatorId = actor(exchange).operatorId();
+        AiOutputLanguage language = outputLanguage(optionalText(
+                body, "outputLanguage", AiOutputLanguage.ZH_CN.name()));
+        auditPipeline.arm(new AuditPipelineCoordinator.Arm(scanId, projectId, operatorId, language));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", 1);
+        result.put("projectId", projectId);
+        result.put("scanId", scanId);
+        result.put("stage", stage);
+        result.put("pipelineArmed", true);
+        switch (stage) {
+            case "PRE_ANALYSIS", "PATH_EXPLORATION", "DYNAMIC_VERIFICATION",
+                    "VULNERABILITY_TRIAGE", "REPORT_GENERATION" -> {
+                if (!requiredBoolean(body, "aiAuthorized")) {
+                    throw new ApiException(403, "AI_AUTHORIZATION_REQUIRED",
+                            "explicit AI authorization is required to retry a model stage");
+                }
+                AgentRole role = AgentRole.valueOf(stage);
+                var job = store.createAiJob(projectId, role, scanId, language, true, operatorId,
+                        Instant.now(clock).toString());
+                aiJobOrchestrator.submit(job, operatorId);
+                store.auditChange(projectId, operatorId, "audit-stage.retry", "ai-job", job.aiJobId(),
+                        "{\"stage\":\"" + stage + "\",\"scanId\":\"" + scanId + "\"}",
+                        Instant.now(clock).toString());
+                result.put("aiJob", aiJobMap(job));
+            }
+            case "DYNAMIC_OBSERVATION", "TRUSTED_DOCKER", "DYNAMIC" -> {
+                if (workerApi.snapshots(projectId, scanId).stream().anyMatch(snapshot ->
+                        snapshot.lifecycle() == TaskLifecycle.QUEUED
+                                || snapshot.lifecycle() == TaskLifecycle.LEASED
+                                || snapshot.lifecycle() == TaskLifecycle.RUNNING
+                                || snapshot.lifecycle() == TaskLifecycle.PAUSED)) {
+                    throw new ApiException(409, "DYNAMIC_TASK_BUSY",
+                            "a dynamic task is already active for this scan");
+                }
+                TaskSnapshot snapshot = enqueueDynamicForPipeline(scanId, operatorId);
+                store.auditChange(projectId, operatorId, "audit-stage.retry", "worker-task",
+                        snapshot.scope().taskId(),
+                        "{\"stage\":\"DYNAMIC_OBSERVATION\",\"scanId\":\"" + scanId + "\"}",
+                        Instant.now(clock).toString());
+                result.put("dynamicTask", dynamicTaskMap(snapshot));
+            }
+            default -> throw new ApiException(400, "RETRY_STAGE_UNKNOWN",
+                    "unsupported retry stage");
+        }
+        sendJson(exchange, 202, result);
+    }
+
+    private static ResourceBudget dynamicBudgetForArtifact(ArtifactDescriptor artifact, int probeCount) {
+        long size = Math.max(0L, artifact.sizeBytes());
+        int probes = Math.max(1, Math.min(512, probeCount));
+        // Cold start (~90s) + batched loopback probes (~0.2s each) + teardown margin.
+        long baseWall = size >= 80L * 1024 * 1024 ? 420 : size >= 20L * 1024 * 1024 ? 300 : 180;
+        long wallSeconds = Math.min(3_600L, Math.max(baseWall, 150L + probes));
+        long memoryBytes = size >= 80L * 1024 * 1024 ? 3L * 1024 * 1024 * 1024 : 2L * 1024 * 1024 * 1024;
+        // Keep room for agent events plus one APPLICATION_REPORTED HTTP line per probe.
+        long traceBytes = Math.min(16L * 1024 * 1024,
+                Math.max(size >= 20L * 1024 * 1024 ? 4L * 1024 * 1024 : 512L * 1024,
+                        512L * 1024 + probes * 2_048L));
+        return new ResourceBudget(wallSeconds, wallSeconds * 1_000L, memoryBytes,
+                64L * 1024 * 1024, traceBytes);
     }
 
     private static Map<String, Object> auditRunMap(
@@ -1219,6 +1317,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         }
         unreachedDynamicPaths.put(scanId, plan.unreachedPaths());
         String taskId = "task-dynamic-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        ResourceBudget budget = dynamicBudgetForArtifact(artifact, plan.probes().size());
         WorkerTaskSpec spec = new WorkerTaskSpec(
                 WorkerControlPlaneApi.CONTRACT_VERSION,
                 scan.dto().projectId(),
@@ -1227,9 +1326,7 @@ public final class ControlPlaneServer implements AutoCloseable {
                 taskId,
                 plan.primary().id(),
                 true,
-                // Large Spring Boot JARs often need >60s cold start under deny-all before loopback probe.
-                new ResourceBudget(180, 180_000, 2L * 1024 * 1024 * 1024,
-                        64L * 1024 * 1024, 512L * 1024),
+                budget,
                 NetworkPolicy.denyAll(),
                 WorkerCapability.TRUSTED_DOCKER);
         TaskSnapshot snapshot = workerApi.enqueueFromControlPlane(spec,
@@ -1254,6 +1351,8 @@ public final class ControlPlaneServer implements AutoCloseable {
         Map<String, Object> result = dynamicTaskMap(snapshot);
         String diagnostic = workerApi.failureDiagnostic(snapshot.scope());
         if (diagnostic != null) result.put("failureDiagnostic", diagnostic);
+        String progress = workerApi.progressDetail(snapshot.scope());
+        if (progress != null) result.put("progressDetail", progress);
         return result;
     }
 
@@ -1293,9 +1392,10 @@ public final class ControlPlaneServer implements AutoCloseable {
         int packageSeparator = entry.declaringClass().lastIndexOf('.');
         String classPrefix = packageSeparator > 0
                 ? entry.declaringClass().substring(0, packageSeparator) : entry.declaringClass();
+        ExternalArtifactTaskExecutor.ProbeTarget primaryProbe = probeTargetFor(entry);
         return new ExternalArtifactTaskExecutor.ArtifactRegistration(
                 scope.projectId(), scope.artifactDigest(), path, artifact.sizeBytes(), true,
-                entry.method(), entry.route(), classPrefix, plan.probes());
+                primaryProbe.method(), primaryProbe.route(), classPrefix, plan.probes());
     }
 
     /**
@@ -1308,13 +1408,15 @@ public final class ControlPlaneServer implements AutoCloseable {
                 .filter(entry -> entry.route() != null
                         && entry.route().matches("/[A-Za-z0-9_./{}:-]{0,1023}"))
                 .filter(entry -> entry.method() != null
-                        && Set.of("GET", "POST", "PUT", "PATCH", "DELETE")
-                        .contains(entry.method().toUpperCase(Locale.ROOT)))
+                        && (Set.of("GET", "POST", "PUT", "PATCH", "DELETE")
+                        .contains(entry.method().toUpperCase(Locale.ROOT))
+                        || "UNKNOWN".equalsIgnoreCase(entry.method())))
                 .toList();
         if (httpEntries.isEmpty()) {
             return new ProbePlan(null, List.of(), List.of());
         }
-        int maxProbes = Math.min(80, Math.max(8, httpEntries.size()));
+        // Cover every discovered HTTP entry in one batched probe JVM (hard cap matches worker).
+        int maxProbes = Math.min(512, httpEntries.size());
         LinkedHashSet<String> selectedIds = new LinkedHashSet<>();
         List<ExternalArtifactTaskExecutor.ProbeTarget> probes = new ArrayList<>();
         // Prefer the worker task's target entry when present in the scan.
@@ -1326,7 +1428,7 @@ public final class ControlPlaneServer implements AutoCloseable {
                     .flatMap(targetId -> httpEntries.stream().filter(entry -> entry.id().equals(targetId)).findFirst())
                     .ifPresent(entry -> {
                         selectedIds.add(entry.id());
-                        probes.add(new ExternalArtifactTaskExecutor.ProbeTarget(entry.method(), entry.route()));
+                        probes.add(probeTargetFor(entry));
                     });
         }
         // Prefer entries named by PATH_EXPLORATION / plan_propose inferences (untrusted hints only).
@@ -1338,13 +1440,13 @@ public final class ControlPlaneServer implements AutoCloseable {
                     continue;
                 }
                 if (!selectedIds.add(entry.id())) continue;
-                probes.add(new ExternalArtifactTaskExecutor.ProbeTarget(entry.method(), entry.route()));
+                probes.add(probeTargetFor(entry));
             }
         }
         for (ApiDtos.EntryDto entry : httpEntries) {
             if (probes.size() >= maxProbes) break;
             if (!selectedIds.add(entry.id())) continue;
-            probes.add(new ExternalArtifactTaskExecutor.ProbeTarget(entry.method(), entry.route()));
+            probes.add(probeTargetFor(entry));
         }
         ApiDtos.EntryDto primary = httpEntries.stream()
                 .filter(entry -> selectedIds.contains(entry.id()))
@@ -1368,6 +1470,44 @@ public final class ControlPlaneServer implements AutoCloseable {
     private record ProbePlan(ApiDtos.EntryDto primary,
                              List<ExternalArtifactTaskExecutor.ProbeTarget> probes,
                              List<ApiDtos.PathDto> unreachedPaths) {
+    }
+
+    private static ExternalArtifactTaskExecutor.ProbeTarget probeTargetFor(ApiDtos.EntryDto entry) {
+        String method = entry.method() == null ? "GET" : entry.method().toUpperCase(Locale.ROOT);
+        if ("UNKNOWN".equals(method)) method = "GET";
+        return new ExternalArtifactTaskExecutor.ProbeTarget(
+                method, materializeRoute(entry.route()), syntheticQuery(entry));
+    }
+
+    /** Replace `{pathVar}` templates with a bounded synthetic token for loopback probes. */
+    private static String materializeRoute(String route) {
+        if (route == null || route.isBlank()) return "/";
+        String materialized = route.replaceAll("\\{[A-Za-z_][A-Za-z0-9_]{0,63}}", "1");
+        if (!materialized.matches("/[A-Za-z0-9_./:-]{0,1023}")) {
+            throw new IllegalArgumentException("materialized probe route is invalid");
+        }
+        return materialized;
+    }
+
+    /** Bounded synthetic query for discovered params (INFERENCE stimulus only). */
+    private static String syntheticQuery(ApiDtos.EntryDto entry) {
+        if (entry.parameters() == null || entry.parameters().isEmpty()) return "";
+        List<String> parts = new ArrayList<>();
+        for (String parameter : entry.parameters()) {
+            if (parameter == null || parts.size() >= 12) continue;
+            int nameAt = parameter.indexOf("name=");
+            if (nameAt < 0) continue;
+            String name = parameter.substring(nameAt + 5).split("[,\\s]", 2)[0].trim();
+            if (!name.matches("[A-Za-z][A-Za-z0-9_]{0,63}")) continue;
+            String lower = name.toLowerCase(Locale.ROOT);
+            if ("businessId".equals(name) || lower.endsWith("id") || lower.endsWith("ids")) {
+                parts.add(name + "=1");
+            } else {
+                parts.add(name + "=synthetic");
+            }
+        }
+        String joined = String.join("&", parts);
+        return joined.length() <= 256 ? joined : joined.substring(0, 256);
     }
 
     /** Untrusted PATH_EXPLORATION conclusion text used only to prioritize probe order. */
@@ -1496,7 +1636,16 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private void dashboard(HttpExchange exchange, String projectId) throws IOException {
         ControlPlaneStore.ProjectRecord project = store.requireProject(projectId);
-        ControlPlaneStore.ScanRecord scan = latestScan(project);
+        String requestedScanId = query(exchange.getRequestURI(), "scanId");
+        ControlPlaneStore.ScanRecord scan = requestedScanId == null || requestedScanId.isBlank()
+                ? latestScan(project)
+                : store.scan(requestedScanId);
+        if (scan != null && !scan.dto().projectId().equals(projectId)) {
+            throw new ApiException(404, "SCAN_NOT_FOUND", "scan not found for project");
+        }
+        if (scan == null && requestedScanId != null && !requestedScanId.isBlank()) {
+            throw new ApiException(404, "SCAN_NOT_FOUND", "scan not found for project");
+        }
         if (scan == null) {
             Map<String, Object> empty = new LinkedHashMap<>();
             empty.put("schemaVersion", ApiDtos.SCHEMA_VERSION);

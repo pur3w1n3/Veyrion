@@ -40,28 +40,26 @@ public final class DevLauncherAcceptanceTest {
         }, workspace), "unknown option");
 
         Path artifacts = Files.createDirectory(workspace.resolve("artifacts"));
-        try (ControlPlaneServer server =
-                     new ControlPlaneServer(artifacts, 0, "launcher-test-token").start()) {
-            String projectId = DevLauncherMain.createProject(server.baseUri(), "launcher-test-token");
-            check(projectId.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"),
-                    "launcher creates one valid local project");
-            check(server.store().requireProject(projectId) != null,
-                    "created project is stored by the Control Plane");
-        }
-
         Path database = artifacts.resolve(".veyrion").resolve("control-plane.db");
-        String persistentProjectId;
+        DevLauncherMain.syncFrontendEnv(config, java.net.URI.create("http://127.0.0.1:18080/api/v1"),
+                "launcher-test-token");
+        String env = Files.readString(frontend.resolve(".env.local"));
+        check(env.contains("VITE_API_BASE_URL=http://127.0.0.1:18080/api/v1"),
+                "frontend env carries the control-plane base URL");
+        check(env.contains("VITE_API_TOKEN=launcher-test-token"),
+                "frontend env carries the mutation token");
+        check(!env.contains("VITE_PROJECT_ID="),
+                "frontend env does not force a default workspace id");
+
         try (ControlPlaneServer server =
                      new ControlPlaneServer(artifacts, 0, "first-launch-token", database).start()) {
-            persistentProjectId = DevLauncherMain.loadOrCreateProject(
-                    server.baseUri(), "first-launch-token");
+            check(server.store().authenticateOperator("first-launch-token") != null,
+                    "bootstrap token authenticates operators");
+            check(server.store().projects().isEmpty(),
+                    "launcher does not bootstrap a default development project");
         }
         try (ControlPlaneServer restarted =
                      new ControlPlaneServer(artifacts, 0, "second-launch-token", database).start()) {
-            String restored = DevLauncherMain.loadOrCreateProject(
-                    restarted.baseUri(), "second-launch-token");
-            check(restored.equals(persistentProjectId),
-                    "launcher reuses the persistent development project");
             check(restarted.store().authenticateOperator("second-launch-token") != null,
                     "new process token rotates the persistent bootstrap credential");
             check(restarted.store().authenticateOperator("first-launch-token") == null,
