@@ -101,8 +101,11 @@ final class WorkerControlPlaneApi implements HttpHandler {
         for (TaskSnapshot snapshot : coordinator.snapshots()) {
             scopes.put(snapshot.scope(), Boolean.TRUE);
             if (snapshot.lifecycle() == TaskLifecycle.COMPLETED) {
-                try { projectionService.publishCompleted(snapshot); }
-                catch (RuntimeException ignored) { /* invalid persisted evidence stays fail-closed */ }
+                try {
+                    persistProjectedPathRuns(snapshot, projectionService.publishCompleted(snapshot));
+                } catch (RuntimeException ignored) {
+                    /* invalid persisted evidence stays fail-closed; durable PathRuns remain readable */
+                }
             }
         }
     }
@@ -267,7 +270,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
         }
         if (snapshot.lifecycle() == TaskLifecycle.COMPLETED) {
             try {
-                projectionService.publishCompleted(snapshot);
+                persistProjectedPathRuns(snapshot, projectionService.publishCompleted(snapshot));
             } catch (IllegalArgumentException | IllegalStateException | SecurityException rejected) {
                 // Execution completion remains authoritative; an invalid or over-budget trace is omitted.
             }
@@ -324,6 +327,17 @@ final class WorkerControlPlaneApi implements HttpHandler {
                 "payloadBytes", committed.payload().length,
                 "traceHeadDigest", manifest.headDigest()));
         sendJson(exchange, 201, traceMap(committed, manifest));
+    }
+
+    private void persistProjectedPathRuns(TaskSnapshot snapshot, TraceProjectionService.Projection projection) {
+        TaskScope scope = snapshot.scope();
+        store.replacePathRunsForTask(
+                scope.projectId(),
+                scope.artifactDigest(),
+                scope.scanId(),
+                scope.taskId(),
+                projection.pathRuns(),
+                Instant.now(clock).toString());
     }
 
     private void publishTerminal(TaskSnapshot snapshot, String key) {

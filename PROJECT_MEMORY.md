@@ -522,3 +522,10 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - PathRun 为一等公民；GUI/研判围绕 PathRun，`AUTH_GAP` 降为次级信号。
 
 实现排期（[docs/MVP_BACKLOG.md](docs/MVP_BACKLOG.md)）：**M-A** 契约与呈现 → **M-B** 鉴权/合成身份/按轨观察 → **M-C** SQL D1–D3 与 `DYNAMIC_CONFIRMED` → **M-D** Blade/Flowable 高价值实验形态（无破坏）。模型不得单独升级任何验证状态；`DYNAMIC_CONFIRMED` ≠ 生产实库已证实。
+
+## 52. PathRun 持久化与 AI 事实回传（2026-07-26）
+
+- 新增 `V013__persistent_path_runs.sql`：任务完成投影后按 `task_id` 替换写入 PathRun；dashboard / AI 工具合并「SQLite ∪ 内存投影」。
+- `facts_search` 增加 `PATH_RUN`（及 `evidence_get pathrun:*`），回传 HTTP 状态、outcomeClass 与有界 SQL 明细；`sandbox_probe` 事实携带 `pathRuns` 摘要。
+- AI 用户提示注入有界 `PATH_RUN_FACTS`；AUTH/DYNAMIC 角色明确要求消费 PathRun。
+- `AUTH_GAP` 不再进入主 findings 列表（仍保留为 sink/事实）；dashboard 以 `authGapFindingCount` 计数，前端默认隐藏并可勾选显示。

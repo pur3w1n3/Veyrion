@@ -142,6 +142,8 @@ export type DashboardSnapshot = {
   evidenceRefs?: EvidenceRef[]
   entries: Entry[]
   findings: Finding[]
+  /** AUTH_GAP findings omitted from findings[]; retained as a demoted count. */
+  authGapFindingCount?: number
   path: PathStep[]
   paths: PathTrace[]
   pathRuns: PathRunDto[]
@@ -811,6 +813,9 @@ export const parseDashboard = (value: unknown): DashboardSnapshot => {
     evidenceRefs: evidenceRefsOf(value.evidenceRefs, 'dashboard.evidenceRefs'),
     entries: entriesValue.map((item) => parseEntry(item, { schemaVersion: version, projectId, artifactDigest })),
     findings: findingsValue.map((item) => parseFinding(item, { schemaVersion: version, projectId, artifactDigest, scanId })),
+    authGapFindingCount: typeof value.authGapFindingCount === 'number' && Number.isFinite(value.authGapFindingCount)
+      ? Math.max(0, Math.floor(value.authGapFindingCount))
+      : undefined,
     path: pathValue.map(parsePath),
     paths: richPaths,
     pathRuns

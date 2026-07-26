@@ -74,7 +74,8 @@ public final class SQLiteControlPlanePersistence {
             "db/migration/V009__persistent_sse_events.sql",
             "db/migration/V010__role_prompt_templates.sql",
             "db/migration/V011__persistent_idempotency_and_pipeline.sql",
-            "db/migration/V012__auth_analysis_role.sql");
+            "db/migration/V012__auth_analysis_role.sql",
+            "db/migration/V013__persistent_path_runs.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 
@@ -219,6 +220,86 @@ public final class SQLiteControlPlanePersistence {
                         + "max_requests=excluded.max_requests,plan_hash=excluded.plan_hash",
                 plan.taskId(), plan.projectId(), plan.artifactDigest(), plan.scanId(), plan.targetEntryId(),
                 plan.candidateInputsJson(), plan.maxRequests(), plan.planHash(), plan.createdAt()));
+    }
+
+    public List<ApiDtos.PathRunDto> loadPathRunsForScan(String projectId, String artifactDigest, String scanId) {
+        Objects.requireNonNull(projectId, "projectId");
+        Objects.requireNonNull(artifactDigest, "artifactDigest");
+        Objects.requireNonNull(scanId, "scanId");
+        try (Connection connection = open();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT path_run_id,payload_json FROM path_runs "
+                             + "WHERE project_id=? AND artifact_digest=? AND scan_id=? "
+                             + "ORDER BY created_at,path_run_id")) {
+            statement.setString(1, projectId);
+            statement.setString(2, artifactDigest);
+            statement.setString(3, scanId);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<ApiDtos.PathRunDto> result = new ArrayList<>();
+                while (rows.next()) {
+                    result.add(decodePathRun(rows.getString(1), rows.getString(2)));
+                    if (result.size() > 50_000) throw new PersistenceException("persistent path run limit exceeded");
+                }
+                return List.copyOf(result);
+            }
+        } catch (SQLException failure) {
+            throw databaseFailure("could not load path runs", failure);
+        }
+    }
+
+    public List<ApiDtos.PathRunDto> loadPathRunsForTask(String taskId) {
+        Objects.requireNonNull(taskId, "taskId");
+        try (Connection connection = open();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT path_run_id,payload_json FROM path_runs WHERE task_id=? "
+                             + "ORDER BY created_at,path_run_id")) {
+            statement.setString(1, taskId);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<ApiDtos.PathRunDto> result = new ArrayList<>();
+                while (rows.next()) {
+                    result.add(decodePathRun(rows.getString(1), rows.getString(2)));
+                    if (result.size() > 20_000) throw new PersistenceException("persistent path run limit exceeded");
+                }
+                return List.copyOf(result);
+            }
+        } catch (SQLException failure) {
+            throw databaseFailure("could not load path runs for task", failure);
+        }
+    }
+
+    private ApiDtos.PathRunDto decodePathRun(String pathRunId, String payloadJson) {
+        try {
+            ApiDtos.PathRunDto run = mapper.readValue(payloadJson, ApiDtos.PathRunDto.class);
+            if (!pathRunId.equals(run.pathRunId())) {
+                throw new PersistenceException("path run id mismatch for " + pathRunId);
+            }
+            return run;
+        } catch (JsonProcessingException | IllegalArgumentException failure) {
+            throw new PersistenceException("persistent path run payload is invalid: " + pathRunId, failure);
+        }
+    }
+
+    public void replacePathRunsForTask(String projectId, String artifactDigest, String scanId,
+                                       String taskId, List<ApiDtos.PathRunDto> pathRuns, String createdAt) {
+        Objects.requireNonNull(projectId, "projectId");
+        Objects.requireNonNull(artifactDigest, "artifactDigest");
+        Objects.requireNonNull(scanId, "scanId");
+        Objects.requireNonNull(taskId, "taskId");
+        Objects.requireNonNull(createdAt, "createdAt");
+        List<ApiDtos.PathRunDto> runs = List.copyOf(pathRuns == null ? List.of() : pathRuns);
+        if (runs.size() > 20_000) throw new PersistenceException("path run batch limit exceeded");
+        transaction("could not persist path runs", connection -> {
+            update(connection, "DELETE FROM path_runs WHERE task_id=?", taskId);
+            for (ApiDtos.PathRunDto run : runs) {
+                if (!scanId.equals(run.scanId())) {
+                    throw new PersistenceException("path run scan scope mismatch");
+                }
+                update(connection,
+                        "INSERT INTO path_runs(path_run_id,project_id,artifact_digest,scan_id,task_id,payload_json,created_at) "
+                                + "VALUES(?,?,?,?,?,?,?)",
+                        run.pathRunId(), projectId, artifactDigest, scanId, taskId, write(run), createdAt);
+            }
+        });
     }
 
     public List<ArtifactUploadService.PersistedSession> loadArtifactUploads() {

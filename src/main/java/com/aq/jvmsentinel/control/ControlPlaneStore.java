@@ -113,6 +113,21 @@ public class ControlPlaneStore {
         if (persistence != null) persistence.saveProbePlan(plan);
     }
 
+    public List<ApiDtos.PathRunDto> loadPathRunsForScan(String projectId, String artifactDigest, String scanId) {
+        return persistence == null ? List.of() : persistence.loadPathRunsForScan(projectId, artifactDigest, scanId);
+    }
+
+    public List<ApiDtos.PathRunDto> loadPathRunsForTask(String taskId) {
+        return persistence == null ? List.of() : persistence.loadPathRunsForTask(taskId);
+    }
+
+    public void replacePathRunsForTask(String projectId, String artifactDigest, String scanId,
+                                       String taskId, List<ApiDtos.PathRunDto> pathRuns, String createdAt) {
+        if (persistence != null) {
+            persistence.replacePathRunsForTask(projectId, artifactDigest, scanId, taskId, pathRuns, createdAt);
+        }
+    }
+
     public SQLiteControlPlanePersistence.WorkerState loadWorkerState() {
         return persistence == null ? SQLiteControlPlanePersistence.WorkerState.empty() : persistence.loadWorkerState();
     }

@@ -150,7 +150,9 @@ public final class AiToolRegistry {
                 Map.of("kind", Field.string(64), "query", Field.string(1024), "limit", Field.integer(1, 100)),
                 Set.of("kind"));
         ToolDefinition definition = new ToolDefinition("facts_search",
-                "Search already-indexed, read-only facts in the server-bound project.",
+                "Search already-indexed, read-only facts in the server-bound project. "
+                        + "Kinds: SCAN, ENTRY, DEPENDENCY, SINK, EVIDENCE, DYNAMIC_EVIDENCE, PATH_RUN, ANY. "
+                        + "PATH_RUN returns persisted HTTP status, outcomeClass, and SQL event detail.",
                 schema.jsonSchema(), OverflowPolicy.TRUNCATE);
         return new RegisteredTool(definition, schema, (call, context) -> {
             JsonNode args = call.arguments();

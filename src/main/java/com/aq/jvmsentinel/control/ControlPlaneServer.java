@@ -266,7 +266,8 @@ public final class ControlPlaneServer implements AutoCloseable {
         this.aiJobOrchestrator = new AiJobOrchestrator(this.store,
                 Objects.requireNonNull(chatTransport, "chatTransport"), this.clock,
                 this.traceProjectionService::evidenceForScan,
-                this::requestSandboxProbe);
+                this::requestSandboxProbe,
+                this::mergedPathRunsForScan);
         this.auditPipeline = new AuditPipelineCoordinator(new AuditPipelineCoordinator.Actions() {
             @Override
             public boolean hasRoleJob(String projectId, String scanId, AgentRole role) {
@@ -1592,12 +1593,12 @@ public final class ControlPlaneServer implements AutoCloseable {
         return latest;
     }
 
-    private static ToolDataSource.FactRecord probeFact(ToolExecutionContext.Scope scope,
-                                                       TaskSnapshot snapshot,
-                                                       ApiDtos.EntryDto entry,
-                                                       String state,
-                                                       List<String> candidateInputs,
-                                                       int maxRequests) {
+    private ToolDataSource.FactRecord probeFact(ToolExecutionContext.Scope scope,
+                                                TaskSnapshot snapshot,
+                                                ApiDtos.EntryDto entry,
+                                                String state,
+                                                List<String> candidateInputs,
+                                                int maxRequests) {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("schemaVersion", 1);
         value.put("state", state);
@@ -1614,6 +1615,25 @@ public final class ControlPlaneServer implements AutoCloseable {
         value.put("probePlanId", "probe-plan:" + snapshot.scope().taskId());
         if (snapshot.stopReason() != null) value.put("stopReason", snapshot.stopReason().name());
         if (snapshot.failureCode() != null) value.put("failureCode", snapshot.failureCode());
+        List<ApiDtos.PathRunDto> pathRuns = mergedPathRunsForTask(snapshot.scope());
+        value.put("pathRunCount", pathRuns.size());
+        List<Object> pathRunSummaries = new ArrayList<>();
+        int emitted = 0;
+        int sqlTotal = 0;
+        Map<String, Integer> outcomeCounts = new LinkedHashMap<>();
+        for (ApiDtos.PathRunDto run : pathRuns) {
+            sqlTotal += run.sqlEvents().size();
+            outcomeCounts.merge(run.outcomeClass(), 1, Integer::sum);
+            if (emitted < 16) {
+                pathRunSummaries.add(ControlPlaneToolDataSource.pathRunPromptSummary(run));
+                emitted++;
+            }
+        }
+        value.put("pathRuns", pathRunSummaries);
+        value.put("pathRunsTruncated", pathRuns.size() > 16);
+        value.put("sqlEventCount", sqlTotal);
+        value.put("outcomeClassCounts", outcomeCounts);
+        value.put("pathRunFactHint", "facts_search kind=PATH_RUN or evidence_get pathrun:<pathRunId>");
         return new ToolDataSource.FactRecord(scope, "sandbox-probe:" + snapshot.scope().taskId(),
                 JSON.valueToTree(value));
     }
@@ -2257,7 +2277,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         }
         ApiDtos.ScanDto dto = scan.dto();
         List<ApiDtos.PathDto> dynamicPaths = dynamicPaths(scan);
-        List<ApiDtos.PathRunDto> pathRuns = traceProjectionService.pathRunsForScan(
+        List<ApiDtos.PathRunDto> pathRuns = mergedPathRunsForScan(
                 dto.projectId(), dto.artifactDigest(), dto.scanId());
         List<ApiDtos.PathStepDto> flattened = !dynamicPaths.isEmpty()
                 ? dynamicPaths.get(dynamicPaths.size() - 1).steps()
@@ -2278,7 +2298,14 @@ public final class ControlPlaneServer implements AutoCloseable {
         List<Object> entries = new ArrayList<>();
         for (ApiDtos.EntryDto entry : dto.entries()) entries.add(entryMap(entry));
         List<Object> findings = new ArrayList<>();
-        for (ApiDtos.FindingDto finding : dto.findings()) findings.add(findingMap(finding));
+        int authGapCount = 0;
+        for (ApiDtos.FindingDto finding : dto.findings()) {
+            if (isAuthGapFinding(finding)) {
+                authGapCount++;
+                continue;
+            }
+            findings.add(findingMap(finding));
+        }
         List<Object> paths = new ArrayList<>();
         for (ApiDtos.PathDto path : dto.paths()) paths.add(pathMap(path));
         for (ApiDtos.PathDto dynamic : dynamicPaths) paths.add(pathMap(dynamic));
@@ -2288,10 +2315,42 @@ public final class ControlPlaneServer implements AutoCloseable {
         for (ApiDtos.PathStepDto step : flattened) path.add(pathStepMap(step));
         body.put("entries", entries);
         body.put("findings", findings);
+        body.put("authGapFindingCount", authGapCount);
         body.put("paths", paths);
         body.put("pathRuns", pathRunMaps);
         body.put("path", path);
         sendJson(exchange, 200, body);
+    }
+
+    private List<ApiDtos.PathRunDto> mergedPathRunsForScan(String projectId, String artifactDigest, String scanId) {
+        Map<String, ApiDtos.PathRunDto> byId = new LinkedHashMap<>();
+        for (ApiDtos.PathRunDto run : store.loadPathRunsForScan(projectId, artifactDigest, scanId)) {
+            byId.put(run.pathRunId(), run);
+        }
+        for (ApiDtos.PathRunDto run : traceProjectionService.pathRunsForScan(projectId, artifactDigest, scanId)) {
+            byId.put(run.pathRunId(), run);
+        }
+        return List.copyOf(byId.values());
+    }
+
+    private List<ApiDtos.PathRunDto> mergedPathRunsForTask(TaskScope scope) {
+        Map<String, ApiDtos.PathRunDto> byId = new LinkedHashMap<>();
+        for (ApiDtos.PathRunDto run : store.loadPathRunsForTask(scope.taskId())) {
+            byId.put(run.pathRunId(), run);
+        }
+        for (ApiDtos.PathRunDto run : traceProjectionService.pathRunsForTask(scope)) {
+            byId.put(run.pathRunId(), run);
+        }
+        return List.copyOf(byId.values());
+    }
+
+    private static boolean isAuthGapFinding(ApiDtos.FindingDto finding) {
+        if (finding == null) return false;
+        String sinkId = finding.sinkId() == null ? "" : finding.sinkId().toLowerCase(Locale.ROOT);
+        String title = finding.title() == null ? "" : finding.title();
+        return sinkId.startsWith("sink-auth-gap")
+                || title.contains("鉴权缺口")
+                || title.toLowerCase(Locale.ROOT).contains("auth gap");
     }
 
     private List<ApiDtos.PathDto> dynamicPaths(ControlPlaneStore.ScanRecord scan) {
@@ -2481,6 +2540,10 @@ public final class ControlPlaneServer implements AutoCloseable {
         String dependency = dependencies.isEmpty() ? "none" : dependencies.get(0).target();
         int index = 0;
         for (ApiDtos.SinkDto sink : sinks) {
+            // AUTH_GAP remains as a sink/fact for tools; it must not flood the primary findings list.
+            if (sink.category() != null && "AUTH_GAP".equalsIgnoreCase(sink.category())) {
+                continue;
+            }
             String sinkBindingKey = sinkBindingKey(sink, evidence);
             ApiDtos.EntryDto linkedEntry = entries.stream()
                     .filter(entry -> entryBindingKey(entry, evidence).equals(sinkBindingKey))
@@ -3083,8 +3146,8 @@ public final class ControlPlaneServer implements AutoCloseable {
         return JsonCodec.parseObject(body);
     }
 
-    private static String safeMessage(IllegalArgumentException exception) {
-        String message = exception.getMessage();
+    private static String safeMessage(Exception exception) {
+        String message = exception == null ? null : exception.getMessage();
         return message == null || message.isBlank() ? "invalid request" : message;
     }
 

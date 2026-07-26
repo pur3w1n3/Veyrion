@@ -4,10 +4,14 @@ import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -17,10 +21,14 @@ import java.util.Optional;
  */
 public final class ControlPlaneToolDataSource implements ToolDataSource {
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final int MAX_SQL_EVENTS_IN_FACT = 8;
+    private static final int MAX_SQL_TEXT = 240;
+
     private final ControlPlaneStore store;
     private final String scanId;
     private final DynamicEvidenceSource dynamicEvidenceSource;
     private final DynamicProbeExecutor dynamicProbeExecutor;
+    private final PathRunSource pathRunSource;
 
     public ControlPlaneToolDataSource(ControlPlaneStore store, String scanId) {
         this(store, scanId, (projectId, artifactDigest, scopedScanId) -> List.of());
@@ -35,10 +43,19 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
     public ControlPlaneToolDataSource(ControlPlaneStore store, String scanId,
                                       DynamicEvidenceSource dynamicEvidenceSource,
                                       DynamicProbeExecutor dynamicProbeExecutor) {
+        this(store, scanId, dynamicEvidenceSource, dynamicProbeExecutor,
+                (projectId, artifactDigest, scopedScanId) -> List.of());
+    }
+
+    public ControlPlaneToolDataSource(ControlPlaneStore store, String scanId,
+                                      DynamicEvidenceSource dynamicEvidenceSource,
+                                      DynamicProbeExecutor dynamicProbeExecutor,
+                                      PathRunSource pathRunSource) {
         this.store = Objects.requireNonNull(store, "store");
         this.scanId = Objects.requireNonNull(scanId, "scanId");
         this.dynamicEvidenceSource = Objects.requireNonNull(dynamicEvidenceSource, "dynamicEvidenceSource");
         this.dynamicProbeExecutor = Objects.requireNonNull(dynamicProbeExecutor, "dynamicProbeExecutor");
+        this.pathRunSource = Objects.requireNonNull(pathRunSource, "pathRunSource");
     }
 
     @Override
@@ -65,6 +82,11 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         if ("SINK".equals(requested) || "ANY".equals(requested)) {
             for (ApiDtos.SinkDto value : scan.dto().sinks()) {
                 addIfMatching(result, scope, "sink:" + value.id(), JSON.valueToTree(value), needle, limit);
+            }
+        }
+        if ("PATH_RUN".equals(requested) || "PATHRUN".equals(requested) || "ANY".equals(requested)) {
+            for (ApiDtos.PathRunDto value : pathRuns(scan)) {
+                addIfMatching(result, scope, "pathrun:" + value.pathRunId(), pathRunFact(value), needle, limit);
             }
         }
         if ("EVIDENCE".equals(requested) || "FACT".equals(requested) || "ANY".equals(requested)) {
@@ -99,6 +121,11 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
             String id = evidenceRef.substring("entry:".length());
             return scan.dto().entries().stream().filter(entry -> entry.id().equals(id)).findFirst()
                     .map(entry -> new FactRecord(scope, evidenceRef, JSON.valueToTree(entry)));
+        }
+        if (evidenceRef.startsWith("pathrun:")) {
+            String id = evidenceRef.substring("pathrun:".length());
+            return pathRuns(scan).stream().filter(run -> run.pathRunId().equals(id)).findFirst()
+                    .map(run -> new FactRecord(scope, evidenceRef, pathRunFact(run)));
         }
         return Optional.empty();
     }
@@ -136,6 +163,60 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         return values;
     }
 
+    private List<ApiDtos.PathRunDto> pathRuns(ControlPlaneStore.ScanRecord scan) {
+        ApiDtos.ScanDto dto = scan.dto();
+        List<ApiDtos.PathRunDto> values = List.copyOf(pathRunSource.pathRunsForScan(
+                dto.projectId(), dto.artifactDigest(), dto.scanId()));
+        if (values.size() > 50_000 || values.stream().anyMatch(value -> !dto.scanId().equals(value.scanId()))) {
+            throw new SecurityException("path run scope mismatch");
+        }
+        return values;
+    }
+
+    private static JsonNode pathRunFact(ApiDtos.PathRunDto value) {
+        ObjectNode node = JSON.createObjectNode();
+        node.put("kind", "PATH_RUN");
+        node.put("pathRunId", value.pathRunId());
+        node.put("scanId", value.scanId());
+        node.put("entrypointRef", value.entrypointRef());
+        node.put("track", value.track());
+        node.put("attemptId", value.attemptId());
+        if (value.experimentPlanId() != null && !value.experimentPlanId().isBlank()) {
+            node.put("experimentPlanId", value.experimentPlanId());
+        }
+        node.put("method", value.method());
+        node.put("contentType", value.contentType());
+        node.put("requestSummary", value.requestSummary());
+        node.put("outcomeClass", value.outcomeClass());
+        node.put("httpStatus", value.httpStatus());
+        if (value.entryHit() != null) node.put("entryHit", value.entryHit());
+        if (value.parameterBound() != null) node.put("parameterBound", value.parameterBound());
+        node.put("stopReason", value.stopReason());
+        node.put("verificationStatus", value.verificationStatus());
+        node.put("identityProvenance", value.identityProvenance());
+        node.put("identityPrecondition", value.identityPrecondition());
+        ArrayNode evidenceRefs = node.putArray("evidenceRefs");
+        for (String ref : value.evidenceRefs()) evidenceRefs.add(ref);
+        ArrayNode sqlEvents = node.putArray("sqlEvents");
+        int emitted = 0;
+        for (ApiDtos.SqlEventDto sql : value.sqlEvents()) {
+            if (emitted >= MAX_SQL_EVENTS_IN_FACT) break;
+            ObjectNode row = sqlEvents.addObject();
+            String sqlText = sql.sqlText() == null ? "" : sql.sqlText();
+            if (sqlText.length() > MAX_SQL_TEXT) sqlText = sqlText.substring(0, MAX_SQL_TEXT);
+            row.put("sqlText", sqlText);
+            row.put("parameterSummary", sql.parameterSummary() == null ? "" : sql.parameterSummary());
+            row.put("readWrite", sql.readWrite());
+            row.put("parameterized", sql.parameterized());
+            row.put("maliciousFragmentPresent", sql.maliciousFragmentPresent());
+            row.put("captureMode", sql.captureMode());
+            emitted++;
+        }
+        node.put("sqlEventCount", value.sqlEvents().size());
+        node.put("sqlEventsTruncated", value.sqlEvents().size() > MAX_SQL_EVENTS_IN_FACT);
+        return node;
+    }
+
     private static JsonNode safeEvidence(ApiDtos.EvidenceDto value) {
         // Only the bounded evidence summary and provenance metadata cross the tool boundary.
         return JSON.createObjectNode()
@@ -159,6 +240,39 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         }
     }
 
+    /** Compact HTTP/SQL digest used when injecting PathRuns into AI prompts. */
+    public static Map<String, Object> pathRunPromptSummary(ApiDtos.PathRunDto value) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("pathRunId", value.pathRunId());
+        row.put("entrypointRef", value.entrypointRef());
+        row.put("track", value.track());
+        row.put("method", value.method());
+        row.put("httpStatus", value.httpStatus());
+        row.put("outcomeClass", value.outcomeClass());
+        row.put("verificationStatus", value.verificationStatus());
+        row.put("requestSummary", truncate(value.requestSummary(), 160));
+        row.put("sqlEventCount", value.sqlEvents().size());
+        List<Map<String, Object>> sql = new ArrayList<>();
+        int emitted = 0;
+        for (ApiDtos.SqlEventDto event : value.sqlEvents()) {
+            if (emitted >= 3) break;
+            Map<String, Object> sqlRow = new LinkedHashMap<>();
+            sqlRow.put("readWrite", event.readWrite());
+            sqlRow.put("captureMode", event.captureMode());
+            sqlRow.put("maliciousFragmentPresent", event.maliciousFragmentPresent());
+            sqlRow.put("sqlText", truncate(event.sqlText(), 120));
+            sql.add(sqlRow);
+            emitted++;
+        }
+        row.put("sqlEvents", sql);
+        return row;
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null) return "";
+        return value.length() <= max ? value : value.substring(0, max);
+    }
+
     @FunctionalInterface
     public interface DynamicEvidenceSource {
         List<ApiDtos.EvidenceDto> evidenceForScan(
@@ -170,5 +284,11 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         Optional<FactRecord> request(String scanId, ToolExecutionContext.Scope scope, String principalId, String jobId,
                                      String entrypointRef, List<String> candidateInputs, int maxRequests)
                 throws Exception;
+    }
+
+    @FunctionalInterface
+    public interface PathRunSource {
+        List<ApiDtos.PathRunDto> pathRunsForScan(
+                String projectId, String artifactDigest, String scanId);
     }
 }

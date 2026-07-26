@@ -16,7 +16,9 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
   const [reportLoading, setReportLoading] = useState(false)
   const [findingQuery, setFindingQuery] = useState('')
   const [findingStatus, setFindingStatus] = useState<'ALL' | 'STATIC_INFERRED' | 'DYNAMIC_SUSPECTED' | 'DYNAMIC_CONFIRMED' | 'VERIFIED' | 'UNREACHED'>('ALL')
+  const [showAuthGap, setShowAuthGap] = useState(false)
   const pathRuns = snapshot?.pathRuns ?? []
+  const authGapFindingCount = snapshot?.authGapFindingCount ?? findings.filter(isAuthGapFinding).length
   const [selectedFindingId, setSelectedFindingId] = useState<string>()
   const [selectedStepIndex, setSelectedStepIndex] = useState(0)
   const [replayLoading, setReplayLoading] = useState(false)
@@ -52,12 +54,13 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
   const filteredFindings = useMemo(() => {
     const query = findingQuery.trim().toLocaleLowerCase()
     return findings.filter((finding) => {
+      if (!showAuthGap && isAuthGapFinding(finding)) return false
       if (findingStatus !== 'ALL' && finding.status !== findingStatus) return false
       if (!query) return true
       return [finding.title, finding.entry, finding.sink, finding.dependency]
         .some((value) => value.toLocaleLowerCase().includes(query))
     })
-  }, [findings, findingQuery, findingStatus])
+  }, [findings, findingQuery, findingStatus, showAuthGap])
 
   const selectedFinding = filteredFindings.find((finding) => finding.id === selectedFindingId)
     ?? filteredFindings[0]
@@ -125,7 +128,7 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       <article className="metric"><span>{english ? 'PathRuns' : 'PathRun'}</span><strong>{pathRuns.length}</strong><small>{english ? 'Primary session view' : '路径会话主视图'}</small></article>
       <article className="metric"><span>{english ? 'Dynamic confirmed' : '动态确认'}</span><strong>{pathRuns.filter((item) => item.verificationStatus === 'DYNAMIC_CONFIRMED').length}</strong><small>{english ? 'SQL H3 (MOCK)' : 'SQL H3（MOCK）'}</small></article>
       <article className="metric"><span>{english ? 'Dynamic suspected' : '动态疑似'}</span><strong>{pathRuns.filter((item) => item.verificationStatus === 'DYNAMIC_SUSPECTED').length + findings.filter((item) => item.status === 'DYNAMIC_SUSPECTED').length}</strong><small>{english ? 'Needs closed loop' : '需闭环'}</small></article>
-      <article className="metric"><span>{english ? 'Secondary findings' : '次级发现'}</span><strong>{findings.length}</strong><small>{english ? 'AUTH_GAP etc.' : '含 AUTH_GAP 等'}</small></article>
+      <article className="metric"><span>{english ? 'Secondary findings' : '次级发现'}</span><strong>{findings.filter((item) => !isAuthGapFinding(item)).length}</strong><small>{english ? `AUTH_GAP hidden: ${authGapFindingCount}` : `已隐藏 AUTH_GAP: ${authGapFindingCount}`}</small></article>
     </div>
     <PathRunPanel pathRuns={pathRuns} english={english} />
     <article className="panel section-gap">
@@ -143,8 +146,8 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
     </article>
     <div className="result-grid">
       <article className="panel">
-        <div className="panel-head"><div><p className="eyebrow">{english ? 'SECONDARY FINDINGS' : '次级发现'}</p><h2>{english ? 'Findings (secondary)' : '发现（次级）'}</h2></div><span>{findings.length}</span></div>
-        <div className="finding-toolbar"><label className="field"><span>{english ? 'Filter findings' : '筛选发现'}</span><input value={findingQuery} onChange={(event) => setFindingQuery(event.target.value)} placeholder={english ? 'Title, entry, sink...' : '标题、入口或 sink…'} /></label><label className="field"><span>{english ? 'Evidence status' : '证据状态'}</span><select value={findingStatus} onChange={(event) => setFindingStatus(event.target.value as typeof findingStatus)}><option value="ALL">{english ? 'All statuses' : '全部状态'}</option><option value="STATIC_INFERRED">STATIC_INFERRED</option><option value="DYNAMIC_SUSPECTED">DYNAMIC_SUSPECTED</option><option value="DYNAMIC_CONFIRMED">DYNAMIC_CONFIRMED</option><option value="VERIFIED">VERIFIED</option><option value="UNREACHED">UNREACHED</option></select></label></div>
+        <div className="panel-head"><div><p className="eyebrow">{english ? 'SECONDARY FINDINGS' : '次级发现'}</p><h2>{english ? 'Findings (secondary)' : '发现（次级）'}</h2></div><span>{filteredFindings.length}</span></div>
+        <div className="finding-toolbar"><label className="field"><span>{english ? 'Filter findings' : '筛选发现'}</span><input value={findingQuery} onChange={(event) => setFindingQuery(event.target.value)} placeholder={english ? 'Title, entry, sink...' : '标题、入口或 sink…'} /></label><label className="field"><span>{english ? 'Evidence status' : '证据状态'}</span><select value={findingStatus} onChange={(event) => setFindingStatus(event.target.value as typeof findingStatus)}><option value="ALL">{english ? 'All statuses' : '全部状态'}</option><option value="STATIC_INFERRED">STATIC_INFERRED</option><option value="DYNAMIC_SUSPECTED">DYNAMIC_SUSPECTED</option><option value="DYNAMIC_CONFIRMED">DYNAMIC_CONFIRMED</option><option value="VERIFIED">VERIFIED</option><option value="UNREACHED">UNREACHED</option></select></label><label className="field checkbox-field"><span>{english ? 'Show AUTH_GAP' : '显示 AUTH_GAP'}</span><input type="checkbox" checked={showAuthGap} onChange={(event) => setShowAuthGap(event.target.checked)} /></label></div>
         <div className="card-list">{filteredFindings.map((finding) => <button type="button" className={`finding-card finding-card-button ${finding.id === selectedFinding?.id ? 'selected' : ''}`} key={finding.id} onClick={() => { setSelectedFindingId(finding.id); setSelectedStepIndex(0) }}><div className={`severity severity-${finding.severity}`}>{finding.severity}</div><div><strong>{finding.title}</strong><small>{finding.entry} → {finding.sink}</small><small>{finding.evidence} {english ? 'evidence items' : '条证据'} · {finding.dependency === 'none' && !english ? '无外部依赖记录' : finding.dependency}</small></div><StatusPill status={finding.status} /></button>)}{filteredFindings.length === 0 && <p className="empty-state">{english ? 'No findings match the current filter.' : '没有符合当前筛选条件的发现。'}</p>}</div>
       </article>
       <article className="panel">
@@ -167,4 +170,14 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       <ol className="evidence-timeline">{snapshot?.path.map((step, index) => <li key={`${step.label}-${index}`}><span>{index + 1}</span><div><strong>{step.label}</strong><small>{step.detail}</small></div>{step.verificationStatus && <StatusPill status={step.verificationStatus} />}</li>)}{!snapshot?.path.length && <p className="empty-state">{english ? 'No evidence path is available.' : '尚无证据路径。'}</p>}</ol>
     </article>
   </section>
+}
+
+function isAuthGapFinding(finding: { title?: string; sink?: string; sinkId?: string }): boolean {
+  const sinkId = (finding.sinkId ?? '').toLocaleLowerCase()
+  const sink = (finding.sink ?? '').toLocaleLowerCase()
+  const title = finding.title ?? ''
+  return sinkId.startsWith('sink-auth-gap')
+    || sink.startsWith('sink-auth-gap')
+    || title.includes('鉴权缺口')
+    || title.toLocaleLowerCase().includes('auth gap')
 }

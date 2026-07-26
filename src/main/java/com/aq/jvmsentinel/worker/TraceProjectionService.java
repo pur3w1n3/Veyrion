@@ -115,9 +115,11 @@ public final class TraceProjectionService {
             if ("JDBC".equals(event.eventType())) {
                 SqlEvent sqlEvent = sqlEventFromDetail(event.detail());
                 jdbcSql.add(sqlEvent);
+                String sqlPreview = truncate(sqlEvent.sqlText(), 160);
                 summary = "JDBC " + sqlEvent.readWrite() + " observed (capture="
-                        + sqlEvent.captureMode() + ")";
-                stepDetail = summary + ": " + truncate(sqlEvent.sqlText(), 160);
+                        + sqlEvent.captureMode() + ")"
+                        + (sqlPreview.isBlank() ? "" : ": " + sqlPreview);
+                stepDetail = summary;
             }
             String snapshotRef = "task:" + snapshot.scope().taskId()
                     + ";digest:" + item.chunkDigest() + ";sequence:" + event.sequence();
@@ -176,6 +178,12 @@ public final class TraceProjectionService {
                 .sorted(Comparator.comparing(Projection::completedAt).thenComparing(x -> x.scope().taskId()))
                 .flatMap(value -> value.pathRuns().stream())
                 .toList();
+    }
+
+    public List<ApiDtos.PathRunDto> pathRunsForTask(TaskScope scope) {
+        Objects.requireNonNull(scope, "scope");
+        Projection projection = projections.get(scope);
+        return projection == null ? List.of() : projection.pathRuns();
     }
 
     private static ApiDtos.PathRunDto pathRunFromHttp(
