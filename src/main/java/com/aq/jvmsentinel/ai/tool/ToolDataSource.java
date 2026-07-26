@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.ai.tool;
 
+import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import java.util.List;
@@ -62,6 +63,15 @@ public interface ToolDataSource {
                                                      String authorizationHeader,
                                                      String bladeAuthHeader) throws Exception {
         return Optional.empty();
+    }
+
+    /**
+     * Accepts a server-gated experiment plan from {@code plan_propose}. Default is no-op;
+     * Control Plane sources bind the plan for later flood/focus execution.
+     */
+    default void acceptExperimentPlan(ToolExecutionContext.Scope scope, ExperimentPlan plan)
+            throws Exception {
+        // optional
     }
 
     record FactRecord(ToolExecutionContext.Scope scope, String reference, JsonNode value) {

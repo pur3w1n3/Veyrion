@@ -2,6 +2,7 @@ package com.aq.jvmsentinel.ai.tool;
 
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
+import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -29,6 +30,7 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
     private final DynamicEvidenceSource dynamicEvidenceSource;
     private final DynamicProbeExecutor dynamicProbeExecutor;
     private final PathRunSource pathRunSource;
+    private final ExperimentPlanAcceptor experimentPlanAcceptor;
 
     public ControlPlaneToolDataSource(ControlPlaneStore store, String scanId) {
         this(store, scanId, (projectId, artifactDigest, scopedScanId) -> List.of());
@@ -52,11 +54,21 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
                                       DynamicEvidenceSource dynamicEvidenceSource,
                                       DynamicProbeExecutor dynamicProbeExecutor,
                                       PathRunSource pathRunSource) {
+        this(store, scanId, dynamicEvidenceSource, dynamicProbeExecutor, pathRunSource,
+                (scopedScanId, plan) -> { });
+    }
+
+    public ControlPlaneToolDataSource(ControlPlaneStore store, String scanId,
+                                      DynamicEvidenceSource dynamicEvidenceSource,
+                                      DynamicProbeExecutor dynamicProbeExecutor,
+                                      PathRunSource pathRunSource,
+                                      ExperimentPlanAcceptor experimentPlanAcceptor) {
         this.store = Objects.requireNonNull(store, "store");
         this.scanId = Objects.requireNonNull(scanId, "scanId");
         this.dynamicEvidenceSource = Objects.requireNonNull(dynamicEvidenceSource, "dynamicEvidenceSource");
         this.dynamicProbeExecutor = Objects.requireNonNull(dynamicProbeExecutor, "dynamicProbeExecutor");
         this.pathRunSource = Objects.requireNonNull(pathRunSource, "pathRunSource");
+        this.experimentPlanAcceptor = Objects.requireNonNull(experimentPlanAcceptor, "experimentPlanAcceptor");
     }
 
     @Override
@@ -166,6 +178,12 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         return dynamicProbeExecutor.request(scanId, scope, principalId, jobId, canonical,
                 candidateInputs == null ? List.of() : List.copyOf(candidateInputs), maxRequests,
                 techniqueId, authorizationHeader, bladeAuthHeader);
+    }
+
+    @Override
+    public void acceptExperimentPlan(ToolExecutionContext.Scope scope, ExperimentPlan plan) {
+        scopedScan(scope);
+        experimentPlanAcceptor.accept(scanId, plan);
     }
 
     private ControlPlaneStore.ScanRecord scopedScan(ToolExecutionContext.Scope scope) {
@@ -326,5 +344,10 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
     public interface PathRunSource {
         List<ApiDtos.PathRunDto> pathRunsForScan(
                 String projectId, String artifactDigest, String scanId);
+    }
+
+    @FunctionalInterface
+    public interface ExperimentPlanAcceptor {
+        void accept(String scanId, ExperimentPlan plan);
     }
 }

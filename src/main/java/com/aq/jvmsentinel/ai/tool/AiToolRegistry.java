@@ -263,16 +263,24 @@ public final class AiToolRegistry {
                         : "application/json";
                 int maxAttempts = call.arguments().has("maxAttempts")
                         ? call.arguments().get("maxAttempts").asInt(2) : 2;
+                List<String> planInputs = new ArrayList<>();
+                for (int i = 0; i < candidates.size() && planInputs.size() < 8; i++) {
+                    planInputs.add(candidates.get(i).asText());
+                }
                 ExperimentPlan experiment = new ExperimentPlan(
                         "plan:" + context.jobId() + ":" + call.callId(),
                         canonicalRef, track, method, contentType, List.of(),
-                        track != IdentityTrack.UNAUTH, "2xx", "", maxAttempts);
+                        track != IdentityTrack.UNAUTH, "2xx", "", maxAttempts,
+                        planInputs, "COMPLETED", "");
                 ExperimentPlanValidator.validate(experiment, 8);
+                source.acceptExperimentPlan(context.scope(), experiment);
+                plan.put("planId", experiment.planId());
                 plan.put("track", track.name());
                 plan.put("method", experiment.method());
                 plan.put("contentType", experiment.contentType());
                 plan.put("maxAttempts", experiment.maxAttempts());
                 plan.put("serverGated", true);
+                plan.put("boundForExecution", true);
             }
             boolean authPoc = (call.arguments().has("techniqueId")
                     && !call.arguments().get("techniqueId").asText("").isBlank())
