@@ -648,8 +648,27 @@ Live DYNAMIC `ai-job-e019163ef1cb4b20`：`sandbox_probe=8` 中 **5× MISSING_AUT
 - **P0-04**：投影挂接 `SqlDiffProbe.compare`，D2 摘要封顶 `DYNAMIC_SUSPECTED`；H3 仍仅 `DynamicConfirmedGate`。
 - **P0-05**：AUTH 确认结论强制 `bypassConfirmation`（`HYPOTHESIS` / `DYNAMIC_CONTRAST` / `INSUFFICIENT_EVIDENCE`）；零 PathRun 证据不得 `DYNAMIC_CONTRAST`。
 
-### 仍开 / 阻塞
+### 仍开 / 阻塞（P0 收口时）
 
-- P1：SQL D3 实验卡、Blade/Flowable 语义包、召回基准、多语言、`VERIFIED`/强化隔离。
+- P1 项见 §64（本轮已按 acceptance 收口；live 仍开）。
 - live Docker：JWT 过闸轨差分、baldex 单入口 SQL D2、重建 runtime 镜像后的 Agent 侧语句捕获——需授权环境复验。
 - 个人本地 `TRUSTED_DOCKER` 仍非恶意强化隔离；模型不得改网络/挂载/命令/UID/预算。
+
+## 64. P1 路径实验与语义包 acceptance 收口（2026-07-27）
+
+按 [`docs/MVP_BACKLOG.md`](docs/MVP_BACKLOG.md) §4.2 推进 P1-01～P1-05，全部以 acceptance / 合成 fixture 为准，**不得**标生产可用或 `VERIFIED`。
+
+### 已落地（acceptance）
+
+- **P1-01**：`SqlExperimentCard` + `SqlExperimentCardBuilder`（良性/元字符 PathRun 对）；dashboard `sqlExperimentCards`；`POST /scans/{scanId}/experiment-cards/{cardId}/replay`（授权 + 幂等，MOCK / `DYNAMIC_SUSPECTED`）；GUI「重放实验卡」。
+- **P1-02**：既有 `blade-jwt-default` / `flowable-deploy-multipart` AnalysisPack 接入 dashboard `analysisPacks`；无破坏模板验收。
+- **P1-03**：`plan_propose` 服务端闸门后 `acceptExperimentPlan`；焦点探针可绑 `experimentPlanId`；dashboard `experimentPlans` + `probeBudget`（T2/T3 策略说明）；`PROBE_BUDGET` 拒绝超预算。
+- **P1-04**：`StaticEntryRecallBaseline` 合成召回表 + `knownGaps`；强制 `SYNTHETIC_BASELINE_ONLY` disclaimer。
+- **P1-05**：PATH/TRIAGE 强制/闸门 `nextExperiments[]`；拒绝无 PathRun 的 AUTH_GAP 叙事；步骤可被 `sandbox_probe` 消费。
+
+### 仍开 / 阻塞
+
+- live Docker / 授权 baldex：四轨预算实跑、D3 live PathRun 对、PDF 链可观测子集、JWT 过闸轨差分。
+- 实验计划仍为进程内 map（非跨重启持久化）。
+- P2：WAR 画像、gVisor/`VERIFIED`、多语言。
+- 召回基准不是授权多样本生产召回；禁止营销 5/5 fixture。

@@ -208,38 +208,43 @@ Spring Boot 可执行 JAR（个人本地）
 
 **P1-01 SQL D3 可重放实验卡**
 
-- [ ] 身份轨 + 输入 + SQL 前后对比 + 停止条件齐套
-- [ ] 默认仍不升 `VERIFIED`；满足 H3 才 `DYNAMIC_CONFIRMED`
-- **验收：** 卡片可从 GUI 触发重放且结果稳定（MOCK 标注）
+- [x] 身份轨 + 输入 + SQL 前后对比 + 停止条件齐套（**acceptance**；`SqlExperimentCard` / dashboard `sqlExperimentCards`）
+- [x] 默认仍不升 `VERIFIED`；满足 H3 才 `DYNAMIC_CONFIRMED`（**acceptance**；卡片构造拒绝 VERIFIED）
+- **验收：** GUI/API `POST .../experiment-cards/{cardId}/replay` 幂等重放，MOCK / `DYNAMIC_SUSPECTED`（`SqlExperimentCardAcceptanceTest`）
 - **依赖：** P0-04
+- **状态：** acceptance 已通；live PathRun 对仍依赖动态环境
 
 **P1-02 M-D Blade / Flowable 高价值实验形态**
 
-- [ ] Blade JWT 默认证件 AnalysisPack（无破坏）
-- [ ] Flowable deploy/multipart 有界实验（无内存马、无外连）
-- **验收：** PDF 链可观测子集（合成身份过闸、deploy PathRun、SQL 分级）有文档化样例
+- [x] Blade JWT 默认证件 AnalysisPack（无破坏）（**acceptance**；`blade-jwt-default`）
+- [x] Flowable deploy/multipart 有界实验模板（无内存马、无外连）（**acceptance**；`flowable-deploy-multipart`）
+- **验收：** 语义包模板与路由匹配入库（`AnalysisPackAcceptanceTest`）；dashboard `analysisPacks` 可核对
 - **依赖：** P0-03；启动依赖兼容（已有部分）
+- **状态：** 模板/匹配 acceptance 已通；baldex/PDF 链 live 样例未做
 
 **P1-03 实验计划一等执行（AI 生成 → 闸门 → 按轨）**
 
-- [ ] `plan_propose` 输出与洪水/焦点执行绑定；预算 T2+T3 可解释
-- [ ] 超预算显式 `UNREACHED` / `PROBE_BUDGET`
-- **验收：** baldex 高价值入口四轨，普通入口 UNAUTH+ADMIN 策略可在 dashboard 核对
-- **依赖：** M-B；probe plan 持久化（已有元数据）
+- [x] `plan_propose` 输出与洪水/焦点执行绑定；预算 T2+T3 可解释（**acceptance**；`experimentPlanId` + dashboard `probeBudget`）
+- [x] 超预算显式 `UNREACHED` / `PROBE_BUDGET`（**acceptance**；`ExperimentPlanValidator`）
+- **验收：** dashboard 可核对已接受计划与预算策略（`ExperimentPlanExecutionAcceptanceTest`）；baldex 四轨 live 仍开
+- **依赖：** M-B；probe plan 持久化（已有元数据）；计划本体为进程内 MVP map
+- **状态：** acceptance 已通；跨进程持久化与 baldex live 未做
 
 **P1-04 静态入口召回基准**
 
-- [ ] 多 Spring / Blade 版本授权样本基准集；报告召回与漏报
-- [ ] 组合注解 / 继承映射差距清单
-- **验收：** 基准表入库；不得用 5/5 fixture 宣称生产召回
-- **依赖：** 授权样本
+- [x] 合成多 Spring / Blade 注解形态基准集；报告召回与漏报（**acceptance**；`StaticEntryRecallBaseline`）
+- [x] 组合注解 / 继承映射差距清单（**acceptance**；catalog `knownGaps`）
+- **验收：** 基准表与 disclaimer 入库；禁止用 fixture 5/5 宣称生产召回（`StaticEntryRecallBaselineAcceptanceTest`）
+- **依赖：** 授权样本（多版本 live 样本仍缺）
+- **状态：** **合成基线 only**；非生产召回
 
 **P1-05 攻击路径 AI 编排（证据约束）**
 
-- [ ] PATH / TRIAGE 基于 PathRun 产出可执行下一步实验，而非综述 `AUTH_GAP`
-- [ ] 组合链仅在共享资源/身份/文件证据上候选
-- **验收：** 报告含「下一步验证步骤」且可被 `sandbox_probe` 消费
+- [x] PATH / TRIAGE 基于 PathRun 产出可执行下一步实验，而非综述 `AUTH_GAP`（**acceptance**；`NextExperimentSteps`）
+- [x] 组合链仅在共享资源/身份/文件证据上候选（提示约束 + 服务端闸门；无 PathRun 的 AUTH_GAP 叙事拒绝）
+- **验收：** conclusion 含 `nextExperiments[]` 且可被 `sandbox_probe` 消费（`NextExperimentStepsAcceptanceTest`）
 - **依赖：** §4.0 主脊稳定
+- **状态：** acceptance 已通；live 编排质量未标 VERIFIED
 
 ### 4.3 P2 — 愿景扩展（不阻塞主脊）
 
