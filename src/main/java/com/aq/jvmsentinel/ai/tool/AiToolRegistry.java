@@ -160,10 +160,13 @@ public final class AiToolRegistry {
                 Set.of("kind"));
         ToolDefinition definition = new ToolDefinition("facts_search",
                 "Search already-indexed, read-only facts in the server-bound project. "
-                        + "Kinds: SCAN, ENTRY, DEPENDENCY, SINK, EVIDENCE, DYNAMIC_EVIDENCE, PATH_RUN, ANY. "
+                        + "Kinds: SCAN, ENTRY, DEPENDENCY, SINK, EVIDENCE, DYNAMIC_EVIDENCE, PATH_RUN, "
+                        + "STATIC_CONTRAST, ANY. "
                         + "For PRE_ANALYSIS, query ENTRY with entry ids, routes, controller/class names, HTTP methods, "
                         + "or English enum keywords; do not rely only on translated prose. "
-                        + "PATH_RUN returns persisted HTTP status, outcomeClass, and SQL event detail.",
+                        + "PATH_RUN returns persisted HTTP status, outcomeClass, and SQL event detail. "
+                        + "STATIC_CONTRAST returns sink-perspective static↔PathRun contrast rows "
+                        + "(MATCHED/PARTIAL/STATIC_ONLY/DYNAMIC_ONLY); STATIC_ONLY is never bypass-confirmed.",
                 schema.jsonSchema(), OverflowPolicy.TRUNCATE);
         return new RegisteredTool(definition, schema, (call, context) -> {
             JsonNode args = call.arguments();

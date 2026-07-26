@@ -1,10 +1,12 @@
 package com.aq.jvmsentinel.ai.tool;
 
+import com.aq.jvmsentinel.analysis.contrast.ContrastLedger;
 import com.aq.jvmsentinel.analysis.identity.AuthCodeQueryService;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
 import com.aq.jvmsentinel.model.ArtifactDescriptor;
 import com.aq.jvmsentinel.model.ExperimentPlan;
+import com.aq.jvmsentinel.model.StaticContrastRow;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -138,6 +140,14 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         if ("PATH_RUN".equals(requested) || "PATHRUN".equals(requested) || "ANY".equals(requested)) {
             for (ApiDtos.PathRunDto value : pathRuns(scan)) {
                 addIfMatching(result, scope, "pathrun:" + value.pathRunId(), pathRunFact(value), needle, limit);
+            }
+        }
+        if ("STATIC_CONTRAST".equals(requested) || "CONTRAST".equals(requested) || "ANY".equals(requested)) {
+            ContrastLedger.Ledger ledger = ContrastLedger.build(
+                    scan.dto().entries(), scan.dto().sinks(), scan.evidence(), pathRuns(scan));
+            for (StaticContrastRow row : ledger.rows()) {
+                addIfMatching(result, scope, "contrast:" + row.rowId(),
+                        ContrastLedger.toFactNode(row), needle, limit);
             }
         }
         if ("EVIDENCE".equals(requested) || "FACT".equals(requested) || "ANY".equals(requested)) {

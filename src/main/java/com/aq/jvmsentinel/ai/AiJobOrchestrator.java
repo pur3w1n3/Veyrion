@@ -6,6 +6,7 @@ import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolStatus;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource.DynamicProbeExecutor;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource.PathRunSource;
+import com.aq.jvmsentinel.analysis.contrast.ContrastLedger;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.ai.tool.ToolExecutionContext;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
@@ -467,6 +468,20 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     || initial.role() == AgentRole.VULNERABILITY_TRIAGE) {
                 conclusion = annotateNextExperiments(initial, summary, conclusion);
             }
+            if (initial.role() == AgentRole.REPORT_GENERATION) {
+                ReportLedgerEnforced enforced = enforceReportContrastLedger(
+                        initial, summary, conclusion, outputLanguage);
+                summary = enforced.summary();
+                conclusion = enforced.conclusionJson();
+                if (enforced.incomplete()) {
+                    appendEvent(initial, ContrastLedger.EVENT_INCOMPLETE, "COMPLETED", null, null,
+                            null, null, null,
+                            ContrastLedger.EVENT_INCOMPLETE
+                                    + " missingRows=" + enforced.missingRowIds().size()
+                                    + " appendedByServer=true",
+                            null);
+                }
+            }
             appendEvent(initial, "MODEL_INFERENCE", "COMPLETED", null, null,
                     null, null, null, summary, null);
             if (built.seeded()) {
@@ -567,13 +582,15 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         资源/身份/文件 PathRun 证据上候选；禁止 AUTH_GAP 综述替代下一步实验。
                         """;
                 case REPORT_GENERATION -> """
-                        先查询 SCAN、ENTRY、SINK、EVIDENCE、PathRun 与 DYNAMIC_EVIDENCE。输出完整中文 Markdown
-                        报告，至少包含：# 审计报告；## 执行摘要与结论边界；## 入口—身份轨—PathRun 矩阵；
-                        ## 多条推测链路（逐条写入口→轨→数据/状态转换→触发点→影响，并列证据、前置条件、
-                        置信度与未验证环节）；## 组合漏洞可能性；## 动态证据与覆盖；## 发现与风险分级；
-                        ## 未覆盖区域、限制与下一步验证。证据不足时明确写“证据不足”，不得为了满足结构
-                        编造 sink、链路或漏洞。严格保留 STATIC_INFERRED、DYNAMIC_SUSPECTED、DYNAMIC_CONFIRMED、
-                        VERIFIED、UNREACHED 的差异；不得把 DYNAMIC_CONFIRMED 宣传为生产实库已证实。
+                        先查询 SCAN、ENTRY、SINK、EVIDENCE、PathRun、STATIC_CONTRAST 与 DYNAMIC_EVIDENCE。
+                        输出完整中文 Markdown 报告，至少包含：# 审计报告；## 执行摘要与结论边界；
+                        ## 入口—身份轨—PathRun 矩阵；## 静态·动态对照账本（须覆盖 CONTRAST_LEDGER 中全部
+                        STATIC_ONLY / 未匹配行摘要，不得省略）；## 多条推测链路（逐条写入口→轨→数据/状态转换
+                        →触发点→影响，并列证据、前置条件、置信度与未验证环节）；## 组合漏洞可能性；
+                        ## 动态证据与覆盖；## 发现与风险分级；## 未覆盖区域、限制与下一步验证。
+                        STATIC_ONLY 只能写「静态候选/未动态确认」，不得写成已绕过或已确认。证据不足时明确写
+                        “证据不足”，不得编造 sink、链路或漏洞。严格保留 STATIC_INFERRED、DYNAMIC_SUSPECTED、
+                        DYNAMIC_CONFIRMED、VERIFIED、UNREACHED；不得把 DYNAMIC_CONFIRMED 宣传为生产实库已证实。
                         """;
             };
         }
@@ -625,12 +642,14 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     combination chains only when PathRuns share identity/resource/file evidence — not AUTH_GAP essays.
                     """;
             case REPORT_GENERATION -> """
-                    Query SCAN, ENTRY, SINK, EVIDENCE, PathRun, and DYNAMIC_EVIDENCE first. Produce a complete English Markdown
-                    report with: Executive Summary and Evidence Boundary; Entrypoint-Track-PathRun Matrix; Multiple
-                    Hypothesized Paths; Combined Vulnerability Possibilities; Dynamic Evidence and Coverage;
-                    Findings and Severity; Gaps, Limitations, and Next Validation Steps. Preserve
-                    STATIC_INFERRED / DYNAMIC_SUSPECTED / DYNAMIC_CONFIRMED / VERIFIED / UNREACHED. Do not market
-                    DYNAMIC_CONFIRMED as production-database proof.
+                    Query SCAN, ENTRY, SINK, EVIDENCE, PathRun, STATIC_CONTRAST, and DYNAMIC_EVIDENCE first.
+                    Produce a complete English Markdown report with: Executive Summary and Evidence Boundary;
+                    Entrypoint-Track-PathRun Matrix; Static-Dynamic Contrast Ledger (must cover every STATIC_ONLY /
+                    unmatched CONTRAST_LEDGER row); Multiple Hypothesized Paths; Combined Vulnerability Possibilities;
+                    Dynamic Evidence and Coverage; Findings and Severity; Gaps, Limitations, and Next Validation Steps.
+                    STATIC_ONLY may only be described as static-candidate / not dynamically confirmed — never bypassed.
+                    Preserve STATIC_INFERRED / DYNAMIC_SUSPECTED / DYNAMIC_CONFIRMED / VERIFIED / UNREACHED.
+                    Do not market DYNAMIC_CONFIRMED as production-database proof.
                     """;
         };
     }
@@ -716,9 +735,79 @@ public final class AiJobOrchestrator implements AutoCloseable {
         }
         String authConfirm = authBypassConfirmPromptContext(job, language);
         if (!authConfirm.isBlank()) prompt.append('\n').append(authConfirm);
+        String contrast = contrastLedgerContext(job, language);
+        if (!contrast.isBlank()) prompt.append('\n').append(contrast);
         String prior = priorInferenceContext(job, language);
         if (!prior.isBlank()) prompt.append('\n').append(prior);
         return prompt.toString();
+    }
+
+    private String contrastLedgerContext(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job.scanId() == null) return "";
+        if (job.role() != AgentRole.REPORT_GENERATION
+                && job.role() != AgentRole.PATH_EXPLORATION
+                && job.role() != AgentRole.VULNERABILITY_TRIAGE) {
+            return "";
+        }
+        ContrastLedger.Ledger ledger = loadContrastLedger(job);
+        return ContrastLedger.formatForPrompt(ledger, language == AiOutputLanguage.EN);
+    }
+
+    private ContrastLedger.Ledger loadContrastLedger(SQLiteControlPlanePersistence.AiJobData job) {
+        try {
+            ControlPlaneStore.ScanRecord scan = store.requireScan(job.scanId());
+            return ContrastLedger.build(
+                    scan.dto().entries(),
+                    scan.dto().sinks(),
+                    scan.evidence(),
+                    loadPathRuns(job));
+        } catch (RuntimeException ignored) {
+            return new ContrastLedger.Ledger(List.of(), 0, false, "SCAN_UNAVAILABLE");
+        }
+    }
+
+    private ReportLedgerEnforced enforceReportContrastLedger(
+            SQLiteControlPlanePersistence.AiJobData job,
+            String summary,
+            String conclusionJson,
+            AiOutputLanguage language) {
+        ContrastLedger.Ledger ledger = loadContrastLedger(job);
+        ContrastLedger.EnforceResult enforced = ContrastLedger.enforceReport(
+                summary, ledger, language == AiOutputLanguage.EN);
+        String conclusion = conclusionJson;
+        try {
+            ObjectNode node;
+            try {
+                node = (ObjectNode) JSON.readTree(conclusionJson);
+            } catch (Exception ignored) {
+                node = JSON.createObjectNode();
+                node.put("schemaVersion", 1);
+                node.put("classification", "INFERENCE");
+            }
+            node.put("summary", enforced.summary());
+            ArrayNode ledgerNode = node.putArray("contrastLedger");
+            for (var row : ledger.staticOnlyRows()) {
+                if (ledgerNode.size() >= ContrastLedger.MAX_FORCED_STATIC_ONLY) break;
+                ledgerNode.add(ContrastLedger.toFactNode(row));
+            }
+            node.put("contrastLedgerIncomplete", enforced.incomplete());
+            node.put("contrastLedgerTruncated", ledger.truncated());
+            conclusion = node.toString();
+        } catch (Exception ignored) {
+            // Keep prior conclusion JSON if patching fails.
+        }
+        return new ReportLedgerEnforced(
+                enforced.summary(), conclusion, enforced.incomplete(), enforced.missingRowIds());
+    }
+
+    private record ReportLedgerEnforced(
+            String summary, String conclusionJson, boolean incomplete, List<String> missingRowIds) {
+        private ReportLedgerEnforced {
+            summary = summary == null ? "" : summary;
+            conclusionJson = conclusionJson == null ? "" : conclusionJson;
+            missingRowIds = List.copyOf(missingRowIds == null ? List.of() : missingRowIds);
+        }
     }
 
     private String authSurfacePromptContext(
