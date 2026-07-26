@@ -13,6 +13,10 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
+# Local Control Plane SQLite lives at <Artifacts>/.veyrion/control-plane.db
+# (default Artifacts = samples). Migration checksum mismatches fail closed;
+# see README for backup-and-recreate recovery on disposable dev databases.
+
 if (-not [string]::IsNullOrWhiteSpace($JavaHome)) {
     $resolvedJavaHome = (Resolve-Path -LiteralPath $JavaHome).Path
     $javaExecutable = Join-Path $resolvedJavaHome 'bin\java.exe'

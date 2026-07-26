@@ -300,7 +300,7 @@ Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约�
 
 ## 14. 本地首版持久化与管理控制
 
-- Desktop Core 使用 SQLite/plain JDBC 保存项目、制品元数据、扫描结果、Provider、AI 角色绑定、有界 AI job、本地操作员 PAT hash 和脱敏审计。迁移按版本顺序执行并校验历史文件摘要，未知版本、断档或 checksum 漂移均拒绝启动。
+- Desktop Core 使用 SQLite/plain JDBC 保存项目、制品元数据、扫描结果、Provider、AI 角色绑定、有界 AI job、本地操作员 PAT hash 和脱敏审计。迁移按版本顺序执行并校验历史文件摘要，未知版本、断档或 checksum 漂移均拒绝启动。已写入 `schema_migrations` 的迁移文件视为不可变；后续 schema 变更只能追加新版本，不得改写已应用 SQL 以“修复”本地库。
 - Provider secret 使用数据库外根密钥和 AES-256-GCM；AAD 绑定 workspace、Provider、credential 和版本。HTTP DTO 不包含明文、密文、nonce 或可逆片段。根密钥文件权限在支持的平台尽力收紧，非 loopback/生产形态无法确认权限时必须拒绝启用。
 - 本地 bootstrap token 映射到 `local-admin`，每次进程启动轮换，旧 token 失效；操作员 PAT 与 Worker token 使用不同格式、header、存储和校验器。当前只完成 loopback 单 workspace RBAC，生产 SSO/session 和全部 GET 的身份边界仍待实现。
 - AI Gateway 已支持 OpenAI Chat/Anthropic Messages 非流式请求和单工具调用循环；只有显式授权、固定角色绑定、启用 Provider、后端凭据和完整配置快照一致时才出站。模型输出无权修改工具、网络、沙箱、预算或验证等级，结论固定为 `INFERENCE`。

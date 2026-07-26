@@ -1145,9 +1145,16 @@ public final class SQLiteControlPlanePersistence {
                     if (version != current + 1 || version > SCHEMA_VERSION) {
                         throw new MigrationException("unsupported or non-contiguous database schema version");
                     }
-                    if (!MIGRATIONS.get(version - 1).equals(rows.getString(2))
-                            || !checksums.get(version - 1).equals(rows.getString(3))) {
-                        throw new MigrationException("database migration checksum mismatch");
+                    String expectedName = MIGRATIONS.get(version - 1);
+                    String appliedName = rows.getString(2);
+                    String expectedChecksum = checksums.get(version - 1);
+                    String appliedChecksum = rows.getString(3);
+                    if (!expectedName.equals(appliedName) || !expectedChecksum.equals(appliedChecksum)) {
+                        throw new MigrationException(
+                                "database migration checksum mismatch for version " + version
+                                        + " (" + expectedName + "); applied migrations must not be rewritten. "
+                                        + "For local development, back up and recreate "
+                                        + "<Artifacts>/.veyrion/control-plane.db after confirming no needed state");
                     }
                     current = version;
                 }

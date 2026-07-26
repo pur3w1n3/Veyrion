@@ -16,7 +16,17 @@ Windows 本地开发可在仓库根目录一键启动后端和 Vite 前端：
 .\Start-Veyrion.ps1
 ```
 
-脚本会创建 `samples/`、按需安装前端依赖、解析运行时 classpath、编译 Java、初始化/恢复 SQLite、复用本地项目并启动两个 loopback 服务。默认 GUI 为 `http://127.0.0.1:5173`，Control Plane 为 `http://127.0.0.1:18080/api/v1`；按 `Ctrl+C` 一并停止。可用 `-Artifacts`、`-BackendPort`、`-FrontendPort` 覆盖默认值，但制品目录必须位于工作区内。状态默认保存在 `<Artifacts>/.veyrion/`。
+脚本会创建 `samples/`、按需安装前端依赖、解析运行时 classpath、编译 Java、初始化/恢复 SQLite、复用本地项目并启动两个 loopback 服务。默认 GUI 为 `http://127.0.0.1:5173`，Control Plane 为 `http://127.0.0.1:18080/api/v1`；按 `Ctrl+C` 一并停止。可用 `-Artifacts`、`-BackendPort`、`-FrontendPort` 覆盖默认值，但制品目录必须位于工作区内。状态默认保存在 `<Artifacts>/.veyrion/`（默认即 `samples/.veyrion/control-plane.db`）。
+
+若 Control Plane 因 `database migration checksum mismatch` 拒绝启动：表示已应用的迁移文件被改写，校验故意 fail-closed。本地开发可先备份再重建 SQLite（不要在生产库上跳过校验）：
+
+```powershell
+$dbDir = 'samples\.veyrion'
+Copy-Item "$dbDir\control-plane.db" "$dbDir\control-plane.db.bak-$(Get-Date -Format yyyyMMddHHmmss)"
+Remove-Item "$dbDir\control-plane.db","$dbDir\control-plane.db-wal","$dbDir\control-plane.db-shm" -ErrorAction SilentlyContinue
+```
+
+然后重新运行 `.\Start-Veyrion.ps1`；全新库会按当前迁移顺序初始化。已应用迁移文件本身不得再改写，schema 变更只能追加新的 `V00N__*.sql`。
 
 如果系统默认 `java` 低于 17，可直接指定 JDK，不需要手工修改 PowerShell 环境变量：
 

@@ -33,6 +33,7 @@ public final class DevLauncherMain {
         Files.createDirectories(runtimeDir);
         String token = loadOrCreateMutationToken(runtimeDir.resolve("mutation.token"));
         Path database = runtimeDir.resolve("control-plane.db");
+        System.out.println("Control Plane SQLite: " + database.toAbsolutePath().normalize());
 
         try (ControlPlaneServer server = new ControlPlaneServer(
                 "127.0.0.1", config.backendPort(), config.artifactRoot(), token,
