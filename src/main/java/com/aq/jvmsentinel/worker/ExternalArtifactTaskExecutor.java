@@ -408,8 +408,11 @@ public final class ExternalArtifactTaskExecutor {
         // Do not force server.port/address: the JAR keeps its own listen config.
         // Readiness uses WaitHttpReady (process LISTEN → HTTP classify) to avoid fragile shell quoting.
         boolean mysqlConnector = containsMysqlConnector(registration.path());
+        // Quote JDBC URLs for /bin/sh: unquoted '&' in query strings backgrounds the java process
+        // and makes later --spring.* flags execute as separate shell commands (exit 70).
         String datasource = mysqlConnector
-                ? "jdbc:mysql://127.0.0.1:3306/veyrion?connectTimeout=1000&socketTimeout=1000&useSSL=false"
+                ? shellSingleQuoted(
+                        "jdbc:mysql://127.0.0.1:3306/veyrion?connectTimeout=1000&socketTimeout=1000&useSSL=false")
                 : "jdbc:veyrion-mock:mem:veyrion";
         String driver = mysqlConnector ? "" : " --spring.datasource.driver-class-name="
                 + "com.aq.jvmsentinel.instrumentation.mock.VeyrionMockDriver";
