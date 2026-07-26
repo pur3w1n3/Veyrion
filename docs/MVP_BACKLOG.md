@@ -1,7 +1,7 @@
 # 溯脉 · Veyrion MVP 开发任务拆解
 
-> 更新日期：2026-07-26  
-> 权威决策与证据：[`PROJECT_MEMORY.md`](../PROJECT_MEMORY.md)（尤其 §51–§62）  
+> 更新日期：2026-07-27  
+> 权威决策与证据：[`PROJECT_MEMORY.md`](../PROJECT_MEMORY.md)（尤其 §51–§67）  
 > 流程契约：[`AUDIT_FLOW.md`](AUDIT_FLOW.md) · 路径实验：[`PATH_EXPERIMENT_MODEL.md`](PATH_EXPERIMENT_MODEL.md)
 
 产品正式名：**溯脉 · Veyrion**（英文：Veyrion）。`com.aq.jvmsentinel` 包名、Maven artifactId、内部 service name 与 `/api/v1` 路由保持兼容；商标/域名尚待法务检索。
@@ -83,6 +83,7 @@ Spring Boot 可执行 JAR（个人本地）
 - [x] `AUTH_GAP` 降级：主 findings 隐藏；`authGapFindingCount` vs `authGapSinkCount` 分口径（**acceptance**）
 - [x] SQL meta 过滤：Redis/MySQL 握手 meta 不进 PathRun `sqlEvents`；仅真实截断 SQL（**acceptance**；语句级观测依赖 runtime 镜像重建）
 - [x] `DynamicConfirmedGate` 忽略 `port=`/`sqlClass=` meta；H3 仍要求恶意语句文本（**acceptance**；live H3 命中样本尚少）
+- [x] 静态·动态对照账本（混合方案，**不新增**第七 AI 角色）：`StaticContrastProjector` / `StaticDynamicContraster` / `ContrastLedger`；`facts_search STATIC_CONTRAST`；REPORT 强制 `STATIC_ONLY` 入账（**acceptance**；见 §4.2 P1-06）
 
 ### 2.5 AUTH → DYNAMIC PoC 交接
 
@@ -245,6 +246,16 @@ Spring Boot 可执行 JAR（个人本地）
 - **验收：** conclusion 含 `nextExperiments[]` 且可被 `sandbox_probe` 消费（`NextExperimentStepsAcceptanceTest`）
 - **依赖：** §4.0 主脊稳定
 - **状态：** acceptance 已通；live 编排质量未标 VERIFIED
+
+**P1-06 静态·动态对照账本（确定性引擎 + REPORT 强制入账）**
+
+- [x] sink 视角投影现有 `TaintPath` + unbound sink → contrast 行含 `entryRefs` / `taintPathId`（**acceptance**；`StaticContrastProjectorAcceptanceTest`）
+- [x] 与 PathRun 按 `entryRef`×轨 join → `MATCHED` / `PARTIAL` / `STATIC_ONLY` / `DYNAMIC_ONLY` / `UNKNOWN`；全 401 → `STATIC_ONLY`，不得写成已绕过（**acceptance**；`StaticDynamicContrasterAcceptanceTest`）
+- [x] REPORT 注入有界 `CONTRAST_LEDGER`；STATIC_ONLY / 未匹配行强制入报告结构；漏写 → 服务端补或 `REPORT_LEDGER_INCOMPLETE`（**acceptance**；`ContrastLedgerAcceptanceTest`；预算：总行 64 / prompt 32 / 强制入报告 40）
+- [x] PATH/TRIAGE 轻消费 contrast；闸门不变（无 PathRun 仍禁 AUTH_GAP 散文；`STATIC_ONLY` 不得升已绕过）（**acceptance**；`NextExperimentStepsAcceptanceTest`）
+- [x] 不新增 `AgentRole`；流水线阶段数不变（**acceptance**）
+- **状态：** acceptance 已通；**真正反向 BFS 未做**；不得标 VERIFIED / 生产可用
+- **依赖：** 现有 `InterproceduralTaintAnalyzer` / PathRun；与 P0 主脊并行补盲，不插队
 
 ### 4.3 P2 — 愿景扩展（不阻塞主脊）
 

@@ -704,3 +704,28 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 - 合成 JWT claims 对齐 tenant_id/user_id/role_name/client_id=saber；默认密钥优先 `bladexisapowerful…`。
 
 仍需 live Docker 复验过闸与 Flowable deploy-upload 链；不得宣称生产可用。
+
+## 67. 静态·动态对照账本（混合方案，不新增第七 AI 角色）（2026-07-27）
+
+架构决策（用户确认落地）：**不新增** `AgentRole` / 第七「静态代码审计」角色。sink→source / 静态·动态对照由**确定性引擎**出账，现有 PATH / TRIAGE / REPORT 只消费。
+
+### 职责切分
+
+| 组件 | 产出 | 边界 |
+|------|------|------|
+| `StaticContrastProjector` | 现有 `TaintPath` + unbound sink 的 sink 视角投影 → 有界行（`entryRefs` / `taintPathId`） | 真正反向 BFS **本轮未做**；引擎 FACT/INFERENCE |
+| `StaticDynamicContraster` | 与 PathRun 按 `entryRef`×轨 join → `ContrastStatus`：`MATCHED` / `PARTIAL` / `STATIC_ONLY` / `DYNAMIC_ONLY` / `UNKNOWN` | 全 401 / `AUTH_CHALLENGE` → **`STATIC_ONLY`**，不得写成已绕过 |
+| `ContrastLedger` | 有界 `CONTRAST_LEDGER`（prompt 最多 32 行；强制入报告最多 40 条 STATIC_ONLY；总行预算 64） | 模型漏写 → 服务端补写 + 事件 `REPORT_LEDGER_INCOMPLETE` |
+| PATH / TRIAGE | 轻扩展提示消费 contrast；闸门不变 | 无 PathRun 仍禁 AUTH_GAP 散文；`STATIC_ONLY` 不得升「已绕过/已确认」 |
+| REPORT | 注入 ledger；强制 STATIC_ONLY / 未匹配行入报告结构 | 不标 `VERIFIED` |
+
+### 与 P0 PathRun 主脊对齐
+
+- 不插队、不放大 `AUTH_GAP` 主 findings；流水线阶段数与六角色不变。
+- SpringBlade 全 401：静态行应为 `STATIC_ONLY`，不得写成已绕过。
+- `facts_search kind=STATIC_CONTRAST` 只读回传对照行。
+
+### 验收（acceptance，合成 fixture）
+
+- `StaticContrastProjectorAcceptanceTest` / `StaticDynamicContrasterAcceptanceTest` / `ContrastLedgerAcceptanceTest` / `NextExperimentStepsAcceptanceTest` 闸门回归。
+- **不得**标生产可用或 `VERIFIED`。后续可选：真正 sink→source 反向 BFS（仅当正向投影召回不足时）。
