@@ -669,6 +669,25 @@ Live DYNAMIC `ai-job-e019163ef1cb4b20`：`sandbox_probe=8` 中 **5× MISSING_AUT
 ### 仍开 / 阻塞
 
 - live Docker / 授权 baldex：四轨预算实跑、D3 live PathRun 对、PDF 链可观测子集、JWT 过闸轨差分。
-- 实验计划仍为进程内 map（非跨重启持久化）。
-- P2：WAR 画像、gVisor/`VERIFIED`、多语言。
 - 召回基准不是授权多样本生产召回；禁止营销 5/5 fixture。
+- P2-03 多语言 / 非 JVM 第二 Packager **未开工**；WAR 嵌入式 runtime 未做。
+
+## 65. P2 本地可落地项 + P0/P1 逻辑复测（2026-07-27）
+
+### P0/P1 本地逻辑复测
+
+对已收口 P0-01～05 / P1-01～05 及相关回归做完整 acceptance 复测（JBR 21 + `mvn -Dmaven.repo.local=.m2 test-compile` 后 `java -ea` 主类），**全部 PASS**；无修复 commit。
+
+### 本轮新增（acceptance，非 VERIFIED）
+
+- **实验计划 V014** 跨重启持久化（`experiment_plans` + restore）。
+- **P2-01** `RunProfile`：WAR/CLASS 动态 fail-closed，禁止静默宿主执行。
+- **P2-02** `VerifiedStatusGate`：`TRUSTED_DOCKER` 永不 VERIFIED；health 诚实暴露门禁。
+- **P2-04** `ExperimentShapeView` + dashboard `experimentShapes` + GUI「一次实验形态」。
+- **P2-05** `NonHttpEntryProtocol`：WebSocket/未知协议 → UNREACHED。
+
+### 仍阻塞
+
+- live Docker / baldex / JWT 过闸实跑。
+- P2-03 第二语言包；WAR 可运行画像的真实嵌入式容器。
+- `VERIFIED` 仍 `VERIFIED_GATE_NOT_OPEN`（逃逸套件未验收）。

@@ -62,7 +62,7 @@ Spring Boot 可执行 JAR（个人本地）
 ### 2.2 控制面 / 流水线 / 持久化
 
 - [x] loopback Control Plane：`/api/v1` DTO、操作员 PAT、显式 `authorized`、幂等键（**acceptance**）
-- [x] SQLite 单节点：项目/扫描/证据/AI job/事件；V007 Worker task/trace；V008 上传会话；V011 幂等绑定 + 流水线 cursor + probe plan；V013 PathRun（**acceptance**）
+- [x] SQLite 单节点：项目/扫描/证据/AI job/事件；V007 Worker task/trace；V008 上传会话；V011 幂等绑定 + 流水线 cursor + probe plan；V013 PathRun；V014 experiment plans（**acceptance**）
 - [x] `audit-runs` 武装流水线；角色顺序见 [`AUDIT_FLOW.md`](AUDIT_FLOW.md)（含 `AUTH_ANALYSIS`）（**acceptance**；完整 live 依赖同进程生命周期）
 - [x] 五/六角色有界 AI Job：工具白名单、脱敏事件、`INFERENCE` 边界；双语提示词 snapshot（**acceptance**；真实供应商互操作 **partial**）
 - [x] finding replay → 固定 `TRUSTED_DOCKER` 任务，返回 `DYNAMIC_SUSPECTED`（**acceptance**）
@@ -111,7 +111,7 @@ Spring Boot 可执行 JAR（个人本地）
 | JWT / 鉴权绕过动态确认 | **partial** | AUTH→DYNAMIC 管道与种子 PoC 已通；多数绕过仍停在 `DYNAMIC_SUSPECTED` / `AUTH_CHALLENGE`，未形成「过闸 + 业务命中」对照闭环 |
 | Blade-Auth 与 Authorization 双通道 | **acceptance** | 计划/探针/工具独立双头；洪水合成默认只写 Authorization；live Auth-vs-Blade 轨差分待授权样例复验 |
 | SQL D1 | **partial** | 语句级写入 PathRun 已修 meta 污染；无语句观测时允许空 SQL；live 深度依赖 runtime 镜像与业务真实发 SQL |
-| SQL D2 / D3 | **D2 acceptance / D3 not done** | 投影侧 `SqlDiffProbe.compare` 已挂 PathRun 摘要（最高 `DYNAMIC_SUSPECTED`）；D3 实验卡未做；live D2 待复验 |
+| SQL D2 / D3 | **D2/D3 acceptance** | 投影侧 D2 + D3 实验卡/重放已 acceptance；live D2/D3 待复验 |
 | `DYNAMIC_CONFIRMED`（H3） | **partial** | 门禁代码存在；缺少稳定 live 恶意片段命中样例与 GUI 主路径演示 |
 | `parameterBound` / 入口命中深度 | **acceptance / live partial** | 投影/探针诚实填写 entryHit 与 unknown/false；Spring handler 可证 true；live baldex 对照待做 |
 | 多身份轨洪水质量 | **partial** | 预算分配已修；不可用身份发 `IDENTITY_UNAVAILABLE` 未达路径；合成过闸率仍参差 |
@@ -128,8 +128,8 @@ Spring Boot 可执行 JAR（个人本地）
 |--------|--------|----------|
 | **M-A** PathRun 契约与呈现 | DTO、超时枚举、GUI 按入口×轨、`AUTH_GAP` 次级 | **完成（acceptance）**；焦点探针 + 入口×轨筛选已落地；实验卡/D3 仍可加深 |
 | **M-B** 鉴权 / 合成身份 / 按轨观察 | AUTH 角色、合成身份、按轨执行、PoC 交接 | **大部分完成**（acceptance + live partial）；双 header 通道已通；JWT live 过闸对照仍薄 |
-| **M-C** SQL D1–D3 + `DYNAMIC_CONFIRMED` | D1 挂 PathRun；D2 差分；D3 实验卡；H3 门禁 | **D1/D2 acceptance；D3 未做；H3 代码有、live 薄** |
-| **M-D** Blade/Flowable 高价值形态 | JWT 默认证件、deploy/multipart 无破坏实验 | **部分启动依赖已兼容**；语义包级实验形态 **未完成** |
+| **M-C** SQL D1–D3 + `DYNAMIC_CONFIRMED` | D1 挂 PathRun；D2 差分；D3 实验卡；H3 门禁 | **D1/D2/D3 acceptance；H3 代码有、live 薄** |
+| **M-D** Blade/Flowable 高价值形态 | JWT 默认证件、deploy/multipart 无破坏实验 | **AnalysisPack 模板 acceptance**；baldex/PDF live 样例未做 |
 
 历史 M0–M6 条目：骨架/控制面/GUI/Agent/洪水等已并入上表「已完成」；未完成项转入 §4–§5，不再假装整章未开工。
 
@@ -227,8 +227,8 @@ Spring Boot 可执行 JAR（个人本地）
 - [x] `plan_propose` 输出与洪水/焦点执行绑定；预算 T2+T3 可解释（**acceptance**；`experimentPlanId` + dashboard `probeBudget`）
 - [x] 超预算显式 `UNREACHED` / `PROBE_BUDGET`（**acceptance**；`ExperimentPlanValidator`）
 - **验收：** dashboard 可核对已接受计划与预算策略（`ExperimentPlanExecutionAcceptanceTest`）；baldex 四轨 live 仍开
-- **依赖：** M-B；probe plan 持久化（已有元数据）；计划本体为进程内 MVP map
-- **状态：** acceptance 已通；跨进程持久化与 baldex live 未做
+- **依赖：** M-B；probe plan 持久化（已有元数据）；实验计划 V014 跨重启持久化（**acceptance**）
+- **状态：** acceptance 已通；baldex live 未做
 
 **P1-04 静态入口召回基准**
 
@@ -250,31 +250,36 @@ Spring Boot 可执行 JAR（个人本地）
 
 **P2-01 WAR / 非 Boot 可运行画像**
 
-- [ ] 用户提供完整运行画像后的动态路径；无画像则仅静态
-- **验收：** 文档化失败模式；不静默宿主执行
+- [x] 无完整运行画像则仅静态；WAR/CLASS 动态 fail-closed（**acceptance**；`RunProfile` + CP `NO_RUN_PROFILE` / `CLASS_STATIC_ONLY`）
+- **验收：** 文档化失败模式；不静默宿主执行（`RunProfileAcceptanceTest`）
+- **状态：** 失败码与门禁已落地；嵌入式 WAR runtime **未做**（有画像仍 `WAR_DYNAMIC_DISABLED`）
 
 **P2-02 强化隔离与 VERIFIED 门禁**
 
-- [ ] gVisor/Kata 或等价 P0 逃逸套件通过后才开放 `VERIFIED`
-- [ ] health 未通过保持 `DYNAMIC_DISABLED`
-- **验收：** 见 TECHNICAL_ARCHITECTURE / 发布闸门；普通 Docker 永不标 VERIFIED
+- [x] gVisor/Kata + release + replay 齐套前禁止 `VERIFIED`；`TRUSTED_DOCKER` 永不 VERIFIED（**acceptance**；`VerifiedStatusGate`）
+- [x] health 暴露 `verifiedAllowed=false` / `DYNAMIC_DISABLED`（**acceptance**）
+- **验收：** 普通 Docker 永不标 VERIFIED（`VerifiedStatusGateAcceptanceTest` + health）
+- **状态：** 诚实脚手架；逃逸套件 live 未验收，`VERIFIED_GATE_NOT_OPEN`
 
 **P2-03 多语言 / 非 JVM 制品**
 
 - [ ] Packager × FrameworkAdapter × AnalysisPack 扩展点落地第二语言包
 - **验收：** 见 [`EXTENSIBLE_ANALYSIS.md`](EXTENSIBLE_ANALYSIS.md)；不破坏 JVM 主脊
+- **状态：** 文档骨架已有；第二语言包 **not started**（需产品选型，非本轮）
 
 **P2-04 底层真实形态统一视图**
 
-- [ ] 入口+参数 → 归一化展示：HTTP 线、绑定参数、调用栈摘要、SQL AST/文本、文件/进程尝试
-- [ ] 供人 debug 与 AI 共用同一证据模型
-- **验收：** 单入口页一屏可读完一次实验
+- [x] 入口+参数 → 归一化 `experimentShapes`：HTTP 线、绑定、SQL 文本、停止原因、MOCK（**acceptance**）
+- [x] GUI PathRun 详情以「一次实验形态」呈现（**acceptance** / 前端 build）
+- **验收：** dashboard `experimentShapes` + 单入口详情一屏可读（`ExperimentShapeViewAcceptanceTest`）
 - **依赖：** P0-02、P0-04、P1-01
+- **状态：** 调用栈/文件/进程尝试摘要仍薄（依赖 Agent 事件深度）
 
 **P2-05 WebSocket / 非 HTTP 入口**
 
-- [ ] 适配器接口可注册；MVP 可不计入覆盖率
-- **验收：** 未知协议标 `UNREACHED` 而非误报 HTTP
+- [x] 协议分类：WebSocket/未知 → `UNREACHED`，不得当 HTTP 探针（**acceptance**；`NonHttpEntryProtocol`）
+- **验收：** 未知协议标 `UNREACHED` 而非误报 HTTP（`NonHttpEntryProtocolAcceptanceTest`）
+- **状态：** 适配器 stub；真实 WS 握手执行未做
 
 ---
 
