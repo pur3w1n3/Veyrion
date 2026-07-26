@@ -75,7 +75,8 @@ public final class SQLiteControlPlanePersistence {
             "db/migration/V010__role_prompt_templates.sql",
             "db/migration/V011__persistent_idempotency_and_pipeline.sql",
             "db/migration/V012__auth_analysis_role.sql",
-            "db/migration/V013__persistent_path_runs.sql");
+            "db/migration/V013__persistent_path_runs.sql",
+            "db/migration/V014__persistent_experiment_plans.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 
@@ -220,6 +221,56 @@ public final class SQLiteControlPlanePersistence {
                         + "max_requests=excluded.max_requests,plan_hash=excluded.plan_hash",
                 plan.taskId(), plan.projectId(), plan.artifactDigest(), plan.scanId(), plan.targetEntryId(),
                 plan.candidateInputsJson(), plan.maxRequests(), plan.planHash(), plan.createdAt()));
+    }
+
+    public List<ExperimentPlanData> loadExperimentPlans() {
+        try (Connection connection = open(); Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery(
+                     "SELECT plan_id,scan_id,project_id,artifact_digest,payload_json,created_at "
+                             + "FROM experiment_plans ORDER BY created_at,plan_id")) {
+            List<ExperimentPlanData> result = new ArrayList<>();
+            while (rows.next()) {
+                result.add(new ExperimentPlanData(
+                        rows.getString(1), rows.getString(2), rows.getString(3),
+                        rows.getString(4), rows.getString(5), rows.getString(6)));
+            }
+            if (result.size() > 20_000) throw new PersistenceException("persistent experiment plan limit exceeded");
+            return List.copyOf(result);
+        } catch (SQLException failure) {
+            throw databaseFailure("could not load experiment plans", failure);
+        }
+    }
+
+    public List<ExperimentPlanData> loadExperimentPlansForScan(String scanId) {
+        Objects.requireNonNull(scanId, "scanId");
+        try (Connection connection = open();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT plan_id,scan_id,project_id,artifact_digest,payload_json,created_at "
+                             + "FROM experiment_plans WHERE scan_id=? ORDER BY created_at,plan_id")) {
+            statement.setString(1, scanId);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<ExperimentPlanData> result = new ArrayList<>();
+                while (rows.next()) {
+                    result.add(new ExperimentPlanData(
+                            rows.getString(1), rows.getString(2), rows.getString(3),
+                            rows.getString(4), rows.getString(5), rows.getString(6)));
+                }
+                if (result.size() > 256) throw new PersistenceException("per-scan experiment plan limit exceeded");
+                return List.copyOf(result);
+            }
+        } catch (SQLException failure) {
+            throw databaseFailure("could not load experiment plans for scan", failure);
+        }
+    }
+
+    public void saveExperimentPlan(ExperimentPlanData plan) {
+        Objects.requireNonNull(plan, "plan");
+        transaction("could not persist experiment plan", connection -> update(connection,
+                "INSERT INTO experiment_plans(plan_id,scan_id,project_id,artifact_digest,payload_json,created_at) "
+                        + "VALUES(?,?,?,?,?,?) ON CONFLICT(scan_id,plan_id) DO UPDATE SET "
+                        + "payload_json=excluded.payload_json,created_at=excluded.created_at",
+                plan.planId(), plan.scanId(), plan.projectId(), plan.artifactDigest(),
+                plan.payloadJson(), plan.createdAt()));
     }
 
     public List<ApiDtos.PathRunDto> loadPathRunsForScan(String projectId, String artifactDigest, String scanId) {
@@ -1459,6 +1510,8 @@ public final class SQLiteControlPlanePersistence {
     public record ProbePlanData(String taskId, String projectId, String artifactDigest,
                                 String scanId, String targetEntryId, String candidateInputsJson,
                                 int maxRequests, String planHash, String createdAt) { }
+    public record ExperimentPlanData(String planId, String scanId, String projectId,
+                                     String artifactDigest, String payloadJson, String createdAt) { }
     public record Snapshot(List<ProjectData> projects, List<ArtifactData> artifacts,
                            List<ControlPlaneStore.ScanRecord> scans) {
         public Snapshot {

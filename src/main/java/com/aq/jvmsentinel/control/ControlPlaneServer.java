@@ -4,14 +4,19 @@ import com.aq.jvmsentinel.analysis.PreAnalysisResult;
 import com.aq.jvmsentinel.analysis.PreAnalysisInput;
 import com.aq.jvmsentinel.analysis.ArtifactMetadataReader;
 import com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService;
+import com.aq.jvmsentinel.analysis.entry.NonHttpEntryProtocol;
 import com.aq.jvmsentinel.analysis.pack.AnalysisPack;
 import com.aq.jvmsentinel.analysis.pack.AnalysisPackRegistry;
+import com.aq.jvmsentinel.model.ArtifactType;
 import com.aq.jvmsentinel.model.AuthBypassCandidate;
 import com.aq.jvmsentinel.model.AuthBypassTechnique;
 import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.aq.jvmsentinel.model.IdentityTrack;
+import com.aq.jvmsentinel.model.RunProfile;
 import com.aq.jvmsentinel.model.SqlExperimentCard;
+import com.aq.jvmsentinel.verification.VerifiedStatusGate;
 import com.aq.jvmsentinel.worker.ExperimentPlanValidator;
+import com.aq.jvmsentinel.worker.ExperimentShapeView;
 import com.aq.jvmsentinel.worker.ProbeBudgetExplainer;
 import com.aq.jvmsentinel.worker.SqlExperimentCardBuilder;
 import com.aq.jvmsentinel.ai.AiJobOrchestrator;
@@ -276,6 +281,7 @@ public final class ControlPlaneServer implements AutoCloseable {
             durableIdempotency.put(idempotencyMapKey(record.scope(), record.key()), record);
         }
         restoreProbePlans();
+        restoreExperimentPlans();
         this.providerInventoryService = Objects.requireNonNull(
                 providerInventoryService, "providerInventoryService");
         if ("SQLITE".equals(this.store.persistenceMode())) {
@@ -1796,8 +1802,18 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (artifact == null) {
             throw new ApiException(409, "SCAN_SCOPE_INVALID", "scan artifact is not registered for project");
         }
-        if (artifact.type() != com.aq.jvmsentinel.model.ArtifactType.JAR) {
-            throw new ApiException(409, "JAR_REQUIRED", "Docker dynamic execution currently requires a JAR");
+        // WAR/CLASS never host-execute. Boot Main-Class is rechecked at worker registration.
+        if (artifact.type() == ArtifactType.CLASS) {
+            throw new ApiException(409, RunProfile.MODE_CLASS_STATIC_ONLY,
+                    "CLASS artifacts remain static-only; dynamic execution is disabled");
+        }
+        if (artifact.type() == ArtifactType.WAR) {
+            throw new ApiException(409, RunProfile.MODE_NO_RUN_PROFILE,
+                    "WAR dynamic requires a complete run profile; silent host execution is forbidden");
+        }
+        if (artifact.type() != ArtifactType.JAR) {
+            throw new ApiException(409, "JAR_REQUIRED",
+                    "Docker dynamic execution currently requires a JAR");
         }
         ProbePlan plan = buildProbePlan(scan, null, preferredEntryId, candidateInputs, maxRequests,
                 techniqueId, authorizationHeader, bladeAuthHeader, artifact.normalizedPath());
@@ -1994,7 +2010,7 @@ public final class ControlPlaneServer implements AutoCloseable {
                                      String authorizationHeader, String bladeAuthHeader,
                                      Path artifactPath) {
         List<ApiDtos.EntryDto> httpEntries = scan.dto().entries().stream()
-                .filter(entry -> "HTTP".equalsIgnoreCase(entry.protocol()))
+                .filter(entry -> NonHttpEntryProtocol.isHttpProbeEligible(entry.protocol()))
                 .filter(entry -> entry.route() != null
                         && entry.route().matches("/[A-Za-z0-9_./{}:-]{0,1023}"))
                 .filter(entry -> entry.method() != null
@@ -2787,7 +2803,7 @@ public final class ControlPlaneServer implements AutoCloseable {
     public synchronized void acceptExperimentPlan(String scanId, ExperimentPlan plan) {
         Objects.requireNonNull(scanId, "scanId");
         Objects.requireNonNull(plan, "plan");
-        store.requireScan(scanId);
+        ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         ExperimentPlanValidator.validate(plan, 8);
         List<ExperimentPlan> plans = scanExperimentPlans.computeIfAbsent(scanId,
                 ignored -> new ArrayList<>());
@@ -2795,6 +2811,39 @@ public final class ControlPlaneServer implements AutoCloseable {
         plans.add(plan);
         while (plans.size() > 64) {
             plans.remove(0);
+        }
+        try {
+            store.persistExperimentPlan(new SQLiteControlPlanePersistence.ExperimentPlanData(
+                    plan.planId(),
+                    scanId,
+                    scan.dto().projectId(),
+                    scan.dto().artifactDigest(),
+                    JSON.writeValueAsString(plan),
+                    Instant.now(clock).toString()));
+        } catch (IOException failure) {
+            throw new ApiException(500, "EXPERIMENT_PLAN_PERSIST_FAILED",
+                    "could not persist experiment plan");
+        }
+    }
+
+    private void restoreExperimentPlans() {
+        for (SQLiteControlPlanePersistence.ExperimentPlanData stored : store.loadExperimentPlans()) {
+            ControlPlaneStore.ScanRecord scan = store.scan(stored.scanId());
+            if (scan == null || !scan.dto().projectId().equals(stored.projectId())
+                    || !scan.dto().artifactDigest().equals(stored.artifactDigest())) {
+                continue;
+            }
+            try {
+                ExperimentPlan plan = JSON.readValue(stored.payloadJson(), ExperimentPlan.class);
+                ExperimentPlanValidator.validate(plan, 8);
+                List<ExperimentPlan> plans = scanExperimentPlans.computeIfAbsent(stored.scanId(),
+                        ignored -> new ArrayList<>());
+                plans.removeIf(existing -> existing.planId().equals(plan.planId()));
+                plans.add(plan);
+                while (plans.size() > 64) plans.remove(0);
+            } catch (Exception ignored) {
+                // Fail closed for a single corrupt row; other plans still restore.
+            }
         }
     }
 
@@ -2995,6 +3044,7 @@ public final class ControlPlaneServer implements AutoCloseable {
             empty.put("path", List.of());
             empty.put("sqlExperimentCards", List.of());
             empty.put("experimentPlans", List.of());
+            empty.put("experimentShapes", List.of());
             empty.put("analysisPacks", List.of());
             empty.put("probeBudget", Map.of(
                     "maxProbes", 0, "plannedProbes", 0, "unreachedEntries", 0,
@@ -3098,8 +3148,13 @@ public final class ControlPlaneServer implements AutoCloseable {
         body.put("paths", paths);
         body.put("pathRuns", pathRunMaps);
         body.put("path", path);
+        List<Object> shapeMaps = new ArrayList<>();
+        for (ExperimentShapeView.Shape shape : ExperimentShapeView.fromPathRuns(pathRuns)) {
+            shapeMaps.add(ExperimentShapeView.toMap(shape));
+        }
         body.put("sqlExperimentCards", cardMaps);
         body.put("experimentPlans", planMaps);
+        body.put("experimentShapes", shapeMaps);
         body.put("analysisPacks", packMaps);
         body.put("probeBudget", budgetMap);
         sendJson(exchange, 200, body);
@@ -3201,13 +3256,18 @@ public final class ControlPlaneServer implements AutoCloseable {
     }
 
     private Map<String, Object> health() {
+        VerifiedStatusGate.Decision verified = VerifiedStatusGate.forTrustedDockerHealth();
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("schemaVersion", ApiDtos.SCHEMA_VERSION);
         body.put("status", "UP");
         body.put("service", "jvm-sentinel-control-plane");
         body.put("persistenceMode", store.persistenceMode());
         body.put("analysisMode", "STATIC_METADATA_ONLY");
-        body.put("dynamicExecutionMode", "DYNAMIC_DISABLED");
+        // Local MVP exposes TRUSTED_DOCKER workers separately; VERIFIED stays closed.
+        body.put("dynamicExecutionMode", verified.dynamicExecutionMode());
+        body.put("verifiedAllowed", verified.allowed());
+        body.put("verifiedReasonCode", verified.reasonCode());
+        body.put("maxVerificationStatus", verified.verificationStatus());
         body.put("workerContractVersion", WorkerControlPlaneApi.CONTRACT_VERSION);
         body.put("dependencyMode", ApiDtos.MOCK);
         body.put("bindAddress", address().getHostString());
