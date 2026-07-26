@@ -224,8 +224,25 @@ export type DashboardSnapshot = {
   pathRuns: PathRunDto[]
   sqlExperimentCards?: SqlExperimentCardDto[]
   experimentPlans?: ExperimentPlanDto[]
+  experimentShapes?: ExperimentShapeDto[]
   analysisPacks?: AnalysisPackDto[]
   probeBudget?: ProbeBudgetDto
+}
+
+export type ExperimentShapeDto = {
+  pathRunId: string
+  entrypointRef: string
+  track: string
+  httpLine: string
+  httpStatus: number
+  entryHit?: boolean | null
+  parameterBound?: boolean | null
+  sqlTexts: string[]
+  stopReason: string
+  outcomeClass: string
+  dependencyMode: DependencyMode
+  verificationStatus: VerificationStatus
+  evidenceRefs?: EvidenceRef[]
 }
 
 export type ProjectDto = {
@@ -929,10 +946,34 @@ export const parseDashboard = (value: unknown): DashboardSnapshot => {
     experimentPlans: Array.isArray(value.experimentPlans)
       ? value.experimentPlans.map(parseExperimentPlan)
       : undefined,
+    experimentShapes: Array.isArray(value.experimentShapes)
+      ? value.experimentShapes.map(parseExperimentShape)
+      : undefined,
     analysisPacks: Array.isArray(value.analysisPacks)
       ? value.analysisPacks.map(parseAnalysisPack)
       : undefined,
     probeBudget: value.probeBudget === undefined ? undefined : parseProbeBudget(value.probeBudget)
+  }
+}
+
+const parseExperimentShape = (value: unknown): ExperimentShapeDto => {
+  if (!isRecord(value)) throw new Error('invalid experimentShape')
+  const status = statusOf(value.verificationStatus, 'experimentShape.verificationStatus')
+  if (status === 'VERIFIED') throw new Error('experimentShape must not claim VERIFIED')
+  return {
+    pathRunId: asText(value.pathRunId, 'experimentShape.pathRunId'),
+    entrypointRef: asText(value.entrypointRef, 'experimentShape.entrypointRef'),
+    track: asText(value.track, 'experimentShape.track'),
+    httpLine: optionalText(value.httpLine) ?? '',
+    httpStatus: typeof value.httpStatus === 'number' ? value.httpStatus : -1,
+    entryHit: value.entryHit === undefined ? undefined : value.entryHit === null ? null : value.entryHit === true,
+    parameterBound: value.parameterBound === undefined ? undefined : value.parameterBound === null ? null : value.parameterBound === true,
+    sqlTexts: listOfText(value.sqlTexts, 'experimentShape.sqlTexts'),
+    stopReason: optionalText(value.stopReason) ?? 'UNKNOWN',
+    outcomeClass: optionalText(value.outcomeClass) ?? 'UNKNOWN',
+    dependencyMode: typeof value.dependencyMode === 'string' ? value.dependencyMode : 'MOCK',
+    verificationStatus: status,
+    evidenceRefs: evidenceRefsOf(value.evidenceRefs, 'experimentShape.evidenceRefs')
   }
 }
 
@@ -1466,6 +1507,7 @@ const demoSnapshot: DashboardSnapshot = {
   pathRuns: [],
   sqlExperimentCards: [],
   experimentPlans: [],
+  experimentShapes: [],
   analysisPacks: [],
   probeBudget: { maxProbes: 0, plannedProbes: 0, unreachedEntries: 0, strategy: '', entryTrackPlans: [] },
   path: [

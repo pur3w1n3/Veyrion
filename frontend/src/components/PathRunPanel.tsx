@@ -185,14 +185,16 @@ export function PathRunPanel({
       <div className="evidence-detail">
         {selected ? <>
           <h3>{selected.requestSummary || selected.entrypointRef}</h3>
+          <p className="eyebrow">{english ? 'EXPERIMENT SHAPE' : '一次实验形态'}</p>
           <dl>
+            <div><dt>{english ? 'HTTP line' : 'HTTP 线'}</dt><dd>{selected.requestSummary || `${selected.method} ${selected.entrypointRef}`}</dd></div>
             <div><dt>{english ? 'Entry' : '入口'}</dt><dd>{entryLabel(selected, entries)}</dd></div>
             <div><dt>{english ? 'Track' : '身份轨'}</dt><dd>{selected.track}</dd></div>
-            <div><dt>{english ? 'Outcome' : '结果码'}</dt><dd>{selected.outcomeClass} · {outcomeClassLabel(selected.outcomeClass)}</dd></div>
+            <div><dt>{english ? 'Outcome' : '结果码'}</dt><dd>{selected.outcomeClass} · {outcomeClassLabel(selected.outcomeClass)} · HTTP {selected.httpStatus < 0 ? '—' : selected.httpStatus}</dd></div>
             <div><dt>entryHit</dt><dd>{triState(selected.entryHit, english)}</dd></div>
             <div><dt>parameterBound</dt><dd>{triState(selected.parameterBound, english)}</dd></div>
             <div><dt>{english ? 'Identity' : '身份前置'}</dt><dd>{selected.identityPrecondition || selected.identityProvenance || 'MOCK'}</dd></div>
-            <div><dt>SQL</dt><dd>{selected.sqlEvents.length === 0 ? (english ? 'none' : '无') : selected.sqlEvents.map((sql) => sql.sqlText).join(' | ')}</dd></div>
+            <div><dt>SQL</dt><dd>{selected.sqlEvents.length === 0 ? (english ? 'none (not a success claim)' : '无（不等于注入成功）') : selected.sqlEvents.map((sql) => sql.sqlText).join(' | ')}</dd></div>
             <div><dt>{english ? 'Stop reason' : '停止原因'}</dt><dd>{selected.stopReason || '—'}</dd></div>
             <div><dt>{english ? 'Dependency' : '依赖模式'}</dt><dd><span className="inference-badge">MOCK</span></dd></div>
           </dl>
