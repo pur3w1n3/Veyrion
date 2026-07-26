@@ -72,10 +72,19 @@ public final class NextExperimentSteps {
         }
         String objective = text(item, "objective");
         if (objective.isBlank()) objective = text(item, "rationale");
-        if (objective.toLowerCase(Locale.ROOT).contains("auth_gap")
+        String objectiveLower = objective.toLowerCase(Locale.ROOT);
+        if (objectiveLower.contains("auth_gap")
                 && !item.has("pathRunRefs")
                 && text(item, "techniqueId").isBlank()) {
             throw new IllegalArgumentException("AUTH_GAP_NARRATIVE_WITHOUT_PATHRUN");
+        }
+        // STATIC_ONLY contrast may inform planning but must not claim bypass/confirmed.
+        boolean claimsBypass = objectiveLower.contains("已绕过") || objectiveLower.contains("bypass confirmed")
+                || objectiveLower.contains("已确认绕过") || objectiveLower.contains("confirmed bypass");
+        boolean staticOnlyClaim = objectiveLower.contains("static_only")
+                || text(item, "contrastStatus").equalsIgnoreCase("STATIC_ONLY");
+        if (claimsBypass && staticOnlyClaim) {
+            throw new IllegalArgumentException("STATIC_ONLY_CANNOT_CONFIRM_BYPASS");
         }
         IdentityTrack track = IdentityTrack.UNAUTH;
         String trackName = text(item, "track");

@@ -557,11 +557,14 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         仅当鉴权面为零时才允许空列表并写 emptyReason。服务端对有鉴权面却空列表会强制补写一次或填充 RULE_GENERATED 草案。
                         """;
                 case PATH_EXPLORATION -> """
-                        只能消费前置建模、鉴权分析、动态验证和沙箱 PathRun（HTTP/Agent/SQL）结果，重新建立
-                        多条互相区分的路径模型。每条链路必须写明入口、身份轨、实际请求与响应、数据/状态转换、
-                        可能触发点、证据引用、反证、置信度和停止条件；不得把未执行的候选写成事实。
-                        结论必须包含 nextExperiments[]：每项含 entryRef、objective、track、可选 techniqueId/
-                        candidateInputs/pathRunRefs；禁止只综述 AUTH_GAP。这些步骤须可被 sandbox_probe 消费。
+                        只能消费前置建模、鉴权分析、动态验证、沙箱 PathRun（HTTP/Agent/SQL）与
+                        CONTRAST_LEDGER / STATIC_CONTRAST 结果，重新建立多条互相区分的路径模型。
+                        每条链路必须写明入口、身份轨、实际请求与响应、数据/状态转换、可能触发点、证据引用、
+                        反证、置信度和停止条件；不得把未执行的候选写成事实。
+                        可对 MATCHED/PARTIAL 建可探针 nextExperiments；STATIC_ONLY 只标「静态候选/未动态触及」，
+                        不得升为已绕过/已确认。结论必须包含 nextExperiments[]：每项含 entryRef、objective、track、
+                        可选 techniqueId/candidateInputs/pathRunRefs；禁止只综述 AUTH_GAP。
+                        这些步骤须可被 sandbox_probe 消费。
                         """;
                 case DYNAMIC_VERIFICATION -> """
                         消费 AUTH_BYPASS_FEASIBILITY / bypassPoCs：当该列表非空时，在给出叙事结论之前必须先对
@@ -574,10 +577,11 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         不得单独把结论升为 DYNAMIC_CONFIRMED 或 VERIFIED；状态只由证据门禁决定。
                         """;
                 case VULNERABILITY_TRIAGE -> """
-                        基于 PRE_ANALYSIS、AUTH_ANALYSIS、DYNAMIC_VERIFICATION、PATH_EXPLORATION 与 PathRun，
-                        再查询 SCAN 与 DYNAMIC_EVIDENCE。漏洞候选必须经过本地授权沙箱的动态调试闭环：
-                        若没有入口命中、参数绑定、触发点执行和可重放结果，只能标记为推测/证据不足，
-                        不能标记为存在或 VERIFIED。DYNAMIC_CONFIRMED 仅服务端 SQL 门禁可写。列出前置条件、证据、反证/缺口、影响和下一步验证。
+                        基于 PRE_ANALYSIS、AUTH_ANALYSIS、DYNAMIC_VERIFICATION、PATH_EXPLORATION、PathRun
+                        与 CONTRAST_LEDGER / STATIC_CONTRAST，再查询 SCAN 与 DYNAMIC_EVIDENCE。
+                        漏洞候选必须经过本地授权沙箱的动态调试闭环：若没有入口命中、参数绑定、触发点执行和可重放结果，
+                        只能标记为推测/证据不足，不能标记为存在或 VERIFIED。STATIC_ONLY 对照行不得升为已绕过/已确认。
+                        DYNAMIC_CONFIRMED 仅服务端 SQL 门禁可写。列出前置条件、证据、反证/缺口、影响和下一步验证。
                         结论必须包含 nextExperiments[]（可被 sandbox_probe 消费的入口×轨步骤）；组合链仅在共享
                         资源/身份/文件 PathRun 证据上候选；禁止 AUTH_GAP 综述替代下一步实验。
                         """;
@@ -617,9 +621,11 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     surface plus emptyReason. Server will re-ask once or seed RULE_GENERATED drafts if still empty.
                     """;
             case PATH_EXPLORATION -> """
-                    Consume only PRE_ANALYSIS, AUTH_ANALYSIS, DYNAMIC_VERIFICATION, and persisted PathRun
-                    (HTTP/Agent/SQL) results. Model multiple distinct paths with track, actual requests, responses,
-                    data/state transitions, triggers, evidence, counterevidence, confidence, and stop conditions.
+                    Consume PRE_ANALYSIS, AUTH_ANALYSIS, DYNAMIC_VERIFICATION, PathRun (HTTP/Agent/SQL), and
+                    CONTRAST_LEDGER / STATIC_CONTRAST. Model multiple distinct paths with track, actual requests,
+                    responses, data/state transitions, triggers, evidence, counterevidence, confidence, and stop
+                    conditions. Prefer MATCHED/PARTIAL for probeable nextExperiments; STATIC_ONLY is
+                    static-candidate / not dynamically touched — never elevate to bypassed/confirmed.
                     Never turn an unexecuted candidate into fact. Emit nextExperiments[] with entryRef, objective,
                     track, optional techniqueId/candidateInputs/pathRunRefs — steps must be sandbox_probe-consumable,
                     not AUTH_GAP essays.
@@ -634,10 +640,12 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     DYNAMIC_CONFIRMED or VERIFIED.
                     """;
             case VULNERABILITY_TRIAGE -> """
-                    Base the analysis on PRE_ANALYSIS, AUTH_ANALYSIS, DYNAMIC_VERIFICATION, PATH_EXPLORATION, and PathRuns,
-                    then query SCAN and DYNAMIC_EVIDENCE. A vulnerability may be marked present only after local authorized sandbox
-                    debugging closes entry hit, parameter binding, trigger execution, and replay evidence. Otherwise
-                    keep it as hypothesis or insufficient evidence; never claim VERIFIED without replay evidence.
+                    Base the analysis on PRE_ANALYSIS, AUTH_ANALYSIS, DYNAMIC_VERIFICATION, PATH_EXPLORATION,
+                    PathRuns, and CONTRAST_LEDGER / STATIC_CONTRAST, then query SCAN and DYNAMIC_EVIDENCE.
+                    A vulnerability may be marked present only after local authorized sandbox debugging closes
+                    entry hit, parameter binding, trigger execution, and replay evidence. Otherwise keep it as
+                    hypothesis or insufficient evidence; never claim VERIFIED without replay evidence.
+                    STATIC_ONLY contrast rows must not be elevated to bypassed/confirmed.
                     DYNAMIC_CONFIRMED is server-gated for SQL only. Emit nextExperiments[] consumable by sandbox_probe;
                     combination chains only when PathRuns share identity/resource/file evidence — not AUTH_GAP essays.
                     """;

@@ -12,6 +12,7 @@ public final class NextExperimentStepsAcceptanceTest {
         rejectsAuthGapNarrativeWithoutPathRun();
         acceptsPathRunGroundedStep();
         rejectsUnknownEntry();
+        rejectsStaticOnlyBypassClaim();
         System.out.println("NextExperimentStepsAcceptanceTest: PASS");
     }
 
@@ -64,6 +65,24 @@ public final class NextExperimentStepsAcceptanceTest {
                 conclusion, Set.of("entry:e1"), Set.of("pathrun-1"));
         check(parsed.steps().isEmpty(), "unknown entry rejected");
         check(parsed.rejected().contains("ENTRYPOINT_NOT_FOUND"), "ENTRYPOINT_NOT_FOUND");
+    }
+
+    /** STATIC_ONLY contrast must not elevate to bypassed/confirmed; AUTH_GAP gate unchanged. */
+    private static void rejectsStaticOnlyBypassClaim() {
+        String conclusion = """
+                {"nextExperiments":[{
+                  "entryRef":"entry:e1",
+                  "objective":"STATIC_ONLY already 已绕过 on this route",
+                  "track":"UNAUTH",
+                  "contrastStatus":"STATIC_ONLY",
+                  "techniqueId":"ALG_NONE"
+                }]}
+                """;
+        NextExperimentSteps.ParseResult parsed = NextExperimentSteps.parseAndValidate(
+                conclusion, Set.of("entry:e1"), Set.of());
+        check(parsed.steps().isEmpty(), "STATIC_ONLY bypass claim rejected");
+        check(parsed.rejected().contains("STATIC_ONLY_CANNOT_CONFIRM_BYPASS"),
+                "STATIC_ONLY_CANNOT_CONFIRM_BYPASS");
     }
 
     private static void check(boolean condition, String message) {
