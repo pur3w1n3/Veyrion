@@ -113,6 +113,55 @@ export type FocusEntryProbeRequest = {
   bladeAuthHeader?: string
   candidateInputs?: string[]
   maxRequests?: number
+  experimentPlanId?: string
+}
+
+export type SqlExperimentCardDto = {
+  cardId: string
+  scanId: string
+  entrypointRef: string
+  track: string
+  experimentPlanId?: string
+  benignInput: string
+  metaInput: string
+  sqlBefore: string
+  sqlAfter: string
+  structureInfluenced: boolean
+  stopCondition: string
+  dependencyMode: DependencyMode
+  verificationStatus: VerificationStatus
+  pathRunRefs: string[]
+  evidenceRefs?: EvidenceRef[]
+  replayable: boolean
+}
+
+export type ExperimentPlanDto = {
+  planId: string
+  entrypointRef: string
+  track: string
+  method: string
+  contentType: string
+  maxAttempts: number
+  candidateInputs: string[]
+  stopCondition: string
+  packId?: string
+  boundForExecution?: boolean
+  serverGated?: boolean
+}
+
+export type ProbeBudgetDto = {
+  maxProbes: number
+  plannedProbes: number
+  unreachedEntries: number
+  strategy: string
+  entryTrackPlans: Array<Record<string, unknown>>
+}
+
+export type AnalysisPackDto = {
+  packId: string
+  destructive: boolean
+  jwtSecretHint?: string
+  templates: ExperimentPlanDto[]
 }
 
 export type FocusEntryProbeDto = {
@@ -173,6 +222,10 @@ export type DashboardSnapshot = {
   path: PathStep[]
   paths: PathTrace[]
   pathRuns: PathRunDto[]
+  sqlExperimentCards?: SqlExperimentCardDto[]
+  experimentPlans?: ExperimentPlanDto[]
+  analysisPacks?: AnalysisPackDto[]
+  probeBudget?: ProbeBudgetDto
 }
 
 export type ProjectDto = {
@@ -558,6 +611,7 @@ export interface SentinelApi {
   listDynamicTasks(scanId: string): Promise<DynamicTaskDto[]>
   replayFinding(findingId: string): Promise<FindingReplayDto>
   focusEntryProbe(scanId: string, entryId: string, body?: FocusEntryProbeRequest): Promise<FocusEntryProbeDto>
+  replaySqlExperimentCard(scanId: string, cardId: string): Promise<FocusEntryProbeDto>
   updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto>
   deleteScan(scanId: string): Promise<void>
   listProviders(): Promise<ProviderDto[]>
@@ -868,7 +922,81 @@ export const parseDashboard = (value: unknown): DashboardSnapshot => {
       : undefined,
     path: pathValue.map(parsePath),
     paths: richPaths,
-    pathRuns
+    pathRuns,
+    sqlExperimentCards: Array.isArray(value.sqlExperimentCards)
+      ? value.sqlExperimentCards.map(parseSqlExperimentCard)
+      : undefined,
+    experimentPlans: Array.isArray(value.experimentPlans)
+      ? value.experimentPlans.map(parseExperimentPlan)
+      : undefined,
+    analysisPacks: Array.isArray(value.analysisPacks)
+      ? value.analysisPacks.map(parseAnalysisPack)
+      : undefined,
+    probeBudget: value.probeBudget === undefined ? undefined : parseProbeBudget(value.probeBudget)
+  }
+}
+
+const parseSqlExperimentCard = (value: unknown): SqlExperimentCardDto => {
+  if (!isRecord(value)) throw new Error('invalid sqlExperimentCard')
+  const status = statusOf(value.verificationStatus, 'sqlExperimentCard.verificationStatus')
+  if (status === 'VERIFIED') throw new Error('sqlExperimentCard must not claim VERIFIED')
+  return {
+    cardId: asText(value.cardId, 'sqlExperimentCard.cardId'),
+    scanId: asText(value.scanId, 'sqlExperimentCard.scanId'),
+    entrypointRef: asText(value.entrypointRef, 'sqlExperimentCard.entrypointRef'),
+    track: asText(value.track, 'sqlExperimentCard.track'),
+    experimentPlanId: strictOptionalText(value.experimentPlanId, 'sqlExperimentCard.experimentPlanId'),
+    benignInput: optionalText(value.benignInput) ?? '',
+    metaInput: optionalText(value.metaInput) ?? '',
+    sqlBefore: optionalText(value.sqlBefore) ?? '',
+    sqlAfter: optionalText(value.sqlAfter) ?? '',
+    structureInfluenced: value.structureInfluenced === true,
+    stopCondition: optionalText(value.stopCondition) ?? 'UNKNOWN',
+    dependencyMode: typeof value.dependencyMode === 'string' ? value.dependencyMode : 'MOCK',
+    verificationStatus: status,
+    pathRunRefs: listOfText(value.pathRunRefs, 'sqlExperimentCard.pathRunRefs'),
+    evidenceRefs: evidenceRefsOf(value.evidenceRefs, 'sqlExperimentCard.evidenceRefs'),
+    replayable: value.replayable !== false
+  }
+}
+
+const parseExperimentPlan = (value: unknown): ExperimentPlanDto => {
+  if (!isRecord(value)) throw new Error('invalid experimentPlan')
+  return {
+    planId: asText(value.planId, 'experimentPlan.planId'),
+    entrypointRef: asText(value.entrypointRef, 'experimentPlan.entrypointRef'),
+    track: asText(value.track, 'experimentPlan.track'),
+    method: asText(value.method, 'experimentPlan.method'),
+    contentType: asText(value.contentType, 'experimentPlan.contentType'),
+    maxAttempts: typeof value.maxAttempts === 'number' ? Math.max(1, Math.min(8, Math.floor(value.maxAttempts))) : 1,
+    candidateInputs: listOfText(value.candidateInputs, 'experimentPlan.candidateInputs'),
+    stopCondition: optionalText(value.stopCondition) ?? 'COMPLETED',
+    packId: strictOptionalText(value.packId, 'experimentPlan.packId'),
+    boundForExecution: value.boundForExecution === true,
+    serverGated: value.serverGated === true
+  }
+}
+
+const parseProbeBudget = (value: unknown): ProbeBudgetDto => {
+  if (!isRecord(value)) throw new Error('invalid probeBudget')
+  return {
+    maxProbes: typeof value.maxProbes === 'number' ? Math.max(0, Math.floor(value.maxProbes)) : 0,
+    plannedProbes: typeof value.plannedProbes === 'number' ? Math.max(0, Math.floor(value.plannedProbes)) : 0,
+    unreachedEntries: typeof value.unreachedEntries === 'number' ? Math.max(0, Math.floor(value.unreachedEntries)) : 0,
+    strategy: optionalText(value.strategy) ?? '',
+    entryTrackPlans: Array.isArray(value.entryTrackPlans)
+      ? value.entryTrackPlans.filter(isRecord) as Array<Record<string, unknown>>
+      : []
+  }
+}
+
+const parseAnalysisPack = (value: unknown): AnalysisPackDto => {
+  if (!isRecord(value)) throw new Error('invalid analysisPack')
+  return {
+    packId: asText(value.packId, 'analysisPack.packId'),
+    destructive: value.destructive === true,
+    jwtSecretHint: strictOptionalText(value.jwtSecretHint, 'analysisPack.jwtSecretHint'),
+    templates: Array.isArray(value.templates) ? value.templates.map(parseExperimentPlan) : []
   }
 }
 
@@ -1336,6 +1464,10 @@ const demoSnapshot: DashboardSnapshot = {
   ],
   paths: [],
   pathRuns: [],
+  sqlExperimentCards: [],
+  experimentPlans: [],
+  analysisPacks: [],
+  probeBudget: { maxProbes: 0, plannedProbes: 0, unreachedEntries: 0, strategy: '', entryTrackPlans: [] },
   path: [
     { label: 'POST /api/upload', detail: 'filename = ${safe-probe}', kind: 'entry', state: 'done' },
     { label: 'UploadService.save', detail: 'URLDecode → path concat', kind: 'transform', state: 'done' },
@@ -1754,6 +1886,20 @@ export class HttpSentinelApi implements SentinelApi {
     return parseFocusEntryProbe(response)
   }
 
+  async replaySqlExperimentCard(scanId: string, cardId: string): Promise<FocusEntryProbeDto> {
+    const response = await this.request(
+      `scans/${encodeURIComponent(asText(scanId, 'scanId'))}/experiment-cards/${encodeURIComponent(asText(cardId, 'cardId'))}/replay`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: mutationHeaders(this.token, generatedIdempotencyKey()),
+        body: JSON.stringify({ authorized: true })
+      },
+      'replay sql experiment card'
+    )
+    return parseFocusEntryProbe(response)
+  }
+
   async updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto> {
     const response = await this.request(`scans/${encodeURIComponent(asText(scanId, 'scanId'))}`, {
       method: 'PATCH', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(request)
@@ -2062,6 +2208,7 @@ export class MockSentinelApi implements SentinelApi {
   async replayFinding(): Promise<FindingReplayDto> { return this.unavailable('replay finding') }
 
   async focusEntryProbe(): Promise<FocusEntryProbeDto> { return this.unavailable('focus entry probe') }
+  async replaySqlExperimentCard(): Promise<FocusEntryProbeDto> { return this.unavailable('replay sql experiment card') }
 
   async getEntries(): Promise<EntryDto[]> {
     return (await this.loadDashboard()).entries

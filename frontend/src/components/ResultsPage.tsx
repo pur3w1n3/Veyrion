@@ -25,6 +25,13 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
   const [replayLoading, setReplayLoading] = useState(false)
   const [replayError, setReplayError] = useState<string>()
   const [replayResult, setReplayResult] = useState<FindingReplayDto>()
+  const sqlCards = snapshot?.sqlExperimentCards ?? []
+  const experimentPlans = snapshot?.experimentPlans ?? []
+  const analysisPacks = snapshot?.analysisPacks ?? []
+  const probeBudget = snapshot?.probeBudget
+  const [cardReplayLoading, setCardReplayLoading] = useState<string>()
+  const [cardReplayError, setCardReplayError] = useState<string>()
+  const [cardReplayNotice, setCardReplayNotice] = useState<string>()
 
   useEffect(() => {
     let active = true
@@ -90,6 +97,23 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
     return api.focusEntryProbe(snapshot.scanId, entryId, { authorized: true, maxRequests: 1 })
   }
 
+  const replaySqlCard = async (cardId: string) => {
+    if (!snapshot?.scanId || snapshot.scanId === 'unscanned' || cardReplayLoading) return
+    setCardReplayLoading(cardId)
+    setCardReplayError(undefined)
+    setCardReplayNotice(undefined)
+    try {
+      const result = await api.replaySqlExperimentCard(snapshot.scanId, cardId)
+      setCardReplayNotice(english
+        ? `D3 card replay task ${result.taskId} is ${result.lifecycle} (${result.verificationStatus}, ${result.dependencyMode}).`
+        : `D3 实验卡重放任务 ${result.taskId} 当前为 ${result.lifecycle}（${result.verificationStatus}，${result.dependencyMode}）。`)
+    } catch (cause) {
+      setCardReplayError(errorMessage(cause))
+    } finally {
+      setCardReplayLoading(undefined)
+    }
+  }
+
   useEffect(() => {
     if (selectedFinding && selectedFinding.id !== selectedFindingId) setSelectedFindingId(selectedFinding.id)
     if (!selectedFinding) setSelectedFindingId(undefined)
@@ -145,6 +169,14 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       english={english}
       onFocusEntry={focusEntry}
     />
+    <article className="panel section-gap">
+      <div className="panel-head"><div><p className="eyebrow">{english ? 'SQL D3 CARDS' : 'SQL D3 实验卡'}</p><h2>{english ? 'Replayable SQL experiment cards' : '可重放 SQL 实验卡'}</h2></div><span>{sqlCards.length}</span></div>
+      <p className="form-help">{english ? 'Built from benign vs meta PathRun pairs. Replay stays MOCK / DYNAMIC_SUSPECTED and never VERIFIED.' : '由良性 vs 元字符 PathRun 对生成；重放保持 MOCK / DYNAMIC_SUSPECTED，永不 VERIFIED。'}</p>
+      {cardReplayError && <Notice kind="error">{cardReplayError}</Notice>}
+      {cardReplayNotice && <Notice kind="info">{cardReplayNotice}</Notice>}
+      <div className="card-list">{sqlCards.map((card) => <div className="list-card" key={card.cardId}><div><strong>{card.entrypointRef} · {card.track}</strong><small>{english ? 'Before' : '前'}：{card.sqlBefore}</small><small>{english ? 'After' : '后'}：{card.sqlAfter}</small><small>{card.dependencyMode} · {card.verificationStatus}{card.structureInfluenced ? (english ? ' · structure influenced' : ' · 结构受影响') : ''}</small></div><div className="button-row"><StatusPill status={card.verificationStatus} /><button type="button" className="secondary-button" disabled={!card.replayable || !!cardReplayLoading || card.verificationStatus === 'VERIFIED'} onClick={() => void replaySqlCard(card.cardId)}>{cardReplayLoading === card.cardId ? (english ? 'Replaying…' : '重放中…') : (english ? 'Replay card' : '重放实验卡')}</button></div></div>)}{sqlCards.length === 0 && <p className="empty-state">{english ? 'No D3 cards yet; need a benign + meta SQL PathRun pair.' : '尚无 D3 实验卡；需要良性与元字符 SQL PathRun 对。'}</p>}</div>
+      {(probeBudget || experimentPlans.length > 0 || analysisPacks.length > 0) && <div className="section-gap"><small>{probeBudget ? (english ? `Probe budget: planned ${probeBudget.plannedProbes}/${probeBudget.maxProbes}, unreached ${probeBudget.unreachedEntries}. ${probeBudget.strategy}` : `探针预算：已规划 ${probeBudget.plannedProbes}/${probeBudget.maxProbes}，未达 ${probeBudget.unreachedEntries}。${probeBudget.strategy}`) : null}</small>{experimentPlans.length > 0 && <small>{english ? `Accepted experiment plans: ${experimentPlans.length}` : `已接受实验计划：${experimentPlans.length}`}</small>}{analysisPacks.length > 0 && <small>{english ? `Matched packs: ${analysisPacks.map((pack) => pack.packId).join(', ')} (non-destructive)` : `匹配语义包：${analysisPacks.map((pack) => pack.packId).join('、')}（无破坏）`}</small>}</div>}
+    </article>
     <article className="panel section-gap">
       <div className="panel-head"><div><p className="eyebrow">{english ? 'FINAL REPORT' : '最终报告'}</p><h2>{english ? 'Final report' : '最终报告'}</h2></div><div className="button-row"><span className="inference-badge">{english ? 'MODEL INFERENCE' : '模型推断'}</span>{reportSummary && <><button type="button" className="secondary-button" onClick={downloadReport}>{english ? 'Download .md' : '下载 .md'}</button><button type="button" className="secondary-button" onClick={downloadHtml}>{english ? 'Export .html' : '导出 .html'}</button></>}{snapshot && <button type="button" className="secondary-button" onClick={downloadJson}>{english ? 'Export .json' : '导出 .json'}</button>}</div></div>
       {reportError && <Notice kind="error">{reportError}</Notice>}

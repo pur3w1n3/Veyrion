@@ -4,9 +4,16 @@ import com.aq.jvmsentinel.analysis.PreAnalysisResult;
 import com.aq.jvmsentinel.analysis.PreAnalysisInput;
 import com.aq.jvmsentinel.analysis.ArtifactMetadataReader;
 import com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService;
+import com.aq.jvmsentinel.analysis.pack.AnalysisPack;
+import com.aq.jvmsentinel.analysis.pack.AnalysisPackRegistry;
 import com.aq.jvmsentinel.model.AuthBypassCandidate;
 import com.aq.jvmsentinel.model.AuthBypassTechnique;
+import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.aq.jvmsentinel.model.IdentityTrack;
+import com.aq.jvmsentinel.model.SqlExperimentCard;
+import com.aq.jvmsentinel.worker.ExperimentPlanValidator;
+import com.aq.jvmsentinel.worker.ProbeBudgetExplainer;
+import com.aq.jvmsentinel.worker.SqlExperimentCardBuilder;
 import com.aq.jvmsentinel.ai.AiJobOrchestrator;
 import com.aq.jvmsentinel.ai.AuditPipelineCoordinator;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource;
@@ -140,6 +147,13 @@ public final class ControlPlaneServer implements AutoCloseable {
     private final Map<String, ProbePlan> dynamicProbePlans = new ConcurrentHashMap<>();
     /** Scan-scoped UNREACHED dynamic path placeholders for entries beyond the probe budget. */
     private final Map<String, List<ApiDtos.PathDto>> unreachedDynamicPaths = new ConcurrentHashMap<>();
+    /** Server-gated experiment plans from plan_propose, keyed by scanId (process-local MVP). */
+    private final Map<String, List<ExperimentPlan>> scanExperimentPlans = new ConcurrentHashMap<>();
+    /** Last expanded probe targets per scan for T2+T3 budget explanation. */
+    private final Map<String, List<ExternalArtifactTaskExecutor.ProbeTarget>> scanExpandedProbes =
+            new ConcurrentHashMap<>();
+    /** Idempotent D3 experiment-card replays. */
+    private final Map<String, EntryFocusProbe> idempotentExperimentCardReplays = new ConcurrentHashMap<>();
     private final String mutationToken;
     private final String workerToken;
     private final InMemoryTraceStore traceStore;
@@ -271,7 +285,8 @@ public final class ControlPlaneServer implements AutoCloseable {
                 Objects.requireNonNull(chatTransport, "chatTransport"), this.clock,
                 this.traceProjectionService::evidenceForScan,
                 this::requestSandboxProbe,
-                this::mergedPathRunsForScan);
+                this::mergedPathRunsForScan,
+                this::acceptExperimentPlan);
         this.auditPipeline = new AuditPipelineCoordinator(new AuditPipelineCoordinator.Actions() {
             @Override
             public boolean hasRoleJob(String projectId, String scanId, AgentRole role) {
@@ -420,6 +435,9 @@ public final class ControlPlaneServer implements AutoCloseable {
         dynamicProbePlans.clear();
         idempotentFindingReplays.clear();
         idempotentEntryFocusProbes.clear();
+        idempotentExperimentCardReplays.clear();
+        scanExperimentPlans.clear();
+        scanExpandedProbes.clear();
         aiJobOrchestrator.close();
     }
 
@@ -624,6 +642,12 @@ public final class ControlPlaneServer implements AutoCloseable {
                 && "focus-probe".equals(path.get(4)) && "POST".equals(method)) {
             requirePermission(exchange, Permission.RUN_SCANS);
             focusEntryProbe(exchange, path.get(1), path.get(3));
+            return;
+        }
+        if (path.size() == 5 && "scans".equals(path.get(0)) && "experiment-cards".equals(path.get(2))
+                && "replay".equals(path.get(4)) && "POST".equals(method)) {
+            requirePermission(exchange, Permission.RUN_SCANS);
+            replaySqlExperimentCard(exchange, path.get(1), path.get(3));
             return;
         }
         if (path.size() == 1 && "operators".equals(path.get(0))) {
@@ -1782,6 +1806,7 @@ public final class ControlPlaneServer implements AutoCloseable {
                     "the scan has no entrypoint to observe");
         }
         unreachedDynamicPaths.put(scanId, plan.unreachedPaths());
+        scanExpandedProbes.put(scanId, List.copyOf(plan.probes()));
         String taskId = "task-dynamic-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         ResourceBudget budget = dynamicBudgetForArtifact(artifact, plan.probes().size());
         WorkerTaskSpec spec = new WorkerTaskSpec(
@@ -1872,6 +1897,7 @@ public final class ControlPlaneServer implements AutoCloseable {
             throw new SecurityException("scan has no bounded HTTP probe target");
         }
         unreachedDynamicPaths.put(scope.scanId(), plan.unreachedPaths());
+        scanExpandedProbes.put(scope.scanId(), List.copyOf(plan.probes()));
         ApiDtos.EntryDto entry = plan.primary();
         int packageSeparator = entry.declaringClass().lastIndexOf('.');
         String classPrefix = packageSeparator > 0
@@ -2637,7 +2663,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         String requestPayload = JsonCodec.stringify(body);
         String durableScope = "entry:focus-probe:" + scanId + ":" + entryId;
         Set<String> allowed = Set.of("authorized", "techniqueId", "authorizationHeader",
-                "bladeAuthHeader", "candidateInputs", "maxRequests");
+                "bladeAuthHeader", "candidateInputs", "maxRequests", "experimentPlanId");
         for (String field : body.keySet()) {
             if (!allowed.contains(field)) {
                 throw new ApiException(400, "FOCUS_PROBE_FIELD_REJECTED",
@@ -2664,10 +2690,29 @@ public final class ControlPlaneServer implements AutoCloseable {
         String bladeAuthHeader = body.containsKey("bladeAuthHeader")
                 ? optionalText(body, "bladeAuthHeader", null) : null;
         List<String> candidateInputs = stringList(body.get("candidateInputs"), "candidateInputs");
+        long maxRequestsLong = positiveLong(body, "maxRequests", 1);
+        String experimentPlanId = body.containsKey("experimentPlanId")
+                ? optionalText(body, "experimentPlanId", null) : null;
+        if (experimentPlanId != null && !experimentPlanId.isBlank()) {
+            ExperimentPlan bound = findAcceptedPlan(scanId, experimentPlanId)
+                    .orElseThrow(() -> new ApiException(404, "EXPERIMENT_PLAN_NOT_FOUND",
+                            "experiment plan was not accepted for this scan"));
+            String expectedRef = "entry:" + entryId;
+            if (!expectedRef.equals(bound.entrypointRef())
+                    && !EntryRefResolver.canonicalRef(entry).equals(bound.entrypointRef())) {
+                throw new ApiException(409, "EXPERIMENT_PLAN_ENTRY_MISMATCH",
+                        "experiment plan entrypoint does not match focus entry");
+            }
+            if (candidateInputs.isEmpty() && !bound.candidateInputs().isEmpty()) {
+                candidateInputs = bound.candidateInputs();
+            }
+            if (!body.containsKey("maxRequests")) {
+                maxRequestsLong = bound.maxAttempts();
+            }
+        }
         if (candidateInputs.size() > 16) {
             throw new ApiException(400, "INVALID_FIELD", "candidateInputs is limited to 16 values");
         }
-        long maxRequestsLong = positiveLong(body, "maxRequests", 1);
         if (maxRequestsLong > 8) {
             throw new ApiException(400, "INVALID_FIELD", "maxRequests must be 1..8");
         }
@@ -2733,6 +2778,126 @@ public final class ControlPlaneServer implements AutoCloseable {
                         + maxRequests + "}",
                 Instant.now(clock).toString());
         sendJson(exchange, 202, entryFocusProbeMap(scan, entryId, snapshot, false));
+    }
+
+    /**
+     * Accepts a server-gated {@link ExperimentPlan} from {@code plan_propose}. Process-local MVP
+     * storage; binds later focus-probe / flood via experimentPlanId.
+     */
+    public synchronized void acceptExperimentPlan(String scanId, ExperimentPlan plan) {
+        Objects.requireNonNull(scanId, "scanId");
+        Objects.requireNonNull(plan, "plan");
+        store.requireScan(scanId);
+        ExperimentPlanValidator.validate(plan, 8);
+        List<ExperimentPlan> plans = scanExperimentPlans.computeIfAbsent(scanId,
+                ignored -> new ArrayList<>());
+        plans.removeIf(existing -> existing.planId().equals(plan.planId()));
+        plans.add(plan);
+        while (plans.size() > 64) {
+            plans.remove(0);
+        }
+    }
+
+    private Optional<ExperimentPlan> findAcceptedPlan(String scanId, String planId) {
+        if (scanId == null || planId == null || planId.isBlank()) return Optional.empty();
+        List<ExperimentPlan> plans = scanExperimentPlans.getOrDefault(scanId, List.of());
+        return plans.stream().filter(plan -> planId.equals(plan.planId())).findFirst();
+    }
+
+    /**
+     * D3 SQL experiment-card replay: reuses focus-probe gates with card benign/meta inputs.
+     * Never upgrades to VERIFIED; dependencyMode remains MOCK-labeled via focus response.
+     */
+    private synchronized void replaySqlExperimentCard(HttpExchange exchange, String scanId, String cardId)
+            throws IOException {
+        ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
+        Map<String, Object> body = readObject(exchange);
+        String requestPayload = JsonCodec.stringify(body);
+        String durableScope = "sql-experiment-card:replay:" + scanId + ":" + cardId;
+        Set<String> allowed = Set.of("authorized");
+        for (String field : body.keySet()) {
+            if (!allowed.contains(field)) {
+                throw new ApiException(400, "EXPERIMENT_CARD_FIELD_REJECTED",
+                        "experiment-card replay body contains an unsupported field");
+            }
+        }
+        if (!requiredBoolean(body, "authorized")) {
+            throw new ApiException(403, "AUTHORIZATION_REQUIRED",
+                    "explicit authorization is required to replay an experiment card");
+        }
+        List<ApiDtos.PathRunDto> pathRuns = mergedPathRunsForScan(
+                scan.dto().projectId(), scan.dto().artifactDigest(), scanId);
+        SqlExperimentCard card = SqlExperimentCardBuilder.fromPathRuns(scanId, pathRuns).stream()
+                .filter(value -> value.cardId().equals(cardId))
+                .findFirst()
+                .orElseThrow(() -> new ApiException(404, "EXPERIMENT_CARD_NOT_FOUND",
+                        "SQL experiment card not found for scan PathRuns"));
+        if ("VERIFIED".equals(card.verificationStatus())) {
+            throw new ApiException(409, "VERIFIED_FORBIDDEN",
+                    "D3 cards must not claim VERIFIED");
+        }
+        EntryRefResolver.Resolution resolved = EntryRefResolver.resolve(
+                scan.dto().entries(), card.entrypointRef());
+        if (!resolved.resolved()) {
+            throw new ApiException(404, resolved.code(),
+                    "experiment card entry is not present in the scan");
+        }
+        ApiDtos.EntryDto entry = resolved.entry();
+        if (!"HTTP".equalsIgnoreCase(entry.protocol()) || entry.route() == null || entry.method() == null) {
+            throw new ApiException(409, "ENTRY_NOT_HTTP",
+                    "experiment-card replay requires an HTTP scan entry");
+        }
+        List<String> inputs = new ArrayList<>();
+        if (card.benignInput() != null && !card.benignInput().isBlank()) inputs.add(card.benignInput());
+        if (card.metaInput() != null && !card.metaInput().isBlank()) inputs.add(card.metaInput());
+        if (inputs.isEmpty()) inputs = List.of("q=benign", "q=" + com.aq.jvmsentinel.worker.SqlDiffProbe.META_MARKER);
+        String key = requireIdempotencyKey(exchange);
+        String replayKey = scan.dto().projectId() + ":" + scanId + ":" + cardId + ":" + key;
+        ensureIdempotencyCapacity(idempotentExperimentCardReplays, replayKey);
+        ensureIdempotencyCapacity(durableIdempotency, idempotencyMapKey(durableScope, key));
+        EntryFocusProbe existing = idempotentExperimentCardReplays.get(replayKey);
+        SQLiteControlPlanePersistence.IdempotencyData durable = existingDurableIdempotency(
+                durableScope, key, requestPayload);
+        if (existing == null && durable != null) {
+            TaskSnapshot restored = workerApi.snapshots(scan.dto().projectId(), scanId).stream()
+                    .filter(value -> value.scope().taskId().equals(durable.resultRef())).findFirst()
+                    .orElse(null);
+            if (restored != null) {
+                existing = new EntryFocusProbe(scanId, entry.id(), restored);
+                idempotentExperimentCardReplays.putIfAbsent(replayKey, existing);
+            }
+        }
+        if (existing != null) {
+            ControlPlaneStore.ScanRecord current = store.requireScan(existing.scanId());
+            Map<String, Object> replayed = entryFocusProbeMap(current, existing.entryId(),
+                    existing.snapshot(), true);
+            replayed.put("cardId", cardId);
+            replayed.put("sqlExperimentReplay", true);
+            sendJson(exchange, 200, replayed);
+            return;
+        }
+        String operatorId = actor(exchange).operatorId();
+        if (workerApi.snapshots(scan.dto().projectId(), scanId).stream().anyMatch(snapshot ->
+                snapshot.lifecycle() == TaskLifecycle.QUEUED
+                        || snapshot.lifecycle() == TaskLifecycle.LEASED
+                        || snapshot.lifecycle() == TaskLifecycle.RUNNING
+                        || snapshot.lifecycle() == TaskLifecycle.PAUSED)) {
+            throw new ApiException(409, "DYNAMIC_TASK_BUSY",
+                    "a dynamic task is already active for this scan");
+        }
+        TaskSnapshot snapshot = enqueueDynamicForPipeline(scanId, operatorId, entry.id(), inputs, 2,
+                AuthBypassTechnique.CUSTOM_POC.name(), null, null);
+        idempotentExperimentCardReplays.put(replayKey, new EntryFocusProbe(scanId, entry.id(), snapshot));
+        rememberDurableIdempotency(durableScope, key, requestPayload, snapshot.scope().taskId(), null);
+        store.auditChange(scan.dto().projectId(), operatorId, "sql-experiment-card.replay", "entry",
+                entry.id(),
+                "{\"scanId\":\"" + scanId + "\",\"cardId\":\"" + cardId
+                        + "\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\",\"dependencyMode\":\"MOCK\"}",
+                Instant.now(clock).toString());
+        Map<String, Object> accepted = entryFocusProbeMap(scan, entry.id(), snapshot, false);
+        accepted.put("cardId", cardId);
+        accepted.put("sqlExperimentReplay", true);
+        sendJson(exchange, 202, accepted);
     }
 
     private static Map<String, Object> entryFocusProbeMap(ControlPlaneStore.ScanRecord scan,
@@ -2828,6 +2993,12 @@ public final class ControlPlaneServer implements AutoCloseable {
             empty.put("paths", List.of());
             empty.put("pathRuns", List.of());
             empty.put("path", List.of());
+            empty.put("sqlExperimentCards", List.of());
+            empty.put("experimentPlans", List.of());
+            empty.put("analysisPacks", List.of());
+            empty.put("probeBudget", Map.of(
+                    "maxProbes", 0, "plannedProbes", 0, "unreachedEntries", 0,
+                    "strategy", "", "entryTrackPlans", List.of()));
             sendJson(exchange, 200, empty);
             return;
         }
@@ -2875,6 +3046,49 @@ public final class ControlPlaneServer implements AutoCloseable {
         for (ApiDtos.PathRunDto run : pathRuns) pathRunMaps.add(pathRunMap(run));
         List<Object> path = new ArrayList<>();
         for (ApiDtos.PathStepDto step : flattened) path.add(pathStepMap(step));
+        List<SqlExperimentCard> cards = SqlExperimentCardBuilder.fromPathRuns(dto.scanId(), pathRuns);
+        List<Object> cardMaps = new ArrayList<>();
+        for (SqlExperimentCard card : cards) cardMaps.add(sqlExperimentCardMap(card));
+        List<Object> planMaps = new ArrayList<>();
+        for (ExperimentPlan plan : scanExperimentPlans.getOrDefault(dto.scanId(), List.of())) {
+            planMaps.add(experimentPlanMap(plan));
+        }
+        List<String> routes = dto.entries().stream()
+                .map(ApiDtos.EntryDto::route)
+                .filter(Objects::nonNull)
+                .toList();
+        Path artifactPath = null;
+        try {
+            ArtifactDescriptor artifact = store.artifact(project, dto.artifactDigest());
+            if (artifact != null) artifactPath = artifact.normalizedPath();
+        } catch (RuntimeException ignored) {
+            // Pack matching without path still uses route heuristics.
+        }
+        List<Object> packMaps = new ArrayList<>();
+        for (AnalysisPack pack : AnalysisPackRegistry.matching(artifactPath, routes)) {
+            Map<String, Object> packRow = new LinkedHashMap<>();
+            packRow.put("packId", pack.id());
+            packRow.put("destructive", false);
+            packRow.put("jwtSecretHint", pack.suggestJwtSecret(artifactPath).orElse(""));
+            List<Object> templates = new ArrayList<>();
+            for (ExperimentPlan template : pack.experimentTemplates(
+                    "entry:pack-template", IdentityTrack.UNAUTH)) {
+                templates.add(experimentPlanMap(template));
+            }
+            packRow.put("templates", templates);
+            packMaps.add(packRow);
+        }
+        ProbeBudgetExplainer.TrackBudgetSummary budget = ProbeBudgetExplainer.explain(
+                dto.entries(),
+                MAX_DYNAMIC_PROBES,
+                scanExpandedProbes.getOrDefault(dto.scanId(), List.of()),
+                unreachedDynamicPaths.getOrDefault(dto.scanId(), List.of()));
+        Map<String, Object> budgetMap = new LinkedHashMap<>();
+        budgetMap.put("maxProbes", budget.maxProbes());
+        budgetMap.put("plannedProbes", budget.plannedProbes());
+        budgetMap.put("unreachedEntries", budget.unreachedEntries());
+        budgetMap.put("strategy", budget.strategy());
+        budgetMap.put("entryTrackPlans", budget.entryTrackPlans());
         body.put("entries", entries);
         body.put("findings", findings);
         // authGapFindingCount = demoted secondary finding rows omitted from findings[].
@@ -2884,7 +3098,56 @@ public final class ControlPlaneServer implements AutoCloseable {
         body.put("paths", paths);
         body.put("pathRuns", pathRunMaps);
         body.put("path", path);
+        body.put("sqlExperimentCards", cardMaps);
+        body.put("experimentPlans", planMaps);
+        body.put("analysisPacks", packMaps);
+        body.put("probeBudget", budgetMap);
         sendJson(exchange, 200, body);
+    }
+
+    private static Map<String, Object> sqlExperimentCardMap(SqlExperimentCard card) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("cardId", card.cardId());
+        result.put("scanId", card.scanId());
+        result.put("entrypointRef", card.entrypointRef());
+        result.put("track", card.track().name());
+        if (card.experimentPlanId() != null && !card.experimentPlanId().isBlank()) {
+            result.put("experimentPlanId", card.experimentPlanId());
+        }
+        result.put("benignInput", card.benignInput());
+        result.put("metaInput", card.metaInput());
+        result.put("sqlBefore", card.sqlBefore());
+        result.put("sqlAfter", card.sqlAfter());
+        result.put("structureInfluenced", card.structureInfluenced());
+        result.put("stopCondition", card.stopCondition());
+        result.put("dependencyMode", card.dependencyMode());
+        result.put("verificationStatus", card.verificationStatus());
+        result.put("pathRunRefs", card.pathRunRefs());
+        result.put("evidenceRefs", card.evidenceRefs());
+        result.put("replayable", true);
+        return result;
+    }
+
+    private static Map<String, Object> experimentPlanMap(ExperimentPlan plan) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("planId", plan.planId());
+        result.put("entrypointRef", plan.entrypointRef());
+        result.put("track", plan.track().name());
+        result.put("method", plan.method());
+        result.put("contentType", plan.contentType());
+        result.put("requiredParameters", plan.requiredParameters());
+        result.put("authRequired", plan.authRequired());
+        result.put("successHttpHint", plan.successHttpHint());
+        result.put("successJsonPath", plan.successJsonPath());
+        result.put("maxAttempts", plan.maxAttempts());
+        result.put("candidateInputs", plan.candidateInputs());
+        result.put("stopCondition", plan.stopCondition());
+        if (plan.packId() != null && !plan.packId().isBlank()) {
+            result.put("packId", plan.packId());
+        }
+        result.put("boundForExecution", true);
+        result.put("serverGated", true);
+        return result;
     }
 
     private List<ApiDtos.PathRunDto> mergedPathRunsForScan(String projectId, String artifactDigest, String scanId) {
