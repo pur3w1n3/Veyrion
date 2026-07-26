@@ -194,9 +194,54 @@ final class AutomaticInstrumentation {
 
         @Advice.OnMethodEnter(suppress = Throwable.class)
         public static void enter(@Advice.Origin("#t") String className,
-                                 @Advice.Origin("#m") String methodName) {
-            AgentRuntime.recordTransformedMethod(
-                    "JDBC", className, methodName, "IMPLEMENTATION_METHOD");
+                                 @Advice.Origin("#m") String methodName,
+                                 @Advice.AllArguments Object[] args) {
+            // Helpers must be public: Advice is inlined into foreign classes (incl. proxies).
+            String sql = extractSqlArg(args);
+            if (sql.isEmpty()) {
+                AgentRuntime.recordTransformedMethod(
+                        "JDBC", className, methodName, "IMPLEMENTATION_METHOD");
+                return;
+            }
+            AgentRuntime.recordTransformedDetail("JDBC", className, methodName, sqlDetail(sql));
+        }
+
+        /** Visible to inlined advice bodies running in instrumented/proxy classes. */
+        public static String extractSqlArg(Object[] args) {
+            if (args == null) return "";
+            for (Object arg : args) {
+                if (!(arg instanceof String text)) continue;
+                String trimmed = text.trim();
+                if (trimmed.length() < 3) continue;
+                String lower = trimmed.toLowerCase(java.util.Locale.ROOT);
+                if (lower.startsWith("select") || lower.startsWith("insert") || lower.startsWith("update")
+                        || lower.startsWith("delete") || lower.startsWith("replace")
+                        || lower.startsWith("with") || lower.startsWith("show")
+                        || lower.startsWith("explain") || lower.startsWith("set ")
+                        || lower.startsWith("call ") || lower.startsWith("create")
+                        || lower.startsWith("alter") || lower.startsWith("drop")
+                        || lower.startsWith("truncate")) {
+                    return trimmed.length() <= 256 ? trimmed : trimmed.substring(0, 256);
+                }
+            }
+            return "";
+        }
+
+        public static Map<String, String> sqlDetail(String sql) {
+            String lower = sql.toLowerCase(java.util.Locale.ROOT);
+            String readWrite = lower.startsWith("select") || lower.startsWith("show")
+                    || lower.startsWith("explain") ? "READ"
+                    : lower.startsWith("insert") || lower.startsWith("update")
+                    || lower.startsWith("delete") || lower.startsWith("replace") ? "WRITE" : "UNKNOWN";
+            boolean parameterized = sql.contains("?");
+            return Map.of("captureMode", "JDBC_STATEMENT",
+                    "sql", sql,
+                    "readWrite", readWrite,
+                    "parameterized", Boolean.toString(parameterized),
+                    "maliciousFragmentPresent",
+                    Boolean.toString(lower.contains("'\"veyrion-sqli-meta")),
+                    "parameterSummary", parameterized ? "jdbc-placeholders" : "inline",
+                    "outcome", "OBSERVED");
         }
     }
 
@@ -333,14 +378,39 @@ final class AutomaticInstrumentation {
                 }
             }
             if (route.isBlank()) {
-                AgentRuntime.recordTransformedMethod(
-                        "HTTP", className, methodName, "SPRING_MAPPING_ANNOTATION");
-            } else {
-                AgentRuntime.recordTransformedDetail("HTTP", className, methodName,
-                        Map.of("captureMode", "SPRING_MAPPING_ANNOTATION",
-                                "httpMethod", truncate(httpMethod, 16),
-                                "route", truncate(route, 512)));
+                String[] fromContext = resolveRequestFromContext();
+                httpMethod = fromContext[0];
+                route = fromContext[1];
             }
+            // Entering a Spring @*Mapping handler means argument resolution already succeeded.
+            java.util.HashMap<String, String> detail = new java.util.HashMap<>();
+            detail.put("captureMode", "SPRING_MAPPING_ANNOTATION");
+            detail.put("entryHit", "true");
+            detail.put("parameterBound", "true");
+            if (!httpMethod.isBlank()) detail.put("httpMethod", truncate(httpMethod, 16));
+            if (!route.isBlank()) detail.put("route", truncate(route, 512));
+            AgentRuntime.recordTransformedDetail("HTTP", className, methodName, detail);
+        }
+
+        /** Best-effort URI from Spring RequestContextHolder when controllers omit the request arg. */
+        public static String[] resolveRequestFromContext() {
+            String httpMethod = "";
+            String route = "";
+            try {
+                Class<?> holder = Class.forName(
+                        "org.springframework.web.context.request.RequestContextHolder");
+                Object attrs = holder.getMethod("getRequestAttributes").invoke(null);
+                if (attrs == null) return new String[]{"", ""};
+                Object request = attrs.getClass().getMethod("getRequest").invoke(attrs);
+                if (request == null) return new String[]{"", ""};
+                Object methodValue = request.getClass().getMethod("getMethod").invoke(request);
+                Object uriValue = request.getClass().getMethod("getRequestURI").invoke(request);
+                if (methodValue instanceof String text) httpMethod = text;
+                if (uriValue instanceof String text) route = text;
+            } catch (Throwable ignored) {
+                // Spring not on classpath or no active request.
+            }
+            return new String[]{httpMethod, route};
         }
 
         private static String truncate(String value, int max) {

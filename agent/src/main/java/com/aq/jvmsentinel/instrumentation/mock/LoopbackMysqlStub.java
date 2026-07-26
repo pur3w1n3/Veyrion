@@ -179,7 +179,7 @@ public final class LoopbackMysqlStub implements AutoCloseable {
                 return;
             }
         }
-        record(operation, "RULE_GENERATED", "sqlClass=" + keyword + ",bytes=" + sqlBytes.length);
+        recordStatement(operation, "RULE_GENERATED", keyword, sql, sql.contains("?"));
     }
 
     private void prepare(byte[] sql, OutputStream output, Session session) throws IOException {
@@ -204,8 +204,8 @@ public final class LoopbackMysqlStub implements AutoCloseable {
             writePacket(output, sequence++, columnDefinition("?" + (index + 1)));
         }
         if (parameters > 0) writePacket(output, sequence, eof());
-        record("COM_STMT_PREPARE", "RULE_GENERATED",
-                "sqlClass=" + firstKeyword(new String(sql, StandardCharsets.UTF_8)) + ",parameters=" + parameters);
+        String text = new String(sql, StandardCharsets.UTF_8);
+        recordStatement("COM_STMT_PREPARE", "RULE_GENERATED", firstKeyword(text), text, parameters > 0);
     }
 
     private void execute(byte[] payload, OutputStream output, Session session) throws IOException {
@@ -392,6 +392,37 @@ public final class LoopbackMysqlStub implements AutoCloseable {
                         "operation", operation,
                         "outcome", outcome,
                         "summary", summary));
+    }
+
+    /** Statement-level D1 observation: truncated SQL text + class/outcome (not handshake meta). */
+    private static void recordStatement(String operation, String outcome, String sqlClass,
+                                        String sql, boolean parameterized) {
+        String text = sql == null ? "" : sql.trim();
+        if (text.length() > 256) text = text.substring(0, 256);
+        String lower = text.toLowerCase(Locale.ROOT);
+        String readWrite = lower.startsWith("select") || lower.startsWith("show")
+                || lower.startsWith("explain") || lower.startsWith("describe") || lower.startsWith("desc")
+                ? "READ"
+                : lower.startsWith("insert") || lower.startsWith("update") || lower.startsWith("delete")
+                || lower.startsWith("replace") || lower.startsWith("create") || lower.startsWith("alter")
+                || lower.startsWith("drop") || lower.startsWith("truncate") ? "WRITE" : "UNKNOWN";
+        boolean malicious = lower.contains("'\"veyrion-sqli-meta");
+        String klass = sqlClass == null ? "" : sqlClass;
+        Map<String, String> detail = new LinkedHashMap<>();
+        detail.put("captureMode", "DEPENDENCY_PROTOCOL_MOCK");
+        detail.put("dependencyMode", "MOCK");
+        detail.put("provenance", "RULE_GENERATED");
+        detail.put("protocol", "MYSQL_CLASSIC");
+        detail.put("operation", operation);
+        detail.put("outcome", outcome);
+        detail.put("sqlClass", klass);
+        detail.put("sql", text);
+        detail.put("readWrite", readWrite);
+        detail.put("parameterized", Boolean.toString(parameterized));
+        detail.put("maliciousFragmentPresent", Boolean.toString(malicious));
+        detail.put("parameterSummary", parameterized ? "jdbc-placeholders" : "inline");
+        detail.put("summary", "sqlClass=" + klass + ",bytes=" + text.length());
+        AgentRuntime.recordJdbc(LoopbackMysqlStub.class.getName(), "mysqlClassic", detail);
     }
 
     @Override

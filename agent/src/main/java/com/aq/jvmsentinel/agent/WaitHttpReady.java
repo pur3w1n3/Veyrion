@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -20,6 +21,10 @@ import java.util.Set;
  * <p>Args: {@code pid [traceDir]}</p>
  */
 public final class WaitHttpReady {
+    /** Dependency mock / common non-HTTP listeners — never treat as HTTP ready. */
+    private static final Set<Integer> NON_HTTP_PORTS = Set.of(
+            6379, 3306, 5432, 27017, 11211, 9200, 5672, 61616, 9092);
+
     private WaitHttpReady() { }
 
     public static void main(String[] args) throws Exception {
@@ -42,11 +47,19 @@ public final class WaitHttpReady {
             System.exit(1);
             return;
         }
-        // Prefer common HTTP listen ports ahead of Redis/DB stubs (e.g. 6379).
-        List<Integer> ordered = new ArrayList<>(ports);
+        List<Integer> ordered = new ArrayList<>();
+        for (int port : ports) {
+            if (!NON_HTTP_PORTS.contains(port)) ordered.add(port);
+        }
         ordered.sort(Comparator
                 .comparingInt((Integer port) -> httpPortRank(port))
                 .thenComparingInt(Integer::intValue));
+        if (ordered.isEmpty()) {
+            write(traceDir, "progress.txt",
+                    "进程 " + pid + " 仅有依赖替身/非 HTTP LISTEN 端口: " + listen);
+            System.exit(2);
+            return;
+        }
         for (int port : ordered) {
             int status = probe(port);
             if (status >= 0) {
@@ -65,9 +78,15 @@ public final class WaitHttpReady {
     private static int httpPortRank(int port) {
         return switch (port) {
             case 80, 8080, 8000, 8888, 8443 -> 0;
-            case 6379, 3306, 5432, 27017, 11211 -> 100;
             default -> 10;
         };
+    }
+
+    /** Visible for acceptance checks: status line must be HTTP/1.x or HTTP/2. */
+    static boolean isHttpStatusLine(String statusLine) {
+        if (statusLine == null || statusLine.isBlank()) return false;
+        String head = statusLine.trim().toUpperCase(Locale.ROOT);
+        return head.startsWith("HTTP/1.") || head.startsWith("HTTP/2");
     }
 
     private static int probe(int port) {
@@ -87,7 +106,9 @@ public final class WaitHttpReady {
             String head = new String(buffer, 0, read, StandardCharsets.ISO_8859_1);
             int lineEnd = head.indexOf("\r\n");
             if (lineEnd <= 0) return -1;
-            String[] parts = head.substring(0, lineEnd).trim().split("\\s+");
+            String statusLine = head.substring(0, lineEnd).trim();
+            if (!isHttpStatusLine(statusLine)) return -1;
+            String[] parts = statusLine.split("\\s+");
             if (parts.length < 2) return -1;
             return Integer.parseInt(parts[1]);
         } catch (Exception ignored) {

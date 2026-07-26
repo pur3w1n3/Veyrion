@@ -93,6 +93,15 @@
                             <mainClass>com.aq.jvmsentinel.instrumentation.ProtocolSubstituteAcceptanceTest</mainClass>
                         </configuration>
                     </execution>
+                    <execution>
+                        <id>loopback-http-probe-acceptance</id>
+                        <phase>test</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>com.aq.jvmsentinel.agent.LoopbackHttpProbeAcceptanceTest</mainClass>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>

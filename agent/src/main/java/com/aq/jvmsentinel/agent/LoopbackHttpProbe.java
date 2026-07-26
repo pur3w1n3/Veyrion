@@ -11,9 +11,14 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -21,22 +26,40 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>Single: {@code method route [port] [query]}.</p>
  * <p>Batch: {@code @planFile port} where each plan line is
- * {@code METHOD\troute[\tquery[\ttrack[\tauthHeader]]]}.</p>
+ * {@code METHOD\troute[\tquery[\ttrack[\tauthHeader[\tbladeAuthHeader]]]]}.
+ * Authorization and Blade-Auth are independent channels — a non-blank
+ * {@code authHeader} does not imply {@code Blade-Auth}, and vice versa.</p>
+ *
+ * <p>Batch uses a dual-phase strategy: a fast parallel pass (800ms connect/read),
+ * then a capped slow retry (2000ms) for {@code BUSINESS_TIMEOUT} targets,
+ * prioritizing {@code UNAUTH} so AUTH_CHALLENGE / HTTP outcomes are recovered
+ * without reverting to full sequential 2s walls.</p>
  */
 public final class LoopbackHttpProbe {
     private static final Set<String> METHODS = Set.of("GET", "POST", "PUT", "PATCH", "DELETE");
     private static final int MAX_RESPONSE_BYTES = 64 * 1024;
     private static final int MAX_BATCH_LINES = 512;
+    private static final int FAST_CONNECT_TIMEOUT_MS = 800;
+    private static final int FAST_READ_TIMEOUT_MS = 800;
+    private static final int SLOW_CONNECT_TIMEOUT_MS = 2000;
+    private static final int SLOW_READ_TIMEOUT_MS = 2000;
+    /** Wave-2 budget: recover timed-out high-value / UNAUTH observations. */
+    private static final int MAX_SLOW_RETRIES = 128;
+    private static final int DEFAULT_BATCH_THREADS = 8;
+    private static final int MAX_BATCH_THREADS = 16;
     private static final byte[] SYNTHETIC_BODY =
             "{\"marker\":\"synthetic-http-entry-v1\"}".getBytes(StandardCharsets.US_ASCII);
     /** Local sequences inside probe-events.jsonl; the worker renumbers when merging. */
     private static final AtomicLong PROBE_SEQUENCE = new AtomicLong();
+    private static int writtenEvents;
+    private static int writeFailures;
 
     private LoopbackHttpProbe() { }
 
     public static void main(String[] args) throws Exception {
         if (args.length == 2 && args[0].startsWith("@")) {
-            runBatch(Path.of(args[0].substring(1)), Integer.parseInt(args[1]));
+            int code = runBatch(Path.of(args[0].substring(1)), Integer.parseInt(args[1]));
+            if (code != 0) System.exit(code);
             return;
         }
         if (args.length < 2 || args.length > 4) {
@@ -47,48 +70,167 @@ public final class LoopbackHttpProbe {
         String route = args[1];
         int port = args.length >= 3 ? Integer.parseInt(args[2]) : 8080;
         String query = args.length >= 4 ? args[3] : "";
-        int status = probeOne(method, route, port, query, "UNAUTH", "");
-        if (status < 0) System.exit(2);
+        lastBatchPort = port;
+        ProbeAttempt attempt = probeOne(method, route, port, query, "UNAUTH", "", "",
+                FAST_CONNECT_TIMEOUT_MS, FAST_READ_TIMEOUT_MS, 1);
+        writeAttemptEvent(attempt);
+        if (attempt.status < 0) System.exit(2);
     }
 
-    private static void runBatch(Path planFile, int port) throws Exception {
+    /**
+     * Batch probe entry. Returns process-style exit codes: 0 ok, 2 all failed, 3 zero events.
+     */
+    static int runBatch(Path planFile, int port) throws Exception {
         if (port < 1 || port > 65535) throw new IllegalArgumentException("port is invalid");
         List<String> lines = Files.readAllLines(planFile, StandardCharsets.UTF_8);
         if (lines.isEmpty() || lines.size() > MAX_BATCH_LINES) {
             throw new IllegalArgumentException("probe plan size is outside limits");
         }
-        List<String[]> targets = new ArrayList<>(lines.size());
+        List<ProbeTarget> targets = new ArrayList<>(lines.size());
+        int ordinal = 0;
         for (String line : lines) {
             if (line == null || line.isBlank() || line.startsWith("#")) continue;
             String[] parts = line.split("\t", -1);
-            if (parts.length < 2 || parts.length > 5) {
+            if (parts.length < 2 || parts.length > 6) {
                 throw new IllegalArgumentException("probe plan line is invalid");
             }
-            targets.add(new String[]{
+            ordinal++;
+            targets.add(new ProbeTarget(
                     parts[0].trim(),
                     parts[1].trim(),
                     parts.length >= 3 ? parts[2].trim() : "",
                     parts.length >= 4 && !parts[3].isBlank() ? parts[3].trim() : "UNAUTH",
-                    parts.length >= 5 ? parts[4].trim() : ""
-            });
+                    parts.length >= 5 ? parts[4].trim() : "",
+                    parts.length >= 6 ? parts[5].trim() : "",
+                    ordinal));
         }
         if (targets.isEmpty()) throw new IllegalArgumentException("probe plan is empty");
+        writtenEvents = 0;
+        writeFailures = 0;
+        lastBatchPort = port;
+        int concurrency = Math.min(targets.size(), batchConcurrency());
+        writeProgress("批量探测启动：" + targets.size() + " 个目标，并发 " + concurrency
+                + "（快波 " + FAST_READ_TIMEOUT_MS + "ms，慢重试上限 " + MAX_SLOW_RETRIES + "）");
+
+        List<ProbeAttempt> wave1 = runWave(targets, port, concurrency,
+                FAST_CONNECT_TIMEOUT_MS, FAST_READ_TIMEOUT_MS, "快波");
+
+        List<ProbeAttempt> timedOut = new ArrayList<>();
         int failures = 0;
-        for (int i = 0; i < targets.size(); i++) {
-            String[] target = targets.get(i);
-            writeProgress("批量探测 " + (i + 1) + "/" + targets.size()
-                    + ": " + target[0] + " " + target[1]
-                    + " [" + target[3] + "]"
-                    + (target[2].isEmpty() ? "" : "?" + target[2]));
-            if (probeOne(target[0], target[1], port, target[2], target[3], target[4]) < 0) failures++;
+        for (ProbeAttempt attempt : wave1) {
+            if (attempt.businessTimeout()) {
+                timedOut.add(attempt);
+            } else {
+                writeAttemptEvent(attempt);
+                if (attempt.status < 0) failures++;
+            }
         }
-        writeProgress("批量探测完成：" + (targets.size() - failures) + "/" + targets.size() + " 收到 HTTP 响应");
-        if (failures == targets.size()) System.exit(2);
+
+        List<ProbeAttempt> retrySelected = selectSlowRetryTargets(timedOut, MAX_SLOW_RETRIES);
+        Set<Integer> retryOrdinals = new HashSet<>();
+        for (ProbeAttempt selected : retrySelected) {
+            retryOrdinals.add(selected.target.ordinal);
+        }
+        for (ProbeAttempt attempt : timedOut) {
+            if (!retryOrdinals.contains(attempt.target.ordinal)) {
+                writeAttemptEvent(attempt);
+                failures++;
+            }
+        }
+
+        if (!retrySelected.isEmpty()) {
+            List<ProbeTarget> retryTargets = new ArrayList<>(retrySelected.size());
+            for (ProbeAttempt selected : retrySelected) {
+                retryTargets.add(selected.target);
+            }
+            writeProgress("慢波重试：" + retryTargets.size() + "/" + timedOut.size()
+                    + " 个 BUSINESS_TIMEOUT（优先 UNAUTH，超时 "
+                    + SLOW_READ_TIMEOUT_MS + "ms）");
+            int slowConcurrency = Math.min(retryTargets.size(), concurrency);
+            List<ProbeAttempt> wave2 = runWave(retryTargets, port, slowConcurrency,
+                    SLOW_CONNECT_TIMEOUT_MS, SLOW_READ_TIMEOUT_MS, "慢波");
+            for (ProbeAttempt attempt : wave2) {
+                writeAttemptEvent(attempt);
+                if (attempt.status < 0) failures++;
+            }
+        }
+
+        writeProgress("批量探测完成：" + (targets.size() - failures) + "/" + targets.size()
+                + " 收到 HTTP 响应；写入事件 " + writtenEvents
+                + (writeFailures == 0 ? "" : "（写失败 " + writeFailures + "）")
+                + "；慢波重试 " + retrySelected.size());
+        if (writtenEvents == 0) {
+            System.err.println("LoopbackHttpProbe wrote zero HTTP events");
+            return 3;
+        }
+        if (failures == targets.size()) return 2;
+        return 0;
     }
 
-    private static int probeOne(String rawMethod, String route, int port, String query,
-                                String track, String authHeader) {
-        String method = rawMethod == null ? "" : rawMethod.toUpperCase(Locale.ROOT);
+    private static List<ProbeAttempt> runWave(List<ProbeTarget> targets, int port, int concurrency,
+                                              int connectTimeoutMs, int readTimeoutMs,
+                                              String waveLabel) throws Exception {
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        List<Future<ProbeAttempt>> futures = new ArrayList<>(targets.size());
+        for (ProbeTarget target : targets) {
+            futures.add(executor.submit(() -> {
+                writeProgress(waveLabel + "探测 " + target.ordinal + ": " + target.method + " "
+                        + target.route + " [" + target.track + "]"
+                        + (target.query.isEmpty() ? "" : "?" + target.query));
+                return probeOne(target.method, target.route, port, target.query, target.track,
+                        target.authHeader, target.bladeAuthHeader,
+                        connectTimeoutMs, readTimeoutMs, target.ordinal);
+            }));
+        }
+        executor.shutdown();
+        List<ProbeAttempt> attempts = new ArrayList<>(targets.size());
+        try {
+            for (Future<ProbeAttempt> future : futures) {
+                attempts.add(future.get());
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw interrupted;
+        }
+        return attempts;
+    }
+
+    /**
+     * Prefer UNAUTH timeouts (auth discrimination), then other tracks; stable by ordinal; hard cap.
+     */
+    static List<ProbeAttempt> selectSlowRetryTargets(List<ProbeAttempt> timedOut, int maxRetries) {
+        if (timedOut == null || timedOut.isEmpty() || maxRetries <= 0) return List.of();
+        List<ProbeAttempt> ranked = new ArrayList<>(timedOut);
+        ranked.sort(Comparator
+                .comparingInt((ProbeAttempt a) -> trackRetryRank(a.target.track))
+                .thenComparingInt(a -> a.target.ordinal));
+        if (ranked.size() <= maxRetries) return List.copyOf(ranked);
+        return List.copyOf(ranked.subList(0, maxRetries));
+    }
+
+    static int trackRetryRank(String track) {
+        if (track == null) return 99;
+        return switch (track) {
+            case "UNAUTH" -> 0;
+            case "USER" -> 1;
+            case "ADMIN" -> 2;
+            case "BYPASS_CANDIDATE" -> 3;
+            default -> 50;
+        };
+    }
+
+    private static ProbeAttempt probeOne(String rawMethod, String route, int port, String query,
+                                         String track, String authHeader, String bladeAuthHeader,
+                                         int connectTimeoutMs, int readTimeoutMs, int ordinal) {
+        ProbeTarget target = new ProbeTarget(
+                rawMethod == null ? "" : rawMethod,
+                route == null ? "" : route,
+                query == null ? "" : query,
+                track == null || track.isBlank() ? "UNAUTH" : track,
+                authHeader == null ? "" : authHeader,
+                bladeAuthHeader == null ? "" : bladeAuthHeader,
+                ordinal);
+        String method = target.method.toUpperCase(Locale.ROOT);
         if (!METHODS.contains(method)
                 || route == null
                 || !route.matches("/[A-Za-z0-9_./{}:-]{0,1023}")
@@ -96,34 +238,24 @@ public final class LoopbackHttpProbe {
                 || (query != null && !query.isEmpty()
                 && !query.matches("[A-Za-z0-9_=&%./{}:-]{1,256}"))
                 || (track != null && !track.matches("[A-Z_]{1,32}"))
-                || (authHeader != null && authHeader.length() > 2048)) {
-            writeProbeEvent(method, route == null ? "" : route, port, -1,
-                    route == null ? "" : route, "InvalidTarget", "UNKNOWN",
-                    track == null ? "UNAUTH" : track);
-            return -1;
+                || (authHeader != null && authHeader.length() > 2048)
+                || (bladeAuthHeader != null && bladeAuthHeader.length() > 2048)) {
+            return new ProbeAttempt(target, -1, "InvalidTarget",
+                    route == null ? "" : route, connectTimeoutMs, readTimeoutMs);
         }
-        String requestTarget = (query == null || query.isEmpty()) ? route : route + "?" + query;
+        String requestTarget = target.query.isEmpty() ? target.route : target.route + "?" + target.query;
         byte[] body = Set.of("POST", "PUT", "PATCH").contains(method)
                 ? SYNTHETIC_BODY : new byte[0];
         int status = -1;
         String error = "";
         try (Socket socket = new Socket()) {
             InetAddress loopback = InetAddress.getByAddress(new byte[]{127, 0, 0, 1});
-            socket.connect(new InetSocketAddress(loopback, port), 2_000);
-            socket.setSoTimeout(2_000);
+            socket.connect(new InetSocketAddress(loopback, port), connectTimeoutMs);
+            socket.setSoTimeout(readTimeoutMs);
             OutputStream output = socket.getOutputStream();
-            StringBuilder headers = new StringBuilder();
-            headers.append(method).append(' ').append(requestTarget).append(" HTTP/1.1\r\n")
-                    .append("Host: 127.0.0.1\r\nConnection: close\r\n")
-                    .append("Content-Type: application/json\r\n")
-                    .append("Content-Length: ").append(body.length).append("\r\n");
-            if (authHeader != null && !authHeader.isBlank()) {
-                // Synthetic Blade/Spring identity: both Authorization and Blade-Auth.
-                headers.append("Authorization: bearer ").append(authHeader).append("\r\n");
-                headers.append("Blade-Auth: ").append(authHeader).append("\r\n");
-            }
-            headers.append("\r\n");
-            output.write(headers.toString().getBytes(StandardCharsets.US_ASCII));
+            String headerBlock = buildRequestHeaders(method, requestTarget, body.length,
+                    target.authHeader, target.bladeAuthHeader);
+            output.write(headerBlock.getBytes(StandardCharsets.US_ASCII));
             output.write(body);
             output.flush();
             InputStream input = socket.getInputStream();
@@ -147,14 +279,60 @@ public final class LoopbackHttpProbe {
             error = failure.getClass().getSimpleName();
             status = -1;
         }
-        String outcome = classifyOutcome(status, error);
-        String detail = method + " " + requestTarget + " → HTTP "
-                + (status < 0 ? "UNKNOWN" : Integer.toString(status))
-                + " (" + outcome + ", track=" + track + ", port " + port + ")"
-                + (error.isEmpty() ? "" : "; " + error);
-        System.out.println(detail);
-        writeProbeEvent(method, route, port, status, requestTarget, error, outcome, track);
-        return status;
+        return new ProbeAttempt(target, status, error, requestTarget, connectTimeoutMs, readTimeoutMs);
+    }
+
+    /**
+     * Builds the HTTP request head. Authorization and Blade-Auth are independent:
+     * neither channel is copied from the other.
+     */
+    static String buildRequestHeaders(String method, String requestTarget, int contentLength,
+                                      String authHeader, String bladeAuthHeader) {
+        StringBuilder headers = new StringBuilder();
+        headers.append(method).append(' ').append(requestTarget).append(" HTTP/1.1\r\n")
+                .append("Host: 127.0.0.1\r\nConnection: close\r\n")
+                .append("Content-Type: application/json\r\n")
+                .append("Content-Length: ").append(contentLength).append("\r\n");
+        if (authHeader != null && !authHeader.isBlank()) {
+            headers.append("Authorization: bearer ").append(authHeader).append("\r\n");
+        }
+        if (bladeAuthHeader != null && !bladeAuthHeader.isBlank()) {
+            headers.append("Blade-Auth: ").append(bladeAuthHeader).append("\r\n");
+        }
+        headers.append("\r\n");
+        return headers.toString();
+    }
+
+    private static void writeAttemptEvent(ProbeAttempt attempt) {
+        String outcome = classifyOutcome(attempt.status, attempt.error);
+        String method = attempt.target.method.toUpperCase(Locale.ROOT);
+        System.out.println(method + " " + attempt.requestTarget
+                + " → HTTP "
+                + (attempt.status < 0 ? "UNKNOWN" : Integer.toString(attempt.status))
+                + " (" + outcome + ", track=" + attempt.target.track
+                + ", port " + lastBatchPort + ")"
+                + (attempt.error.isEmpty() ? "" : "; " + attempt.error));
+        writeProbeEvent(method, attempt.target.route, lastBatchPort, attempt.status,
+                attempt.requestTarget, attempt.error, outcome, attempt.target.track);
+    }
+
+    /**
+     * Probe-side entry hit: true when the HTTP response shows the route reached the app or auth
+     * layer; false for missing/unsupported methods; absent ({@code null}) for transport failures.
+     */
+    static Boolean classifyEntryHit(int httpStatus) {
+        if (httpStatus == 404 || httpStatus == 405) return Boolean.FALSE;
+        if (httpStatus == 401 || httpStatus == 403) return Boolean.TRUE;
+        if (httpStatus >= 200 && httpStatus < 400) return Boolean.TRUE;
+        return null;
+    }
+
+    /**
+     * Probe alone cannot prove binding success. Only emit false for clear no-route cases.
+     */
+    static Boolean classifyParameterBound(int httpStatus) {
+        if (httpStatus == 404 || httpStatus == 405) return Boolean.FALSE;
+        return null;
     }
 
     static String classifyOutcome(int httpStatus, String errorClass) {
@@ -176,16 +354,37 @@ public final class LoopbackHttpProbe {
         return "UNKNOWN";
     }
 
-    private static void writeProbeEvent(String method, String route, int port, int status,
-                                        String requestTarget, String error, String outcomeClass,
-                                        String track) {
+    private static synchronized void writeProbeEvent(String method, String route, int port, int status,
+                                                     String requestTarget, String error, String outcomeClass,
+                                                     String track) {
         try {
             String dir = System.getProperty("veyrion.sandbox.traceDir");
-            if (dir == null || dir.isBlank()) return;
+            if (dir == null || dir.isBlank()) {
+                writeFailures++;
+                return;
+            }
             Path file = Path.of(dir, "probe-events.jsonl");
             long sequence = PROBE_SEQUENCE.getAndIncrement();
             String statusText = status < 0 ? "UNKNOWN" : Integer.toString(status);
             String verification = "DYNAMIC_SUSPECTED";
+            Boolean entryHit = classifyEntryHit(status);
+            Boolean parameterBound = classifyParameterBound(status);
+            StringBuilder detail = new StringBuilder();
+            detail.append("\"captureMode\":\"LOOPBACK_HTTP_PROBE\",")
+                    .append("\"httpMethod\":\"").append(json(truncate(method, 16))).append("\",")
+                    .append("\"route\":\"").append(json(truncate(route, 512))).append("\",")
+                    .append("\"requestTarget\":\"").append(json(truncate(requestTarget, 512))).append("\",")
+                    .append("\"status\":\"").append(json(statusText)).append("\",")
+                    .append("\"port\":\"").append(port).append("\",")
+                    .append("\"error\":\"").append(json(truncate(error == null ? "" : error, 64))).append("\",")
+                    .append("\"outcomeClass\":\"").append(json(truncate(outcomeClass, 32))).append("\",")
+                    .append("\"track\":\"").append(json(truncate(track == null ? "UNAUTH" : track, 32))).append("\"");
+            if (entryHit != null) {
+                detail.append(",\"entryHit\":\"").append(entryHit ? "true" : "false").append("\"");
+            }
+            if (parameterBound != null) {
+                detail.append(",\"parameterBound\":\"").append(parameterBound ? "true" : "false").append("\"");
+            }
             String line = "{"
                     + "\"schemaVersion\":1,"
                     + "\"sequence\":" + sequence + ","
@@ -196,22 +395,18 @@ public final class LoopbackHttpProbe {
                     + "\"method\":\"main\","
                     + "\"timestamp\":\"" + Instant.now() + "\","
                     + "\"thread\":\"" + json(Thread.currentThread().getName()) + "\","
-                    + "\"detail\":{"
-                    + "\"captureMode\":\"LOOPBACK_HTTP_PROBE\","
-                    + "\"httpMethod\":\"" + json(truncate(method, 16)) + "\","
-                    + "\"route\":\"" + json(truncate(route, 512)) + "\","
-                    + "\"requestTarget\":\"" + json(truncate(requestTarget, 512)) + "\","
-                    + "\"status\":\"" + json(statusText) + "\","
-                    + "\"port\":\"" + port + "\","
-                    + "\"error\":\"" + json(truncate(error == null ? "" : error, 64)) + "\","
-                    + "\"outcomeClass\":\"" + json(truncate(outcomeClass, 32)) + "\","
-                    + "\"track\":\"" + json(truncate(track == null ? "UNAUTH" : track, 32)) + "\""
-                    + "}}\n";
+                    + "\"detail\":{" + detail + "}}\n";
             Files.writeString(file, line, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-        } catch (Exception ignored) {
-            // Probe success is independent of evidence file write.
+            writtenEvents++;
+        } catch (Exception failure) {
+            writeFailures++;
+            System.err.println("LoopbackHttpProbe could not write probe event: "
+                    + failure.getClass().getSimpleName());
         }
     }
+
+    /** Port for single-shot main / console lines; batch sets this before waves. */
+    private static volatile int lastBatchPort = 0;
 
     private static void writeProgress(String message) {
         try {
@@ -221,6 +416,21 @@ public final class LoopbackHttpProbe {
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
         } catch (Exception ignored) {
         }
+    }
+
+    private static int batchConcurrency() {
+        String configured = System.getProperty("veyrion.loopbackProbe.threads");
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv("VEYRION_PROBE_THREADS");
+        }
+        int value = DEFAULT_BATCH_THREADS;
+        if (configured != null && !configured.isBlank()) {
+            try {
+                value = Integer.parseInt(configured.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return Math.max(1, Math.min(MAX_BATCH_THREADS, value));
     }
 
     private static String truncate(String value, int max) {
@@ -257,6 +467,55 @@ public final class LoopbackHttpProbe {
             return Integer.parseInt(parts[1]);
         } catch (NumberFormatException ignored) {
             return -1;
+        }
+    }
+
+    static final class ProbeTarget {
+        final String method;
+        final String route;
+        final String query;
+        final String track;
+        final String authHeader;
+        final String bladeAuthHeader;
+        final int ordinal;
+
+        ProbeTarget(String method, String route, String query, String track,
+                    String authHeader, int ordinal) {
+            this(method, route, query, track, authHeader, "", ordinal);
+        }
+
+        ProbeTarget(String method, String route, String query, String track,
+                    String authHeader, String bladeAuthHeader, int ordinal) {
+            this.method = method;
+            this.route = route;
+            this.query = query;
+            this.track = track;
+            this.authHeader = authHeader == null ? "" : authHeader;
+            this.bladeAuthHeader = bladeAuthHeader == null ? "" : bladeAuthHeader;
+            this.ordinal = ordinal;
+        }
+    }
+
+    static final class ProbeAttempt {
+        final ProbeTarget target;
+        final int status;
+        final String error;
+        final String requestTarget;
+        final int connectTimeoutMs;
+        final int readTimeoutMs;
+
+        ProbeAttempt(ProbeTarget target, int status, String error, String requestTarget,
+                     int connectTimeoutMs, int readTimeoutMs) {
+            this.target = target;
+            this.status = status;
+            this.error = error == null ? "" : error;
+            this.requestTarget = requestTarget == null ? "" : requestTarget;
+            this.connectTimeoutMs = connectTimeoutMs;
+            this.readTimeoutMs = readTimeoutMs;
+        }
+
+        boolean businessTimeout() {
+            return status < 0 && error.contains("SocketTimeout");
         }
     }
 }
