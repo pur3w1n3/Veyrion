@@ -10,7 +10,9 @@ import java.util.Optional;
 
 /** Blade / SpringBlade default JWT credential experiment shapes (non-destructive). */
 public final class BladeJwtCredentialPack implements AnalysisPack {
-    public static final String DEFAULT_SECRET = "00000000000000000000000000000000";
+    /** Historical Blade hard-coded JwtProperties sign-key (UTF-8 plaintext; HMAC uses those bytes). */
+    public static final String DEFAULT_SECRET =
+            "bladexisapowerfulmicroservicearchitectureupgradedandoptimizedfromacommercialproject";
 
     @Override
     public String id() {

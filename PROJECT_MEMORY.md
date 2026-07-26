@@ -691,3 +691,16 @@ Live DYNAMIC `ai-job-e019163ef1cb4b20`：`sandbox_probe=8` 中 **5× MISSING_AUT
 - live Docker / baldex / JWT 过闸实跑。
 - P2-03 第二语言包；WAR 可运行画像的真实嵌入式容器。
 - `VERIFIED` 仍 `VERIFIED_GATE_NOT_OPEN`（逃逸套件未验收）。
+
+## 66. scan-46224b8d76a34ec0 复盘与 AUTH code_query 最小闭环（2026-07-27）
+
+Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS_TIMEOUT`，零过闸；RULE_GENERATED 种子偏向 `ALG_NONE`；洪水只写 Authorization、不写 Blade-Auth；合成 JWT claims/密钥与 Blade SecureUtil 不符；AUTH 模型未查配置/代码中的默认 sign-key。
+
+本轮本地落地（acceptance，**不得**标 VERIFIED）：
+
+- 新增 `code_query` 工具 + `AuthCodeQueryService`（有界 ZIP 扫描 JWT 默认密钥匹配、skip-url、鉴权类名；不回传自定义明文密钥）。
+- AUTH/PRE/TRIAGE allowlist 接入；AUTH 提示要求先 `code_query`。
+- Blade 面优先种子 `DEFAULT_SECRET_HS256` + Authorization/Blade-Auth 双通道；洪水在 Blade 路由上 dual-write Blade-Auth。
+- 合成 JWT claims 对齐 tenant_id/user_id/role_name/client_id=saber；默认密钥优先 `bladexisapowerful…`。
+
+仍需 live Docker 复验过闸与 Flowable deploy-upload 链；不得宣称生产可用。

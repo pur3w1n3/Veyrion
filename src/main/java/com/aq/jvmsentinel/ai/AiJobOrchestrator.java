@@ -531,7 +531,9 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         entryRef、techniqueId、track、rationale、evidenceRefs、confidence，以及你研判需要的
                         authorizationHeader / bladeAuthHeader / query / bodyHint（可含 JWT、alg-none、自定义 claims）。
                         服务端只做 schema/边界校验后交给动态验证执行；不得改网络/挂载/命令。
-                        只能用 facts_search/evidence_get/plan_propose；有 PathRun 时用 kind=PATH_RUN 核对。
+                        只能用 facts_search/evidence_get/plan_propose/code_query；
+                        鉴权分析必须先用 code_query 查 JWT 默认密钥、skip-url 与 Secure/Jwt 类，再写 bypassPoCs。
+                        有 PathRun 时用 kind=PATH_RUN 核对。
                         结论须含 bypassConfirmation：{status:HYPOTHESIS|DYNAMIC_CONTRAST, pathRunRefs:[...]}；
                         零动态 PathRun 证据不得宣称已绕过，也不得写 DYNAMIC_CONTRAST。
                         AUTH_GAP 仅为次级静态信号。
@@ -587,7 +589,10 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     bypassPoCs/bypassCandidates JSON with entryRef, techniqueId, track, rationale, evidenceRefs,
                     confidence, and AI-authored authorizationHeader/bladeAuthHeader/query/bodyHint (JWT, alg-none,
                     custom claims allowed). The server schema-gates then DYNAMIC executes. Use only
-                    facts_search/evidence_get/plan_propose. Never change network/mounts/commands. Emit
+                    facts_search/evidence_get/plan_propose/code_query. Call code_query first for JWT
+                    defaults, skip-url patterns, and Secure/Jwt classes; for SpringBlade prefer
+                    DEFAULT_SECRET_HS256 with Blade-Auth (not ALG_NONE alone). Never change
+                    network/mounts/commands. Emit
                     bypassConfirmation:{status:HYPOTHESIS|DYNAMIC_CONTRAST,pathRunRefs:[...]}. Never claim bypass
                     or DYNAMIC_CONTRAST without PathRun evidence. AUTH_GAP is secondary. When the scan has JWT /
                     AUTH_GAP / auth-annotated entries, bypassPoCs MUST be non-empty (probe hypotheses or explicit
@@ -1026,7 +1031,18 @@ public final class AiJobOrchestrator implements AutoCloseable {
             } catch (RuntimeException ignored) {
                 // Fall through with empty seeds.
             }
-            List<AuthBypassCandidate> drafts = AuthBypassFeasibility.seedRuleGeneratedDrafts(scanDto);
+            java.nio.file.Path artifactPath = null;
+            try {
+                ControlPlaneStore.ProjectRecord project = store.requireProject(job.projectId());
+                var artifact = store.artifact(project, job.artifactDigest());
+                if (artifact != null) {
+                    artifactPath = artifact.normalizedPath();
+                }
+            } catch (RuntimeException ignored) {
+                artifactPath = null;
+            }
+            List<AuthBypassCandidate> drafts =
+                    AuthBypassFeasibility.seedRuleGeneratedDrafts(scanDto, artifactPath);
             if (!drafts.isEmpty()) {
                 merged = drafts;
                 seeded = true;

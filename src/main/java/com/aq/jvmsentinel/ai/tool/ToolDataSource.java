@@ -15,6 +15,17 @@ public interface ToolDataSource {
     List<FactRecord> searchFacts(ToolExecutionContext.Scope scope, String kind, String query, int limit)
             throws Exception;
 
+    /**
+     * Bounded auth/config/code fact query against the registered artifact.
+     * Default empty; Control Plane may scan the already-authorized JAR for
+     * JWT defaults, skip-url patterns and auth-related class names. Never
+     * executes bytecode or returns raw custom secrets.
+     */
+    default List<FactRecord> queryCode(ToolExecutionContext.Scope scope, String query, int limit)
+            throws Exception {
+        return List.of();
+    }
+
     Optional<FactRecord> findEvidence(ToolExecutionContext.Scope scope, String evidenceRef)
             throws Exception;
 

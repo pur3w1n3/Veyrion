@@ -46,6 +46,7 @@ public final class AiToolRegistry {
         Map<String, RegisteredTool> fixed = new LinkedHashMap<>();
         add(fixed, factsSearch());
         add(fixed, evidenceGet());
+        add(fixed, codeQuery());
         add(fixed, planPropose());
         add(fixed, sandboxProbe());
         this.tools = Map.copyOf(fixed);
@@ -191,6 +192,34 @@ public final class AiToolRegistry {
                     .orElseThrow(() -> new MissingException("EVIDENCE_NOT_FOUND"));
             requireScope(context, record);
             return List.of(new ToolOutput(OutputKind.FACT, record.reference(), record.value()));
+        });
+    }
+
+    private RegisteredTool codeQuery() {
+        ToolSchema schema = new ToolSchema(
+                Map.of("query", Field.string(1024), "limit", Field.integer(1, 50)),
+                Set.of());
+        ToolDefinition definition = new ToolDefinition("code_query",
+                "Bounded read-only auth/config/code query over the registered artifact. "
+                        + "Use for AUTH_ANALYSIS to inspect JWT sign-key defaults, secure skip-url patterns, "
+                        + "and auth-related classes (SecureUtil/JwtUtil/BladeTokenEndPoint). "
+                        + "Returns FACT observations only; raw custom secrets stay redacted; "
+                        + "never executes bytecode, opens network, or upgrades verificationStatus. "
+                        + "For SpringBlade, prefer DEFAULT_SECRET_HS256 + Blade-Auth over ALG_NONE.",
+                schema.jsonSchema(), OverflowPolicy.TRUNCATE);
+        return new RegisteredTool(definition, schema, (call, context) -> {
+            String query = call.arguments().has("query") ? call.arguments().get("query").asText() : "";
+            int limit = call.arguments().has("limit") ? call.arguments().get("limit").asInt() : 20;
+            List<ToolDataSource.FactRecord> records = source.queryCode(context.scope(), query, limit);
+            if (records == null || records.size() > Math.max(1, Math.min(50, limit))) {
+                throw new IllegalStateException("invalid code_query result");
+            }
+            List<ToolOutput> outputs = new ArrayList<>();
+            for (ToolDataSource.FactRecord record : records) {
+                requireScope(context, record);
+                outputs.add(new ToolOutput(OutputKind.FACT, record.reference(), record.value()));
+            }
+            return outputs;
         });
     }
 

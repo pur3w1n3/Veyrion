@@ -1,13 +1,16 @@
 package com.aq.jvmsentinel.ai.tool;
 
+import com.aq.jvmsentinel.analysis.identity.AuthCodeQueryService;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
+import com.aq.jvmsentinel.model.ArtifactDescriptor;
 import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -17,8 +20,9 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Read-only projection of an already persisted scan. It never reads artifact
- * bytes and has no execution, decompiler, network, or shell capability.
+ * Read-only projection of an already persisted scan. Default path never executes
+ * artifacts; {@link #queryCode} may perform a bounded ZIP string/config scan of
+ * the already-registered artifact (same trust boundary as synthetic identity harvest).
  */
 public final class ControlPlaneToolDataSource implements ToolDataSource {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -69,6 +73,40 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         this.dynamicProbeExecutor = Objects.requireNonNull(dynamicProbeExecutor, "dynamicProbeExecutor");
         this.pathRunSource = Objects.requireNonNull(pathRunSource, "pathRunSource");
         this.experimentPlanAcceptor = Objects.requireNonNull(experimentPlanAcceptor, "experimentPlanAcceptor");
+    }
+
+    @Override
+    public List<FactRecord> queryCode(ToolExecutionContext.Scope scope, String query, int limit) {
+        ControlPlaneStore.ScanRecord scan = scopedScan(scope);
+        Path artifactPath = null;
+        try {
+            ControlPlaneStore.ProjectRecord project = store.requireProject(scan.dto().projectId());
+            ArtifactDescriptor artifact = store.artifact(project, scan.dto().artifactDigest());
+            if (artifact != null) {
+                artifactPath = artifact.normalizedPath();
+            }
+        } catch (RuntimeException ignored) {
+            artifactPath = null;
+        }
+        int capped = Math.max(1, Math.min(50, limit));
+        AuthCodeQueryService.AuthCodeQueryResult result =
+                new AuthCodeQueryService().query(artifactPath, query, Math.max(1, capped - 1));
+        ObjectNode summary = JSON.valueToTree(AuthCodeQueryService.toToolMap(result));
+        List<FactRecord> records = new ArrayList<>();
+        records.add(new FactRecord(scope, "code_query:auth-summary", summary));
+        for (AuthCodeQueryService.AuthCodeFact fact : result.facts()) {
+            if (records.size() >= capped) break;
+            ObjectNode node = JSON.createObjectNode();
+            node.put("id", fact.id());
+            node.put("category", fact.category());
+            node.put("summary", fact.summary());
+            node.put("sourcePath", fact.sourcePath());
+            node.put("classification", "FACT");
+            node.put("verificationStatus", "STATIC_INFERRED");
+            node.set("attributes", JSON.valueToTree(fact.attributes()));
+            records.add(new FactRecord(scope, "code_query:" + fact.id(), node));
+        }
+        return List.copyOf(records);
     }
 
     @Override

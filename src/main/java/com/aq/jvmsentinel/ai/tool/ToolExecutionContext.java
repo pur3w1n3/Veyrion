@@ -16,11 +16,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class ToolExecutionContext {
     private static final Map<AgentRole, Set<String>> ROLE_TOOLS = Map.of(
-            AgentRole.PRE_ANALYSIS, Set.of("facts_search", "evidence_get"),
-            AgentRole.AUTH_ANALYSIS, Set.of("facts_search", "evidence_get", "plan_propose"),
+            AgentRole.PRE_ANALYSIS, Set.of("facts_search", "evidence_get", "code_query"),
+            AgentRole.AUTH_ANALYSIS, Set.of("facts_search", "evidence_get", "plan_propose", "code_query"),
             AgentRole.DYNAMIC_VERIFICATION, Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe"),
             AgentRole.PATH_EXPLORATION, Set.of("facts_search", "evidence_get", "plan_propose"),
-            AgentRole.VULNERABILITY_TRIAGE, Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe"),
+            AgentRole.VULNERABILITY_TRIAGE, Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe", "code_query"),
             AgentRole.REPORT_GENERATION, Set.of("facts_search", "evidence_get", "plan_propose"));
 
     private final Scope scope;

@@ -532,19 +532,34 @@ public final class AuthBypassFeasibility {
      * Marked RULE_GENERATED; DYNAMIC may attempt them. Never upgrades verification alone.
      */
     public static List<AuthBypassCandidate> seedRuleGeneratedDrafts(ApiDtos.ScanDto scan) {
+        return seedRuleGeneratedDrafts(scan, null);
+    }
+
+    /**
+     * Server draft candidates from static JWT/AUTH_GAP/auth-entry signals.
+     * When {@code artifactPath} is present, prefers Blade DEFAULT_SECRET_HS256 + Blade-Auth
+     * over ALG_NONE for SpringBlade surfaces discovered via code/config scan.
+     */
+    public static List<AuthBypassCandidate> seedRuleGeneratedDrafts(
+            ApiDtos.ScanDto scan, java.nio.file.Path artifactPath) {
         if (scan == null) return List.of();
         AuthSurface surface = detectAuthSurface(scan);
         if (!surface.present()) return List.of();
         List<ApiDtos.EntryDto> targets = selectSeedEntries(scan);
         if (targets.isEmpty()) return List.of();
         SyntheticIdentityService identity = new SyntheticIdentityService();
+        SyntheticIdentityService.MaterialBundle materials = identity.harvest(artifactPath);
+        boolean bladeSurface = materials.bladeSurface() || materials.preferBladeAuthHeader()
+                || looksBladeScan(scan);
+        SyntheticIdentityService.SyntheticIdentity defaultHs256 =
+                identity.synthesizeTechnique(AuthBypassTechnique.DEFAULT_SECRET_HS256, materials);
         SyntheticIdentityService.SyntheticIdentity algNone =
-                identity.synthesizeTechnique(AuthBypassTechnique.ALG_NONE, null);
+                identity.synthesizeTechnique(AuthBypassTechnique.ALG_NONE, materials);
         SyntheticIdentityService.SyntheticIdentity emptyBearer =
-                identity.synthesizeTechnique(AuthBypassTechnique.EMPTY_BEARER, null);
+                identity.synthesizeTechnique(AuthBypassTechnique.EMPTY_BEARER, materials);
         List<AuthBypassCandidate> drafts = new ArrayList<>();
         boolean jwtSignal = surface.jwtSinkCount() > 0 || surface.jwtOrAuthGapFindingCount() > 0
-                || surface.authGapSinkCount() > 0;
+                || surface.authGapSinkCount() > 0 || bladeSurface;
         for (ApiDtos.EntryDto entry : targets) {
             if (drafts.size() >= MAX_SEEDED_POCS) break;
             String entryRef = "entry:" + entry.id();
@@ -557,7 +572,19 @@ public final class AuthBypassFeasibility {
                             + "auth-annotated surface; AI omitted structured bypassPoCs",
                     refs, 0.25, "", "", "", ""));
             if (drafts.size() >= MAX_SEEDED_POCS) break;
-            if (jwtSignal && emptyBearer.available()) {
+            if (jwtSignal && bladeSurface && defaultHs256.available()) {
+                String token = defaultHs256.authorizationHeader();
+                drafts.add(AuthBypassCandidate.of(
+                        entryRef,
+                        AuthBypassTechnique.DEFAULT_SECRET_HS256.name(),
+                        IdentityTrack.BYPASS_CANDIDATE,
+                        "RULE_GENERATED draft: Blade default HS256 JWT via code/config material; "
+                                + "dual-channel Authorization + Blade-Auth",
+                        refs, 0.55,
+                        "Bearer " + token,
+                        SyntheticIdentityService.bladeAuthHeaderValue(token),
+                        "", ""));
+            } else if (jwtSignal && emptyBearer.available()) {
                 drafts.add(AuthBypassCandidate.of(
                         entryRef,
                         AuthBypassTechnique.EMPTY_BEARER.name(),
@@ -566,7 +593,7 @@ public final class AuthBypassFeasibility {
                         refs, 0.28, emptyBearer.authorizationHeader(), "", "", ""));
             }
             if (drafts.size() >= MAX_SEEDED_POCS) break;
-            if (jwtSignal && algNone.available()) {
+            if (jwtSignal && !bladeSurface && algNone.available()) {
                 drafts.add(AuthBypassCandidate.of(
                         entryRef,
                         AuthBypassTechnique.ALG_NONE.name(),
@@ -575,25 +602,61 @@ public final class AuthBypassFeasibility {
                                 + "refine with AI headers when available",
                         refs, 0.35,
                         "Bearer " + algNone.authorizationHeader(), "", "", ""));
+            } else if (jwtSignal && bladeSurface && emptyBearer.available()) {
+                drafts.add(AuthBypassCandidate.of(
+                        entryRef,
+                        AuthBypassTechnique.EMPTY_BEARER.name(),
+                        IdentityTrack.BYPASS_CANDIDATE,
+                        "RULE_GENERATED draft: empty Bearer hypothesis for Blade JWT surface",
+                        refs, 0.28, emptyBearer.authorizationHeader(), "", "", ""));
             }
         }
         return List.copyOf(drafts).stream().limit(AuthBypassCandidate.MAX_CANDIDATES).toList();
     }
 
+    private static boolean looksBladeScan(ApiDtos.ScanDto scan) {
+        if (scan == null || scan.entries() == null) return false;
+        for (ApiDtos.EntryDto entry : scan.entries()) {
+            if (entry == null) continue;
+            String route = entry.route() == null ? "" : entry.route().toLowerCase(Locale.ROOT);
+            String cls = entry.declaringClass() == null ? "" : entry.declaringClass().toLowerCase(Locale.ROOT);
+            if (route.contains("/blade-") || cls.contains("springblade") || cls.contains("blade.")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static List<ApiDtos.EntryDto> selectSeedEntries(ApiDtos.ScanDto scan) {
+        List<ApiDtos.EntryDto> highValue = new ArrayList<>();
         List<ApiDtos.EntryDto> authAnnotated = new ArrayList<>();
         List<ApiDtos.EntryDto> fallback = new ArrayList<>();
         for (ApiDtos.EntryDto entry : scan.entries()) {
             if (entry == null || entry.id() == null || entry.id().isBlank()) continue;
-            if (!authAnnotations(entry).isEmpty()) {
+            String route = entry.route() == null ? "" : entry.route().toLowerCase(Locale.ROOT);
+            boolean bladeHighValue = route.contains("deploy-upload")
+                    || route.contains("/oauth/token")
+                    || route.contains("/blade-flow/manager")
+                    || route.contains("/blade-flow/model");
+            if (bladeHighValue) {
+                highValue.add(entry);
+            } else if (!authAnnotations(entry).isEmpty()) {
                 authAnnotated.add(entry);
             } else if (fallback.size() < MAX_SEEDED_ENTRIES) {
                 fallback.add(entry);
             }
-            if (authAnnotated.size() >= MAX_SEEDED_ENTRIES) break;
         }
-        if (!authAnnotated.isEmpty()) {
-            return authAnnotated.stream().limit(MAX_SEEDED_ENTRIES).toList();
+        List<ApiDtos.EntryDto> selected = new ArrayList<>();
+        for (ApiDtos.EntryDto entry : highValue) {
+            if (selected.size() >= MAX_SEEDED_ENTRIES) break;
+            selected.add(entry);
+        }
+        for (ApiDtos.EntryDto entry : authAnnotated) {
+            if (selected.size() >= MAX_SEEDED_ENTRIES) break;
+            if (!selected.contains(entry)) selected.add(entry);
+        }
+        if (!selected.isEmpty()) {
+            return List.copyOf(selected);
         }
         return fallback.stream().limit(MAX_SEEDED_ENTRIES).toList();
     }

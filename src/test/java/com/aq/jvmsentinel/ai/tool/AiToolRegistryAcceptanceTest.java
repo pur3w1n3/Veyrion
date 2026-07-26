@@ -63,10 +63,11 @@ public final class AiToolRegistryAcceptanceTest {
     }
 
     private static void roleAllowlistsAreFixed(AiToolRegistry registry) {
-        check(names(registry, AgentRole.PRE_ANALYSIS).equals(Set.of("facts_search", "evidence_get")),
+        check(names(registry, AgentRole.PRE_ANALYSIS)
+                        .equals(Set.of("facts_search", "evidence_get", "code_query")),
                 "pre-analysis allowlist");
         check(names(registry, AgentRole.AUTH_ANALYSIS)
-                        .equals(Set.of("facts_search", "evidence_get", "plan_propose")),
+                        .equals(Set.of("facts_search", "evidence_get", "plan_propose", "code_query")),
                 "auth-analysis allowlist");
         check(names(registry, AgentRole.PATH_EXPLORATION)
                         .equals(Set.of("facts_search", "evidence_get", "plan_propose")),
@@ -75,7 +76,7 @@ public final class AiToolRegistryAcceptanceTest {
                         .equals(Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe")),
                 "dynamic-verification allowlist");
         check(names(registry, AgentRole.VULNERABILITY_TRIAGE)
-                        .equals(Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe")),
+                        .equals(Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe", "code_query")),
                 "vulnerability-triage allowlist");
         check(names(registry, AgentRole.REPORT_GENERATION)
                         .equals(Set.of("facts_search", "evidence_get", "plan_propose")),

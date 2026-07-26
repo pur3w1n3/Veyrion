@@ -2214,6 +2214,12 @@ public final class ControlPlaneServer implements AutoCloseable {
                 AuthBypassCandidate.validateAuthMaterialOnly(authorizationHeader);
                 authToken = normalizeProbeToken(authorizationHeader);
             }
+            if (bladeToken.isEmpty()
+                    && technique.isPresent()
+                    && technique.get() == AuthBypassTechnique.DEFAULT_SECRET_HS256
+                    && !authToken.isBlank()) {
+                bladeToken = SyntheticIdentityService.bladeAuthHeaderValue(authToken);
+            }
             IdentityTrack track = technique
                     .map(AuthBypassTechnique::defaultTrack)
                     .orElse(IdentityTrack.BYPASS_CANDIDATE);
@@ -2231,7 +2237,18 @@ public final class ControlPlaneServer implements AutoCloseable {
                     synth.precondition(), false);
         }
         String token = normalizeProbeToken(synth.authorizationHeader());
-        return new AuthMaterialized(synth.track(), token, "", synth.provenance(), true);
+        String blade = "";
+        if (!token.isBlank() && (technique.get() == AuthBypassTechnique.DEFAULT_SECRET_HS256
+                || materials.preferBladeAuthHeader()
+                || materials.bladeSurface())) {
+            blade = SyntheticIdentityService.bladeAuthHeaderValue(token);
+        }
+        // ALG_NONE / EMPTY_BEARER: keep channels independent unless AI supplied Blade-Auth.
+        if (technique.get() == AuthBypassTechnique.ALG_NONE
+                || technique.get() == AuthBypassTechnique.EMPTY_BEARER) {
+            blade = "";
+        }
+        return new AuthMaterialized(synth.track(), token, blade, synth.provenance(), true);
     }
 
     private static List<ExternalArtifactTaskExecutor.ProbeTarget> candidateProbeTargets(
@@ -2449,9 +2466,30 @@ public final class ControlPlaneServer implements AutoCloseable {
             return;
         }
         String token = normalizeProbeToken(synth.authorizationHeader());
+        // SpringBlade Secure filter primarily consumes Blade-Auth; dual-write when harvest
+        // marks Blade surface so Authorization-only floods stop false-negative 401s.
+        String blade = "";
+        if (!token.isBlank() && materialsPreferBladeAuth(expansion, synth)) {
+            blade = com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService
+                    .bladeAuthHeaderValue(token);
+        }
         expanded.add(new ExternalArtifactTaskExecutor.ProbeTarget(
                 probe.method(), probe.route(), probe.query(),
-                synth.track().name(), token, ""));
+                synth.track().name(), token, blade));
+    }
+
+    private static boolean materialsPreferBladeAuth(
+            TrackExpansion expansion,
+            SyntheticIdentityService.SyntheticIdentity synth) {
+        if (synth == null || synth.authorizationHeader() == null || synth.authorizationHeader().isBlank()) {
+            return false;
+        }
+        String pre = synth.precondition() == null ? "" : synth.precondition().toLowerCase(Locale.ROOT);
+        if (pre.contains("blade") || pre.contains("bladex")) {
+            return true;
+        }
+        String route = expansion.probe() == null ? "" : expansion.probe().route();
+        return route != null && route.toLowerCase(Locale.ROOT).contains("/blade-");
     }
 
     /** Strip a leading Bearer scheme for probe Authorization / Blade-Auth tokens. */

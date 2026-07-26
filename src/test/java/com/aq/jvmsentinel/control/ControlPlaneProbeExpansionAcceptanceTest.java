@@ -55,6 +55,7 @@ public final class ControlPlaneProbeExpansionAcceptanceTest {
 
         missingAuthMaterializesUnauthenticated();
         authAndBladeChannelsMaterializeIndependently();
+        defaultSecretHs256DualWritesBladeAuth();
 
         System.out.println("ControlPlaneProbeExpansionAcceptanceTest: PASS");
     }
@@ -112,6 +113,17 @@ public final class ControlPlaneProbeExpansionAcceptanceTest {
                 ControlPlaneServer.materializeAiPocAuth("CUSTOM_POC", "tok-a", "tok-b", null);
         check("tok-a".equals(both.authToken()) && "tok-b".equals(both.bladeAuthToken()),
                 "both channels stay distinct");
+    }
+
+    /** Blade DEFAULT_SECRET_HS256 synthesizer dual-writes Authorization + Blade-Auth. */
+    private static void defaultSecretHs256DualWritesBladeAuth() {
+        ControlPlaneServer.AuthMaterialized mat =
+                ControlPlaneServer.materializeAiPocAuth("DEFAULT_SECRET_HS256", null, null, null);
+        check(mat.identityAvailable(), "DEFAULT_SECRET_HS256 identity available");
+        check(!mat.authToken().isBlank(), "DEFAULT_SECRET_HS256 sets Authorization token");
+        check(mat.bladeAuthToken() != null
+                        && mat.bladeAuthToken().toLowerCase().startsWith("bearer "),
+                "DEFAULT_SECRET_HS256 dual-writes Blade-Auth with bearer scheme");
     }
 
     private static Set<String> tracksFor(List<ExternalArtifactTaskExecutor.ProbeTarget> probes, String route) {
