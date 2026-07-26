@@ -1,12 +1,19 @@
 package com.aq.jvmsentinel.worker;
 
 import com.aq.jvmsentinel.control.ApiDtos;
+import com.aq.jvmsentinel.model.IdentityTrack;
+import com.aq.jvmsentinel.model.PathOutcomeClass;
+import com.aq.jvmsentinel.model.PathOutcomeClassifier;
+import com.aq.jvmsentinel.model.PathRun;
+import com.aq.jvmsentinel.model.SqlEvent;
+import com.aq.jvmsentinel.model.VerificationStatus;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -74,9 +81,12 @@ public final class TraceProjectionService {
         Map<String, ApiDtos.EvidenceDto> projectedEvidence = new LinkedHashMap<>();
         Map<String, List<ApiDtos.PathStepDto>> routeSteps = new LinkedHashMap<>();
         Map<String, List<String>> routeRefs = new LinkedHashMap<>();
+        List<SqlEvent> jdbcSql = new ArrayList<>();
+        List<ApiDtos.PathRunDto> pathRuns = new ArrayList<>();
         String scopeDigest = WorkerContracts.sha256((snapshot.scope().projectId() + "\n"
                 + snapshot.scope().artifactDigest() + "\n" + snapshot.scope().scanId() + "\n"
                 + snapshot.scope().taskId()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        int httpAttempt = 0;
         for (EventWithDigest item : events) {
             AgentJsonlTraceConverter.AgentEvent event = item.event();
             String evidenceId = "evidence-dynamic-" + scopeDigest + "-" + event.sequence();
@@ -102,6 +112,13 @@ public final class TraceProjectionService {
                         + observation.response() + " at " + symbol;
                 stepDetail = summary;
             }
+            if ("JDBC".equals(event.eventType())) {
+                SqlEvent sqlEvent = sqlEventFromDetail(event.detail());
+                jdbcSql.add(sqlEvent);
+                summary = "JDBC " + sqlEvent.readWrite() + " observed (capture="
+                        + sqlEvent.captureMode() + ")";
+                stepDetail = summary + ": " + truncate(sqlEvent.sqlText(), 160);
+            }
             String snapshotRef = "task:" + snapshot.scope().taskId()
                     + ";digest:" + item.chunkDigest() + ";sequence:" + event.sequence();
             ApiDtos.EvidenceDto evidenceDto = new ApiDtos.EvidenceDto(
@@ -120,6 +137,7 @@ public final class TraceProjectionService {
                 String routeKey = (httpMethod.isBlank() ? "GET" : httpMethod) + " " + route;
                 routeSteps.computeIfAbsent(routeKey, ignored -> new ArrayList<>()).add(step);
                 routeRefs.computeIfAbsent(routeKey, ignored -> new ArrayList<>()).add(evidenceId);
+                pathRuns.add(pathRunFromHttp(snapshot, event, evidenceId, httpAttempt++, jdbcSql));
             }
         }
         ApiDtos.PathDto path = new ApiDtos.PathDto(
@@ -146,8 +164,99 @@ public final class TraceProjectionService {
                     snapshot.spec().requiredCapability().name(),
                     snapshot.spec().requiredCapability().name() + "_COMPLETED"));
         }
-        return new Projection(snapshot.scope(), path, List.copyOf(paths), projectedEvidence,
-                snapshot.updatedAt().toString());
+        return new Projection(snapshot.scope(), path, List.copyOf(paths), List.copyOf(pathRuns),
+                projectedEvidence, snapshot.updatedAt().toString());
+    }
+
+    public List<ApiDtos.PathRunDto> pathRunsForScan(String projectId, String artifactDigest, String scanId) {
+        return projections.values().stream()
+                .filter(value -> value.scope().projectId().equals(projectId)
+                        && value.scope().artifactDigest().equals(artifactDigest)
+                        && value.scope().scanId().equals(scanId))
+                .sorted(Comparator.comparing(Projection::completedAt).thenComparing(x -> x.scope().taskId()))
+                .flatMap(value -> value.pathRuns().stream())
+                .toList();
+    }
+
+    private static ApiDtos.PathRunDto pathRunFromHttp(
+            TaskSnapshot snapshot, AgentJsonlTraceConverter.AgentEvent event,
+            String evidenceId, int attempt, List<SqlEvent> jdbcSql) {
+        Map<String, String> detail = event.detail();
+        String route = detail.getOrDefault("route", "/");
+        String method = detail.getOrDefault("httpMethod", "GET");
+        String statusText = detail.getOrDefault("status", "UNKNOWN");
+        int status = statusText.matches("[1-5][0-9]{2}") ? Integer.parseInt(statusText) : -1;
+        String error = detail.getOrDefault("error", "");
+        String outcomeText = detail.getOrDefault("outcomeClass", "");
+        PathOutcomeClass outcome;
+        try {
+            outcome = outcomeText.isBlank()
+                    ? PathOutcomeClassifier.classify(status, error, "")
+                    : PathOutcomeClass.valueOf(outcomeText);
+        } catch (IllegalArgumentException ignored) {
+            outcome = PathOutcomeClassifier.classify(status, error, "");
+        }
+        IdentityTrack track;
+        try {
+            track = IdentityTrack.valueOf(detail.getOrDefault("track", "UNAUTH"));
+        } catch (IllegalArgumentException ignored) {
+            track = IdentityTrack.UNAUTH;
+        }
+        String attemptId = "attempt-" + attempt;
+        String entryRef = "entry:" + method.toUpperCase(Locale.ROOT) + ":" + route;
+        List<SqlEvent> sqlCopy = List.copyOf(jdbcSql);
+        List<ApiDtos.SqlEventDto> sqlDtos = sqlCopy.stream()
+                .map(sql -> new ApiDtos.SqlEventDto(sql.sqlText(), sql.parameterSummary(),
+                        sql.readWrite(), sql.parameterized(), sql.maliciousFragmentPresent(),
+                        sql.captureMode()))
+                .toList();
+        PathRun provisional = new PathRun(
+                "pathrun-" + snapshot.scope().taskId() + "-" + attempt,
+                snapshot.scope().scanId(), entryRef, track, attemptId, null,
+                method.isBlank() ? "GET" : method.toUpperCase(Locale.ROOT),
+                "application/json",
+                method + " " + route + " track=" + track.name(),
+                outcome, status, status >= 200 && status < 500, null,
+                sqlCopy, outcome.name(), VerificationStatus.DYNAMIC_SUSPECTED.name(),
+                List.of(evidenceId), ApiDtos.MOCK,
+                track == IdentityTrack.UNAUTH ? "no credentials" : "synthetic identity");
+        String marker = detail.getOrDefault("sqlProbeMarker", SqlDiffProbe.META_MARKER);
+        PathRun gated = DynamicConfirmedGate.apply(provisional, marker);
+        return new ApiDtos.PathRunDto(
+                ApiDtos.SCHEMA_VERSION, gated.pathRunId(), gated.scanId(), gated.entrypointRef(),
+                gated.track().name(), gated.attemptId(), gated.experimentPlanId(),
+                gated.method(), gated.contentType(), gated.requestSummary(),
+                gated.outcomeClass().name(), gated.httpStatus(), gated.entryHit(),
+                gated.parameterBound(), sqlDtos, gated.stopReason(), gated.verificationStatus(),
+                gated.evidenceRefs(), gated.identityProvenance(), gated.identityPrecondition());
+    }
+
+    private static SqlEvent sqlEventFromDetail(Map<String, String> detail) {
+        String sql = detail.getOrDefault("sql", detail.getOrDefault("summary", ""));
+        String rw = detail.getOrDefault("readWrite", inferReadWrite(sql));
+        boolean parameterized = "true".equalsIgnoreCase(detail.getOrDefault("parameterized", "false"))
+                || sql.contains("?");
+        boolean malicious = sql.toLowerCase(Locale.ROOT).contains(SqlDiffProbe.META_MARKER.toLowerCase(Locale.ROOT))
+                || "true".equalsIgnoreCase(detail.getOrDefault("maliciousFragmentPresent", "false"));
+        return new SqlEvent(sql, detail.getOrDefault("parameterSummary", ""), rw, parameterized,
+                malicious, detail.getOrDefault("dependencyMode", ApiDtos.MOCK));
+    }
+
+    private static String inferReadWrite(String sql) {
+        String value = sql == null ? "" : sql.trim().toLowerCase(Locale.ROOT);
+        if (value.startsWith("select") || value.startsWith("show") || value.startsWith("explain")) {
+            return "READ";
+        }
+        if (value.startsWith("insert") || value.startsWith("update") || value.startsWith("delete")
+                || value.startsWith("replace")) {
+            return "WRITE";
+        }
+        return "UNKNOWN";
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null) return "";
+        return value.length() <= max ? value : value.substring(0, max);
     }
 
     public List<ApiDtos.PathDto> pathsForScan(String projectId, String artifactDigest, String scanId) {
@@ -317,11 +426,18 @@ public final class TraceProjectionService {
     private record HttpObservation(String method, String route, String requestTarget, String response) { }
 
     public record Projection(TaskScope scope, ApiDtos.PathDto path, List<ApiDtos.PathDto> paths,
+                             List<ApiDtos.PathRunDto> pathRuns,
                              Map<String, ApiDtos.EvidenceDto> evidence, String completedAt) {
+        public Projection(TaskScope scope, ApiDtos.PathDto path, List<ApiDtos.PathDto> paths,
+                          Map<String, ApiDtos.EvidenceDto> evidence, String completedAt) {
+            this(scope, path, paths, List.of(), evidence, completedAt);
+        }
+
         public Projection {
             Objects.requireNonNull(scope, "scope");
             Objects.requireNonNull(path, "path");
             paths = List.copyOf(paths == null || paths.isEmpty() ? List.of(path) : paths);
+            pathRuns = List.copyOf(pathRuns == null ? List.of() : pathRuns);
             evidence = Map.copyOf(evidence);
             Objects.requireNonNull(completedAt, "completedAt");
         }

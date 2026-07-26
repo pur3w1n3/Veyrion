@@ -114,7 +114,7 @@ public final class SecurityConfigurationAcceptanceTest {
                     "provider response field cannot contain credential material");
         }
         check(EnumSet.allOf(AgentRole.class).equals(EnumSet.of(
-                AgentRole.PRE_ANALYSIS, AgentRole.PATH_EXPLORATION,
+                AgentRole.PRE_ANALYSIS, AgentRole.AUTH_ANALYSIS, AgentRole.PATH_EXPLORATION,
                 AgentRole.DYNAMIC_VERIFICATION, AgentRole.VULNERABILITY_TRIAGE,
                 AgentRole.REPORT_GENERATION)),
                 "agent roles are the fixed five-role set");

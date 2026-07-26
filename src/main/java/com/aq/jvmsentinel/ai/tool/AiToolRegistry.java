@@ -5,7 +5,10 @@ import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolCall;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolOutput;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolResult;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolStatus;
+import com.aq.jvmsentinel.model.ExperimentPlan;
+import com.aq.jvmsentinel.model.IdentityTrack;
 import com.aq.jvmsentinel.provider.AgentRole;
+import com.aq.jvmsentinel.worker.ExperimentPlanValidator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -184,9 +187,14 @@ public final class AiToolRegistry {
                 "entrypointRef", Field.string(1024),
                 "objective", Field.string(4096),
                 "candidateInputs", Field.stringArray(16, 1024),
-                "maxCandidates", Field.integer(1, 16)), Set.of("entrypointRef", "objective"));
+                "maxCandidates", Field.integer(1, 16),
+                "track", Field.string(32),
+                "method", Field.string(16),
+                "contentType", Field.string(128),
+                "maxAttempts", Field.integer(1, 8)), Set.of("entrypointRef", "objective"));
         ToolDefinition definition = new ToolDefinition("plan_propose",
-                "Create a non-executing, evidence-linked candidate plan; it grants no capabilities.",
+                "Create a non-executing, evidence-linked candidate plan; it grants no capabilities. "
+                        + "Optional experiment-plan fields are server-gated.",
                 schema.jsonSchema(), OverflowPolicy.DENY);
         return new RegisteredTool(definition, schema, (call, context) -> {
             String reference = call.arguments().get("entrypointRef").asText();
@@ -208,6 +216,39 @@ public final class AiToolRegistry {
             plan.put("objective", call.arguments().get("objective").asText());
             plan.put("sourceEvidenceRef", reference);
             plan.set("candidateInputs", candidates);
+            // Server-gate optional PathRun experiment fields only when entry:* is proposed.
+            if (reference.startsWith("entry:")
+                    || call.arguments().has("track")
+                    || call.arguments().has("method")
+                    || call.arguments().has("contentType")
+                    || call.arguments().has("maxAttempts")) {
+                String trackName = call.arguments().has("track")
+                        ? call.arguments().get("track").asText("UNAUTH") : "UNAUTH";
+                IdentityTrack track;
+                try {
+                    track = IdentityTrack.valueOf(trackName);
+                } catch (IllegalArgumentException invalid) {
+                    throw new IllegalArgumentException("track is invalid");
+                }
+                String method = call.arguments().has("method")
+                        ? call.arguments().get("method").asText("GET") : "GET";
+                String contentType = call.arguments().has("contentType")
+                        ? call.arguments().get("contentType").asText("application/json")
+                        : "application/json";
+                int maxAttempts = call.arguments().has("maxAttempts")
+                        ? call.arguments().get("maxAttempts").asInt(2) : 2;
+                String entryRef = reference.startsWith("entry:") ? reference : "entry:synthetic";
+                ExperimentPlan experiment = new ExperimentPlan(
+                        "plan:" + context.jobId() + ":" + call.callId(),
+                        entryRef, track, method, contentType, List.of(),
+                        track != IdentityTrack.UNAUTH, "2xx", "", maxAttempts);
+                ExperimentPlanValidator.validate(experiment, 8);
+                plan.put("track", track.name());
+                plan.put("method", experiment.method());
+                plan.put("contentType", experiment.contentType());
+                plan.put("maxAttempts", experiment.maxAttempts());
+                plan.put("serverGated", true);
+            }
             plan.putArray("allowedActions").add("REVIEW_FACTS").add("SELECT_CANDIDATE_INPUTS");
             plan.put("executionRequested", false);
             return List.of(new ToolOutput(OutputKind.INFERENCE,

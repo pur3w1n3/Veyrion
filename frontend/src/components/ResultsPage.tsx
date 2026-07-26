@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { api, type AiJobDto, type DashboardSnapshot, type FindingReplayDto, type OutputLanguage } from '../api'
 import { dependencyModeLabel, jobStatusLabel } from '../labels'
 import { errorMessage, Notice, PageHeader, StatusPill } from './Common'
+import { PathRunPanel } from './PathRunPanel'
 
 export function ResultsPage({ projectId, snapshot, language }: { projectId: string; snapshot: DashboardSnapshot | null; language: OutputLanguage }) {
   const english = language === 'EN'
@@ -14,7 +15,8 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
   const [reportError, setReportError] = useState<string>()
   const [reportLoading, setReportLoading] = useState(false)
   const [findingQuery, setFindingQuery] = useState('')
-  const [findingStatus, setFindingStatus] = useState<'ALL' | 'STATIC_INFERRED' | 'DYNAMIC_SUSPECTED' | 'VERIFIED' | 'UNREACHED'>('ALL')
+  const [findingStatus, setFindingStatus] = useState<'ALL' | 'STATIC_INFERRED' | 'DYNAMIC_SUSPECTED' | 'DYNAMIC_CONFIRMED' | 'VERIFIED' | 'UNREACHED'>('ALL')
+  const pathRuns = snapshot?.pathRuns ?? []
   const [selectedFindingId, setSelectedFindingId] = useState<string>()
   const [selectedStepIndex, setSelectedStepIndex] = useState(0)
   const [replayLoading, setReplayLoading] = useState(false)
@@ -120,11 +122,12 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       {english ? 'Every conclusion retains its evidence status. Static signals without runtime evidence must not be described as exploitable vulnerabilities.' : '每项结论保留独立证据状态；无动态证据时不得将静态命中描述为可利用漏洞。'}
     </PageHeader>
     <div className="metrics-grid">
-      <article className="metric"><span>{english ? 'Entries' : '入口'}</span><strong>{entries.length}</strong><small>{entries.filter((item) => item.status === 'UNREACHED').length} {english ? 'uncovered' : '未覆盖'}</small></article>
-      <article className="metric"><span>{english ? 'Static inference' : '静态推断'}</span><strong>{findings.filter((item) => item.status === 'STATIC_INFERRED').length}</strong><small>{english ? 'Runtime evidence required' : '需运行时证据'}</small></article>
-      <article className="metric"><span>{english ? 'Dynamic suspected' : '动态疑似'}</span><strong>{findings.filter((item) => item.status === 'DYNAMIC_SUSPECTED').length}</strong><small>{english ? 'Replayable validation required' : '需可重放验证'}</small></article>
-      <article className="metric"><span>{english ? 'Verified' : '已验证'}</span><strong>{findings.filter((item) => item.status === 'VERIFIED').length}</strong><small>{english ? 'Highest evidence boundary' : '证据边界最高等级'}</small></article>
+      <article className="metric"><span>{english ? 'PathRuns' : 'PathRun'}</span><strong>{pathRuns.length}</strong><small>{english ? 'Primary session view' : '路径会话主视图'}</small></article>
+      <article className="metric"><span>{english ? 'Dynamic confirmed' : '动态确认'}</span><strong>{pathRuns.filter((item) => item.verificationStatus === 'DYNAMIC_CONFIRMED').length}</strong><small>{english ? 'SQL H3 (MOCK)' : 'SQL H3（MOCK）'}</small></article>
+      <article className="metric"><span>{english ? 'Dynamic suspected' : '动态疑似'}</span><strong>{pathRuns.filter((item) => item.verificationStatus === 'DYNAMIC_SUSPECTED').length + findings.filter((item) => item.status === 'DYNAMIC_SUSPECTED').length}</strong><small>{english ? 'Needs closed loop' : '需闭环'}</small></article>
+      <article className="metric"><span>{english ? 'Secondary findings' : '次级发现'}</span><strong>{findings.length}</strong><small>{english ? 'AUTH_GAP etc.' : '含 AUTH_GAP 等'}</small></article>
     </div>
+    <PathRunPanel pathRuns={pathRuns} english={english} />
     <article className="panel section-gap">
       <div className="panel-head"><div><p className="eyebrow">{english ? 'FINAL REPORT' : '最终报告'}</p><h2>{english ? 'Final report' : '最终报告'}</h2></div><div className="button-row"><span className="inference-badge">{english ? 'MODEL INFERENCE' : '模型推断'}</span>{reportSummary && <><button type="button" className="secondary-button" onClick={downloadReport}>{english ? 'Download .md' : '下载 .md'}</button><button type="button" className="secondary-button" onClick={downloadHtml}>{english ? 'Export .html' : '导出 .html'}</button></>}{snapshot && <button type="button" className="secondary-button" onClick={downloadJson}>{english ? 'Export .json' : '导出 .json'}</button>}</div></div>
       {reportError && <Notice kind="error">{reportError}</Notice>}
@@ -140,8 +143,8 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
     </article>
     <div className="result-grid">
       <article className="panel">
-        <div className="panel-head"><div><p className="eyebrow">{english ? 'FINDINGS' : '发现'}</p><h2>{english ? 'Findings' : '发现'}</h2></div><span>{findings.length}</span></div>
-        <div className="finding-toolbar"><label className="field"><span>{english ? 'Filter findings' : '筛选发现'}</span><input value={findingQuery} onChange={(event) => setFindingQuery(event.target.value)} placeholder={english ? 'Title, entry, sink...' : '标题、入口或 sink…'} /></label><label className="field"><span>{english ? 'Evidence status' : '证据状态'}</span><select value={findingStatus} onChange={(event) => setFindingStatus(event.target.value as typeof findingStatus)}><option value="ALL">{english ? 'All statuses' : '全部状态'}</option><option value="STATIC_INFERRED">STATIC_INFERRED</option><option value="DYNAMIC_SUSPECTED">DYNAMIC_SUSPECTED</option><option value="VERIFIED">VERIFIED</option><option value="UNREACHED">UNREACHED</option></select></label></div>
+        <div className="panel-head"><div><p className="eyebrow">{english ? 'SECONDARY FINDINGS' : '次级发现'}</p><h2>{english ? 'Findings (secondary)' : '发现（次级）'}</h2></div><span>{findings.length}</span></div>
+        <div className="finding-toolbar"><label className="field"><span>{english ? 'Filter findings' : '筛选发现'}</span><input value={findingQuery} onChange={(event) => setFindingQuery(event.target.value)} placeholder={english ? 'Title, entry, sink...' : '标题、入口或 sink…'} /></label><label className="field"><span>{english ? 'Evidence status' : '证据状态'}</span><select value={findingStatus} onChange={(event) => setFindingStatus(event.target.value as typeof findingStatus)}><option value="ALL">{english ? 'All statuses' : '全部状态'}</option><option value="STATIC_INFERRED">STATIC_INFERRED</option><option value="DYNAMIC_SUSPECTED">DYNAMIC_SUSPECTED</option><option value="DYNAMIC_CONFIRMED">DYNAMIC_CONFIRMED</option><option value="VERIFIED">VERIFIED</option><option value="UNREACHED">UNREACHED</option></select></label></div>
         <div className="card-list">{filteredFindings.map((finding) => <button type="button" className={`finding-card finding-card-button ${finding.id === selectedFinding?.id ? 'selected' : ''}`} key={finding.id} onClick={() => { setSelectedFindingId(finding.id); setSelectedStepIndex(0) }}><div className={`severity severity-${finding.severity}`}>{finding.severity}</div><div><strong>{finding.title}</strong><small>{finding.entry} → {finding.sink}</small><small>{finding.evidence} {english ? 'evidence items' : '条证据'} · {finding.dependency === 'none' && !english ? '无外部依赖记录' : finding.dependency}</small></div><StatusPill status={finding.status} /></button>)}{filteredFindings.length === 0 && <p className="empty-state">{english ? 'No findings match the current filter.' : '没有符合当前筛选条件的发现。'}</p>}</div>
       </article>
       <article className="panel">

@@ -76,7 +76,7 @@ AI 与 checklist 只作候选目录，不能改工具权限或单独升 `VERIFIE
 | 语义层 | 敏感 sink 是否在屏障之后 | 路径/轨迹顺序 |
 
 每层取值：`present | absent | unknown | contradicted`，并挂证据引用。  
-`AUTH_GAP` 仅表示「声明层 absent 且管道/代码仍 unknown」一类信号，状态最高 `STATIC_INFERRED`，不得无重放升 `VERIFIED`。
+`AUTH_GAP` 仅表示「声明层 absent 且管道/代码仍 unknown」一类信号，状态最高 `STATIC_INFERRED`，不得无重放升 `VERIFIED` 或 `DYNAMIC_CONFIRMED`。鉴权覆盖与**平台合成身份**、多轨 PathRun 实验见 [PATH_EXPERIMENT_MODEL.md](PATH_EXPERIMENT_MODEL.md)；AuthCoverage AnalysisPack 为合成材料与轨选择提供 FACT，AI `AUTH_ANALYSIS` 只解释与编排，不改写 FACT。
 
 能力诚实分档：
 
@@ -90,7 +90,7 @@ AI 与 checklist 只作候选目录，不能改工具权限或单独升 `VERIFIE
 
 - 依赖替身插件化：`JdbcMock`、`RedisRespMock`、`MysqlClassicMock` 等按需启用；主机侧替身引擎不偷偷放开 Docker 外连。当前实现是有界协议子集，不等同于完整 Redis/MySQL 兼容性。
 - 探针计划绑定不可变 scan；超预算入口记 `UNREACHED`，不静默丢弃。
-- 轨迹与结论：`MOCK` / `DYNAMIC_SUSPECTED` / `INFERENCE`；`VERIFIED` 仅在可重放门禁之后。
+- 轨迹与结论：`MOCK` / `DYNAMIC_SUSPECTED` / `DYNAMIC_CONFIRMED` / `INFERENCE`；`VERIFIED` 仅在强化沙箱可重放门禁之后；SQL 恶意片段无过滤入库由服务端升 `DYNAMIC_CONFIRMED`。
 
 ## 6. JAR 先行落地顺序
 

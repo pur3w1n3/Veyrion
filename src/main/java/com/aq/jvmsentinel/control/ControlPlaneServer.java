@@ -3,6 +3,9 @@ package com.aq.jvmsentinel.control;
 import com.aq.jvmsentinel.analysis.PreAnalysisResult;
 import com.aq.jvmsentinel.analysis.PreAnalysisInput;
 import com.aq.jvmsentinel.analysis.ArtifactMetadataReader;
+import com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService;
+import com.aq.jvmsentinel.analysis.pack.AnalysisPackRegistry;
+import com.aq.jvmsentinel.model.IdentityTrack;
 import com.aq.jvmsentinel.ai.AiJobOrchestrator;
 import com.aq.jvmsentinel.ai.AuditPipelineCoordinator;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource;
@@ -272,6 +275,13 @@ public final class ControlPlaneServer implements AutoCloseable {
             }
 
             @Override
+            public int countRoleJobs(String projectId, String scanId, AgentRole role) {
+                return (int) store.aiJobs(projectId).stream()
+                        .filter(AuditPipelineCoordinator.busyOrDoneFor(scanId, role))
+                        .count();
+            }
+
+            @Override
             public boolean hasBusyDynamicTask(String scanId) {
                 return hasRunningDynamicTask(scanId);
             }
@@ -337,6 +347,9 @@ public final class ControlPlaneServer implements AutoCloseable {
             List<SQLiteControlPlanePersistence.AiJobData> jobs = store.aiJobs(run.projectId()).stream()
                     .filter(job -> run.scanId().equals(job.scanId())).toList();
             boolean pre = completed(jobs, AgentRole.PRE_ANALYSIS);
+            long authCount = jobs.stream()
+                    .filter(job -> job.role() == AgentRole.AUTH_ANALYSIS && "COMPLETED".equals(job.status()))
+                    .count();
             boolean dynamicVerification = completed(jobs, AgentRole.DYNAMIC_VERIFICATION);
             boolean path = completed(jobs, AgentRole.PATH_EXPLORATION);
             boolean triage = completed(jobs, AgentRole.VULNERABILITY_TRIAGE);
@@ -349,8 +362,13 @@ public final class ControlPlaneServer implements AutoCloseable {
             else if (triage) stage = AuditPipelineCoordinator.PipelineStage.REPORT_GENERATION;
             else if (path) stage = AuditPipelineCoordinator.PipelineStage.VULNERABILITY_TRIAGE;
             else if (dynamicVerification) stage = AuditPipelineCoordinator.PipelineStage.PATH_EXPLORATION;
-            else if (dynamicCompleted) stage = AuditPipelineCoordinator.PipelineStage.DYNAMIC_VERIFICATION;
-            else if (pre) stage = AuditPipelineCoordinator.PipelineStage.DYNAMIC_OBSERVATION;
+            else if (dynamicCompleted && authCount >= 2) {
+                stage = AuditPipelineCoordinator.PipelineStage.DYNAMIC_VERIFICATION;
+            } else if (dynamicCompleted) {
+                stage = AuditPipelineCoordinator.PipelineStage.AUTH_BYPASS_CONFIRM;
+            } else if (authCount >= 1) {
+                stage = AuditPipelineCoordinator.PipelineStage.DYNAMIC_OBSERVATION;
+            } else if (pre) stage = AuditPipelineCoordinator.PipelineStage.AUTH_ANALYSIS;
             else stage = AuditPipelineCoordinator.PipelineStage.PRE_ANALYSIS;
             AuditPipelineCoordinator.Arm arm = new AuditPipelineCoordinator.Arm(
                     run.scanId(), run.projectId(), run.actorId(), language);
@@ -1233,8 +1251,11 @@ public final class ControlPlaneServer implements AutoCloseable {
         result.put("stage", stage);
         result.put("pipelineArmed", true);
         switch (stage) {
-            case "PRE_ANALYSIS", "PATH_EXPLORATION", "DYNAMIC_VERIFICATION",
-                    "VULNERABILITY_TRIAGE", "REPORT_GENERATION" -> {
+            case "PRE_ANALYSIS", "AUTH_ANALYSIS", "AUTH_BYPASS_CONFIRM", "PATH_EXPLORATION",
+                    "DYNAMIC_VERIFICATION", "VULNERABILITY_TRIAGE", "REPORT_GENERATION" -> {
+                if ("AUTH_BYPASS_CONFIRM".equals(stage)) {
+                    stage = "AUTH_ANALYSIS";
+                }
                 if (!requiredBoolean(body, "aiAuthorized")) {
                     throw new ApiException(403, "AI_AUTHORIZATION_REQUIRED",
                             "explicit AI authorization is required to retry a model stage");
@@ -1854,6 +1875,7 @@ public final class ControlPlaneServer implements AutoCloseable {
             selectedIds.clear();
             selectedIds.add(primary.id());
         }
+        effectiveProbes = expandProbesByIdentityTracks(scan, httpEntries, effectiveProbes, maxProbes);
         List<ApiDtos.PathDto> unreached = new ArrayList<>();
         for (ApiDtos.EntryDto entry : httpEntries) {
             if (selectedIds.contains(entry.id())) continue;
@@ -1920,7 +1942,59 @@ public final class ControlPlaneServer implements AutoCloseable {
         String method = entry.method() == null ? "GET" : entry.method().toUpperCase(Locale.ROOT);
         if ("UNKNOWN".equals(method)) method = "GET";
         return new ExternalArtifactTaskExecutor.ProbeTarget(
-                method, materializeRoute(entry.route()), syntheticQuery(entry));
+                method, materializeRoute(entry.route()), syntheticQuery(entry), "UNAUTH", "");
+    }
+
+    /**
+     * T2+T3: high-value entries probe all synthesizable tracks; others UNAUTH + ADMIN when available.
+     * Total probes remain capped by {@code maxProbes}.
+     */
+    private List<ExternalArtifactTaskExecutor.ProbeTarget> expandProbesByIdentityTracks(
+            ControlPlaneStore.ScanRecord scan,
+            List<ApiDtos.EntryDto> httpEntries,
+            List<ExternalArtifactTaskExecutor.ProbeTarget> base,
+            int maxProbes) {
+        if (base == null || base.isEmpty()) return List.of();
+        Path artifactPath = null;
+        try {
+            ControlPlaneStore.ProjectRecord project = store.requireProject(scan.dto().projectId());
+            ArtifactDescriptor artifact = store.artifact(project, scan.dto().artifactDigest());
+            if (artifact != null) artifactPath = artifact.normalizedPath();
+        } catch (RuntimeException ignored) {
+            artifactPath = null;
+        }
+        SyntheticIdentityService identity = new SyntheticIdentityService();
+        List<String> routes = httpEntries.stream().map(ApiDtos.EntryDto::route).toList();
+        boolean packMatch = !AnalysisPackRegistry.matching(artifactPath, routes).isEmpty();
+        Map<String, ApiDtos.EntryDto> byRoute = new LinkedHashMap<>();
+        for (ApiDtos.EntryDto entry : httpEntries) {
+            byRoute.putIfAbsent(materializeRoute(entry.route()), entry);
+        }
+        List<ExternalArtifactTaskExecutor.ProbeTarget> expanded = new ArrayList<>();
+        for (ExternalArtifactTaskExecutor.ProbeTarget probe : base) {
+            if (expanded.size() >= maxProbes) break;
+            ApiDtos.EntryDto entry = byRoute.get(probe.route());
+            boolean highValue = packMatch || isHighValueRoute(probe.route());
+            Map<IdentityTrack, SyntheticIdentityService.SyntheticIdentity> tracks =
+                    identity.defaultTracks(artifactPath, highValue);
+            for (Map.Entry<IdentityTrack, SyntheticIdentityService.SyntheticIdentity> item : tracks.entrySet()) {
+                if (expanded.size() >= maxProbes) break;
+                SyntheticIdentityService.SyntheticIdentity synth = item.getValue();
+                if (!synth.available() && item.getKey() != IdentityTrack.UNAUTH) continue;
+                expanded.add(new ExternalArtifactTaskExecutor.ProbeTarget(
+                        probe.method(), probe.route(), probe.query(),
+                        item.getKey().name(),
+                        synth.available() ? synth.authorizationHeader() : ""));
+            }
+        }
+        return List.copyOf(expanded.isEmpty() ? base : expanded);
+    }
+
+    private static boolean isHighValueRoute(String route) {
+        String value = route == null ? "" : route.toLowerCase(Locale.ROOT);
+        return value.contains("admin") || value.contains("upload") || value.contains("deploy")
+                || value.contains("token") || value.contains("exec") || value.contains("flowable")
+                || value.contains("bpmn") || value.contains("oauth") || value.contains("blade-");
     }
 
     /** Replace `{pathVar}` templates with a bounded synthetic token for loopback probes. */
@@ -2174,12 +2248,15 @@ public final class ControlPlaneServer implements AutoCloseable {
             empty.put("entries", List.of());
             empty.put("findings", List.of());
             empty.put("paths", List.of());
+            empty.put("pathRuns", List.of());
             empty.put("path", List.of());
             sendJson(exchange, 200, empty);
             return;
         }
         ApiDtos.ScanDto dto = scan.dto();
         List<ApiDtos.PathDto> dynamicPaths = dynamicPaths(scan);
+        List<ApiDtos.PathRunDto> pathRuns = traceProjectionService.pathRunsForScan(
+                dto.projectId(), dto.artifactDigest(), dto.scanId());
         List<ApiDtos.PathStepDto> flattened = !dynamicPaths.isEmpty()
                 ? dynamicPaths.get(dynamicPaths.size() - 1).steps()
                 : dto.paths().isEmpty() ? List.of() : dto.paths().get(0).steps();
@@ -2188,8 +2265,10 @@ public final class ControlPlaneServer implements AutoCloseable {
         body.put("projectId", dto.projectId());
         body.put("artifactDigest", dto.artifactDigest());
         body.put("scanId", dto.scanId());
-        body.put("verificationStatus", dynamicPaths.isEmpty()
-                ? dto.verificationStatus() : "DYNAMIC_SUSPECTED");
+        boolean confirmed = pathRuns.stream()
+                .anyMatch(run -> ApiDtos.DYNAMIC_CONFIRMED.equals(run.verificationStatus()));
+        body.put("verificationStatus", confirmed ? ApiDtos.DYNAMIC_CONFIRMED
+                : dynamicPaths.isEmpty() ? dto.verificationStatus() : "DYNAMIC_SUSPECTED");
         body.put("dependencyMode", dto.dependencyMode());
         List<String> dashboardEvidence = new ArrayList<>(dto.evidenceRefs());
         for (ApiDtos.PathDto pathDto : dynamicPaths) dashboardEvidence.addAll(pathDto.evidenceRefs());
@@ -2201,11 +2280,14 @@ public final class ControlPlaneServer implements AutoCloseable {
         List<Object> paths = new ArrayList<>();
         for (ApiDtos.PathDto path : dto.paths()) paths.add(pathMap(path));
         for (ApiDtos.PathDto dynamic : dynamicPaths) paths.add(pathMap(dynamic));
+        List<Object> pathRunMaps = new ArrayList<>();
+        for (ApiDtos.PathRunDto run : pathRuns) pathRunMaps.add(pathRunMap(run));
         List<Object> path = new ArrayList<>();
         for (ApiDtos.PathStepDto step : flattened) path.add(pathStepMap(step));
         body.put("entries", entries);
         body.put("findings", findings);
         body.put("paths", paths);
+        body.put("pathRuns", pathRunMaps);
         body.put("path", path);
         sendJson(exchange, 200, body);
     }
@@ -2717,6 +2799,42 @@ public final class ControlPlaneServer implements AutoCloseable {
         }
         List<Object> steps = new ArrayList<>(); for (ApiDtos.PathStepDto step : dto.steps()) steps.add(pathStepMap(step));
         result.put("steps", steps); result.put("path", steps);
+        return result;
+    }
+
+    private static Map<String, Object> pathRunMap(ApiDtos.PathRunDto dto) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", dto.schemaVersion());
+        result.put("pathRunId", dto.pathRunId());
+        result.put("scanId", dto.scanId());
+        result.put("entrypointRef", dto.entrypointRef());
+        result.put("track", dto.track());
+        result.put("attemptId", dto.attemptId());
+        result.put("experimentPlanId", dto.experimentPlanId());
+        result.put("method", dto.method());
+        result.put("contentType", dto.contentType());
+        result.put("requestSummary", dto.requestSummary());
+        result.put("outcomeClass", dto.outcomeClass());
+        result.put("httpStatus", dto.httpStatus());
+        result.put("entryHit", dto.entryHit());
+        result.put("parameterBound", dto.parameterBound());
+        List<Object> sqlEvents = new ArrayList<>();
+        for (ApiDtos.SqlEventDto sql : dto.sqlEvents()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("sqlText", sql.sqlText());
+            row.put("parameterSummary", sql.parameterSummary());
+            row.put("readWrite", sql.readWrite());
+            row.put("parameterized", sql.parameterized());
+            row.put("maliciousFragmentPresent", sql.maliciousFragmentPresent());
+            row.put("captureMode", sql.captureMode());
+            sqlEvents.add(row);
+        }
+        result.put("sqlEvents", sqlEvents);
+        result.put("stopReason", dto.stopReason());
+        result.put("verificationStatus", dto.verificationStatus());
+        result.put("evidenceRefs", dto.evidenceRefs());
+        result.put("identityProvenance", dto.identityProvenance());
+        result.put("identityPrecondition", dto.identityPrecondition());
         return result;
     }
 

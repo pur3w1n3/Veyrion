@@ -19,7 +19,7 @@ const nav: Array<{ id: View; label: string; description: string; icon: string }>
   { id: 'ai-audit', label: '审计过程', description: '提示词、思考与输出对话', icon: '≋' },
   { id: 'results', label: '审计结果', description: '证据、发现与报告', icon: '◇' },
   { id: 'history', label: '审计历史', description: '本工作区全部扫描记录', icon: '☰' },
-  { id: 'providers', label: '模型服务', description: '接口配置与五个角色', icon: '◈' },
+  { id: 'providers', label: '模型服务', description: '接口配置与六个角色', icon: '◈' },
   { id: 'settings', label: '全局设置', description: '外观与安全默认值', icon: '⚙' }
 ]
 

@@ -405,33 +405,41 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         补充项必须标记为 MODEL_SUPPLEMENT、给出理由和证据引用；不得改写或伪造静态事实，
                         不得把补充入口直接标成运行时可达。
                         """;
+                case AUTH_ANALYSIS -> """
+                        基于静态事实与 PRE_ANALYSIS 假设，建立鉴权模型：哪些入口需要鉴权、可合成身份材料
+                        （JWT/默认密钥等，provenance=MOCK 或 RULE_GENERATED）、高价值入口与建议身份轨
+                        （UNAUTH/USER/ADMIN/BYPASS_CANDIDATE），并起草实验计划（method、contentType、
+                        必填参数、成功判据、预算内尝试次数）。只能用 facts_search/evidence_get/plan_propose；
+                        不得改网络/挂载，不得在零动态证据时宣称“已绕过”。若本任务是洪水后的绕过确认，
+                        仅消费已保存的 401/过闸 PathRun 证据。
+                        """;
                 case PATH_EXPLORATION -> """
-                        只能消费前置建模、动态验证和沙箱反馈中已保存的入口/参数/响应结果，重新建立
-                        多条互相区分的路径模型。每条链路必须写明入口、实际请求与响应、数据/状态转换、
+                        只能消费前置建模、鉴权分析、动态验证和沙箱 PathRun（HTTP/Agent/SQL）结果，重新建立
+                        多条互相区分的路径模型。每条链路必须写明入口、身份轨、实际请求与响应、数据/状态转换、
                         可能触发点、证据引用、反证、置信度和停止条件；不得把未执行的候选写成事实。
                         """;
                 case DYNAMIC_VERIFICATION -> """
-                        以 PRE_ANALYSIS 的入口补充和沙箱实际反馈的请求/响应参数为基础，提出同一授权沙箱
+                        以 AUTH_ANALYSIS 实验计划与沙箱 PathRun 为基础，提出同一授权沙箱
                         loopback 范围内的本地化发包探索；实际发包必须由服务端受控执行器完成，并保存每次请求、
                         响应、入口命中和触发点结果。需要发包时只能调用 sandbox_probe，且只能引用已存在的 entry:*。
                         对每个入口区分容器完成、类加载、HTTP 命中、参数绑定、触发点执行和副作用；不得读取
                         或调用外部网络，不得把模型输出变成命令、挂载、权限或网络策略。输出可重放的动态
-                        结果及缺口，任务完成本身不等于漏洞已验证。
+                        结果及缺口；不得单独把结论升为 DYNAMIC_CONFIRMED 或 VERIFIED。
                         """;
                 case VULNERABILITY_TRIAGE -> """
-                        基于 PRE_ANALYSIS、DYNAMIC_VERIFICATION 和 PATH_EXPLORATION 三个角色的结果，
+                        基于 PRE_ANALYSIS、AUTH_ANALYSIS、DYNAMIC_VERIFICATION、PATH_EXPLORATION 与 PathRun，
                         再查询 SCAN 与 DYNAMIC_EVIDENCE。漏洞候选必须经过本地授权沙箱的动态调试闭环：
                         若没有入口命中、参数绑定、触发点执行和可重放结果，只能标记为推测/证据不足，
-                        不能标记为存在或 VERIFIED。列出前置条件、证据、反证/缺口、影响和下一步验证。
+                        不能标记为存在或 VERIFIED。DYNAMIC_CONFIRMED 仅服务端 SQL 门禁可写。列出前置条件、证据、反证/缺口、影响和下一步验证。
                         """;
                 case REPORT_GENERATION -> """
-                        先查询 SCAN、ENTRY、SINK、EVIDENCE 与 DYNAMIC_EVIDENCE。输出完整中文 Markdown
-                        报告，至少包含：# 审计报告；## 执行摘要与结论边界；## 入口—触发点矩阵；
-                        ## 多条推测链路（逐条写入口→数据/状态转换→触发点→影响，并列证据、前置条件、
+                        先查询 SCAN、ENTRY、SINK、EVIDENCE、PathRun 与 DYNAMIC_EVIDENCE。输出完整中文 Markdown
+                        报告，至少包含：# 审计报告；## 执行摘要与结论边界；## 入口—身份轨—PathRun 矩阵；
+                        ## 多条推测链路（逐条写入口→轨→数据/状态转换→触发点→影响，并列证据、前置条件、
                         置信度与未验证环节）；## 组合漏洞可能性；## 动态证据与覆盖；## 发现与风险分级；
                         ## 未覆盖区域、限制与下一步验证。证据不足时明确写“证据不足”，不得为了满足结构
-                        编造 sink、链路或漏洞。严格保留 STATIC_INFERRED、DYNAMIC_SUSPECTED、VERIFIED、
-                        UNREACHED 的差异；动态记录存在时不得声称不存在运行时证据。
+                        编造 sink、链路或漏洞。严格保留 STATIC_INFERRED、DYNAMIC_SUSPECTED、DYNAMIC_CONFIRMED、
+                        VERIFIED、UNREACHED 的差异；不得把 DYNAMIC_CONFIRMED 宣传为生产实库已证实。
                         """;
             };
         }
@@ -441,32 +449,41 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     business, parameter/permission, dependency, and trigger model, and add missing entry candidates
                     as MODEL_SUPPLEMENT with reasons and evidence. Never rewrite static facts or claim runtime reachability.
                     """;
+            case AUTH_ANALYSIS -> """
+                    From static facts and PRE_ANALYSIS hypotheses, build the auth model: which entries require auth,
+                    synthesizable identity materials (JWT/default keys, provenance MOCK or RULE_GENERATED), high-value
+                    entries and suggested tracks (UNAUTH/USER/ADMIN/BYPASS_CANDIDATE), and draft experiment plans
+                    (method, contentType, required params, success criteria, budgeted attempts). Use only
+                    facts_search/evidence_get/plan_propose. Never change network/mounts. Never claim bypass without
+                    dynamic 401/pass-gate PathRun evidence. On the post-flood confirm pass, consume only persisted evidence.
+                    """;
             case PATH_EXPLORATION -> """
-                    Consume only PRE_ANALYSIS, DYNAMIC_VERIFICATION, and persisted sandbox request/response results.
-                    Model multiple distinct paths with actual requests, responses, data/state transitions, triggers,
-                    evidence, counterevidence, confidence, and stop conditions. Never turn an unexecuted candidate into fact.
+                    Consume only PRE_ANALYSIS, AUTH_ANALYSIS, DYNAMIC_VERIFICATION, and persisted PathRun
+                    (HTTP/Agent/SQL) results. Model multiple distinct paths with track, actual requests, responses,
+                    data/state transitions, triggers, evidence, counterevidence, confidence, and stop conditions.
+                    Never turn an unexecuted candidate into fact.
                     """;
             case DYNAMIC_VERIFICATION -> """
-                    Use PRE_ANALYSIS entry candidates and sandbox feedback parameters to propose localized requests
+                    Use AUTH_ANALYSIS experiment plans and sandbox PathRuns to propose localized requests
                     inside the same authorized sandbox loopback. The server-owned executor performs and persists
                     request/response, entry hits, trigger hits, and gaps. When a request is needed, call only
                     sandbox_probe with an existing entry:* reference. Never access external network or let model text change commands, mounts, capabilities,
-                    budgets, or policy. Distinguish container completion, class loads, HTTP hits, binding, trigger
-                    execution, and side effects; task completion is not exploit confirmation.
+                    budgets, or policy. Never alone upgrade to DYNAMIC_CONFIRMED or VERIFIED.
                     """;
             case VULNERABILITY_TRIAGE -> """
-                    Base the analysis on PRE_ANALYSIS, DYNAMIC_VERIFICATION, and PATH_EXPLORATION, then query SCAN
-                    and DYNAMIC_EVIDENCE. A vulnerability may be marked present only after local authorized sandbox
+                    Base the analysis on PRE_ANALYSIS, AUTH_ANALYSIS, DYNAMIC_VERIFICATION, PATH_EXPLORATION, and PathRuns,
+                    then query SCAN and DYNAMIC_EVIDENCE. A vulnerability may be marked present only after local authorized sandbox
                     debugging closes entry hit, parameter binding, trigger execution, and replay evidence. Otherwise
                     keep it as hypothesis or insufficient evidence; never claim VERIFIED without replay evidence.
+                    DYNAMIC_CONFIRMED is server-gated for SQL only.
                     """;
             case REPORT_GENERATION -> """
-                    Query SCAN, ENTRY, SINK, EVIDENCE, and DYNAMIC_EVIDENCE first. Produce a complete English Markdown
-                    report with: Executive Summary and Evidence Boundary; Entrypoint-to-Trigger Matrix; Multiple
+                    Query SCAN, ENTRY, SINK, EVIDENCE, PathRun, and DYNAMIC_EVIDENCE first. Produce a complete English Markdown
+                    report with: Executive Summary and Evidence Boundary; Entrypoint-Track-PathRun Matrix; Multiple
                     Hypothesized Paths; Combined Vulnerability Possibilities; Dynamic Evidence and Coverage;
-                    Findings and Severity; Gaps, Limitations, and Next Validation Steps. Each path must show
-                    entrypoint → data/state transitions → trigger → impact, with evidence, prerequisites, confidence,
-                    and unverified links. State “insufficient evidence” instead of inventing sinks or vulnerabilities.
+                    Findings and Severity; Gaps, Limitations, and Next Validation Steps. Preserve
+                    STATIC_INFERRED / DYNAMIC_SUSPECTED / DYNAMIC_CONFIRMED / VERIFIED / UNREACHED. Do not market
+                    DYNAMIC_CONFIRMED as production-database proof.
                     """;
         };
     }
@@ -559,13 +576,15 @@ public final class AiJobOrchestrator implements AutoCloseable {
     private String priorInferenceContext(
             SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
         List<AgentRole> priors = switch (job.role()) {
-            case DYNAMIC_VERIFICATION -> List.of(AgentRole.PRE_ANALYSIS);
+            case AUTH_ANALYSIS -> List.of(AgentRole.PRE_ANALYSIS);
+            case DYNAMIC_VERIFICATION -> List.of(AgentRole.PRE_ANALYSIS, AgentRole.AUTH_ANALYSIS);
             case PATH_EXPLORATION -> List.of(
-                    AgentRole.PRE_ANALYSIS, AgentRole.DYNAMIC_VERIFICATION);
+                    AgentRole.PRE_ANALYSIS, AgentRole.AUTH_ANALYSIS, AgentRole.DYNAMIC_VERIFICATION);
             case VULNERABILITY_TRIAGE -> List.of(
-                    AgentRole.PRE_ANALYSIS, AgentRole.DYNAMIC_VERIFICATION, AgentRole.PATH_EXPLORATION);
+                    AgentRole.PRE_ANALYSIS, AgentRole.AUTH_ANALYSIS, AgentRole.DYNAMIC_VERIFICATION,
+                    AgentRole.PATH_EXPLORATION);
             case REPORT_GENERATION -> List.of(
-                    AgentRole.PRE_ANALYSIS, AgentRole.DYNAMIC_VERIFICATION,
+                    AgentRole.PRE_ANALYSIS, AgentRole.AUTH_ANALYSIS, AgentRole.DYNAMIC_VERIFICATION,
                     AgentRole.PATH_EXPLORATION, AgentRole.VULNERABILITY_TRIAGE);
             default -> List.of();
         };

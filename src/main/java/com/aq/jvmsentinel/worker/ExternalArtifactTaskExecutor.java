@@ -534,7 +534,9 @@ public final class ExternalArtifactTaskExecutor {
             StringBuilder plan = new StringBuilder();
             for (ProbeTarget target : targets == null ? List.<ProbeTarget>of() : targets) {
                 plan.append(target.method()).append('\t').append(target.route()).append('\t')
-                        .append(target.query() == null ? "" : target.query()).append('\n');
+                        .append(target.query() == null ? "" : target.query()).append('\t')
+                        .append(target.track() == null ? "UNAUTH" : target.track()).append('\t')
+                        .append(target.authHeader() == null ? "" : target.authHeader()).append('\n');
             }
             Files.writeString(file, plan.toString());
             return file;
@@ -649,18 +651,27 @@ public final class ExternalArtifactTaskExecutor {
     }
 
     /** One bounded HTTP stimulus inside the deny-all container. */
-    public record ProbeTarget(String method, String route, String query) {
+    public record ProbeTarget(String method, String route, String query, String track, String authHeader) {
         public ProbeTarget(String method, String route) {
-            this(method, route, "");
+            this(method, route, "", "UNAUTH", "");
+        }
+
+        public ProbeTarget(String method, String route, String query) {
+            this(method, route, query, "UNAUTH", "");
         }
 
         public ProbeTarget {
             method = Objects.requireNonNull(method, "method").toUpperCase(java.util.Locale.ROOT);
             query = query == null ? "" : query;
+            track = track == null || track.isBlank() ? "UNAUTH" : track;
+            authHeader = authHeader == null ? "" : authHeader;
             if (!Set.of("GET", "POST", "PUT", "PATCH", "DELETE").contains(method)
                     || route == null
                     || !route.matches("/[A-Za-z0-9_./{}:-]{0,1023}")
-                    || (!query.isEmpty() && !query.matches("[A-Za-z0-9_=&%./{}:-]{1,256}"))) {
+                    || (!query.isEmpty() && !query.matches("[A-Za-z0-9_=&%./{}:-]{1,256}"))
+                    || !track.matches("[A-Z_]{1,32}")
+                    || authHeader.length() > 2048
+                    || authHeader.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {
                 throw new IllegalArgumentException("artifact probe target is invalid");
             }
         }

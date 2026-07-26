@@ -7,23 +7,25 @@
 - 版本：0.1（产品草案）
 - 状态：待评审
 - 适用范围：JAR、WAR、CLASS 形式的闭源 Java/JVM 应用
-- 产品定位：AI 驱动的代码理解、路径探索、运行时验证和攻击链推理平台
+- 产品定位：面向已授权闭源 JVM 制品的**路径调试型**安全验证平台——入口枚举、鉴权与合成身份、多轨实验、PathRun 对齐代码与 SQL 观测，再做有证据的漏洞研判
 
 ## 1.1 核心术语
 
 - **入口（Entrypoint）**：任何能由应用边界之外触发的 HTTP、WebSocket、消息、RPC、定时任务或管理接口。内部 service 方法只有在存在外部可达链路时才计为入口链的一部分。
 - **路径（Path）**：从入口、输入和身份出发，经过转换、分支、状态变化到副作用或返回结果的一条可重放执行轨迹。
+- **PathRun**：一次路径实验的一等公民记录（`scanId + entryId + track + attemptId`），聚合请求、超时分类、入口命中、参数绑定、Agent 与 SQL 事件。详见 [PATH_EXPERIMENT_MODEL.md](PATH_EXPERIMENT_MODEL.md)。
+- **身份轨（Identity Track）**：`UNAUTH` / `USER` / `ADMIN` / `BYPASS_CANDIDATE`；默认平台合成凭据，失败则 `IDENTITY_UNAVAILABLE`。
 - **依赖模式（Dependency Mode）**：`MOCK`（规则/模拟器）、`REPLAY`（录制回放）、`SHADOW`（影子环境）或 `REAL_READONLY`（受控只读真实连接）。
 - **证据（Evidence）**：请求、快照、调用栈、字节码位置、污点事件、依赖访问、覆盖率和输出的可引用记录。
-- **验证状态**：`STATIC_INFERRED`、`DYNAMIC_SUSPECTED`、`VERIFIED`、`UNREACHED`。状态升级必须有新增证据，不能由模型单独升级。
+- **验证状态**：`STATIC_INFERRED`、`DYNAMIC_SUSPECTED`、`DYNAMIC_CONFIRMED`、`VERIFIED`、`UNREACHED`。状态升级必须有新增证据与服务端门禁，不能由模型单独升级。
 
 ## 2. 产品愿景
 
-用户提供已获授权的闭源应用制品，平台先由前置 AI 通读字节码、反编译结果、配置和运行时注册信息，建立业务逻辑、对外入口、参数、权限、租户和外部依赖地图；随后在隔离沙箱中尽可能深入执行每条业务路径。
+用户提供已获授权的闭源应用制品，平台先建立入口、参数、鉴权与依赖地图，再像人工 debug 一样对高价值路径做多身份轨实验：每条实验形成 PathRun，对照代码行为与 JDBC/SQL 观测，最后才归纳漏洞与攻击链。
 
-平台的第一原则是“代码逻辑优先”：数据库、第三方服务、时间、随机数等不可控因素不应让路径探索提前终止。系统优先使用模拟器、快照、录制回放或受控替身完成逻辑执行，同时记录真实数据依赖（例如具体表和字段），在结果中明确标记依赖和前置条件。
+平台的第一原则是“代码逻辑优先”：数据库、第三方服务、时间、随机数等不可控因素不应让路径探索提前终止。系统优先使用模拟器、快照、录制回放或受控替身完成逻辑执行，同时记录真实数据依赖（例如具体 SQL、表和字段），在结果中明确标记依赖和合成身份前置条件。
 
-平台不承诺数学意义上的所有路径都能终止或全部覆盖，而是提供覆盖度、未覆盖原因、停止条件和可重复证据。
+`AUTH_GAP`（映射上缺少声明层注解）只是静态信号，不是主交付物。平台不承诺数学意义上的所有路径都能终止或全部覆盖，而是提供有效路径实验占比、未覆盖原因、停止条件和可重复证据。
 
 ## 3. 目标与非目标
 
@@ -169,14 +171,17 @@ GUI 采用独立的 React/TypeScript 前端，Java 只提供分析控制面和�
 
 ## 8. 结果分级
 
-- **已验证**：在沙箱中可重复达到敏感 sink，并有完整轨迹。
-- **动态疑似**：运行时达到关键中间点，但影响尚未闭合。
-- **静态推测**：静态图显示可达，但尚未成功执行。
-- **未覆盖**：存在路径或依赖，但受预算、权限、状态或非终止条件影响。
+- **已验证（VERIFIED）**：强化隔离沙箱中可重放闭环；本阶段 SQL 命中默认不升此级。
+- **动态确认（DYNAMIC_CONFIRMED）**：动态调试证明恶意片段进入实际发往 DB 的语句，且中途无过滤/参数化阻断（服务端门禁；见路径实验模型 §7）。
+- **动态疑似（DYNAMIC_SUSPECTED）**：运行时达到关键点或 SQL 差分疑似，闭环未充分。
+- **静态推测（STATIC_INFERRED）**：静态图显示可达，但尚未成功执行。
+- **未覆盖（UNREACHED）**：存在路径或依赖，但受预算、身份不可用、冷启动或非终止条件影响。
 
-所有结果均显示覆盖度和停止原因，禁止只展示一个没有上下文的风险分数。
+所有结果均挂到 PathRun 并显示超时分类与停止原因，禁止只展示一个没有上下文的风险分数或以 AUTH_GAP 计数充当主结论。
 
 ### 8.1 结果最小证据集
+
+标记为 `DYNAMIC_CONFIRMED`（SQL）至少需要：绑定 PathRun 的动态轨迹、实际 JDBC/替身语句含对应恶意片段、无过滤/参数化阻断证据、可重放实验卡；且必须标注 MOCK 与合成身份前置条件。
 
 标记为 `VERIFIED` 至少需要：
 
@@ -186,7 +191,8 @@ GUI 采用独立的 React/TypeScript 前端，Java 只提供分析控制面和�
 - 到达的敏感 sink 和实际副作用摘要；
 - 所有外部依赖及其模式；
 - 快照、任务和日志引用；
-- 沙箱资源和停止条件未被突破的证明。
+- 沙箱资源和停止条件未被突破的证明；
+- 通常还要求强化隔离运行时门禁（超出普通 `TRUSTED_DOCKER`）。
 
 ### 8.2 用户操作
 
@@ -235,34 +241,26 @@ GUI 采用独立的 React/TypeScript 前端，Java 只提供分析控制面和�
 
 本产品服务个人用户的本地分析与验证工作流。完整多租户/RBAC、企业 SSO、跨租户调度和真实供应商生产互操作明确不在当前产品范围内，不作为本版验收项或已实现能力宣传。动态验证依赖用户明确授权的沙箱；沙箱能力不足或未获授权时必须 fail-closed，保持静态或不可用状态。
 
-### 13.2 五个 AI 角色与审计顺序
+### 13.2 六个 AI 角色与审计顺序
 
-五个角色按固定顺序运行，模型不能跳过、重排或自行启动阶段。每个角色的中文提示词和 English prompt 都可以在前端“模型服务”页按项目编辑；任务创建时保存提示词快照，运行中修改不会改变正在执行的任务。编辑提示词不能改变工具白名单、沙箱能力、网络策略、资源预算或验证等级。
+六个角色按固定顺序运行，模型不能跳过、重排或自行启动阶段。权威流程图见 [AUDIT_FLOW.md](AUDIT_FLOW.md)；PathRun / 轨 / SQL 门禁见 [PATH_EXPERIMENT_MODEL.md](PATH_EXPERIMENT_MODEL.md)。每个角色的中文与 English 提示词可在“模型服务”页按项目编辑；任务创建时保存快照。编辑提示词不能改变工具白名单、沙箱能力、网络策略、资源预算或验证等级。开始审计前须绑定全部六个角色。
 
 ```mermaid
 flowchart LR
-    A[制品摘要与静态接口] --> B[前置建模\nPRE_ANALYSIS]
-    B --> B1[入口补充候选\nMODEL_SUPPLEMENT]
-    B1 --> C[授权沙箱\n断网/只读制品挂载]
-    C --> D[动态验证\nDYNAMIC_VERIFICATION]
-    D --> D1[依据入口与沙箱参数\nloopback 本地发包并保存请求/响应]
-    D1 --> E[路径探索\nPATH_EXPLORATION]
-    E --> F[漏洞研判\nVULNERABILITY_TRIAGE]
-    F --> G[报告生成\nREPORT_GENERATION]
-    F -. 动态调试未闭环 .-> H[推测/证据不足\n不得标记漏洞存在]
-    C -. 沙箱不可用 .-> X[DYNAMIC_DISABLED\n保留静态结果]
+    A[静态接口] --> B[PRE_ANALYSIS]
+    B --> C[AUTH_ANALYSIS]
+    C --> D[按轨动态观察]
+    D --> E[AUTH 绕过确认]
+    E --> F[DYNAMIC_VERIFICATION]
+    F --> G[PATH_EXPLORATION]
+    G --> H[VULNERABILITY_TRIAGE]
+    H --> I[REPORT_GENERATION]
 ```
 
-- **前置建模**：读取静态入口、依赖、权限、sink 和证据，补充可能遗漏的入口候选；补充内容必须标记 `MODEL_SUPPLEMENT`，不能改写静态事实。
-- **动态验证**：消费前置入口和沙箱反馈参数，在同一授权沙箱的 loopback 范围内发起无破坏请求，持久化请求、响应、入口命中、参数绑定和触发点结果；模型输出不能改变沙箱权限。
-- **路径探索**：只消费前三阶段保存的事实/推断和请求结果，建立数据与状态转换路径，不把未执行候选写成事实。
-- **漏洞研判**：基于前置建模、动态验证和路径探索，只有入口命中、参数绑定、触发点执行和可重放动态调试闭环时才可标记漏洞存在；否则保持推测或证据不足。
-- **报告生成**：汇总前四个角色（前置建模、动态验证、路径探索、漏洞研判），并保留 `STATIC_INFERRED`、`DYNAMIC_SUSPECTED`、`VERIFIED` 和 `UNREACHED` 的差异。
+- **前置建模**：静态入口/依赖/sink；`MODEL_SUPPLEMENT` 不得改写 FACT。
+- **鉴权分析**：鉴权模型、平台合成身份策略、高价值与轨集合、实验计划草稿；洪水后再据 PathRun 确认绕过。
+- **动态验证 / 路径探索 / 漏洞研判 / 报告**：围绕 PathRun；SQL 满足 H3 门禁时服务端升 `DYNAMIC_CONFIRMED`，模型不能单独升级。
 
-首版已围绕可执行 Spring Boot JAR 落地一条受限闭环：内容寻址制品、静态入口与权限信号、制品内调用图、跨方法污点候选、断网 `TRUSTED_DOCKER`、JDBC/Redis/数据库协议替身、JVM Agent、批量 loopback 探针、动态证据投影和五个模型角色。动态任务、租约、checkpoint、trace chunk 与 worker 提交幂等已写入本地 SQLite。V011 进一步持久化 project/artifact/scan、audit-run、dynamic-task、finding replay 和 AI `sandbox_probe` job 绑定的请求幂等关系，并保存流水线 stage cursor 与有界 probe plan 元数据；控制面重启后可恢复未完成任务和已提交轨迹。
+已落地基线（演进中）：内容寻址制品、静态入口、调用图/污点候选、断网 `TRUSTED_DOCKER`、JDBC/Redis/MySQL 协议替身、Agent、loopback 探针、V011 单节点恢复。路径调试契约（六角色、PathRun、合成身份、D1–D3、`DYNAMIC_CONFIRMED`）以本文与路径实验模型为准分期实现（MVP 里程碑 M-A…M-D）。
 
-V011 的恢复语义是单节点 SQLite，不是分布式 exactly-once。重启前仍处于 `QUEUED/RUNNING` 的 AI job 会保留为 `FAILED/PROCESS_RESTARTED` 历史记录，恢复器依据持久化 cursor 创建下一阶段的新 job，不改写旧记录，也不复制已完成阶段。probe plan 只保存 task/scan/entry、候选输入、请求上限和 plan hash 等有界元数据，不携带命令、网络、挂载、UID 或授权；删除、修改等其他 mutation 尚未全部纳入统一持久化幂等。
-
-其中“完整调用图”在产品语义上指**预算内、制品可见字节范围内的调用图**：`DIRECT` 和制品内 CHA 可绑定，反射/代理/JNI/动态注册/制品外依赖保留 `UNRESOLVED`，分支复杂或超预算区域必须报告停止原因。跨方法污点只形成 `STATIC_INFERRED` 候选，不能单独产生动态疑似或已验证结论。
-
-协议替身不是对应数据库的完整实现。当前 Redis 为有界 RESP2/RESP3 子集，MySQL 为有界 Classic 协议启动、认证占位和常见查询子集；未知命令、帧/连接/操作预算超限均拒绝，并将 `MOCK`、`RULE_GENERATED` 和执行摘要写入轨迹。`TRUSTED_DOCKER` 仍不满足运行不受信制品的生产隔离门槛，`VERIFIED` 仍需独立强化沙箱与可重放证据。
+`TRUSTED_DOCKER` 不是恶意制品强化隔离；`DYNAMIC_CONFIRMED` 不等于生产实库已证实；`VERIFIED` 仍需强化沙箱门禁。

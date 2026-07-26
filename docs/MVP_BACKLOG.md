@@ -70,7 +70,32 @@
 
 ### M1：制品接入与前置 AI
 
-> **范围修订**：MVP 面向个人本地使用。完整多租户/RBAC、SSO、跨租户调度以及真实供应商生产互操作取消，不再作为本版里程碑或验收条件。动态验收必须依赖用户授权的沙箱，未获授权或沙箱不可用时保持 fail-closed。五个 AI 角色固定按前置建模、动态验证、路径探索、漏洞研判、报告生成推进，提示词支持中英文项目级编辑并在 Job snapshot 中固化。
+> **范围修订**：MVP 面向个人本地使用。完整多租户/RBAC、SSO、跨租户调度以及真实供应商生产互操作取消，不再作为本版里程碑或验收条件。动态验收必须依赖用户授权的沙箱，未获授权或沙箱不可用时保持 fail-closed。六个 AI 角色固定按 [AUDIT_FLOW.md](AUDIT_FLOW.md) 推进（含 `AUTH_ANALYSIS`）；路径实验契约见 [PATH_EXPERIMENT_MODEL.md](PATH_EXPERIMENT_MODEL.md)。提示词支持中英文项目级编辑并在 Job snapshot 中固化。
+
+### M-A：PathRun 契约与呈现（P0）
+
+- 引入 PathRun / 实验计划 DTO、超时分类枚举、`DYNAMIC_CONFIRMED` 验证状态（API + 前端 labels）。
+- 探针/Agent 将传输与业务失败打到最小超时枚举，减少笼统 `UNKNOWN`。
+- GUI 结果主视图按入口×轨展示 PathRun；`AUTH_GAP` 降为次级信号。
+- 验收：DTO 含新状态；结果页可筛选 `DYNAMIC_CONFIRMED`；旧 scan 兼容展示。
+
+### M-B：鉴权分析、合成身份与按轨观察（P0）
+
+- `AUTH_ANALYSIS` 角色绑定与流水线 P1+P3（洪水前分析 + 动态后绕过确认）。
+- 平台合成身份（JWT 等推断材料）；失败轨 `IDENTITY_UNAVAILABLE`。
+- AI 生成实验计划 → 服务端闸门 → 按轨执行（T2+T3 预算）。
+- 验收：baldex 上 ADMIN 轨可携带合成 Token 探测；PathRun 含轨与身份 provenance。
+
+### M-C：SQL D1–D3 与 DYNAMIC_CONFIRMED（P0）
+
+- JDBC/替身插桩记录 SQL 事件到 PathRun（D1）；差分探针（D2）；可重放实验卡（D3）。
+- 服务端 H3 门禁升 `DYNAMIC_CONFIRMED`；模型不能单独升级。
+- 验收：含 SQL 的入口出现 D1；受控差分可达 D2/D3；仅恶意片段无过滤入库时出现 `DYNAMIC_CONFIRMED`。
+
+### M-D：高价值语义包 Blade/Flowable（P1）
+
+- Blade JWT 默认证件 AnalysisPack；Flowable deploy/multipart 实验形态（无破坏、无内存马）。
+- 验收：PDF 链的可观测子集（合成身份过闸、deploy 路径实验、SQL 分级），不承诺内存马或 `VERIFIED`。
 
 **M1-01 JAR/WAR/CLASS 解析（P0）**
 

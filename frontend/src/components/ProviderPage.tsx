@@ -143,8 +143,8 @@ export function ProviderPage({ projectId }: { projectId: string }) {
       </article>
     </div>
     <article className="panel section-gap">
-      <div className="panel-head"><div><p className="eyebrow">角色分配</p><h2>五个模型角色</h2></div><span>{projectId || '未选择工作区'}</span></div>
-      <p className="form-help">角色绑定是项目配置；可分别编辑中文与英文提示词。审计任务按前置建模 → 动态验证 → 路径探索 → 漏洞研判 → 报告生成顺序创建，服务端会把提示词快照写入任务。</p>
+      <div className="panel-head"><div><p className="eyebrow">角色分配</p><h2>六个模型角色</h2></div><span>{projectId || '未选择工作区'}</span></div>
+      <p className="form-help">角色绑定是项目配置；可分别编辑中文与英文提示词。审计任务按前置建模 → 鉴权分析 → 动态观察 → 绕过确认 → 动态验证 → 路径探索 → 漏洞研判 → 报告生成顺序推进，服务端会把提示词快照写入任务。</p>
       <div className="role-grid">{AI_ROLES.map((roleId) => {
         const role = AI_ROLE_META[roleId]
         const assignment = assignments.find((item) => item.role === roleId)

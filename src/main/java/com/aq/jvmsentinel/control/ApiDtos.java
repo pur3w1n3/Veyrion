@@ -10,6 +10,7 @@ public final class ApiDtos {
     public static final int EVENT_SCHEMA_VERSION = SCHEMA_VERSION;
     public static final String STATIC_INFERRED = "STATIC_INFERRED";
     public static final String DYNAMIC_SUSPECTED = "DYNAMIC_SUSPECTED";
+    public static final String DYNAMIC_CONFIRMED = "DYNAMIC_CONFIRMED";
     public static final String UNREACHED = "UNREACHED";
     public static final String MOCK = "MOCK";
 
@@ -207,6 +208,46 @@ public final class ApiDtos {
             requireText(eventType, "eventType");
             if (sequence != null && sequence < 0) throw new IllegalArgumentException("sequence cannot be negative");
             evidenceRefs = List.copyOf(evidenceRefs == null ? List.of() : evidenceRefs);
+        }
+    }
+
+    public record SqlEventDto(String sqlText, String parameterSummary, String readWrite,
+                              boolean parameterized, boolean maliciousFragmentPresent,
+                              String captureMode) {
+        public SqlEventDto {
+            sqlText = sqlText == null ? "" : sqlText;
+            parameterSummary = parameterSummary == null ? "" : parameterSummary;
+            readWrite = readWrite == null ? "UNKNOWN" : readWrite;
+            captureMode = captureMode == null ? MOCK : captureMode;
+        }
+    }
+
+    public record PathRunDto(int schemaVersion, String pathRunId, String scanId,
+                             String entrypointRef, String track, String attemptId,
+                             String experimentPlanId, String method, String contentType,
+                             String requestSummary, String outcomeClass, int httpStatus,
+                             Boolean entryHit, Boolean parameterBound,
+                             List<SqlEventDto> sqlEvents, String stopReason,
+                             String verificationStatus, List<String> evidenceRefs,
+                             String identityProvenance, String identityPrecondition) {
+        public PathRunDto {
+            requireSchema(schemaVersion);
+            requireText(pathRunId, "pathRunId");
+            requireText(scanId, "scanId");
+            requireText(entrypointRef, "entrypointRef");
+            requireText(track, "track");
+            requireText(attemptId, "attemptId");
+            requireText(outcomeClass, "outcomeClass");
+            requireText(verificationStatus, "verificationStatus");
+            method = method == null || method.isBlank() ? "GET" : method;
+            contentType = contentType == null || contentType.isBlank() ? "application/json" : contentType;
+            requestSummary = requestSummary == null ? "" : requestSummary;
+            stopReason = stopReason == null || stopReason.isBlank() ? "UNKNOWN" : stopReason;
+            sqlEvents = List.copyOf(sqlEvents == null ? List.of() : sqlEvents);
+            evidenceRefs = List.copyOf(evidenceRefs == null ? List.of() : evidenceRefs);
+            identityProvenance = identityProvenance == null || identityProvenance.isBlank()
+                    ? MOCK : identityProvenance;
+            identityPrecondition = identityPrecondition == null ? "" : identityPrecondition;
         }
     }
 

@@ -20,7 +20,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * Fixed loopback-only HTTP stimulus used inside the deny-all Docker container.
  *
  * <p>Single: {@code method route [port] [query]}.</p>
- * <p>Batch: {@code @planFile port} where each plan line is {@code METHOD\troute[\tquery]}.</p>
+ * <p>Batch: {@code @planFile port} where each plan line is
+ * {@code METHOD\troute[\tquery[\ttrack[\tauthHeader]]]}.</p>
  */
 public final class LoopbackHttpProbe {
     private static final Set<String> METHODS = Set.of("GET", "POST", "PUT", "PATCH", "DELETE");
@@ -46,7 +47,7 @@ public final class LoopbackHttpProbe {
         String route = args[1];
         int port = args.length >= 3 ? Integer.parseInt(args[2]) : 8080;
         String query = args.length >= 4 ? args[3] : "";
-        int status = probeOne(method, route, port, query);
+        int status = probeOne(method, route, port, query, "UNAUTH", "");
         if (status < 0) System.exit(2);
     }
 
@@ -60,13 +61,15 @@ public final class LoopbackHttpProbe {
         for (String line : lines) {
             if (line == null || line.isBlank() || line.startsWith("#")) continue;
             String[] parts = line.split("\t", -1);
-            if (parts.length < 2 || parts.length > 3) {
+            if (parts.length < 2 || parts.length > 5) {
                 throw new IllegalArgumentException("probe plan line is invalid");
             }
             targets.add(new String[]{
                     parts[0].trim(),
                     parts[1].trim(),
-                    parts.length == 3 ? parts[2].trim() : ""
+                    parts.length >= 3 ? parts[2].trim() : "",
+                    parts.length >= 4 && !parts[3].isBlank() ? parts[3].trim() : "UNAUTH",
+                    parts.length >= 5 ? parts[4].trim() : ""
             });
         }
         if (targets.isEmpty()) throw new IllegalArgumentException("probe plan is empty");
@@ -75,23 +78,28 @@ public final class LoopbackHttpProbe {
             String[] target = targets.get(i);
             writeProgress("批量探测 " + (i + 1) + "/" + targets.size()
                     + ": " + target[0] + " " + target[1]
+                    + " [" + target[3] + "]"
                     + (target[2].isEmpty() ? "" : "?" + target[2]));
-            if (probeOne(target[0], target[1], port, target[2]) < 0) failures++;
+            if (probeOne(target[0], target[1], port, target[2], target[3], target[4]) < 0) failures++;
         }
         writeProgress("批量探测完成：" + (targets.size() - failures) + "/" + targets.size() + " 收到 HTTP 响应");
         if (failures == targets.size()) System.exit(2);
     }
 
-    private static int probeOne(String rawMethod, String route, int port, String query) {
+    private static int probeOne(String rawMethod, String route, int port, String query,
+                                String track, String authHeader) {
         String method = rawMethod == null ? "" : rawMethod.toUpperCase(Locale.ROOT);
         if (!METHODS.contains(method)
                 || route == null
                 || !route.matches("/[A-Za-z0-9_./{}:-]{0,1023}")
                 || port < 1 || port > 65535
                 || (query != null && !query.isEmpty()
-                && !query.matches("[A-Za-z0-9_=&%./{}:-]{1,256}"))) {
+                && !query.matches("[A-Za-z0-9_=&%./{}:-]{1,256}"))
+                || (track != null && !track.matches("[A-Z_]{1,32}"))
+                || (authHeader != null && authHeader.length() > 2048)) {
             writeProbeEvent(method, route == null ? "" : route, port, -1,
-                    route == null ? "" : route, "InvalidTarget");
+                    route == null ? "" : route, "InvalidTarget", "UNKNOWN",
+                    track == null ? "UNAUTH" : track);
             return -1;
         }
         String requestTarget = (query == null || query.isEmpty()) ? route : route + "?" + query;
@@ -104,10 +112,18 @@ public final class LoopbackHttpProbe {
             socket.connect(new InetSocketAddress(loopback, port), 2_000);
             socket.setSoTimeout(2_000);
             OutputStream output = socket.getOutputStream();
-            String headers = method + " " + requestTarget + " HTTP/1.1\r\n"
-                    + "Host: 127.0.0.1\r\nConnection: close\r\n"
-                    + "Content-Type: application/json\r\nContent-Length: " + body.length + "\r\n\r\n";
-            output.write(headers.getBytes(StandardCharsets.US_ASCII));
+            StringBuilder headers = new StringBuilder();
+            headers.append(method).append(' ').append(requestTarget).append(" HTTP/1.1\r\n")
+                    .append("Host: 127.0.0.1\r\nConnection: close\r\n")
+                    .append("Content-Type: application/json\r\n")
+                    .append("Content-Length: ").append(body.length).append("\r\n");
+            if (authHeader != null && !authHeader.isBlank()) {
+                // Synthetic Blade/Spring identity: both Authorization and Blade-Auth.
+                headers.append("Authorization: bearer ").append(authHeader).append("\r\n");
+                headers.append("Blade-Auth: ").append(authHeader).append("\r\n");
+            }
+            headers.append("\r\n");
+            output.write(headers.toString().getBytes(StandardCharsets.US_ASCII));
             output.write(body);
             output.flush();
             InputStream input = socket.getInputStream();
@@ -131,29 +147,51 @@ public final class LoopbackHttpProbe {
             error = failure.getClass().getSimpleName();
             status = -1;
         }
+        String outcome = classifyOutcome(status, error);
         String detail = method + " " + requestTarget + " → HTTP "
                 + (status < 0 ? "UNKNOWN" : Integer.toString(status))
-                + " (port " + port + ")"
+                + " (" + outcome + ", track=" + track + ", port " + port + ")"
                 + (error.isEmpty() ? "" : "; " + error);
         System.out.println(detail);
-        writeProbeEvent(method, route, port, status, requestTarget, error);
+        writeProbeEvent(method, route, port, status, requestTarget, error, outcome, track);
         return status;
     }
 
+    static String classifyOutcome(int httpStatus, String errorClass) {
+        String error = errorClass == null ? "" : errorClass;
+        if ("InvalidTarget".equals(error)) return "UNKNOWN";
+        if (error.contains("SocketTimeout")) return "BUSINESS_TIMEOUT";
+        if (error.contains("ConnectException")) return "COLD_START";
+        if (error.contains("SocketException") || error.contains("EOFException")) {
+            return "TRANSPORT_ERROR";
+        }
+        if (httpStatus == 401 || httpStatus == 403) return "AUTH_CHALLENGE";
+        if (httpStatus == 404) return "REACHED_NO_BIND";
+        if (httpStatus == 409 || httpStatus == 423 || httpStatus == 429) return "ENGINE_BUSY";
+        if (httpStatus == 500 || httpStatus == 502 || httpStatus == 503) {
+            return "DEPENDENCY_MOCK_GAP";
+        }
+        if (httpStatus >= 200 && httpStatus < 500) return "HTTP_OBSERVED";
+        if (httpStatus < 0) return "UNKNOWN";
+        return "UNKNOWN";
+    }
+
     private static void writeProbeEvent(String method, String route, int port, int status,
-                                        String requestTarget, String error) {
+                                        String requestTarget, String error, String outcomeClass,
+                                        String track) {
         try {
             String dir = System.getProperty("veyrion.sandbox.traceDir");
             if (dir == null || dir.isBlank()) return;
             Path file = Path.of(dir, "probe-events.jsonl");
             long sequence = PROBE_SEQUENCE.getAndIncrement();
             String statusText = status < 0 ? "UNKNOWN" : Integer.toString(status);
+            String verification = "DYNAMIC_SUSPECTED";
             String line = "{"
                     + "\"schemaVersion\":1,"
                     + "\"sequence\":" + sequence + ","
                     + "\"eventType\":\"HTTP\","
                     + "\"provenanceKind\":\"APPLICATION_REPORTED\","
-                    + "\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                    + "\"verificationStatus\":\"" + verification + "\","
                     + "\"class\":\"com.aq.jvmsentinel.agent.LoopbackHttpProbe\","
                     + "\"method\":\"main\","
                     + "\"timestamp\":\"" + Instant.now() + "\","
@@ -165,11 +203,23 @@ public final class LoopbackHttpProbe {
                     + "\"requestTarget\":\"" + json(truncate(requestTarget, 512)) + "\","
                     + "\"status\":\"" + json(statusText) + "\","
                     + "\"port\":\"" + port + "\","
-                    + "\"error\":\"" + json(truncate(error == null ? "" : error, 64)) + "\""
+                    + "\"error\":\"" + json(truncate(error == null ? "" : error, 64)) + "\","
+                    + "\"outcomeClass\":\"" + json(truncate(outcomeClass, 32)) + "\","
+                    + "\"track\":\"" + json(truncate(track == null ? "UNAUTH" : track, 32)) + "\""
                     + "}}\n";
             Files.writeString(file, line, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (Exception ignored) {
             // Probe success is independent of evidence file write.
+        }
+    }
+
+    private static void writeProgress(String message) {
+        try {
+            String dir = System.getProperty("veyrion.sandbox.traceDir");
+            if (dir == null || dir.isBlank()) return;
+            Files.writeString(Path.of(dir, "progress.txt"), message + "\n",
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        } catch (Exception ignored) {
         }
     }
 
@@ -201,23 +251,12 @@ public final class LoopbackHttpProbe {
     }
 
     private static int parseStatus(String statusLine) {
-        String[] parts = statusLine.trim().split("\\s+");
+        String[] parts = statusLine.split(" ", 3);
         if (parts.length < 2) return -1;
         try {
             return Integer.parseInt(parts[1]);
         } catch (NumberFormatException ignored) {
             return -1;
-        }
-    }
-
-    private static void writeProgress(String message) {
-        try {
-            String dir = System.getProperty("veyrion.sandbox.traceDir");
-            if (dir == null || dir.isBlank()) return;
-            Path file = Path.of(dir, "progress.txt");
-            Files.writeString(file, message + "\n");
-        } catch (Exception ignored) {
-            // Progress is best-effort for the GUI; probe success is independent.
         }
     }
 }

@@ -368,7 +368,11 @@ Agent 使用 startup-only Byte Buddy 插桩，不修改 bootstrap class：Spring
 
 ## 19.1 固定 AI 审计流水线
 
-控制面固定编排 `PRE_ANALYSIS → DYNAMIC_OBSERVATION（沙箱执行，不是 AI 角色）→ DYNAMIC_VERIFICATION → PATH_EXPLORATION → VULNERABILITY_TRIAGE → REPORT_GENERATION`。前置建模结束后先由授权沙箱基于静态入口执行基础观察；动态验证角色可调用 `sandbox_probe` 提出同一容器 loopback 内的发包计划，由服务端受控执行器发包并保存请求/响应结果。AI 只提交入口引用和有界输入提示，不能控制网络请求的权限边界；路径探索只能消费已保存结果。漏洞研判没有入口命中、参数绑定、触发点执行和可重放动态调试闭环时，不得把候选标记为漏洞存在或 `VERIFIED`。
+控制面固定编排（路径调试型，见 [AUDIT_FLOW.md](AUDIT_FLOW.md) 与 [PATH_EXPERIMENT_MODEL.md](PATH_EXPERIMENT_MODEL.md)）：
+
+`PRE_ANALYSIS → AUTH_ANALYSIS → DYNAMIC_OBSERVATION（按身份轨；非 AI）→ AUTH_ANALYSIS 绕过确认 → DYNAMIC_VERIFICATION → PATH_EXPLORATION → VULNERABILITY_TRIAGE → REPORT_GENERATION`。
+
+鉴权分析产出合成身份策略、轨集合与 AI 实验计划草稿；服务端校验后按轨执行并写入 PathRun（含超时分类与 SQL 事件）。动态验证可调用 `sandbox_probe`；AI 不能改网络/挂载/UID/预算。漏洞研判围绕 PathRun；SQL 满足 H3 门禁时服务端升 `DYNAMIC_CONFIRMED`，模型不能单独升级；`VERIFIED` 仍要求强化沙箱门禁。
 
 角色绑定现在包含 `promptZh` 与 `promptEn`，由 V010 持久化；创建 AI Job 时将对应提示词写入不可变 policy snapshot，执行时按 `outputLanguage` 选择语言。提示词属于不可信任务输入，不能修改工具、网络、沙箱、预算或验证状态。
 

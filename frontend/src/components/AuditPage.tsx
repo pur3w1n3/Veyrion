@@ -57,6 +57,11 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .find((job) => job.role === role)
   const preAnalysisJob = roleJob('PRE_ANALYSIS')
+  const authJobs = [...scanJobs]
+    .filter((job) => job.role === 'AUTH_ANALYSIS')
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+  const authAnalysisJob = authJobs[0]
+  const authBypassJob = authJobs[1]
   const pathJob = roleJob('PATH_EXPLORATION')
   const dynamicVerifyJob = roleJob('DYNAMIC_VERIFICATION')
   const triageJob = roleJob('VULNERABILITY_TRIAGE')
@@ -102,7 +107,7 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
     const data = new FormData(form)
     if (data.get('authorized') !== 'on') { setError('必须明确确认已获授权'); return }
     if (missingRoles.length > 0) {
-      setError(`请先在“模型服务”绑定全部五个角色：${missingRoles.map(roleLabel).join('、')}`)
+      setError(`请先在“模型服务”绑定全部六个角色：${missingRoles.map(roleLabel).join('、')}`)
       return
     }
     if (!confirmAiAuthorization()) return
@@ -123,7 +128,7 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
         created.preAnalysisJob,
         ...current.filter((job) => job.aiJobId !== created.preAnalysisJob.aiJobId)
       ])
-      setMessage('审计流水线已启动：系统将按前置建模、断网容器观察、动态验证、本地发包结果建模、漏洞研判与报告生成推进。')
+      setMessage('审计流水线已启动：系统将按前置建模、鉴权分析、按轨动态观察、绕过确认、动态验证、路径探索、漏洞研判与报告生成推进。')
       await onRefresh()
       await refreshJobs()
     }).catch((cause) => setError(`审计启动未完整完成：${errorMessage(cause)}`)).finally(() => setBusy(false))
@@ -167,7 +172,11 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
         setJobs((current) => [result.aiJob!, ...current.filter((job) => job.aiJobId !== result.aiJob!.aiJobId)])
       }
       if (result.dynamicTask) setDynamicTask(result.dynamicTask)
-      const stageLabel = stage === 'DYNAMIC_OBSERVATION' ? '断网容器动态观察' : roleLabel(stage)
+      const stageLabel = stage === 'DYNAMIC_OBSERVATION'
+        ? '断网容器按轨动态观察'
+        : stage === 'AUTH_BYPASS_CONFIRM'
+          ? '鉴权绕过确认'
+          : roleLabel(stage)
       setMessage(`已重新排队：${stageLabel}。流水线将从该阶段继续自动推进。`)
       await refreshJobs()
       await onRefresh()
@@ -182,10 +191,12 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
     { title: '目标摘要复核', state: snapshot?.artifactDigest ? 'completed' : 'waiting', detail: snapshot?.artifactDigest ?? '等待后端摘要' },
     { title: '静态事实与入口发现', state: snapshot?.entries.length ? 'completed' : 'waiting', detail: `${snapshot?.entries.length ?? 0} 个入口；事实层不由模型改写` },
     { title: '前置建模', state: jobState(preAnalysisJob), detail: jobDetail(preAnalysisJob, '流水线自动创建'), retryStage: jobState(preAnalysisJob) === 'unavailable' ? 'PRE_ANALYSIS' : undefined },
-    { title: '断网容器动态观察', state: dynamicState, detail: dynamicDetail, retryStage: dynamicState === 'unavailable' ? 'DYNAMIC_OBSERVATION' : undefined },
+    { title: '鉴权分析', state: jobState(authAnalysisJob), detail: jobDetail(authAnalysisJob, '静态鉴权模型、合成身份与实验计划'), retryStage: jobState(authAnalysisJob) === 'unavailable' ? 'AUTH_ANALYSIS' : undefined },
+    { title: '断网容器按轨动态观察', state: dynamicState, detail: dynamicDetail, retryStage: dynamicState === 'unavailable' ? 'DYNAMIC_OBSERVATION' : undefined },
+    { title: '鉴权绕过确认', state: jobState(authBypassJob), detail: jobDetail(authBypassJob, '消费 401/过闸 PathRun 后确认绕过'), retryStage: jobState(authBypassJob) === 'unavailable' ? 'AUTH_BYPASS_CONFIRM' : undefined },
     { title: '动态验证与本地发包', state: jobState(dynamicVerifyJob), detail: jobDetail(dynamicVerifyJob, '沙箱反馈后按入口和参数进行授权 loopback 探索'), retryStage: jobState(dynamicVerifyJob) === 'unavailable' ? 'DYNAMIC_VERIFICATION' : undefined },
-    { title: '路径探索', state: jobState(pathJob), detail: jobDetail(pathJob, '动态验证结果保存后建立路径模型'), retryStage: jobState(pathJob) === 'unavailable' ? 'PATH_EXPLORATION' : undefined },
-    { title: '漏洞研判', state: jobState(triageJob), detail: jobDetail(triageJob, '前三个角色结果与动态调试闭环后进入'), retryStage: jobState(triageJob) === 'unavailable' ? 'VULNERABILITY_TRIAGE' : undefined },
+    { title: '路径探索', state: jobState(pathJob), detail: jobDetail(pathJob, 'PathRun 保存后建立路径模型'), retryStage: jobState(pathJob) === 'unavailable' ? 'PATH_EXPLORATION' : undefined },
+    { title: '漏洞研判', state: jobState(triageJob), detail: jobDetail(triageJob, 'PathRun 与动态调试闭环后进入'), retryStage: jobState(triageJob) === 'unavailable' ? 'VULNERABILITY_TRIAGE' : undefined },
     { title: '报告生成', state: jobState(reportJob), detail: jobDetail(reportJob, '研判完成后自动汇总'), retryStage: jobState(reportJob) === 'unavailable' ? 'REPORT_GENERATION' : undefined }
   ]
 
@@ -211,7 +222,7 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
             <label className="field"><span>超时（秒）</span><input name="timeout" type="number" min="10" max="3600" defaultValue="300" /></label>
             <label className="field"><span>内存（MiB）</span><input name="memory" type="number" min="128" max="8192" defaultValue="512" /></label>
           </div>
-          <div className="selected-ai"><small>自动流水线 · {language === 'ZH_CN' ? '简体中文输出' : 'English output'}</small><strong>{assignments.length}/5 个角色已绑定</strong><span>一次授权后，系统按前置建模、动态验证、路径探索、漏洞研判、报告生成推进；动态验证只能在授权沙箱内发包。</span></div>
+          <div className="selected-ai"><small>自动流水线 · {language === 'ZH_CN' ? '简体中文输出' : 'English output'}</small><strong>{assignments.length}/6 个角色已绑定</strong><span>一次授权后，系统按前置建模、鉴权分析、按轨观察、绕过确认、动态验证、路径探索、漏洞研判、报告生成推进；模型不能改沙箱策略或单独升级状态。</span></div>
           <label className="check-field"><input type="checkbox" name="authorized" />我确认该制品与范围已获授权，并接受无外网、危险动作空跑演练，以及整条审计流水线自动推进。</label>
           <button className="primary-button" disabled={!projectId || busy || artifacts.length === 0}>{busy ? '启动中…' : '开始审计（自动流水线）'}</button>
         </form>

@@ -7,7 +7,12 @@
  * values, but is selected only when VITE_DEMO_MODE=true.
  */
 
-export type VerificationStatus = 'VERIFIED' | 'DYNAMIC_SUSPECTED' | 'STATIC_INFERRED' | 'UNREACHED'
+export type VerificationStatus =
+  | 'VERIFIED'
+  | 'DYNAMIC_CONFIRMED'
+  | 'DYNAMIC_SUSPECTED'
+  | 'STATIC_INFERRED'
+  | 'UNREACHED'
 export type OutputLanguage = 'ZH_CN' | 'EN'
 
 export type DependencyMode = 'MOCK' | 'REPLAY' | 'LIVE_DISABLED' | 'LIVE' | string
@@ -139,6 +144,7 @@ export type DashboardSnapshot = {
   findings: Finding[]
   path: PathStep[]
   paths: PathTrace[]
+  pathRuns: PathRunDto[]
 }
 
 export type ProjectDto = {
@@ -309,10 +315,58 @@ export type ProviderModelInventoryDto = {
 
 export type AiRole =
   | 'PRE_ANALYSIS'
+  | 'AUTH_ANALYSIS'
   | 'PATH_EXPLORATION'
   | 'DYNAMIC_VERIFICATION'
   | 'VULNERABILITY_TRIAGE'
   | 'REPORT_GENERATION'
+
+export type IdentityTrack = 'UNAUTH' | 'USER' | 'ADMIN' | 'BYPASS_CANDIDATE'
+
+export type PathOutcomeClass =
+  | 'COLD_START'
+  | 'AUTH_CHALLENGE'
+  | 'REACHED_NO_BIND'
+  | 'BUSINESS_TIMEOUT'
+  | 'ENGINE_BUSY'
+  | 'DEPENDENCY_MOCK_GAP'
+  | 'TRANSPORT_ERROR'
+  | 'PROBE_BUDGET'
+  | 'IDENTITY_UNAVAILABLE'
+  | 'HTTP_OBSERVED'
+  | 'UNKNOWN'
+
+export type SqlEventDto = {
+  sqlText: string
+  parameterSummary?: string
+  readWrite?: string
+  parameterized?: boolean
+  maliciousFragmentPresent?: boolean
+  captureMode?: string
+}
+
+export type PathRunDto = {
+  schemaVersion: number
+  pathRunId: string
+  scanId: string
+  entrypointRef: string
+  track: IdentityTrack | string
+  attemptId: string
+  experimentPlanId?: string
+  method: string
+  contentType?: string
+  requestSummary?: string
+  outcomeClass: PathOutcomeClass | string
+  httpStatus: number
+  entryHit?: boolean | null
+  parameterBound?: boolean | null
+  sqlEvents: SqlEventDto[]
+  stopReason?: string
+  verificationStatus: VerificationStatus
+  evidenceRefs?: EvidenceRef[]
+  identityProvenance?: string
+  identityPrecondition?: string
+}
 export type RoleAssignmentDto = {
   schemaVersion: number
   projectId: string
@@ -371,6 +425,8 @@ export type CreateAiJobRequest = {
 
 export type AuditRetryStage =
   | 'PRE_ANALYSIS'
+  | 'AUTH_ANALYSIS'
+  | 'AUTH_BYPASS_CONFIRM'
   | 'PATH_EXPLORATION'
   | 'DYNAMIC_OBSERVATION'
   | 'DYNAMIC_VERIFICATION'
@@ -495,7 +551,13 @@ export interface SentinelApi {
   subscribe(scanId: string, onEvent: (event: ScanEvent) => void, options?: SubscribeOptions): () => void
 }
 
-const statuses = new Set<VerificationStatus>(['VERIFIED', 'DYNAMIC_SUSPECTED', 'STATIC_INFERRED', 'UNREACHED'])
+const statuses = new Set<VerificationStatus>([
+  'VERIFIED',
+  'DYNAMIC_CONFIRMED',
+  'DYNAMIC_SUSPECTED',
+  'STATIC_INFERRED',
+  'UNREACHED'
+])
 const provenanceKinds = new Set<ProvenanceKind>(['FACT', 'INFERENCE', 'SIMULATION', 'RUNTIME_OBSERVED', 'AGENT_INSTRUMENTED', 'APPLICATION_REPORTED'])
 const workerCapabilities = new Set<WorkerCapability>(['STATIC_ONLY', 'TRUSTED_DOCKER', 'HARDENED_GVISOR', 'HARDENED_KATA'])
 const outputLanguages = new Set<OutputLanguage>(['ZH_CN', 'EN'])
@@ -734,6 +796,10 @@ export const parseDashboard = (value: unknown): DashboardSnapshot => {
   // present, while retaining every rich path and using the first path only as
   // a compatibility projection for views that still consume `path`.
   const pathValue = rawPathValue === undefined ? richPaths[0]?.steps ?? [] : rawPathValue
+  const rawPathRuns = value.pathRuns
+  const pathRuns = rawPathRuns === undefined
+    ? []
+    : Array.isArray(rawPathRuns) ? rawPathRuns.map(parsePathRun) : (() => { throw new Error('invalid dashboard.pathRuns') })()
   return {
     schemaVersion: version,
     projectId,
@@ -745,7 +811,51 @@ export const parseDashboard = (value: unknown): DashboardSnapshot => {
     entries: entriesValue.map((item) => parseEntry(item, { schemaVersion: version, projectId, artifactDigest })),
     findings: findingsValue.map((item) => parseFinding(item, { schemaVersion: version, projectId, artifactDigest, scanId })),
     path: pathValue.map(parsePath),
-    paths: richPaths
+    paths: richPaths,
+    pathRuns
+  }
+}
+
+const parsePathRun = (value: unknown): PathRunDto => {
+  if (!isRecord(value)) throw new Error('invalid pathRun')
+  const sqlRaw = value.sqlEvents
+  const sqlEvents = sqlRaw === undefined
+    ? []
+    : Array.isArray(sqlRaw)
+      ? sqlRaw.map((item) => {
+        if (!isRecord(item)) throw new Error('invalid pathRun.sqlEvents')
+        return {
+          sqlText: typeof item.sqlText === 'string' ? item.sqlText : '',
+          parameterSummary: typeof item.parameterSummary === 'string' ? item.parameterSummary : undefined,
+          readWrite: typeof item.readWrite === 'string' ? item.readWrite : undefined,
+          parameterized: typeof item.parameterized === 'boolean' ? item.parameterized : undefined,
+          maliciousFragmentPresent: typeof item.maliciousFragmentPresent === 'boolean'
+            ? item.maliciousFragmentPresent : undefined,
+          captureMode: typeof item.captureMode === 'string' ? item.captureMode : undefined
+        }
+      })
+      : (() => { throw new Error('invalid pathRun.sqlEvents') })()
+  return {
+    schemaVersion: schemaVersion(value.schemaVersion, 'pathRun.schemaVersion'),
+    pathRunId: asText(value.pathRunId, 'pathRun.pathRunId'),
+    scanId: asText(value.scanId, 'pathRun.scanId'),
+    entrypointRef: asText(value.entrypointRef, 'pathRun.entrypointRef'),
+    track: asText(value.track, 'pathRun.track'),
+    attemptId: asText(value.attemptId, 'pathRun.attemptId'),
+    experimentPlanId: strictOptionalText(value.experimentPlanId, 'pathRun.experimentPlanId'),
+    method: asText(value.method ?? 'GET', 'pathRun.method'),
+    contentType: strictOptionalText(value.contentType, 'pathRun.contentType'),
+    requestSummary: strictOptionalText(value.requestSummary, 'pathRun.requestSummary'),
+    outcomeClass: asText(value.outcomeClass, 'pathRun.outcomeClass'),
+    httpStatus: typeof value.httpStatus === 'number' ? value.httpStatus : -1,
+    entryHit: typeof value.entryHit === 'boolean' ? value.entryHit : null,
+    parameterBound: typeof value.parameterBound === 'boolean' ? value.parameterBound : null,
+    sqlEvents,
+    stopReason: strictOptionalText(value.stopReason, 'pathRun.stopReason'),
+    verificationStatus: statusOf(value.verificationStatus, 'pathRun.verificationStatus'),
+    evidenceRefs: evidenceRefsOf(value.evidenceRefs, 'pathRun.evidenceRefs'),
+    identityProvenance: strictOptionalText(value.identityProvenance, 'pathRun.identityProvenance'),
+    identityPrecondition: strictOptionalText(value.identityPrecondition, 'pathRun.identityPrecondition')
   }
 }
 
@@ -949,9 +1059,18 @@ export const parseRoleAssignment = (value: unknown): RoleAssignmentDto => {
   const body = unwrap(value, 'roleAssignment')
   if (!isRecord(body)) throw new Error('invalid role assignment response')
   const role = asText(body.role, 'roleAssignment.role') as AiRole
-  if (!['PRE_ANALYSIS', 'PATH_EXPLORATION', 'DYNAMIC_VERIFICATION', 'VULNERABILITY_TRIAGE', 'REPORT_GENERATION'].includes(role)) throw new Error('invalid roleAssignment.role')
+  if (!['PRE_ANALYSIS', 'AUTH_ANALYSIS', 'PATH_EXPLORATION', 'DYNAMIC_VERIFICATION', 'VULNERABILITY_TRIAGE', 'REPORT_GENERATION'].includes(role)) throw new Error('invalid roleAssignment.role')
+  // Control plane emits schemaVersion 2 once promptZh/promptEn are on the wire (V010+).
+  const rawSchema = isRecord(value) && value.schemaVersion !== undefined
+    ? value.schemaVersion
+    : body.schemaVersion
+  const assignmentSchema = rawSchema === undefined
+    ? 2
+    : Number.isSafeInteger(rawSchema) && (rawSchema === 1 || rawSchema === 2)
+      ? rawSchema
+      : (() => { throw new Error('unsupported roleAssignment.schemaVersion') })()
   return {
-    schemaVersion: schemaVersion(isRecord(value) ? value.schemaVersion : body.schemaVersion, 'roleAssignment.schemaVersion', false),
+    schemaVersion: assignmentSchema,
     projectId: asText(body.projectId, 'roleAssignment.projectId'),
     role,
     providerId: asText(body.providerId, 'roleAssignment.providerId'),
@@ -966,7 +1085,7 @@ export const parseAiJob = (value: unknown): AiJobDto => {
   const body = unwrap(value, 'aiJob')
   if (!isRecord(body)) throw new Error('invalid ai job response')
   const role = asText(body.role, 'aiJob.role') as AiRole
-  if (!['PRE_ANALYSIS', 'PATH_EXPLORATION', 'DYNAMIC_VERIFICATION', 'VULNERABILITY_TRIAGE', 'REPORT_GENERATION'].includes(role)) throw new Error('invalid aiJob.role')
+  if (!['PRE_ANALYSIS', 'AUTH_ANALYSIS', 'PATH_EXPLORATION', 'DYNAMIC_VERIFICATION', 'VULNERABILITY_TRIAGE', 'REPORT_GENERATION'].includes(role)) throw new Error('invalid aiJob.role')
   let policySnapshot: Record<string, unknown> | undefined
   if (body.policySnapshot !== undefined) {
     if (isRecord(body.policySnapshot)) {
@@ -1160,6 +1279,7 @@ const demoSnapshot: DashboardSnapshot = {
     { id: 'f-03', title: '文件内容进入执行器', severity: 'critical', status: 'DYNAMIC_SUSPECTED', entry: '/api/run', sink: 'ProcessBuilder', dependency: 'ROLE_ADMIN', evidence: 4 }
   ],
   paths: [],
+  pathRuns: [],
   path: [
     { label: 'POST /api/upload', detail: 'filename = ${safe-probe}', kind: 'entry', state: 'done' },
     { label: 'UploadService.save', detail: 'URLDecode → path concat', kind: 'transform', state: 'done' },

@@ -4,6 +4,7 @@ import type { VerificationStatus } from '../api'
 const labels: Record<VerificationStatus, string> = {
   STATIC_INFERRED: '静态推断',
   DYNAMIC_SUSPECTED: '动态疑似',
+  DYNAMIC_CONFIRMED: '动态确认',
   VERIFIED: '已验证',
   UNREACHED: '未覆盖'
 }
@@ -19,8 +20,10 @@ export function BoundaryLegend() {
     <span>代码与结构推断</span>
     <StatusPill status="DYNAMIC_SUSPECTED" />
     <span>运行时观察，尚未重放确认</span>
+    <StatusPill status="DYNAMIC_CONFIRMED" />
+    <span>SQL 恶意片段无过滤入库（MOCK，非生产证实）</span>
     <StatusPill status="VERIFIED" />
-    <span>仅限可重放证据</span>
+    <span>仅限强化沙箱可重放证据</span>
   </section>
 }
 

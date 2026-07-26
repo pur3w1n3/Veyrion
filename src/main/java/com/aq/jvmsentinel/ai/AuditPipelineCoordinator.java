@@ -16,6 +16,9 @@ import java.util.function.Predicate;
 /**
  * Server-owned audit stage machine. Model output cannot arm, skip, or expand stages.
  * Advancement requires an armed pipeline from an authorized audit-run.
+ *
+ * <p>Path-debug order: PRE → AUTH → DYNAMIC_OBSERVATION → AUTH bypass confirm →
+ * DYNAMIC_VERIFICATION → PATH → TRIAGE → REPORT.</p>
  */
 public final class AuditPipelineCoordinator {
     private static final Set<String> BUSY = Set.of("QUEUED", "RUNNING", "COMPLETED");
@@ -37,6 +40,11 @@ public final class AuditPipelineCoordinator {
     public interface Actions {
         boolean hasRoleJob(String projectId, String scanId, AgentRole role);
 
+        /** Count of busy-or-done jobs for a role (AUTH_ANALYSIS may run twice). */
+        default int countRoleJobs(String projectId, String scanId, AgentRole role) {
+            return hasRoleJob(projectId, scanId, role) ? 1 : 0;
+        }
+
         boolean hasBusyDynamicTask(String scanId);
 
         /** True only while a dynamic task still needs to finish (QUEUED..PAUSED). */
@@ -55,7 +63,9 @@ public final class AuditPipelineCoordinator {
 
     public enum PipelineStage {
         PRE_ANALYSIS,
+        AUTH_ANALYSIS,
         DYNAMIC_OBSERVATION,
+        AUTH_BYPASS_CONFIRM,
         DYNAMIC_VERIFICATION,
         PATH_EXPLORATION,
         VULNERABILITY_TRIAGE,
@@ -88,7 +98,9 @@ public final class AuditPipelineCoordinator {
         async.execute(() -> {
             switch (stage) {
                 case PRE_ANALYSIS -> safeEnqueueRole(arm, AgentRole.PRE_ANALYSIS);
+                case AUTH_ANALYSIS -> safeEnqueueRole(arm, AgentRole.AUTH_ANALYSIS);
                 case DYNAMIC_OBSERVATION -> safeEnqueueDynamic(arm);
+                case AUTH_BYPASS_CONFIRM -> enqueueAuthBypass(arm);
                 case DYNAMIC_VERIFICATION -> safeEnqueueRole(arm, AgentRole.DYNAMIC_VERIFICATION);
                 case PATH_EXPLORATION -> waitForDynamicIdleThenPath(arm);
                 case VULNERABILITY_TRIAGE -> safeEnqueueRole(arm, AgentRole.VULNERABILITY_TRIAGE);
@@ -122,20 +134,45 @@ public final class AuditPipelineCoordinator {
             disarm(arm, PipelineStage.DYNAMIC_OBSERVATION.name() + "_FAILED");
             return;
         }
-        // The first sandbox pass is driven by the static/pre-analysis entry
-        // catalog. The dynamic role interprets those observations before path
-        // modeling is allowed to consume them.
-        actions.persistState(arm, PipelineStage.DYNAMIC_VERIFICATION.name(), true);
-        async.execute(() -> safeEnqueueRole(arm, AgentRole.DYNAMIC_VERIFICATION));
+        // P3: confirm bypass using dynamic 401/pass-gate evidence before dynamic verification.
+        actions.persistState(arm, PipelineStage.AUTH_BYPASS_CONFIRM.name(), true);
+        async.execute(() -> enqueueAuthBypass(arm));
     }
 
     private void advanceAfterRole(Arm arm, AgentRole completed) {
         switch (completed) {
-            case PRE_ANALYSIS -> safeEnqueueDynamic(arm);
+            case PRE_ANALYSIS -> safeEnqueueRole(arm, AgentRole.AUTH_ANALYSIS);
+            case AUTH_ANALYSIS -> {
+                if (actions.hasCompletedDynamicTask(arm.scanId())
+                        && actions.countRoleJobs(arm.projectId(), arm.scanId(), AgentRole.AUTH_ANALYSIS) >= 2) {
+                    safeEnqueueRole(arm, AgentRole.DYNAMIC_VERIFICATION);
+                } else if (actions.hasCompletedDynamicTask(arm.scanId())) {
+                    // First AUTH completed after dynamic somehow — still need bypass confirm.
+                    enqueueAuthBypass(arm);
+                } else {
+                    safeEnqueueDynamic(arm);
+                }
+            }
             case DYNAMIC_VERIFICATION -> waitForDynamicIdleThenPath(arm);
             case PATH_EXPLORATION -> safeEnqueueRole(arm, AgentRole.VULNERABILITY_TRIAGE);
             case VULNERABILITY_TRIAGE -> safeEnqueueRole(arm, AgentRole.REPORT_GENERATION);
             case REPORT_GENERATION -> disarm(arm, PipelineStage.COMPLETE.name());
+        }
+    }
+
+    private void enqueueAuthBypass(Arm arm) {
+        try {
+            actions.persistState(arm, PipelineStage.AUTH_BYPASS_CONFIRM.name(), true);
+            int authJobs = actions.countRoleJobs(arm.projectId(), arm.scanId(), AgentRole.AUTH_ANALYSIS);
+            if (authJobs >= 2) {
+                actions.persistState(arm, PipelineStage.DYNAMIC_VERIFICATION.name(), true);
+                safeEnqueueRole(arm, AgentRole.DYNAMIC_VERIFICATION);
+                return;
+            }
+            actions.enqueueRole(arm.projectId(), arm.scanId(), AgentRole.AUTH_ANALYSIS,
+                    arm.outputLanguage(), arm.actorId());
+        } catch (RuntimeException ignored) {
+            disarm(arm, PipelineStage.AUTH_BYPASS_CONFIRM.name() + "_ENQUEUE_FAILED");
         }
     }
 
@@ -156,13 +193,12 @@ public final class AuditPipelineCoordinator {
                 return;
             }
             if (actions.hasCompletedDynamicTask(arm.scanId())) {
-                // Observation already finished (recovery / prior pass); do not start a second Docker task.
-                actions.persistState(arm, PipelineStage.DYNAMIC_VERIFICATION.name(), true);
-                safeEnqueueRole(arm, AgentRole.DYNAMIC_VERIFICATION);
+                // Observation already finished (recovery / prior pass); continue to bypass confirm.
+                actions.persistState(arm, PipelineStage.AUTH_BYPASS_CONFIRM.name(), true);
+                enqueueAuthBypass(arm);
                 return;
             }
             if (actions.hasBusyDynamicTask(arm.scanId())) {
-                // Compatibility for stubs that only implement hasBusyDynamicTask after enqueue.
                 return;
             }
             actions.enqueueDynamic(arm.scanId(), arm.actorId());

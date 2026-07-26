@@ -6,17 +6,11 @@
 
 **个人本地版边界**：GUI 只承载本地项目、制品、扫描、证据和沙箱任务。当前不提供多租户切换、企业 RBAC/SSO 或真实供应商生产连接入口；Provider 和动态能力均须显示本地授权与沙箱状态，沙箱不可用时明确显示不可用，而不是提供宿主机执行按钮。
 
-模型服务页的五个角色卡片同时提供中文提示词和 English prompt 编辑器。保存时由后端校验长度、控制字符和项目作用域；任务创建时固化提示词快照。审计执行页按以下顺序显示阶段：
+模型服务页的**六个**角色卡片（前置建模、鉴权分析、动态验证、路径探索、漏洞研判、报告生成）同时提供中文提示词和 English prompt 编辑器。保存时由后端校验长度、控制字符和项目作用域；任务创建时固化提示词快照。审计执行页按以下顺序显示阶段（与 [AUDIT_FLOW.md](AUDIT_FLOW.md) 一致）：
 
-```mermaid
-flowchart TD
-  S[静态接口与证据] --> P[前置建模\n可补充入口候选]
-  P --> O[沙箱动态观察]
-  O --> D[动态验证\n授权 loopback 发包]
-  D --> X[路径探索\n消费请求/响应]
-  X --> T[漏洞研判\n动态闭环门槛]
-  T --> R[报告生成]
-```
+- 前置建模 → 鉴权分析 → 沙箱按轨动态观察 → 鉴权绕过确认 → 动态验证 → 路径探索 → 漏洞研判 → 报告生成
+
+结果页主视图应以 **PathRun 会话**（入口 × 身份轨 × 尝试）组织，展示超时分类码、HTTP/Agent/SQL 摘要与合成身份前置条件；`AUTH_GAP` 与 `DYNAMIC_CONFIRMED` 等状态可筛选。筛选选项包含 `STATIC_INFERRED` / `DYNAMIC_SUSPECTED` / `DYNAMIC_CONFIRMED` / `VERIFIED` / `UNREACHED`。
 
 GUI 不采用 Swing、JavaFX 或把页面嵌入 Java 进程。Java 负责 JVM 制品分析、任务编排、证据和沙箱控制；GUI 作为独立的 React/TypeScript 应用，通过受控 API 访问后端。
 
@@ -157,7 +151,7 @@ Control Plane 当前使用本地 SQLite 保存项目、制品元数据、scan、
 
 SSE 路由 `GET /api/v1/scans/{id}/events` 支持 `Last-Event-ID` 续接。客户端必须处理 `ScanCreated`、`TaskLeased`、`FindingUpdated`、`ScanCompleted`、`TaskStopped` 等事件，并在断线、事件窗口不足或收到终态后调用幂等 GET 进行补偿。SSE 是增量通知，不是事实来源；最终状态以 `GET /api/v1/scans/{id}` 为准。事件 DTO 带 `schemaVersion`、`projectId`、`artifactDigest`、`scanId`、`verificationStatus`、`dependencyMode` 和 `evidenceRefs`。
 
-静态元数据限制必须在 UI 中持续可见：调用图和跨方法污点是预算内 `STATIC_INFERRED` 事实/候选；`MOCK`、沙箱 trace 和模型输出不能直接显示为 `VERIFIED`。动态验证仍必须依赖用户授权沙箱，个人本地版不承诺多租户/RBAC 或生产供应商互操作。
+静态元数据限制必须在 UI 中持续可见：调用图和跨方法污点是预算内 `STATIC_INFERRED` 事实/候选；`MOCK`、沙箱 trace 和模型输出不能直接显示为 `VERIFIED`。`DYNAMIC_CONFIRMED` 必须展示 MOCK/合成身份前置条件，且不得文案暗示生产实库已证实。动态验证仍必须依赖用户授权沙箱，个人本地版不承诺多租户/RBAC 或生产供应商互操作。
 
 DTO 必须带 `schemaVersion`、`projectId`、`artifactDigest`、`scanId`、`verificationStatus`、`dependencyMode` 和 `evidenceRefs`。前端只把事件当作增量提示，最终状态以幂等的查询接口为准。
 

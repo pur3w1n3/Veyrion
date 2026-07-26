@@ -18,14 +18,19 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Verifies server-owned audit pipeline advancement without model authority. */
 public final class AuditPipelineCoordinatorAcceptanceTest {
     public static void main(String[] args) throws Exception {
         List<String> actions = new CopyOnWriteArrayList<>();
+        CountDownLatch auth = new CountDownLatch(1);
         CountDownLatch path = new CountDownLatch(1);
         CountDownLatch dynamic = new CountDownLatch(1);
         CountDownLatch verify = new CountDownLatch(1);
+        AtomicInteger authJobs = new AtomicInteger();
+        AtomicBoolean dynamicCompleted = new AtomicBoolean();
         AuditPipelineCoordinator coordinator = new AuditPipelineCoordinator(
                 new AuditPipelineCoordinator.Actions() {
                     @Override
@@ -34,14 +39,27 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
                     }
 
                     @Override
+                    public int countRoleJobs(String projectId, String scanId, AgentRole role) {
+                        if (role == AgentRole.AUTH_ANALYSIS) return authJobs.get();
+                        return hasRoleJob(projectId, scanId, role) ? 1 : 0;
+                    }
+
+                    @Override
                     public boolean hasBusyDynamicTask(String scanId) {
-                        return actions.contains("dynamic");
+                        return actions.contains("dynamic") && !dynamicCompleted.get();
+                    }
+
+                    @Override
+                    public boolean hasCompletedDynamicTask(String scanId) {
+                        return dynamicCompleted.get();
                     }
 
                     @Override
                     public void enqueueRole(String projectId, String scanId, AgentRole role,
                                             AiOutputLanguage language, String actorId) {
                         actions.add("role:" + role.name());
+                        if (role == AgentRole.AUTH_ANALYSIS) authJobs.incrementAndGet();
+                        if (role == AgentRole.AUTH_ANALYSIS && authJobs.get() == 1) auth.countDown();
                         if (role == AgentRole.PATH_EXPLORATION) path.countDown();
                         if (role == AgentRole.DYNAMIC_VERIFICATION) verify.countDown();
                     }
@@ -55,14 +73,20 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
         coordinator.arm(new AuditPipelineCoordinator.Arm(
                 "scan-a", "project-a", "operator-a", AiOutputLanguage.ZH_CN));
         coordinator.onAiJobFinished(job("scan-a", AgentRole.PRE_ANALYSIS, "COMPLETED"));
-        check(dynamic.await(3, TimeUnit.SECONDS), "PRE_ANALYSIS completion enqueues Docker dynamic");
+        check(auth.await(3, TimeUnit.SECONDS), "PRE_ANALYSIS completion enqueues AUTH_ANALYSIS");
+        coordinator.onAiJobFinished(job("scan-a", AgentRole.AUTH_ANALYSIS, "COMPLETED"));
+        check(dynamic.await(3, TimeUnit.SECONDS), "AUTH_ANALYSIS completion enqueues Docker dynamic");
         WorkerTaskSpec spec = new WorkerTaskSpec(
                 1, "project-a", "a".repeat(64), "scan-a", "task-a", "entry-a", true,
                 new ResourceBudget(60, 30_000, 1024L * 1024 * 1024, 64L * 1024 * 1024, 512L * 1024),
                 NetworkPolicy.denyAll(), WorkerCapability.TRUSTED_DOCKER);
+        dynamicCompleted.set(true);
         coordinator.onDynamicTaskFinished(new TaskSnapshot(
                 1, spec, TaskLifecycle.COMPLETED, null, null, StopReason.COMPLETED, null, Instant.now()));
-        check(verify.await(3, TimeUnit.SECONDS), "dynamic completion enqueues DYNAMIC_VERIFICATION");
+        Thread.sleep(300);
+        check(authJobs.get() >= 2, "dynamic completion enqueues AUTH bypass confirm");
+        coordinator.onAiJobFinished(job("scan-a", AgentRole.AUTH_ANALYSIS, "COMPLETED"));
+        check(verify.await(3, TimeUnit.SECONDS), "AUTH bypass confirm enqueues DYNAMIC_VERIFICATION");
         coordinator.onAiJobFinished(job("scan-a", AgentRole.DYNAMIC_VERIFICATION, "COMPLETED"));
         check(path.await(3, TimeUnit.SECONDS), "DYNAMIC_VERIFICATION completion enqueues PATH_EXPLORATION");
         coordinator.onAiJobFinished(job("scan-a", AgentRole.PATH_EXPLORATION, "FAILED"));
@@ -76,7 +100,8 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
 
     private static AiJobData job(String scanId, AgentRole role, String status) {
         return new AiJobData(
-                "ai-job-" + role.name().toLowerCase(), "local", "project-a", scanId, "a".repeat(64),
+                "ai-job-" + role.name().toLowerCase() + "-" + System.nanoTime(), "local", "project-a", scanId,
+                "a".repeat(64),
                 role, "provider-a", "model-a", "{\"schemaVersion\":1}", true, status, status,
                 "[]", null, 0, 0, "[]", null, Instant.now().toString(), Instant.now().toString());
     }

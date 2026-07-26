@@ -23,8 +23,8 @@
 
 - M0/M1 Java 切片通过 Java 17 编译和依赖无关验收主类；`mvn test` 在使用工作区本地 Maven 缓存时通过，但验收类本身不是 JUnit 用例，仍需显式执行 `AcceptanceTest`。
 - 审计期间修正了制品大小/归档条目边界、路径真实化与注册后变更校验、配置脱敏和读取上限、JSON 控制字符转义、模型输入约束以及事件作用域上下文。
-- 当前代码已提供受限动态执行、JVM Agent、JDBC/Redis/MySQL 替身、本地 SQLite Worker/trace 恢复和 V008 上传会话恢复，但普通 `TRUSTED_DOCKER` 不是强化沙箱，动态证据最多为 `DYNAMIC_SUSPECTED`，不能把替身或模型输出当作安全结论。
-- 2026-07-26 曾在用户授权的 Docker Desktop Linux engine 中通过 `LocalDockerDynamicLoopAcceptanceTest`；覆盖固定 runtime digest、断网容器、只读制品挂载、loopback 探针、Agent trace 和五角色事件。rootfs/UID 兼容策略调整后需重新验收；该结果仍只属于受信内部 JAR 的开发验收。
+- 当前代码已提供受限动态执行、JVM Agent、JDBC/Redis/MySQL 替身、本地 SQLite Worker/trace 恢复和 V008 上传会话恢复，但普通 `TRUSTED_DOCKER` 不是强化沙箱；动态证据历史上多为 `DYNAMIC_SUSPECTED`。产品已转向路径调试型契约（PathRun、六角色含 `AUTH_ANALYSIS`、合成身份、SQL D1–D3、`DYNAMIC_CONFIRMED`），见 [PATH_EXPERIMENT_MODEL.md](PATH_EXPERIMENT_MODEL.md)；实现按 MVP M-A…M-D 分期，模型仍不能单独升级状态。
+- 2026-07-26 曾在用户授权的 Docker Desktop Linux engine 中通过 `LocalDockerDynamicLoopAcceptanceTest`；覆盖固定 runtime digest、断网容器、只读制品挂载、loopback 探针、Agent trace 和（当时）五角色事件。路径调试改造后需按六角色与 PathRun 重新验收；该结果仍只属于受信内部 JAR 的开发验收。
 - 事件上下文已加入项目/制品/扫描/任务作用域；Control Plane DTO 已补齐 `observedAt`、工具/模型版本和快照引用，但不可变对象存储仍未实现。
 - 前端生产构建已通过，当前完整 `npm audit --audit-level=high` 无已知漏洞；真实 DTO/SSE 接入已完成 MVP slice，仍需在后续发布流程中持续锁定和升级依赖。
 
@@ -43,7 +43,7 @@ Control Plane REST/SSE 已纳入当前 MVP slice：
 
 已完成：Java 17 制品登记和有界 classfile 事实/制品内调用图、跨方法污点候选、Control Plane REST/SSE + SQLite、版本化 DTO、幂等键、SSE 终态/续接协议、React/TypeScript/Vite GUI、JVM Agent、断网 `TRUSTED_DOCKER`、批量探针、服务端受控 finding replay、JDBC/Redis/MySQL 协议替身及动态任务/trace 的单节点恢复。
 
-未完成：gVisor/Kata 强化运行时及 P0 逃逸门禁、真实反编译器、完整 classpath/复杂分支对象流、协议替身的完整兼容性、生产级身份/会话鉴权、真实漏洞确认和 `VERIFIED` 重放门禁；完整多租户/RBAC 已明确不在当前产品范围。
+未完成 / 分期中：PathRun 主视图与超时分类落地、`AUTH_ANALYSIS` 与合成身份按轨洪水、SQL D1–D3 与 `DYNAMIC_CONFIRMED` 服务端门禁、Blade/Flowable 高价值实验形态；以及 gVisor/Kata 强化运行时及 P0 逃逸门禁、真实反编译器、完整 classpath/复杂分支对象流、协议替身完整兼容性、`VERIFIED` 强化沙箱门禁。完整多租户/RBAC 已明确不在当前产品范围。
 
 前端默认 DEMO/MOCK 仅在 `VITE_DEMO_MODE=true` 时开启；真实模式必须关闭该开关并配置 `VITE_API_BASE_URL`、`VITE_PROJECT_ID`（可选 `VITE_SCAN_ID`）。真实模式失败不会自动回退到 Mock。当前本地 MVP 写操作需要 `VITE_API_TOKEN`；生产级 HttpOnly 会话、CSRF、SSO/RBAC 尚未在 Java Control Plane 实现。
 

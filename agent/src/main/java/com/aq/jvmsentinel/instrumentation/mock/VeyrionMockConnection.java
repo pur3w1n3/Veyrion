@@ -297,11 +297,23 @@ final class VeyrionMockConnection implements Connection {
     }
 
     void observeSql(String sql) {
+        String text = sql == null ? "" : sql;
+        String lower = text.toLowerCase(java.util.Locale.ROOT);
+        String readWrite = lower.startsWith("select") || lower.startsWith("show") || lower.startsWith("explain")
+                ? "READ"
+                : lower.startsWith("insert") || lower.startsWith("update") || lower.startsWith("delete")
+                || lower.startsWith("replace") ? "WRITE" : "UNKNOWN";
+        boolean parameterized = text.contains("?");
+        boolean malicious = lower.contains("'\"veyrion-sqli-meta");
         AgentRuntime.recordJdbc(getClass().getName(), "execute",
                 Map.of("captureMode", "DEPENDENCY_MOCK",
                         "dependencyMode", "MOCK",
                         "provenance", "RULE_GENERATED",
-                        "sql", truncate(sql == null ? "" : sql)));
+                        "sql", truncate(text),
+                        "readWrite", readWrite,
+                        "parameterized", Boolean.toString(parameterized),
+                        "maliciousFragmentPresent", Boolean.toString(malicious),
+                        "parameterSummary", parameterized ? "jdbc-placeholders" : "inline"));
     }
 
     private static String truncate(String value) {

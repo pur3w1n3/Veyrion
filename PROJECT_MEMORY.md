@@ -508,3 +508,17 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - `sandbox_probe` 不再把扫描上任意进行中任务伪绑到请求入口；扫描忙时返回 `BUSY/retryable`。对本 job 创建的任务会等待终态后再把 lifecycle/stopReason 回传给模型。
 - 流水线 `hasBusyDynamicTask` 不再把 `COMPLETED` 当成忙；已完成观察则直接推进动态验证，避免 finding-replay / 恢复后二次 Docker 任务或卡死。
 - 所有动态任务都会持久化有界 probe-plan 元数据（空 candidateInputs 也写入）；Worker mutation replay key 仍主要在进程内（§42 边界保留）。
+
+## 51. 路径调试型审计定位（2026-07-26）
+
+产品从「入口洪水 + AUTH_GAP 综述」转向「鉴权分析 + 多身份轨路径实验 + SQL 观测闭环」。权威契约：[docs/PATH_EXPERIMENT_MODEL.md](docs/PATH_EXPERIMENT_MODEL.md)、[docs/AUDIT_FLOW.md](docs/AUDIT_FLOW.md)。
+
+锁定决策：
+
+- 新增 AI 角色 `AUTH_ANALYSIS`；流水线 P1+P3（洪水前分析，动态后再确认绕过）。
+- 身份默认平台合成（`MOCK`/`RULE_GENERATED`）；轨 `UNAUTH`/`USER`/`ADMIN`/`BYPASS_CANDIDATE`；预算 T2+T3。
+- 实验计划由 AI 生成、服务端闸门执行（所有权 M）。
+- 超时最小枚举；SQL 承诺 D1+D2+D3；默认不高开 `VERIFIED`；恶意 SQL 无过滤入库升 **`DYNAMIC_CONFIRMED`（H3）**。
+- PathRun 为一等公民；GUI/研判围绕 PathRun，`AUTH_GAP` 降为次级信号。
+
+实现排期（[docs/MVP_BACKLOG.md](docs/MVP_BACKLOG.md)）：**M-A** 契约与呈现 → **M-B** 鉴权/合成身份/按轨观察 → **M-C** SQL D1–D3 与 `DYNAMIC_CONFIRMED` → **M-D** Blade/Flowable 高价值实验形态（无破坏）。模型不得单独升级任何验证状态；`DYNAMIC_CONFIRMED` ≠ 生产实库已证实。
