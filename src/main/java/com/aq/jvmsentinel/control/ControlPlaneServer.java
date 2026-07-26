@@ -476,6 +476,8 @@ public final class ControlPlaneServer implements AutoCloseable {
                 sendError(exchange, 403, "POLICY_REJECTED", policyViolation.getMessage(), requestId);
             } catch (IllegalArgumentException badRequest) {
                 sendError(exchange, 400, "INVALID_REQUEST", safeMessage(badRequest), requestId);
+            } catch (SQLiteControlPlanePersistence.PersistenceException persistence) {
+                sendError(exchange, 409, "PERSISTENCE_REJECTED", safeMessage(persistence), requestId);
             } catch (Exception unexpected) {
                 // Do not expose host paths, stack traces or parser internals to
                 // the browser.  The request ID is enough for local logs.
@@ -2810,7 +2812,9 @@ public final class ControlPlaneServer implements AutoCloseable {
         result.put("entrypointRef", dto.entrypointRef());
         result.put("track", dto.track());
         result.put("attemptId", dto.attemptId());
-        result.put("experimentPlanId", dto.experimentPlanId());
+        if (dto.experimentPlanId() != null && !dto.experimentPlanId().isBlank()) {
+            result.put("experimentPlanId", dto.experimentPlanId());
+        }
         result.put("method", dto.method());
         result.put("contentType", dto.contentType());
         result.put("requestSummary", dto.requestSummary());

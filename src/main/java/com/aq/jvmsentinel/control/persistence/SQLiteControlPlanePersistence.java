@@ -73,7 +73,8 @@ public final class SQLiteControlPlanePersistence {
             "db/migration/V008__persistent_artifact_uploads.sql",
             "db/migration/V009__persistent_sse_events.sql",
             "db/migration/V010__role_prompt_templates.sql",
-            "db/migration/V011__persistent_idempotency_and_pipeline.sql");
+            "db/migration/V011__persistent_idempotency_and_pipeline.sql",
+            "db/migration/V012__auth_analysis_role.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 

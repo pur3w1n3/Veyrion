@@ -31,12 +31,18 @@ const initialLanguage = (): OutputLanguage => {
   try { return localStorage.getItem('veyrion.language') === 'EN' ? 'EN' : 'ZH_CN' } catch { return 'ZH_CN' }
 }
 
+const initialProjectId = (): string => {
+  const fromEnv = import.meta.env.VITE_PROJECT_ID
+  if (typeof fromEnv === 'string' && fromEnv.trim()) return fromEnv.trim()
+  try { return localStorage.getItem('veyrion.projectId') ?? '' } catch { return '' }
+}
+
 export default function App() {
   const [view, setView] = useState<View>('workspaces')
   const [theme, setTheme] = useState<Theme>(initialTheme)
   const [language, setLanguage] = useState<OutputLanguage>(initialLanguage)
   const [projects, setProjects] = useState<ProjectDto[]>([])
-  const [projectId, setProjectId] = useState(import.meta.env.VITE_PROJECT_ID || '')
+  const [projectId, setProjectId] = useState(initialProjectId)
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null)
   const [focusedScanId, setFocusedScanId] = useState<string>()
   const [projectApiError, setProjectApiError] = useState<string>()
@@ -53,6 +59,13 @@ export default function App() {
     document.documentElement.lang = language === 'ZH_CN' ? 'zh-CN' : 'en'
     try { localStorage.setItem('veyrion.language', language) } catch { /* Language still applies for this session. */ }
   }, [language])
+
+  useEffect(() => {
+    try {
+      if (projectId) localStorage.setItem('veyrion.projectId', projectId)
+      else localStorage.removeItem('veyrion.projectId')
+    } catch { /* Selection still applies for this session. */ }
+  }, [projectId])
 
   const refreshProjects = useCallback(async () => {
     try {

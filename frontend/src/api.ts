@@ -574,7 +574,8 @@ const asText = (value: unknown, field: string): string => {
 const optionalText = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined
 
 const strictOptionalText = (value: unknown, field: string): string | undefined => {
-  if (value === undefined) return undefined
+  // JSON null and empty string are treated as absent optional fields.
+  if (value === undefined || value === null || value === '') return undefined
   return asText(value, field)
 }
 
