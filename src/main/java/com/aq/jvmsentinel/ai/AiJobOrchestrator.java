@@ -23,6 +23,7 @@ import com.aq.jvmsentinel.provider.chat.ProviderChatContracts;
 import com.aq.jvmsentinel.provider.chat.ProviderChatTransport;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.net.URI;
@@ -83,6 +84,7 @@ public final class AiJobOrchestrator implements AutoCloseable {
     private final ControlPlaneToolDataSource.DynamicEvidenceSource dynamicEvidenceSource;
     private final DynamicProbeExecutor dynamicProbeExecutor;
     private final PathRunSource pathRunSource;
+    private final ControlPlaneToolDataSource.ExperimentPlanAcceptor experimentPlanAcceptor;
     private final ExecutorService executor;
     private final Map<String, Running> running = new ConcurrentHashMap<>();
     private volatile TerminalListener terminalListener = job -> { };
@@ -117,12 +119,22 @@ public final class AiJobOrchestrator implements AutoCloseable {
                              ControlPlaneToolDataSource.DynamicEvidenceSource dynamicEvidenceSource,
                              DynamicProbeExecutor dynamicProbeExecutor,
                              PathRunSource pathRunSource) {
+        this(store, transport, clock, dynamicEvidenceSource, dynamicProbeExecutor, pathRunSource,
+                (scanId, plan) -> { });
+    }
+
+    public AiJobOrchestrator(ControlPlaneStore store, ChatTransport transport, Clock clock,
+                             ControlPlaneToolDataSource.DynamicEvidenceSource dynamicEvidenceSource,
+                             DynamicProbeExecutor dynamicProbeExecutor,
+                             PathRunSource pathRunSource,
+                             ControlPlaneToolDataSource.ExperimentPlanAcceptor experimentPlanAcceptor) {
         this.store = Objects.requireNonNull(store, "store");
         this.transport = Objects.requireNonNull(transport, "transport");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.dynamicEvidenceSource = Objects.requireNonNull(dynamicEvidenceSource, "dynamicEvidenceSource");
         this.dynamicProbeExecutor = Objects.requireNonNull(dynamicProbeExecutor, "dynamicProbeExecutor");
         this.pathRunSource = Objects.requireNonNull(pathRunSource, "pathRunSource");
+        this.experimentPlanAcceptor = Objects.requireNonNull(experimentPlanAcceptor, "experimentPlanAcceptor");
         this.executor = Executors.newFixedThreadPool(4, runnable -> {
             Thread thread = new Thread(runnable, "bounded-ai-job");
             thread.setDaemon(true);
@@ -258,7 +270,7 @@ public final class AiJobOrchestrator implements AutoCloseable {
         AnthropicMessagesAdapter anthropic = new AnthropicMessagesAdapter();
         AiToolRegistry registry = new AiToolRegistry(
                 new ControlPlaneToolDataSource(store, initial.scanId(), dynamicEvidenceSource,
-                        dynamicProbeExecutor, pathRunSource));
+                        dynamicProbeExecutor, pathRunSource, experimentPlanAcceptor));
         ToolExecutionContext context = ToolExecutionContext.bind(
                 new ToolExecutionContext.Scope(initial.workspaceId(), initial.projectId()),
                 actorId, initial.aiJobId(), initial.role(),
@@ -451,6 +463,10 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     ? buildDynamicConclusion(summary, feasibilityPoCs, sandboxProbeCount,
                     dynamicProbeRepairAsked, dynamicAutoProbeCount)
                     : built.conclusionJson();
+            if (initial.role() == AgentRole.PATH_EXPLORATION
+                    || initial.role() == AgentRole.VULNERABILITY_TRIAGE) {
+                conclusion = annotateNextExperiments(initial, summary, conclusion);
+            }
             appendEvent(initial, "MODEL_INFERENCE", "COMPLETED", null, null,
                     null, null, null, summary, null);
             if (built.seeded()) {
@@ -527,6 +543,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         只能消费前置建模、鉴权分析、动态验证和沙箱 PathRun（HTTP/Agent/SQL）结果，重新建立
                         多条互相区分的路径模型。每条链路必须写明入口、身份轨、实际请求与响应、数据/状态转换、
                         可能触发点、证据引用、反证、置信度和停止条件；不得把未执行的候选写成事实。
+                        结论必须包含 nextExperiments[]：每项含 entryRef、objective、track、可选 techniqueId/
+                        candidateInputs/pathRunRefs；禁止只综述 AUTH_GAP。这些步骤须可被 sandbox_probe 消费。
                         """;
                 case DYNAMIC_VERIFICATION -> """
                         消费 AUTH_BYPASS_FEASIBILITY / bypassPoCs：当该列表非空时，在给出叙事结论之前必须先对
@@ -543,6 +561,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         再查询 SCAN 与 DYNAMIC_EVIDENCE。漏洞候选必须经过本地授权沙箱的动态调试闭环：
                         若没有入口命中、参数绑定、触发点执行和可重放结果，只能标记为推测/证据不足，
                         不能标记为存在或 VERIFIED。DYNAMIC_CONFIRMED 仅服务端 SQL 门禁可写。列出前置条件、证据、反证/缺口、影响和下一步验证。
+                        结论必须包含 nextExperiments[]（可被 sandbox_probe 消费的入口×轨步骤）；组合链仅在共享
+                        资源/身份/文件 PathRun 证据上候选；禁止 AUTH_GAP 综述替代下一步实验。
                         """;
                 case REPORT_GENERATION -> """
                         先查询 SCAN、ENTRY、SINK、EVIDENCE、PathRun 与 DYNAMIC_EVIDENCE。输出完整中文 Markdown
@@ -578,7 +598,9 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     Consume only PRE_ANALYSIS, AUTH_ANALYSIS, DYNAMIC_VERIFICATION, and persisted PathRun
                     (HTTP/Agent/SQL) results. Model multiple distinct paths with track, actual requests, responses,
                     data/state transitions, triggers, evidence, counterevidence, confidence, and stop conditions.
-                    Never turn an unexecuted candidate into fact.
+                    Never turn an unexecuted candidate into fact. Emit nextExperiments[] with entryRef, objective,
+                    track, optional techniqueId/candidateInputs/pathRunRefs — steps must be sandbox_probe-consumable,
+                    not AUTH_GAP essays.
                     """;
             case DYNAMIC_VERIFICATION -> """
                     Consume AUTH_BYPASS_FEASIBILITY / bypassPoCs. When that list is non-empty you MUST call
@@ -594,7 +616,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     then query SCAN and DYNAMIC_EVIDENCE. A vulnerability may be marked present only after local authorized sandbox
                     debugging closes entry hit, parameter binding, trigger execution, and replay evidence. Otherwise
                     keep it as hypothesis or insufficient evidence; never claim VERIFIED without replay evidence.
-                    DYNAMIC_CONFIRMED is server-gated for SQL only.
+                    DYNAMIC_CONFIRMED is server-gated for SQL only. Emit nextExperiments[] consumable by sandbox_probe;
+                    combination chains only when PathRuns share identity/resource/file evidence — not AUTH_GAP essays.
                     """;
             case REPORT_GENERATION -> """
                     Query SCAN, ENTRY, SINK, EVIDENCE, PathRun, and DYNAMIC_EVIDENCE first. Produce a complete English Markdown
@@ -904,6 +927,57 @@ public final class AiJobOrchestrator implements AutoCloseable {
             SQLiteControlPlanePersistence.AiJobData job, String summary,
             List<AuthBypassCandidate> toolBypassPoCs) {
         return buildAuthAwareConclusion(job, summary, toolBypassPoCs, false).conclusionJson();
+    }
+
+    /** PATH/TRIAGE: parse nextExperiments and keep only sandbox_probe-consumable steps. */
+    private String annotateNextExperiments(
+            SQLiteControlPlanePersistence.AiJobData job, String summary, String conclusionJson) {
+        Set<String> entries = Set.of();
+        try {
+            entries = store.requireScan(job.scanId()).dto().entries().stream()
+                    .map(entry -> "entry:" + entry.id())
+                    .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+        } catch (RuntimeException ignored) {
+            // Keep empty allow-list → only structural validation.
+        }
+        Set<String> pathRunIds = loadPathRuns(job).stream()
+                .map(ApiDtos.PathRunDto::pathRunId)
+                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+        NextExperimentSteps.ParseResult parsed = NextExperimentSteps.parseAndValidate(
+                conclusionJson + "\n" + summary, entries, pathRunIds);
+        try {
+            ObjectNode node;
+            try {
+                node = (ObjectNode) JSON.readTree(conclusionJson);
+            } catch (Exception ignored) {
+                node = JSON.createObjectNode();
+                node.put("schemaVersion", 1);
+                node.put("classification", "INFERENCE");
+                node.put("summary", summary == null ? "" : summary);
+            }
+            ArrayNode array = node.putArray("nextExperiments");
+            for (var step : parsed.steps()) {
+                ObjectNode row = JSON.createObjectNode();
+                row.put("entryRef", step.entryRef());
+                row.put("objective", step.objective());
+                row.put("track", step.track().name());
+                if (!step.techniqueId().isBlank()) row.put("techniqueId", step.techniqueId());
+                ArrayNode inputs = row.putArray("candidateInputs");
+                step.candidateInputs().forEach(inputs::add);
+                ArrayNode refs = row.putArray("pathRunRefs");
+                step.pathRunRefs().forEach(refs::add);
+                if (!step.rationale().isBlank()) row.put("rationale", step.rationale());
+                array.add(row);
+            }
+            if (!parsed.rejected().isEmpty()) {
+                ArrayNode rejected = node.putArray("rejectedNextExperiments");
+                parsed.rejected().stream().limit(16).forEach(rejected::add);
+            }
+            node.put("nextExperimentsSource", "SERVER_GATED");
+            return node.toString();
+        } catch (Exception failure) {
+            return conclusionJson;
+        }
     }
 
     private AuthConclusionBuilt buildAuthAwareConclusion(
