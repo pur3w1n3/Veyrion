@@ -10,6 +10,7 @@ import java.util.jar.JarFile;
 /** Enables in-sandbox JDBC driver registration and loopback Redis stub. */
 public final class DependencyMockBootstrap {
     private static volatile LoopbackRedisStub redisStub;
+    private static volatile LoopbackMysqlStub mysqlStub;
 
     private DependencyMockBootstrap() {
     }
@@ -25,12 +26,16 @@ public final class DependencyMockBootstrap {
             if (redisStub == null) {
                 redisStub = LoopbackRedisStub.start(6379);
             }
+            if (mysqlStub == null) {
+                mysqlStub = LoopbackMysqlStub.start(3306);
+            }
             AgentRuntime.recordJdbc(DependencyMockBootstrap.class.getName(), "install",
                     Map.of("captureMode", "DEPENDENCY_MOCK",
                             "dependencyMode", "MOCK",
                             "provenance", "RULE_GENERATED",
                             "jdbc", "veyrion-mock",
-                            "redisPort", Integer.toString(redisStub.port())));
+                            "redisPort", Integer.toString(redisStub.port()),
+                            "mysqlPort", Integer.toString(mysqlStub.port())));
         } catch (Exception failure) {
             AgentRuntime.recordJdbc(DependencyMockBootstrap.class.getName(), "installFailed",
                     Map.of("captureMode", "DEPENDENCY_MOCK",

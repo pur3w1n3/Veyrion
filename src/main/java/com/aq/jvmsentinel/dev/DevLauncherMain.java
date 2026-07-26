@@ -58,7 +58,7 @@ public final class DevLauncherMain {
             System.out.println("Local GUI auth token synced to frontend/.env.local (loopback only)");
             System.out.println("No default workspace is created; open 工作区 to choose or create one.");
             System.out.println("Trusted internal JAR Docker worker: "
-                    + (worker == null ? "disabled" : "enabled (TRUSTED_DOCKER, network none)"));
+                    + (worker == null ? "disabled" : "enabled (TRUSTED_DOCKER, network none, network/DNS observation)"));
             System.out.println("Press Ctrl+C to stop both processes.");
 
             try {

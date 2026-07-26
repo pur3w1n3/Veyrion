@@ -94,10 +94,13 @@ public final class TraceProjectionService {
             String route = event.detail().getOrDefault("route", "");
             String httpMethod = event.detail().getOrDefault("httpMethod", "");
             String summary = event.eventType() + " observed by veyrion-agent at " + symbol;
+            String stepDetail = event.eventType() + " observed by veyrion-agent at " + symbol;
             if ("HTTP".equals(event.eventType()) && !route.isBlank()) {
-                summary = httpMethod.isBlank()
-                        ? "HTTP probe observed " + route + " at " + symbol
-                        : "HTTP probe observed " + httpMethod + " " + route + " at " + symbol;
+                HttpObservation observation = httpObservation(event.detail(), route, httpMethod);
+                summary = "HTTP probe observed " + observation.method() + " "
+                        + observation.route() + " (target " + observation.requestTarget() + ") -> "
+                        + observation.response() + " at " + symbol;
+                stepDetail = summary;
             }
             String snapshotRef = "task:" + snapshot.scope().taskId()
                     + ";digest:" + item.chunkDigest() + ";sequence:" + event.sequence();
@@ -110,7 +113,7 @@ public final class TraceProjectionService {
             projectedEvidence.put(evidenceId, evidenceDto);
             refs.add(evidenceId);
             ApiDtos.PathStepDto step = new ApiDtos.PathStepDto(
-                    event.eventType(), symbol, kind, "done", List.of(evidenceId),
+                    event.eventType(), stepDetail, kind, "done", List.of(evidenceId),
                     "DYNAMIC_SUSPECTED", event.provenanceKind(), event.eventType(), event.sequence());
             steps.add(step);
             if ("HTTP".equals(event.eventType()) && !route.isBlank()) {
@@ -254,6 +257,64 @@ public final class TraceProjectionService {
     }
 
     private record EventWithDigest(AgentJsonlTraceConverter.AgentEvent event, String chunkDigest) { }
+
+    /**
+     * Builds a bounded public view of a loopback probe. Query values are never exposed: only
+     * parameter names and value lengths cross the evidence boundary.
+     */
+    private static HttpObservation httpObservation(Map<String, String> detail, String route,
+                                                   String method) {
+        String safeRoute = safeRoute(route);
+        String rawTarget = detail.getOrDefault("requestTarget", route);
+        String safeTarget = safeRequestTarget(rawTarget, safeRoute);
+        String safeMethod = safeMethod(method);
+        String status = detail.getOrDefault("status", "UNKNOWN");
+        String safeStatus = status.matches("[1-5][0-9]{2}") ? "HTTP " + status : "HTTP UNKNOWN";
+        String error = detail.getOrDefault("error", "");
+        if (!error.isBlank()) {
+            String safeError = error.matches("[A-Za-z0-9_.$-]{1,64}") ? error : "ProbeError";
+            safeStatus += " (" + safeError + ")";
+        }
+        return new HttpObservation(safeMethod, safeRoute, safeTarget, safeStatus);
+    }
+
+    private static String safeMethod(String method) {
+        return method != null && method.matches("(?i)GET|POST|PUT|PATCH|DELETE")
+                ? method.toUpperCase(java.util.Locale.ROOT) : "HTTP";
+    }
+
+    private static String safeRoute(String route) {
+        if (route == null || route.isBlank()) return "/";
+        String value = route.length() > 512 ? route.substring(0, 512) : route;
+        return value.matches("/[A-Za-z0-9_./{}:-]{0,511}") ? value : "/<redacted-route>";
+    }
+
+    private static String safeRequestTarget(String target, String fallbackRoute) {
+        if (target == null || target.isBlank()) return fallbackRoute;
+        String value = target.length() > 512 ? target.substring(0, 512) : target;
+        int queryIndex = value.indexOf('?');
+        String targetRoute = queryIndex < 0 ? value : value.substring(0, queryIndex);
+        String safeTargetRoute = safeRoute(targetRoute);
+        if (queryIndex < 0 || queryIndex == value.length() - 1) return safeTargetRoute;
+        String query = value.substring(queryIndex + 1);
+        StringBuilder redacted = new StringBuilder(safeTargetRoute).append('?');
+        String[] pairs = query.split("&", -1);
+        int emitted = 0;
+        for (String pair : pairs) {
+            if (pair.isBlank() || emitted >= 32) continue;
+            int equals = pair.indexOf('=');
+            String name = equals < 0 ? pair : pair.substring(0, equals);
+            String rawValue = equals < 0 ? "" : pair.substring(equals + 1);
+            if (!name.matches("[A-Za-z0-9_:-]{1,64}")) name = "param" + emitted;
+            if (emitted > 0) redacted.append('&');
+            redacted.append(name).append("=<redacted:length=")
+                    .append(Math.min(rawValue.length(), 256)).append('>');
+            emitted++;
+        }
+        return redacted.toString();
+    }
+
+    private record HttpObservation(String method, String route, String requestTarget, String response) { }
 
     public record Projection(TaskScope scope, ApiDtos.PathDto path, List<ApiDtos.PathDto> paths,
                              Map<String, ApiDtos.EvidenceDto> evidence, String completedAt) {

@@ -6,6 +6,10 @@
 
 ## 结论
 
+## 产品边界修订（2026-07-26）
+
+审计基线已按个人本地产品重新收敛：完整多租户/RBAC 和真实供应商生产互操作从当前范围移除，不得标记为缺失的 MVP 必做项，也不得在 UI/README 中暗示已具备。仍保留沙箱逃逸、越权和宿主机访问作为 P0 安全门槛；动态测试依赖用户显式授权的沙箱，沙箱失败必须禁用动态执行，不能降级到宿主机。
+
 原文已经具备纵向闭环和清晰的产品方向，可以作为 MVP 基线；但商业化/可实施性仍需要明确运行边界、事实与推断的分层、恶意制品防护、发布闸门和可量化验收标准。本轮已直接补充这些内容。
 
 ## 已补充内容
@@ -19,7 +23,8 @@
 
 - M0/M1 Java 切片通过 Java 17 编译和依赖无关验收主类；`mvn test` 在使用工作区本地 Maven 缓存时通过，但验收类本身不是 JUnit 用例，仍需显式执行 `AcceptanceTest`。
 - 审计期间修正了制品大小/归档条目边界、路径真实化与注册后变更校验、配置脱敏和读取上限、JSON 控制字符转义、模型输入约束以及事件作用域上下文。
-- 当前切片仍明确不提供动态执行、沙箱、JVM Agent、真实数据库、LLM 或漏洞确认能力；不能把规则 Stub 输出当作安全结论。
+- 当前代码已提供受限动态执行、JVM Agent、JDBC/Redis/MySQL 替身、本地 SQLite Worker/trace 恢复和 V008 上传会话恢复，但普通 `TRUSTED_DOCKER` 不是强化沙箱，动态证据最多为 `DYNAMIC_SUSPECTED`，不能把替身或模型输出当作安全结论。
+- 2026-07-26 曾在用户授权的 Docker Desktop Linux engine 中通过 `LocalDockerDynamicLoopAcceptanceTest`；覆盖固定 runtime digest、断网容器、只读制品挂载、loopback 探针、Agent trace 和五角色事件。rootfs/UID 兼容策略调整后需重新验收；该结果仍只属于受信内部 JAR 的开发验收。
 - 事件上下文已加入项目/制品/扫描/任务作用域；Control Plane DTO 已补齐 `observedAt`、工具/模型版本和快照引用，但不可变对象存储仍未实现。
 - 前端生产构建已通过，当前完整 `npm audit --audit-level=high` 无已知漏洞；真实 DTO/SSE 接入已完成 MVP slice，仍需在后续发布流程中持续锁定和升级依赖。
 
@@ -29,15 +34,16 @@ Control Plane REST/SSE 已纳入当前 MVP slice：
 
 - 路由统一使用 `/api/v1`，包括 health、projects、artifacts、entries、scans、paths、findings、evidence、attack-chains 和扫描 SSE events。
 - 写操作要求 `X-Sentinel-Authorization` 或 `Authorization: Bearer`；扫描要求 body 显式 `authorized: true`，制品登记若显式传 `authorized=false` 则拒绝。认证令牌不等于制品授权。
-- `Idempotency-Key` 只允许非空、无空白、最多 256 字符；项目/制品/扫描创建在内存中按作用域去重。
+- `Idempotency-Key` 只允许非空、无空白、最多 256 字符；项目/制品/扫描、audit-run、动态任务、finding replay 和 `sandbox_probe` job 绑定按作用域写入 SQLite，重启后按 payload hash 复用，冲突返回 409。
+- `POST /api/v1/findings/{findingId}/replay` 已提供受控动态重放：请求体仅允许 `authorized:true`，必须有幂等键；服务端固定 `TRUSTED_DOCKER`、断网和制品挂载，返回任务状态而不直接升级 `VERIFIED`。候选输入由 `sandbox_probe` 服务端裁剪为入口参数提示（最多 8 次）。
 - `GET /api/v1/scans/{id}/events` 支持 `Last-Event-ID`；SSE 事件包含 schema/context/status/evidence 字段，断线、窗口不足和终态后必须用幂等 GET 补偿。终态为 `ScanCompleted` 或 `TaskStopped`。
-- `/api/v1/health` 明确返回 `IN_MEMORY_MVP`、`STATIC_METADATA_ONLY` 和 `MOCK`，防止 GUI/用户误以为已经动态执行。
+- `/api/v1/health` 明确返回 SQLite 持久化、`STATIC_METADATA_ONLY` 分析事实和动态能力边界；动态任务仍需用户授权沙箱，不能据此误认为已具备生产级隔离或 `VERIFIED`。
 
 ## 当前能力边界
 
-已完成：Java 17 制品登记和规则 Stub、Control Plane REST/SSE 本地内存切片、版本化 DTO、幂等键、SSE 终态/续接协议、React/TypeScript/Vite GUI 原型及 DEMO/真实 API 配置边界。
+已完成：Java 17 制品登记和有界 classfile 事实/制品内调用图、跨方法污点候选、Control Plane REST/SSE + SQLite、版本化 DTO、幂等键、SSE 终态/续接协议、React/TypeScript/Vite GUI、JVM Agent、断网 `TRUSTED_DOCKER`、批量探针、服务端受控 finding replay、JDBC/Redis/MySQL 协议替身及动态任务/trace 的单节点恢复。
 
-未完成：持久化、多租户/RBAC、真实字节码调用图、JVM Agent、沙箱、动态路径执行、真实数据库/HTTP 替身、LLM、真实漏洞确认和生产级鉴权。
+未完成：gVisor/Kata 强化运行时及 P0 逃逸门禁、真实反编译器、完整 classpath/复杂分支对象流、协议替身的完整兼容性、生产级身份/会话鉴权、真实漏洞确认和 `VERIFIED` 重放门禁；完整多租户/RBAC 已明确不在当前产品范围。
 
 前端默认 DEMO/MOCK 仅在 `VITE_DEMO_MODE=true` 时开启；真实模式必须关闭该开关并配置 `VITE_API_BASE_URL`、`VITE_PROJECT_ID`（可选 `VITE_SCAN_ID`）。真实模式失败不会自动回退到 Mock。当前本地 MVP 写操作需要 `VITE_API_TOKEN`；生产级 HttpOnly 会话、CSRF、SSO/RBAC 尚未在 Java Control Plane 实现。
 
@@ -52,6 +58,6 @@ Control Plane REST/SSE 已纳入当前 MVP slice：
 
 ## 优先级审计意见
 
-- 先完成 M0 策略、审计和 Worker 幂等，再做动态探测；任何 P0 沙箱隔离测试失败都不得进入外部试用。
+- V011 的持久化幂等键、流水线 stage recovery 和 probe plan 元数据已完成并通过重启验收；仍需保持单节点 SQLite、非分布式 exactly-once 的边界。任何 P0 沙箱隔离测试失败都不得进入外部试用。
 - M1 的 WebSocket 适配器可以保留接口占位，但不应计入 HTTP MVP 验收。
 - M4 的 AI 只能消费版本化证据并回退到静态规则/人工队列；GUI 不应自行生成漏洞结论。

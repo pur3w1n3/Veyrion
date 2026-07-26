@@ -42,6 +42,7 @@ public final class AiToolRegistry {
         add(fixed, factsSearch());
         add(fixed, evidenceGet());
         add(fixed, planPropose());
+        add(fixed, sandboxProbe());
         this.tools = Map.copyOf(fixed);
     }
 
@@ -211,6 +212,31 @@ public final class AiToolRegistry {
             plan.put("executionRequested", false);
             return List.of(new ToolOutput(OutputKind.INFERENCE,
                     "plan:" + context.jobId() + ":" + call.callId(), plan));
+        });
+    }
+
+    private RegisteredTool sandboxProbe() {
+        ToolSchema schema = new ToolSchema(Map.of(
+                "entrypointRef", Field.string(1024),
+                "candidateInputs", Field.stringArray(16, 1024),
+                "maxRequests", Field.integer(1, 8)), Set.of("entrypointRef"));
+        ToolDefinition definition = new ToolDefinition("sandbox_probe",
+                "Request a bounded server-owned loopback probe for an existing entrypoint. "
+                        + "The model cannot choose the command, route, network, mount, or budget.",
+                schema.jsonSchema(), OverflowPolicy.DENY);
+        return new RegisteredTool(definition, schema, (call, context) -> {
+            String reference = call.arguments().get("entrypointRef").asText();
+            List<String> inputs = new ArrayList<>();
+            if (call.arguments().has("candidateInputs")) {
+                for (JsonNode value : call.arguments().get("candidateInputs")) inputs.add(value.asText());
+            }
+            int maxRequests = call.arguments().has("maxRequests")
+                    ? call.arguments().get("maxRequests").asInt() : 1;
+            ToolDataSource.FactRecord result = source.requestSandboxProbe(
+                    context.scope(), context.principalId(), context.jobId(), reference, inputs, maxRequests)
+                    .orElseThrow(() -> new MissingException("SANDBOX_PROBE_UNAVAILABLE"));
+            requireScope(context, result);
+            return List.of(new ToolOutput(OutputKind.FACT, result.reference(), result.value()));
         });
     }
 

@@ -136,7 +136,7 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - 尚未实现真实字节码调用图、运行时入口发现、沙箱/JVM Agent、动态污点/路径洪水、数据库替身、LLM 子 Agent 或 VERIFIED 结论；受限 classfile 注解入口解析正在等待根 Agent 审计。
 - store 是进程内非持久化实现，尚无企业身份、多租户隔离、对象存储和生产级限流；对外部署前必须补齐这些边界。
 - 默认启动器只绑定 loopback；可注入的非 loopback 构造器仅供受控集成/测试使用，尚未提供生产级读权限、SSO/RBAC 和跨租户隔离。
-- `POST /findings/{id}/replay` 明确返回 `STATIC_ONLY`，不能把静态推断伪装成动态验证。
+- `POST /findings/{id}/replay` 已改为受控动态重放：请求体只允许 `authorized:true`，必须携带 `Idempotency-Key`，服务端校验 finding/scan/artifact/entrypoint 绑定后创建固定 `TRUSTED_DOCKER` 任务并返回 `DYNAMIC_SUSPECTED`。任务完成和可重放证据仍是升级 `VERIFIED` 的必要条件。
 
 ## 11. 本轮同步（2026-07-24）
 
@@ -268,12 +268,12 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 
 - 用户可见动态入口不再选择或运行受控 Fixture。`POST /api/v1/scans/{scanId}/dynamic-tasks` 只接受 `authorized=true`，Control Plane 根据不可变 scan 快照选择首个入口，并只从后端 artifact catalog 解析已登记、内容寻址且执行前复核 SHA-256 的可执行 Spring Boot JAR；浏览器不能提供镜像、命令、宿主路径、挂载或 capability。
 - Windows 本地显式开关为 `-WithDockerRuntime` 与 `-RebuildRuntimeImage`；旧 Fixture 命名 alias 已删除。Sandbox Pack 构建只包含固定 Agent 的 digest-pinned runtime image，并启动 loopback registry；当前直接 Docker Worker 不依赖或假装经过 OpenSandbox。
-- 该开发能力单独声明 `TRUSTED_DOCKER`，不是 `FIXTURE_RUNC`，也不是 gVisor/Kata 强化运行时。容器固定 `--network none`、只读 rootfs、单个只读 artifact bind mount、非 root `65532:65532`、cap-drop ALL、no-new-privileges、PID/内存/CPU 上限和有界 trace tmpfs，创建后复核有效 Docker 配置；任何失败均 fail-closed，绝不回退到宿主 Java。
+- 该开发能力单独声明 `TRUSTED_DOCKER`，不是 `FIXTURE_RUNC`，也不是 gVisor/Kata 强化运行时。容器固定 `--network none`、单个只读 artifact bind mount、资源上限和有界 trace tmpfs；个人本地模式不强制只读 rootfs、非 root 或 cap-drop，允许受信应用写日志或 root 启动检查。任何失败均 fail-closed，绝不回退到宿主 Java。
 - `--network none` 同时阻断外部 DNS 和外部网络；执行器的 HTTP probe 由同一容器内的 Agent helper 访问目标 JVM loopback，不是外部网络探测。Docker runc 仍不是运行恶意制品的强化隔离边界，对外生产启用仍需 gVisor/Kata 与 P0 release gate。
 - 首轮真实 AI 失败的根因是 Provider 拒绝带点号的函数名；代码侧工具标识统一改为 Provider 可接受的 snake_case：`facts_search`、`evidence_get`、`plan_propose`。这属于协议互操作修正，不扩大工具 allowlist、作用域或权限。
 - SQLite V005 为每个 AI job 保存最多 128 条顺序事件，记录有界 Provider 请求/结果元数据、工具名、参数形状/字节数、工具结果状态、脱敏截断的模型摘要和失败诊断。API 展示的是可审计事件摘要，不保存 Provider 原始响应、秘密、模型隐藏推理或 chain-of-thought；模型结论仍只能是 `INFERENCE`。
 - `LocalDockerDynamicLoopAcceptanceTest` 现要求通过 `VEYRION_TEST_ARTIFACT_JAR` 显式提供后端管理的 executable 测试 JAR；仓库不再携带受控 Fixture 代码、镜像或专用合约测试。回归继续覆盖 public 排队、内容寻址只读挂载、断网容器、容器内 loopback HTTP、不可变 trace commit 与 dashboard `DYNAMIC_SUSPECTED` 投影；这只验证本地受信 JAR 开发路径，不代表恶意制品隔离或真实外部 Provider 互操作已验证。
-- GUI 不再把“当前 scan 尚未创建动态任务”误显示为 Worker `UNAVAILABLE`。`GET /api/v1/scans/{scanId}/dynamic-tasks` 返回当前进程内任务状态、停止原因和失败代码，审计页对 `QUEUED/RUNNING` 自动轮询；进程重启后任务协调状态仍不会持久化。历史 AI `FAILED` 状态保持不可变，审计页可显式重新创建四角色任务并自动刷新新任务，不能把旧任务原地改写为成功。
+- GUI 不再把“当前 scan 尚未创建动态任务”误显示为 Worker `UNAVAILABLE`。`GET /api/v1/scans/{scanId}/dynamic-tasks` 返回当前进程内任务状态、停止原因和失败代码，审计页对 `QUEUED/RUNNING` 自动轮询；进程重启后任务协调状态仍不会持久化。历史 AI `FAILED` 状态保持不可变，审计页可显式重新创建五角色任务并自动刷新新任务，不能把旧任务原地改写为成功。
 - AI 审计页创建任务时必须显式提交当前页面 `scanId`，后端复核 scan 属于项目并将其固化到 job 快照，避免依赖隐式“最新扫描”导致 `SCAN_REQUIRED`。Docker Worker 失败现在通过内部合约提交最长 2 KiB 的脱敏诊断，public 动态任务状态可显示该诊断；旧任务在加入该字段前的失败细节无法追溯恢复。
 - AI 审计详情对运行中任务自动轮询，能够在结束前显示 `PROVIDER_REQUEST`、`PROVIDER_RESPONSE` 与后续工具事件；仍不保存隐藏思维链。用户可显式清理 `FAILED/BLOCKED/CANCELLED` job 及其事件。非协议类异常保存脱敏后的异常类型/消息，避免统一 `AI_JOB_FAILED` 丢失可操作原因。TRUSTED_DOCKER 对已限定为 executable Spring Boot JAR 的制品固定追加 `--server.address=127.0.0.1 --server.port=8080`，使容器内 HTTP 探针不受制品自定义监听端口影响；程序化禁用 Web Server 的应用仍会按真实失败报告。
 - AI 数据发送确认只在当前浏览器页面会话首次创建 Job 时弹出一次，不写入持久存储；每个后端 Job 请求仍必须单独携带 `authorized=true` 并通过权限校验。Provider 返回 2xx 但协议解析失败时，仅持久化代码生成的协议名与解析规则诊断（不保存响应正文），用于区分缺少 `choices`、`finish_reason`、assistant message 等兼容性问题。
@@ -440,3 +440,71 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - **报告超时**：`REPORT_GENERATION` 在注入四角色先验 + 多轮工具上下文后易触发 90s `TRANSPORT_FAILED`。已将单请求超时提到 120s、任务预算到 600s，并将先验摘要截断到每角色 2KiB。
 - **动态证据存活域**：`DYNAMIC_EVIDENCE` 来自进程内 `TraceProjectionService`，控制面重启后不可见；中途重启会使后续 AI 角色误判“无运行时证据”。完整审计须在同一次进程生命周期内跑完。
 - **已验证一次闭环**（`scan` 示例：`scan-*` / 本轮成功跑）：五角色均 `COMPLETED`，动态 `COMPLETED`，`HTTP probe observed` = 250。仍为 `MOCK` / 最多 `DYNAMIC_SUSPECTED`，不得标 `VERIFIED`。
+
+## 42. 目标扫描复盘与调用图/协议替身/动态持久化补强（2026-07-26）
+
+针对 `scan-8d3661d1ab5942f0`（制品 `e2aeb86bddca6f4b7415ebe1e0053c9f5642caee5e09849d9ad8c169ace99a9a`）复盘确认：静态快照包含 250 个入口、164 个 sink/发现和 519 条证据；五个模型角色均完成，但扫描状态仍为 `STATIC_INFERRED / MOCK`，动态证据原先主要依赖进程内 trace 投影。
+
+本轮补强已落地：
+
+- classfile 事实索引增加制品内 `DIRECT`、`CHA`、`UNRESOLVED` 调用图；入口参数沿有界字节码栈/局部变量摘要跨方法传播到敏感 API，形成带 source/transform/call/sink 步骤的 `STATIC_INFERRED` `TaintPath`。调用图、污点状态、路径数量和方法流完整性均记录预算与停止原因；分支合流、字段别名、反射、代理、JNI、动态注册和制品外依赖不伪装成已解析。
+- Agent 依赖替身增加有界 Redis RESP2/RESP3 与 MySQL Classic loopback 协议子集。未知命令、畸形帧、连接数、帧大小和操作数超限均拒绝；事件标注 `MOCK`、`RULE_GENERATED`、协议名、操作和结果。执行器仅在制品包含 MySQL Connector/J 时切换 MySQL URL，否则继续使用进程内 JDBC 替身。
+- SQLite V007 持久化 Worker task、租约、checkpoint、生命周期、失败原因、trace chunk、前序摘要和 trace 幂等键；控制面启动重建 trace 投影，并将旧的 `LEASED/RUNNING/PAUSED` 任务回收到 `QUEUED`，原因分别记录为 `LEASE_EXPIRED` 或 `CONTROL_PLANE_RESTART_RECOVERY`。
+
+边界与未完成项：task mutation 的完整 replay key 仍主要在进程内，重启后重复操作可能得到状态冲突而不是原响应；V007 目前是单节点 SQLite 恢复，不是分布式队列或不可变归档。协议替身只是有界兼容子集，`TRUSTED_DOCKER` 仍不是不受信制品强化隔离；跨方法污点、动态观察和模型结论均不得升级为 `VERIFIED`。
+
+## 43. 个人本地版范围与上传会话持久化（2026-07-26）
+
+- 产品范围正式收敛为个人本地应用：完整多租户/RBAC、企业 SSO、跨租户调度和真实供应商生产互操作取消，不再作为当前版本的待办或验收承诺。Provider 仅用于本地显式授权的受控实验。
+- 动态测试必须依赖用户明确授权且通过策略检查的沙箱；沙箱不可用时保持 `DYNAMIC_DISABLED`/静态结果并 fail-closed，禁止回退到宿主机直接执行制品。普通 `TRUSTED_DOCKER` 仍不是强化隔离。
+- 新增 V008 `artifact_upload_sessions`，分块上传的元数据、偏移和过期时间进入 SQLite；控制面重启时仅恢复路径、大小、摘要、项目和过期校验全部通过的 `.part`，其余记录与孤儿分片清理并 fail-closed。
+- README 与 MVP 状态说明必须以 V007/V008/V011 为准：Worker task、租约、checkpoint、trace、上传会话、控制面幂等绑定、流水线 cursor 和 probe plan 已具备单节点 SQLite 恢复；SSE 仍是有界历史，不构成分布式事件归档。
+
+## 44. 本地 TRUSTED_DOCKER 沙箱动态闭环复验（2026-07-26）
+
+- Docker Desktop Linux engine 经用户授权可用；`sandbox-pack` 构建并推送 runtime digest：`127.0.0.1:5000/veyrion/artifact-runtime@sha256:5bbd9c30d8788fda06b9266510dbb19df8235cb90893f76b98560d0c098990ec`。
+- 使用显式 `VEYRION_TEST_ARTIFACT_JAR=aaaaa.jar` 运行 `LocalDockerDynamicLoopAcceptanceTest`，结果 `PASS`：公开动态任务排队、内容寻址只读制品挂载、`--network none`、可写 rootfs/root 启动兼容、容器内 loopback HTTP、Agent JSONL、不可变 trace 提交、dashboard `DYNAMIC_SUSPECTED` 投影以及五个模型角色事件均通过。
+- 该证据只覆盖本地受信内部 JAR 的 `TRUSTED_DOCKER` 开发后端；Docker runc 不是恶意制品强化隔离，不能替代 gVisor/Kata/OpenSandbox 生产门禁，也不能把动态结果升级为 `VERIFIED`。
+
+## 45. 五角色提示词与审计顺序调整（2026-07-26）
+
+- 固定顺序调整为：前置建模 → 沙箱动态观察 → 动态验证 → 路径探索 → 漏洞研判 → 报告生成。路径探索不再先于动态验证；它只能消费动态验证保存的请求/响应和沙箱参数。
+- 前置建模允许补充静态入口候选，但补充必须标记 `MODEL_SUPPLEMENT`，不能写回或覆盖 `FACT` 静态事实。
+- 动态验证角色依据前置入口和沙箱反馈，在同一授权沙箱的 loopback 范围内进行本地化无破坏发包并保留结果。漏洞研判只有在入口命中、参数绑定、触发点执行和可重放动态调试闭环时才可标记漏洞存在；否则保持推测/证据不足。
+- V010 为角色绑定增加 `prompt_zh`/`prompt_en`；前端可编辑五个角色的双语提示词，AI Job policy snapshot 固化所选语言提示词，后续修改不会影响运行中的任务。
+
+## 46. 审计流程契约统一（2026-07-26）
+
+- 五个 AI 角色的代码契约顺序统一为 `PRE_ANALYSIS → DYNAMIC_VERIFICATION → PATH_EXPLORATION → VULNERABILITY_TRIAGE → REPORT_GENERATION`。沙箱动态观察是服务端执行阶段，不计为第六个 AI 角色。
+- 固定流程为：静态接口/事实 → 前置建模（允许 `MODEL_SUPPLEMENT`，不得改写 `FACT`）→ 用户授权沙箱动态观察 → 动态验证在同一沙箱 loopback 本地发包并保存请求/响应 → 路径探索 → 漏洞研判 → 报告生成。
+- 漏洞研判必须同时具备入口命中、参数绑定、触发点执行和可重放动态调试闭环；否则只允许推测或证据不足，不得标记漏洞存在或 `VERIFIED`。
+- 新增 [docs/AUDIT_FLOW.md](docs/AUDIT_FLOW.md) 作为产品流程图和阶段契约的单一文档入口。
+
+## 47. TRUSTED_DOCKER 兼容运行与 sandbox_probe（2026-07-26）
+
+- 个人本地 `TRUSTED_DOCKER` 继续使用 `--network none`，但不再强制只读 rootfs、非 root 或 cap-drop；保留单个只读制品挂载、资源上限和有界 trace tmpfs，允许受信应用写日志或执行 root 启动检查。该模式不是恶意制品强化隔离，也不能标记 `VERIFIED`。
+- Agent 新增网络/DNS/JNDI 尝试事件：HTTP client、Socket、URL 连接、`InetAddress` 查询、URL hash/equals 和 JNDI lookup 分别记录为动态疑似证据；断网策略仍阻断外部连接，使 JNDI/URLDNS 等候选可区分“未尝试”和“尝试但被策略阻断”。
+- AI 工具新增 `sandbox_probe`，仅对动态验证和漏洞研判角色开放。模型只能提交已有 `entry:*` 引用及有界输入提示；服务端从 scan 快照解析路由、固定 `NetworkPolicy.DENY`、资源和挂载，按 job 限制创建动态任务并返回任务证据。模型不能改变命令、网络、UID、挂载、预算或授权范围。
+- 若 `sandbox_probe` 创建的动态任务仍在运行，服务端流水线会等待其结束后再推进路径探索，避免模型任务先完成而路径阶段看不到新动态证据。
+
+## 48. Finding replay API 与当前恢复边界（2026-07-26）
+
+- `POST /api/v1/findings/{findingId}/replay` 已接入真实前端结果页。请求体严格限制为 `{ "authorized": true }`，必须携带 `Idempotency-Key`；服务端校验 finding、scan、artifact 和 entrypoint scope 后，创建固定 `TRUSTED_DOCKER` 动态任务。
+- replay 返回 `202`、task/lifecycle、`DYNAMIC_SUSPECTED`、`MOCK`、所需 capability 和重放标记；前端只显示任务状态和错误，不把重放请求或模型判断当作 `VERIFIED`。
+- V011 已将项目/制品/扫描/audit-run/动态任务/finding replay/AI `sandbox_probe` job 绑定的请求摘要与结果引用、流水线下一阶段与 armed 状态、以及有界 probe plan 元数据持久化到 SQLite。控制面重启后按 scope/hash 校验恢复原资源或任务；未完成 AI job 保留为 `FAILED/PROCESS_RESTARTED`，恢复器创建下一阶段新 job，不改写旧记录或复制已完成阶段。
+
+## 49. V011 持久幂等与流水线恢复验收（2026-07-26）
+
+- 新增 `V011__persistent_idempotency_and_pipeline.sql`，schema 版本升级到 11；控制面启动校验迁移 checksum，异常 fail-closed。
+- `PipelineRestartRecoveryAcceptanceTest` 验证前置建模完成后动态任务已排队，控制面重启可恢复原 task、不会创建第二个动态任务、不会复制已完成的前置建模 job，并保留 `armed=1 / DYNAMIC_OBSERVATION` cursor。
+- `ControlPlanePersistenceAcceptanceTest`、`AuditRunAcceptanceTest`、`ControlPlaneAcceptanceTest` 验证跨重启幂等、payload 冲突 409、缺失扫描授权优先返回 403、probe plan 元数据保存/加载和 V011 升级。
+- 边界：单节点 SQLite，不是分布式 exactly-once；已完成的是 request-to-resource 持久化绑定，删除/修改等其他 mutation 尚未全部纳入统一幂等；probe plan 只保存有界输入/预算/hash，不保存命令、网络、挂载、UID 或授权；本轮未重跑完整 Docker 全链路。
+
+## 50. 审计契约接线补强（2026-07-26）
+
+未提交大包补强后的接线缺口已收口：
+
+- `PATH_EXPLORATION` 用户提示注入 `PRE_ANALYSIS` + `DYNAMIC_VERIFICATION` 先验摘要（不可信假设）。
+- `sandbox_probe` 不再把扫描上任意进行中任务伪绑到请求入口；扫描忙时返回 `BUSY/retryable`。对本 job 创建的任务会等待终态后再把 lifecycle/stopReason 回传给模型。
+- 流水线 `hasBusyDynamicTask` 不再把 `COMPLETED` 当成忙；已完成观察则直接推进动态验证，避免 finding-replay / 恢复后二次 Docker 任务或卡死。
+- 所有动态任务都会持久化有界 probe-plan 元数据（空 candidateInputs 也写入）；Worker mutation replay key 仍主要在进程内（§42 边界保留）。

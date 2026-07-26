@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { api, type AiRole, type ProviderDto, type ProviderKind, type ProviderModelInventoryDto, type RoleAssignmentDto } from '../api'
-import { AI_ROLE_META, AI_ROLES, roleLabel } from '../labels'
+import { AI_ROLE_META, AI_ROLES, DEFAULT_ROLE_PROMPTS, roleLabel } from '../labels'
 import { errorMessage, Notice, PageHeader } from './Common'
 
 const providerKindLabel = (kind: ProviderKind) => {
@@ -19,6 +19,7 @@ export function ProviderPage({ projectId }: { projectId: string }) {
   const [inventories, setInventories] = useState<Record<string, ProviderModelInventoryDto>>({})
   const [roleProviders, setRoleProviders] = useState<Partial<Record<AiRole, string>>>({})
   const [roleModels, setRoleModels] = useState<Partial<Record<AiRole, string>>>({})
+  const [rolePrompts, setRolePrompts] = useState<Partial<Record<AiRole, { zh: string; en: string }>>>({})
   const [roleBusy, setRoleBusy] = useState<AiRole>()
   const [loadingProvider, setLoadingProvider] = useState<string>()
   const [error, setError] = useState<string>()
@@ -45,6 +46,10 @@ export function ProviderPage({ projectId }: { projectId: string }) {
       setAssignments(results[1].value)
       setRoleProviders(Object.fromEntries(results[1].value.map((item) => [item.role, item.providerId])))
       setRoleModels(Object.fromEntries(results[1].value.map((item) => [item.role, item.model ?? ''])))
+      setRolePrompts(Object.fromEntries(results[1].value.map((item) => [item.role, {
+        zh: item.promptZh ?? DEFAULT_ROLE_PROMPTS[item.role].zh,
+        en: item.promptEn ?? DEFAULT_ROLE_PROMPTS[item.role].en
+      }])))
     }
     const rejected = results.find((item): item is PromiseRejectedResult => item.status === 'rejected')
     if (rejected) setError(errorMessage(rejected.reason))
@@ -100,7 +105,8 @@ export function ProviderPage({ projectId }: { projectId: string }) {
   const saveAssignment = (role: AiRole, providerId: string, model: string) => {
     if (!projectId || !providerId || !model) return
     setError(undefined); setMessage(undefined); setRoleBusy(role)
-    void api.saveRoleAssignment(projectId, role, { providerId, model })
+    const prompts = rolePrompts[role] ?? DEFAULT_ROLE_PROMPTS[role]
+    void api.saveRoleAssignment(projectId, role, { providerId, model, promptZh: prompts.zh, promptEn: prompts.en })
       .then(async () => {
         setMessage(`「${roleLabel(role)}」角色绑定已保存；任务将由审计流程在对应阶段创建`)
         await refresh()
@@ -138,7 +144,7 @@ export function ProviderPage({ projectId }: { projectId: string }) {
     </div>
     <article className="panel section-gap">
       <div className="panel-head"><div><p className="eyebrow">角色分配</p><h2>五个模型角色</h2></div><span>{projectId || '未选择工作区'}</span></div>
-      <p className="form-help">角色绑定是项目配置；审计任务由“审计执行”按前置建模、路径探索、动态验证、漏洞研判、报告生成的顺序创建。</p>
+      <p className="form-help">角色绑定是项目配置；可分别编辑中文与英文提示词。审计任务按前置建模 → 动态验证 → 路径探索 → 漏洞研判 → 报告生成顺序创建，服务端会把提示词快照写入任务。</p>
       <div className="role-grid">{AI_ROLES.map((roleId) => {
         const role = AI_ROLE_META[roleId]
         const assignment = assignments.find((item) => item.role === roleId)
@@ -147,6 +153,10 @@ export function ProviderPage({ projectId }: { projectId: string }) {
         const inventoryModels = inventories[selectedRoleProvider]?.models ?? []
         const assignedModel = assignment?.providerId === selectedRoleProvider ? assignment.model : undefined
         const modelDraft = roleModels[roleId] ?? assignedModel ?? provider?.model ?? ''
+        const promptDraft = rolePrompts[roleId] ?? {
+          zh: assignment?.promptZh ?? DEFAULT_ROLE_PROMPTS[roleId].zh,
+          en: assignment?.promptEn ?? DEFAULT_ROLE_PROMPTS[roleId].en
+        }
         const availableModels = Array.from(new Set([...(provider?.model ? [provider.model] : []), ...(assignedModel ? [assignedModel] : []), ...inventoryModels.map((item) => item.providerModelName)]))
         const listId = `models-${roleId.toLowerCase()}`
         return <article className="role-card" key={roleId}>
@@ -158,6 +168,8 @@ export function ProviderPage({ projectId }: { projectId: string }) {
           }}><option value="">未分配</option>{providers.map((item) => <option value={item.providerId} key={item.providerId}>{item.name} · {providerKindLabel(item.kind)}</option>)}</select></label>
           <label className="field"><span>模型（可搜索或输入）</span><input list={listId} value={modelDraft} disabled={!projectId || !selectedRoleProvider} placeholder={inventoryModels.length ? '搜索模型名称' : '输入模型名称'} onChange={(event) => setRoleModels((current) => ({ ...current, [roleId]: event.target.value }))} /></label>
           <datalist id={listId}>{availableModels.map((model) => <option value={model} key={model} />)}</datalist>
+          <label className="field"><span>中文提示词</span><textarea className="prompt-editor" rows={5} value={promptDraft.zh} disabled={!projectId} onChange={(event) => setRolePrompts((current) => ({ ...current, [roleId]: { ...promptDraft, zh: event.target.value } }))} /></label>
+          <label className="field"><span>English prompt</span><textarea className="prompt-editor" rows={5} value={promptDraft.en} disabled={!projectId} onChange={(event) => setRolePrompts((current) => ({ ...current, [roleId]: { ...promptDraft, en: event.target.value } }))} /></label>
           <button className="secondary-button" disabled={!projectId || !selectedRoleProvider || !modelDraft.trim() || roleBusy !== undefined} onClick={() => saveAssignment(roleId, selectedRoleProvider, modelDraft.trim())}>{roleBusy === roleId ? '保存中…' : '保存角色分配'}</button>
         </article>
       })}</div>

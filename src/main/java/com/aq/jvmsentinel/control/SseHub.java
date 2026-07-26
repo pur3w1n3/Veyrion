@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Collection;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -30,10 +31,26 @@ public final class SseHub {
     private static final long HEARTBEAT_SECONDS = 15;
 
     private final Map<String, Channel> channels = new ConcurrentHashMap<>();
+    private volatile EventPersistence persistence = EventPersistence.NONE;
+
+    public synchronized void attachPersistence(Collection<VersionedEvent> events, EventPersistence persistence) {
+        this.persistence = Objects.requireNonNull(persistence, "persistence");
+        if (events == null) return;
+        for (VersionedEvent event : events) {
+            String scanId = event.context() == null ? null : event.context().scanId();
+            if (scanId == null) continue;
+            Channel channel = channels.computeIfAbsent(scanId, ignored -> new Channel());
+            synchronized (channel) {
+                channel.history.addLast(event);
+                while (channel.history.size() > HISTORY_LIMIT) channel.history.removeFirst();
+            }
+        }
+    }
 
     public void publish(String scanId, VersionedEvent event) {
         Objects.requireNonNull(scanId, "scanId");
         Objects.requireNonNull(event, "event");
+        persistence.save(scanId, event);
         Channel channel = channels.computeIfAbsent(scanId, ignored -> new Channel());
         synchronized (channel) {
             channel.history.addLast(event);
@@ -222,6 +239,11 @@ public final class SseHub {
     private static final class Channel {
         private final Deque<VersionedEvent> history = new ArrayDeque<>();
         private final List<Client> clients = new ArrayList<>();
+    }
+
+    public interface EventPersistence {
+        EventPersistence NONE = (scanId, event) -> { };
+        void save(String scanId, VersionedEvent event);
     }
 
     private static final class Client {

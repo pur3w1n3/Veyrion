@@ -32,8 +32,15 @@ public final class DynamicTraceProjectionAcceptanceTest {
                     + "\"thread\":\"main\",\"detail\":{\"mode\":\"test\"}}\n"
                     + "{\"schemaVersion\":1,\"sequence\":1,\"eventType\":\"JDBC\","
                     + "\"provenanceKind\":\"APPLICATION_REPORTED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
-                    + "\"class\":\"sample.Repository\",\"method\":\"query\",\"timestamp\":\"2026-07-24T00:00:01Z\","
-                    + "\"thread\":\"main\",\"detail\":{\"operation\":\"select\"}}\n";
+                    + "\"class\":\"sample.Repository\",\"method\":\"query\",\"timestamp\":\"2026-07-24T00:00:01Z\"," 
+                    + "\"thread\":\"main\",\"detail\":{\"operation\":\"select\"}}\n"
+                    + "{\"schemaVersion\":1,\"sequence\":2,\"eventType\":\"HTTP\","
+                    + "\"provenanceKind\":\"APPLICATION_REPORTED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                    + "\"class\":\"com.aq.jvmsentinel.agent.LoopbackHttpProbe\",\"method\":\"main\","
+                    + "\"timestamp\":\"2026-07-24T00:00:02Z\",\"thread\":\"main\","
+                    + "\"detail\":{\"httpMethod\":\"GET\",\"route\":\"/api/read\","
+                    + "\"requestTarget\":\"/api/read?path=super-secret\",\"status\":\"200\","
+                    + "\"port\":\"8080\",\"error\":\"\"}}\n";
     private static final String EXTERNAL_JSONL =
             "{\"schemaVersion\":1,\"sequence\":0,\"eventType\":\"AGENT_STARTED\","
                     + "\"provenanceKind\":\"RUNTIME_OBSERVED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
@@ -85,6 +92,18 @@ public final class DynamicTraceProjectionAcceptanceTest {
                         && projection.path().steps().stream()
                         .noneMatch(step -> "VERIFIED".equals(step.verificationStatus())),
                 "completed dynamic task remains DYNAMIC_SUSPECTED");
+        String projectedHttp = projection.evidence().values().stream()
+                .filter(item -> item.summary().contains("HTTP probe observed"))
+                .findFirst().orElseThrow(() -> new AssertionError("HTTP probe evidence missing"))
+                .summary();
+        check(projectedHttp.contains("GET /api/read") && projectedHttp.contains("HTTP 200")
+                        && projectedHttp.contains("path=<redacted:length=12>")
+                        && !projectedHttp.contains("super-secret"),
+                "HTTP request/response evidence is bounded and redacted");
+        check(projection.path().steps().stream()
+                        .anyMatch(step -> step.detail().contains("HTTP 200")
+                                && step.detail().contains("path=<redacted:length=12>")),
+                "path step exposes the bounded HTTP result");
 
         WorkerTaskSpec externalSpec = new WorkerTaskSpec(
                 1, "project-1", DIGEST, "scan-external", "task-external", "entry-1",

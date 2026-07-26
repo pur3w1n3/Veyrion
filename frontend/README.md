@@ -27,4 +27,5 @@ VITE_API_TOKEN=local-demo
 - 前端不保存原始凭据，不把模型文本当作 HTML 渲染，不直接访问存储层；REST 使用 `credentials: include` 兼容同源/本地跨端口 HttpOnly 会话，SSE 使用带凭据的 EventSource。
 - `index.html` 的 CSP 仅允许同源和 loopback Control Plane；私有化部署到其他域名时必须由部署模板显式替换 `connect-src`，不能通过放宽为 `*` 解决。
 - `VERIFIED`、`DYNAMIC_SUSPECTED`、`STATIC_INFERRED`、`UNREACHED` 状态在列表、时间线和图谱中统一表达。
+- 审计结果页支持按标题、入口和 sink 筛选发现，选择发现后查看证据引用、前置条件和路径节点攻击链；报告可导出为 Markdown、HTML 和 JSON。导出内容保留原始验证状态，不会把静态推断升级为已验证结果。
 - 详细页面与视觉规范见 [`../docs/GUI_DESIGN.md`](../docs/GUI_DESIGN.md)。

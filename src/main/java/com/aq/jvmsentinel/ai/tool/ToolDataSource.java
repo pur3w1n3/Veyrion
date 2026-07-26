@@ -17,6 +17,19 @@ public interface ToolDataSource {
     Optional<FactRecord> findEvidence(ToolExecutionContext.Scope scope, String evidenceRef)
             throws Exception;
 
+    /**
+     * Requests a server-owned, bounded loopback probe. The model supplies only an
+     * evidence reference and candidate input hints; the implementation must derive
+     * the actual route, sandbox, network policy and budget from persisted state.
+     */
+    default Optional<FactRecord> requestSandboxProbe(ToolExecutionContext.Scope scope,
+                                                     String principalId, String jobId,
+                                                     String entrypointRef,
+                                                     List<String> candidateInputs,
+                                                     int maxRequests) throws Exception {
+        return Optional.empty();
+    }
+
     record FactRecord(ToolExecutionContext.Scope scope, String reference, JsonNode value) {
         public FactRecord {
             Objects.requireNonNull(scope, "scope");

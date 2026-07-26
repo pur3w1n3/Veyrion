@@ -19,14 +19,18 @@ import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Bounded, sequential upload staging for backend-managed JVM artifacts.
  *
- * <p>Sessions are process-local by design. A restart safely removes abandoned
- * staging parts but never removes installed content-addressed artifacts.</p>
+ * <p>Session metadata may be persisted by the Control Plane. Bytes remain in
+ * the controlled staging directory and are restored only after path, size,
+ * offset and expiry checks.</p>
  */
 public final class ArtifactUploadService {
     public static final int RECOMMENDED_CHUNK_BYTES = 1 * 1024 * 1024;
@@ -42,17 +46,25 @@ public final class ArtifactUploadService {
     private final Duration ttl;
     private final Path uploadRoot;
     private final Path contentRoot;
+    private final UploadPersistence persistence;
     private final Map<String, Session> sessions = new ConcurrentHashMap<>();
     private long declaredBytes;
 
     public ArtifactUploadService(ArtifactRegistry registry) {
-        this(registry, Clock.systemUTC(), DEFAULT_MAX_SESSIONS, DEFAULT_MAX_DECLARED_BYTES, DEFAULT_TTL);
+        this(registry, Clock.systemUTC(), DEFAULT_MAX_SESSIONS, DEFAULT_MAX_DECLARED_BYTES, DEFAULT_TTL,
+                UploadPersistence.NONE);
     }
 
     public ArtifactUploadService(ArtifactRegistry registry, Clock clock, int maxSessions,
                                  long maxDeclaredBytes, Duration ttl) {
+        this(registry, clock, maxSessions, maxDeclaredBytes, ttl, UploadPersistence.NONE);
+    }
+
+    public ArtifactUploadService(ArtifactRegistry registry, Clock clock, int maxSessions,
+                                 long maxDeclaredBytes, Duration ttl, UploadPersistence persistence) {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.persistence = Objects.requireNonNull(persistence, "persistence");
         if (maxSessions <= 0 || maxDeclaredBytes <= 0 || ttl == null || ttl.isZero() || ttl.isNegative()) {
             throw new IllegalArgumentException("upload limits must be positive");
         }
@@ -62,7 +74,7 @@ public final class ArtifactUploadService {
         Path managedRoot = secureDirectory(registry.allowedRoot(), ".veyrion");
         this.uploadRoot = secureDirectory(managedRoot, "uploads");
         this.contentRoot = secureDirectory(secureDirectory(managedRoot, "artifacts"), "sha256");
-        cleanupStartupParts();
+        restorePersistedSessions();
     }
 
     public synchronized UploadSession initialize(String projectId, String fileName,
@@ -99,6 +111,14 @@ public final class ArtifactUploadService {
                 digest, part, now, now.plus(ttl), 0);
         sessions.put(uploadId, session);
         declaredBytes = next;
+        try {
+            persistence.save(toPersisted(session));
+        } catch (RuntimeException failure) {
+            sessions.remove(uploadId);
+            declaredBytes -= sizeBytes;
+            deletePart(part);
+            throw persistenceFailure(failure);
+        }
         return view(session);
     }
 
@@ -132,8 +152,20 @@ public final class ArtifactUploadService {
                 actual.getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
             throw new UploadException(422, "CHUNK_DIGEST_MISMATCH", "chunk SHA-256 does not match");
         }
+        long previousOffset = session.offset;
         Files.write(session.part, chunk, StandardOpenOption.APPEND, LinkOption.NOFOLLOW_LINKS);
         session.offset += contentLength;
+        try {
+            persistence.save(toPersisted(session));
+        } catch (RuntimeException failure) {
+            session.offset = previousOffset;
+            try (var channel = java.nio.channels.FileChannel.open(session.part, StandardOpenOption.WRITE)) {
+                channel.truncate(previousOffset);
+            } catch (IOException rollbackFailure) {
+                throw new UploadException(500, "UPLOAD_STORAGE_ERROR", "upload rollback failed after persistence error");
+            }
+            throw persistenceFailure(failure);
+        }
         return view(session);
     }
 
@@ -168,16 +200,24 @@ public final class ArtifactUploadService {
         if (session.completed == null) {
             throw new UploadException(409, "UPLOAD_NOT_COMPLETED", "upload has not completed validation");
         }
-        sessions.remove(uploadId);
-        declaredBytes -= session.sizeBytes;
+        try {
+            persistence.delete(uploadId);
+        } catch (RuntimeException failure) {
+            throw persistenceFailure(failure);
+        }
+        if (sessions.remove(uploadId, session)) declaredBytes -= session.sizeBytes;
     }
 
     public synchronized void cancel(String projectId, String uploadId) {
         cleanupExpired();
         requireStableDirectory(uploadRoot);
         Session session = requireSession(projectId, uploadId);
-        sessions.remove(uploadId);
-        declaredBytes -= session.sizeBytes;
+        try {
+            persistence.delete(uploadId);
+        } catch (RuntimeException failure) {
+            throw persistenceFailure(failure);
+        }
+        if (sessions.remove(uploadId, session)) declaredBytes -= session.sizeBytes;
         deletePart(session.part);
     }
 
@@ -221,18 +261,81 @@ public final class ArtifactUploadService {
         for (Session session : sessions.values()) {
             if (!now.isBefore(session.expiresAt) && sessions.remove(session.uploadId, session)) {
                 declaredBytes -= session.sizeBytes;
+                try { persistence.delete(session.uploadId); }
+                catch (RuntimeException ignored) { /* expired rows are discarded on the next startup */ }
                 deletePart(session.part);
             }
         }
     }
 
-    private void cleanupStartupParts() {
+    private void restorePersistedSessions() {
+        Set<String> restored = new HashSet<>();
+        Instant now = Instant.now(clock);
+        List<PersistedSession> persisted = persistence.load();
+        if (persisted.size() > maxSessions) {
+            throw new IllegalStateException("persisted upload session limit exceeded");
+        }
+        for (PersistedSession item : persisted) {
+            try {
+                validatePersisted(item, now);
+                Path part = uploadRoot.resolve(item.uploadId() + ".part").normalize();
+                if (!Files.isRegularFile(part, LinkOption.NOFOLLOW_LINKS)
+                        || Files.size(part) != item.nextOffset()) {
+                    throw new IllegalArgumentException("staging part does not match persisted offset");
+                }
+                if (sessions.putIfAbsent(item.uploadId(), new Session(item.uploadId(), item.projectId(),
+                        item.fileName(), extension(item.fileName()), item.sizeBytes(), item.sha256(), part,
+                        item.createdAt(), item.expiresAt(), item.nextOffset())) != null) {
+                    throw new IllegalArgumentException("duplicate persisted upload id");
+                }
+                restored.add(item.uploadId());
+                declaredBytes = Math.addExact(declaredBytes, item.sizeBytes());
+            } catch (RuntimeException | IOException invalid) {
+                try { persistence.delete(item.uploadId()); } catch (RuntimeException ignored) { }
+                deletePart(uploadRoot.resolve(item.uploadId() + ".part").normalize());
+            }
+        }
+        if (declaredBytes > maxDeclaredBytes) {
+            throw new IllegalStateException("persisted upload byte limit exceeded");
+        }
+        cleanupStartupParts(restored);
+    }
+
+    private void validatePersisted(PersistedSession item, Instant now) {
+        Objects.requireNonNull(item, "persisted upload");
+        if (item.uploadId() == null || !item.uploadId().matches("upload-[a-f0-9]{32}")) {
+            throw new IllegalArgumentException("invalid persisted upload id");
+        }
+        requireProjectId(item.projectId());
+        extension(item.fileName());
+        requireDigest(item.sha256(), "sha256");
+        if (item.sizeBytes() <= 0 || item.sizeBytes() > registry.maxArtifactBytes()
+                || item.nextOffset() < 0 || item.nextOffset() > item.sizeBytes()
+                || item.createdAt() == null || item.expiresAt() == null
+                || !item.expiresAt().isAfter(now)) {
+            throw new IllegalArgumentException("invalid persisted upload bounds");
+        }
+        Path part = uploadRoot.resolve(item.uploadId() + ".part").normalize();
+        if (!part.getParent().equals(uploadRoot)) throw new IllegalArgumentException("persisted upload escaped staging root");
+    }
+
+    private void cleanupStartupParts(Set<String> activeUploadIds) {
         try (var paths = Files.list(uploadRoot)) {
             paths.filter(path -> path.getFileName().toString().matches("upload-[a-f0-9]{32}\\.part"))
+                    .filter(path -> !activeUploadIds.contains(path.getFileName().toString().substring(0, 39)))
                     .forEach(this::deletePart);
         } catch (IOException failure) {
             throw new IllegalStateException("cannot clean upload staging directory", failure);
         }
+    }
+
+    private PersistedSession toPersisted(Session session) {
+        return new PersistedSession(session.uploadId, session.projectId, session.fileName,
+                session.sizeBytes, session.sha256, session.offset, session.createdAt, session.expiresAt);
+    }
+
+    private static UploadException persistenceFailure(RuntimeException failure) {
+        return new UploadException(503, "UPLOAD_PERSISTENCE_ERROR", "upload state could not be persisted");
     }
 
     private void deletePart(Path part) {
@@ -326,6 +429,21 @@ public final class ArtifactUploadService {
     public record UploadSession(String uploadId, String projectId, String fileName, long sizeBytes,
                                 String sha256, long nextOffset, Instant expiresAt,
                                 int recommendedChunkBytes, int maxChunkBytes) { }
+
+    public record PersistedSession(String uploadId, String projectId, String fileName, long sizeBytes,
+                                   String sha256, long nextOffset, Instant createdAt, Instant expiresAt) { }
+
+    public interface UploadPersistence {
+        UploadPersistence NONE = new UploadPersistence() {
+            @Override public List<PersistedSession> load() { return List.of(); }
+            @Override public void save(PersistedSession session) { }
+            @Override public void delete(String uploadId) { }
+        };
+
+        List<PersistedSession> load();
+        void save(PersistedSession session);
+        void delete(String uploadId);
+    }
 
     public static final class UploadException extends RuntimeException {
         private final int status;

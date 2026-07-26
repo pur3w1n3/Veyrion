@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { api, type AiJobDto, type DashboardSnapshot, type OutputLanguage } from '../api'
+import { api, type AiJobDto, type DashboardSnapshot, type FindingReplayDto, type OutputLanguage } from '../api'
 import { dependencyModeLabel, jobStatusLabel } from '../labels'
 import { errorMessage, Notice, PageHeader, StatusPill } from './Common'
 
@@ -13,6 +13,13 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
   const [reportSummary, setReportSummary] = useState<string>()
   const [reportError, setReportError] = useState<string>()
   const [reportLoading, setReportLoading] = useState(false)
+  const [findingQuery, setFindingQuery] = useState('')
+  const [findingStatus, setFindingStatus] = useState<'ALL' | 'STATIC_INFERRED' | 'DYNAMIC_SUSPECTED' | 'VERIFIED' | 'UNREACHED'>('ALL')
+  const [selectedFindingId, setSelectedFindingId] = useState<string>()
+  const [selectedStepIndex, setSelectedStepIndex] = useState(0)
+  const [replayLoading, setReplayLoading] = useState(false)
+  const [replayError, setReplayError] = useState<string>()
+  const [replayResult, setReplayResult] = useState<FindingReplayDto>()
 
   useEffect(() => {
     let active = true
@@ -40,17 +47,72 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
     return () => { active = false }
   }, [projectId, snapshot?.scanId])
 
-  const downloadReport = () => {
-    if (!reportSummary || !snapshot?.scanId) return
-    const safeScanId = snapshot.scanId.replace(/[^A-Za-z0-9._-]/g, '_')
-    const url = URL.createObjectURL(new Blob([reportSummary], { type: 'text/markdown;charset=utf-8' }))
+  const filteredFindings = useMemo(() => {
+    const query = findingQuery.trim().toLocaleLowerCase()
+    return findings.filter((finding) => {
+      if (findingStatus !== 'ALL' && finding.status !== findingStatus) return false
+      if (!query) return true
+      return [finding.title, finding.entry, finding.sink, finding.dependency]
+        .some((value) => value.toLocaleLowerCase().includes(query))
+    })
+  }, [findings, findingQuery, findingStatus])
+
+  const selectedFinding = filteredFindings.find((finding) => finding.id === selectedFindingId)
+    ?? filteredFindings[0]
+  const selectedPath = snapshot?.paths.find((path) => path.entrypointId === selectedFinding?.entrypointId)
+    ?? snapshot?.paths[0]
+  const selectedStep = selectedPath?.steps[Math.min(selectedStepIndex, Math.max(0, (selectedPath?.steps.length ?? 1) - 1))]
+
+  const replaySelectedFinding = async () => {
+    if (!selectedFinding?.id || replayLoading) return
+    setReplayLoading(true)
+    setReplayError(undefined)
+    setReplayResult(undefined)
+    try {
+      setReplayResult(await api.replayFinding(selectedFinding.findingId ?? selectedFinding.id))
+    } catch (cause) {
+      setReplayError(errorMessage(cause))
+    } finally {
+      setReplayLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (selectedFinding && selectedFinding.id !== selectedFindingId) setSelectedFindingId(selectedFinding.id)
+    if (!selectedFinding) setSelectedFindingId(undefined)
+    setSelectedStepIndex(0)
+  }, [selectedFinding?.id, selectedFindingId])
+
+  const downloadFile = (filename: string, content: string, type: string) => {
+    const url = URL.createObjectURL(new Blob([content], { type }))
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `veyrion-report-${safeScanId}.md`
+    anchor.download = filename
     document.body.appendChild(anchor)
     anchor.click()
     anchor.remove()
     URL.revokeObjectURL(url)
+  }
+
+  const downloadReport = () => {
+    if (!reportSummary || !snapshot?.scanId) return
+    const safeScanId = snapshot.scanId.replace(/[^A-Za-z0-9._-]/g, '_')
+    downloadFile(`veyrion-report-${safeScanId}.md`, reportSummary, 'text/markdown;charset=utf-8')
+  }
+
+  const downloadJson = () => {
+    if (!snapshot?.scanId) return
+    const safeScanId = snapshot.scanId.replace(/[^A-Za-z0-9._-]/g, '_')
+    downloadFile(`veyrion-scan-${safeScanId}.json`, JSON.stringify(snapshot, null, 2), 'application/json;charset=utf-8')
+  }
+
+  const downloadHtml = () => {
+    if (!snapshot?.scanId) return
+    const safeScanId = snapshot.scanId.replace(/[^A-Za-z0-9._-]/g, '_')
+    const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] ?? char))
+    const rows = findings.map((finding) => `<tr><td>${esc(finding.severity)}</td><td>${esc(finding.title)}</td><td>${esc(finding.entry)}</td><td>${esc(finding.sink)}</td><td>${esc(finding.status)}</td></tr>`).join('')
+    const html = `<!doctype html><html lang="${english ? 'en' : 'zh-CN'}"><head><meta charset="utf-8"><title>Veyrion ${esc(snapshot.scanId)}</title><style>body{font:14px system-ui,sans-serif;color:#172033;margin:32px}h1{font-size:24px}small{color:#667085}table{border-collapse:collapse;width:100%;margin-top:24px}th,td{border:1px solid #dfe5ee;padding:8px;text-align:left}th{background:#f0f4fa}</style></head><body><h1>Veyrion audit report</h1><small>${esc(snapshot.scanId)} · ${esc(snapshot.verificationStatus)} · ${esc(snapshot.dependencyMode)}</small><table><thead><tr><th>Severity</th><th>Finding</th><th>Entry</th><th>Sink</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></body></html>`
+    downloadFile(`veyrion-report-${safeScanId}.html`, html, 'text/html;charset=utf-8')
   }
 
   return <section>
@@ -64,7 +126,7 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       <article className="metric"><span>{english ? 'Verified' : '已验证'}</span><strong>{findings.filter((item) => item.status === 'VERIFIED').length}</strong><small>{english ? 'Highest evidence boundary' : '证据边界最高等级'}</small></article>
     </div>
     <article className="panel section-gap">
-      <div className="panel-head"><div><p className="eyebrow">{english ? 'FINAL REPORT' : '最终报告'}</p><h2>{english ? 'Final report' : '最终报告'}</h2></div><div className="button-row"><span className="inference-badge">{english ? 'MODEL INFERENCE' : '模型推断'}</span>{reportSummary && <button type="button" className="secondary-button" onClick={downloadReport}>{english ? 'Download .md' : '下载 .md'}</button>}</div></div>
+      <div className="panel-head"><div><p className="eyebrow">{english ? 'FINAL REPORT' : '最终报告'}</p><h2>{english ? 'Final report' : '最终报告'}</h2></div><div className="button-row"><span className="inference-badge">{english ? 'MODEL INFERENCE' : '模型推断'}</span>{reportSummary && <><button type="button" className="secondary-button" onClick={downloadReport}>{english ? 'Download .md' : '下载 .md'}</button><button type="button" className="secondary-button" onClick={downloadHtml}>{english ? 'Export .html' : '导出 .html'}</button></>}{snapshot && <button type="button" className="secondary-button" onClick={downloadJson}>{english ? 'Export .json' : '导出 .json'}</button>}</div></div>
       {reportError && <Notice kind="error">{reportError}</Notice>}
       {reportLoading && <p className="empty-state">{english ? 'Loading report events for this scan…' : '正在加载当前扫描的报告事件…'}</p>}
       {!reportLoading && reportSummary && <>
@@ -79,11 +141,22 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
     <div className="result-grid">
       <article className="panel">
         <div className="panel-head"><div><p className="eyebrow">{english ? 'FINDINGS' : '发现'}</p><h2>{english ? 'Findings' : '发现'}</h2></div><span>{findings.length}</span></div>
-        <div className="card-list">{findings.map((finding) => <div className="finding-card" key={finding.id}><div className={`severity severity-${finding.severity}`}>{finding.severity}</div><div><strong>{finding.title}</strong><small>{finding.entry} → {finding.sink}</small><small>{finding.evidence} {english ? 'evidence items' : '条证据'} · {finding.dependency === 'none' && !english ? '无外部依赖记录' : finding.dependency}</small></div><StatusPill status={finding.status} /></div>)}{findings.length === 0 && <p className="empty-state">{english ? 'The backend has returned no findings.' : '后端尚未返回发现。'}</p>}</div>
+        <div className="finding-toolbar"><label className="field"><span>{english ? 'Filter findings' : '筛选发现'}</span><input value={findingQuery} onChange={(event) => setFindingQuery(event.target.value)} placeholder={english ? 'Title, entry, sink...' : '标题、入口或 sink…'} /></label><label className="field"><span>{english ? 'Evidence status' : '证据状态'}</span><select value={findingStatus} onChange={(event) => setFindingStatus(event.target.value as typeof findingStatus)}><option value="ALL">{english ? 'All statuses' : '全部状态'}</option><option value="STATIC_INFERRED">STATIC_INFERRED</option><option value="DYNAMIC_SUSPECTED">DYNAMIC_SUSPECTED</option><option value="VERIFIED">VERIFIED</option><option value="UNREACHED">UNREACHED</option></select></label></div>
+        <div className="card-list">{filteredFindings.map((finding) => <button type="button" className={`finding-card finding-card-button ${finding.id === selectedFinding?.id ? 'selected' : ''}`} key={finding.id} onClick={() => { setSelectedFindingId(finding.id); setSelectedStepIndex(0) }}><div className={`severity severity-${finding.severity}`}>{finding.severity}</div><div><strong>{finding.title}</strong><small>{finding.entry} → {finding.sink}</small><small>{finding.evidence} {english ? 'evidence items' : '条证据'} · {finding.dependency === 'none' && !english ? '无外部依赖记录' : finding.dependency}</small></div><StatusPill status={finding.status} /></button>)}{filteredFindings.length === 0 && <p className="empty-state">{english ? 'No findings match the current filter.' : '没有符合当前筛选条件的发现。'}</p>}</div>
       </article>
       <article className="panel">
         <div className="panel-head"><div><p className="eyebrow">{english ? 'ENTRY COVERAGE' : '入口覆盖'}</p><h2>{english ? 'Entries and coverage' : '入口与覆盖'}</h2></div><span>{dependencyModeLabel(snapshot?.dependencyMode)}</span></div>
         <div className="card-list">{entries.map((entry) => <div className="list-card" key={entry.id}><div><strong>{entry.method} {entry.route}</strong><small>{entry.module} · {entry.precondition} · {english ? `coverage ${entry.coverage}%` : `覆盖 ${entry.coverage}%`}</small></div><StatusPill status={entry.status} /></div>)}{entries.length === 0 && <p className="empty-state">{english ? 'No entries are available; this does not imply an empty attack surface.' : '暂无入口；这不表示攻击面为空。'}</p>}</div>
+      </article>
+    </div>
+    <div className="chain-layout section-gap">
+      <article className="panel chain-panel">
+        <div className="panel-head"><div><p className="eyebrow">{english ? 'ATTACK CHAIN' : '攻击链'}</p><h2>{english ? 'Evidence path' : '证据链路'}</h2></div><span>{selectedPath ? `${selectedPath.steps.length} ${english ? 'nodes' : '个节点'}` : (english ? 'No path' : '暂无路径')}</span></div>
+        {selectedPath ? <div className="chain-board" role="list" aria-label={english ? 'Evidence path nodes' : '证据路径节点'}>{selectedPath.steps.map((step, index) => <div className="chain-node-wrap" key={`${step.label}-${index}`}><button type="button" role="listitem" className={`chain-node chain-node-${step.kind} ${index === selectedStepIndex ? 'selected' : ''}`} onClick={() => setSelectedStepIndex(index)}><span>{index + 1}</span><strong>{step.label}</strong><small>{step.kind} · {step.state}</small></button>{index < selectedPath.steps.length - 1 && <span className="chain-connector" aria-hidden="true">→</span>}</div>)}</div> : <p className="empty-state">{english ? 'Select a finding with a path to inspect its evidence chain.' : '选择带有路径的发现以查看证据链。'}</p>}
+      </article>
+      <article className="panel detail-panel">
+        <div className="panel-head"><div><p className="eyebrow">{english ? 'SELECTED EVIDENCE' : '选中证据'}</p><h2>{selectedFinding ? selectedFinding.title : (english ? 'No finding selected' : '尚未选择发现')}</h2></div>{selectedFinding && <StatusPill status={selectedFinding.status} />}</div>
+        {selectedFinding ? <div className="evidence-detail"><div className="button-row"><button type="button" className="secondary-button" onClick={() => void replaySelectedFinding()} disabled={replayLoading || selectedFinding.status === 'VERIFIED'}>{replayLoading ? (english ? 'Requesting…' : '正在请求…') : (english ? 'Request sandbox replay' : '请求沙箱重放')}</button><span className="form-help">{english ? 'The server owns the sandbox policy; this does not mark VERIFIED.' : '由服务端固定沙箱策略；重放不会直接标记为 VERIFIED。'}</span></div>{replayError && <Notice kind="error">{replayError}</Notice>}{replayResult && <Notice kind="info">{english ? `Replay task ${replayResult.taskId} is ${replayResult.lifecycle}.` : `重放任务 ${replayResult.taskId} 当前为 ${replayResult.lifecycle}。`}</Notice>}<dl><div><dt>{english ? 'Entry' : '入口'}</dt><dd>{selectedFinding.entry}</dd></div><div><dt>{english ? 'Sink' : 'Sink'}</dt><dd>{selectedFinding.sink}</dd></div><div><dt>{english ? 'Dependency' : '依赖'}</dt><dd>{selectedFinding.dependency}</dd></div><div><dt>{english ? 'Evidence refs' : '证据引用'}</dt><dd>{selectedFinding.evidenceRefs?.length ?? selectedFinding.evidence}</dd></div></dl>{selectedStep && <section><h3>{selectedStep.label}</h3><p>{selectedStep.detail}</p><small>{selectedStep.provenanceKind ?? 'INFERENCE'} · {selectedStep.eventType ?? 'STATIC_ANALYSIS'} · {selectedStep.verificationStatus ?? selectedPath?.verificationStatus}</small></section>}</div> : <p className="empty-state">{english ? 'Findings are evidence-bound and remain static until runtime proof exists.' : '发现必须绑定证据；没有运行时证明时仍保持静态推断。'}</p>}
       </article>
     </div>
     <article className="panel section-gap">

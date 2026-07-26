@@ -51,6 +51,12 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         Path directory = Files.createTempDirectory("veyrion-external-acceptance-");
         Path jar = directory.resolve("application.jar");
         createJar(jar, "original");
+        Path mysqlJar = directory.resolve("mysql-application.jar");
+        createJar(mysqlJar, "mysql-connector-j-8.4.0.jar", "original");
+        check(!ExternalArtifactTaskExecutor.containsMysqlConnector(jar),
+                "plain application must keep in-JVM JDBC substitute");
+        check(ExternalArtifactTaskExecutor.containsMysqlConnector(mysqlJar),
+                "Connector/J catalog entry must select protocol substitute");
         byte[] original = Files.readAllBytes(jar);
         String digest = sha256(original);
 
@@ -120,6 +126,7 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         } finally {
             mock.close();
             Files.deleteIfExists(jar);
+            Files.deleteIfExists(mysqlJar);
             Files.deleteIfExists(directory);
         }
     }
@@ -162,10 +169,19 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
     }
 
     private static void createJar(Path path, String value) throws IOException {
+        createJar(path, null, value);
+    }
+
+    private static void createJar(Path path, String libraryName, String value) throws IOException {
         try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(path))) {
             output.putNextEntry(new ZipEntry("BOOT-INF/classes/example.txt"));
             output.write(value.getBytes(StandardCharsets.UTF_8));
             output.closeEntry();
+            if (libraryName != null) {
+                output.putNextEntry(new ZipEntry("BOOT-INF/lib/" + libraryName));
+                output.write(new byte[]{0x50, 0x4b, 0x03, 0x04});
+                output.closeEntry();
+            }
         }
     }
 

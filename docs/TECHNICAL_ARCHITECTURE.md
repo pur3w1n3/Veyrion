@@ -268,6 +268,8 @@ Control Plane 与 Worker 之间应使用版本化事件，而不是共享内部�
 
 ## 10. 沙箱隔离与多租户基线
 
+> **个人本地版边界（2026-07-26）**：本版不实现完整多租户、企业级 RBAC/SSO 或跨租户调度；数据库中的 project/workspace 字段只用于本地作用域和证据关联，不构成企业租户隔离承诺。真实供应商生产互操作也不在范围内，Provider 仅可作为本地显式授权的受控适配。动态任务只能交给通过策略校验的沙箱；沙箱不可用时必须保持 `DYNAMIC_DISABLED`，不得在宿主机直接运行制品。
+
 - 容器使用只读根文件系统、非特权用户、最小 Linux capabilities、seccomp/AppArmor（或等效策略），并禁用宿主机路径、Docker socket、内核接口和不必要的设备。
 - 出站网络按域名/IP/端口白名单控制，同时防止 DNS rebinding、IPv6 绕过和云元数据地址访问；所有允许的流量写入审计日志。
 - Worker、对象存储和数据库按项目/租户使用独立身份；临时文件、快照和密钥在任务结束或保留期到期后可验证销毁。
@@ -314,7 +316,8 @@ Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约�
 ## 15. 字节码事实索引
 
 - 在既有有界 classfile reader 上提取类层次、字段、方法、字段读写、调用指令与稳定指令证据，不加载或初始化被测类。
-- `invokestatic`/`invokespecial` 只记录符号直接目标；虚调用和接口调用标为保守 CHA 声明目标；`invokedynamic`、反射、JNI 和动态代理标为 unresolved。当前不展开完整 classpath 子类、不执行 bootstrap、不做跨方法污点或反射字符串求值。
+- `invokestatic`/`invokespecial` 在制品内解析为 `DIRECT`；虚调用和接口调用在制品内按类层次解析为有界 `CHA`，制品外或动态目标标为 `UNRESOLVED`。解析会保留声明 owner、实际候选 owner、调用位置和限制说明。
+- 入口参数通过受限字节码栈/局部变量摘要作为 source，沿制品内调用边传播到敏感 API，形成带 source、transform、call、sink 步骤的 `STATIC_INFERRED` `TaintPath`。调用图边数、污点状态、路径数和方法流完整性均有预算/停止原因；分支合流、对象字段别名、反射、JNI、动态代理、完整 classpath 和运行时注册不被伪装成已解析。
 - 反编译只作为未来隔离分析 Worker 的派生阅读视图，不能作为事实源，也不能在 Control Plane 进程内运行。
 
 ## 16. 交付与部署形态
@@ -338,7 +341,13 @@ Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约�
 
 Agent 使用 startup-only Byte Buddy 插桩，不修改 bootstrap class：Spring mapping/Servlet 与 JDBC implementation 采用方法 Advice，JDK HTTP/文件/进程采用应用调用点插桩。事件区分 `RUNTIME_OBSERVED`、`AGENT_INSTRUMENTED`、`APPLICATION_REPORTED`，并回指 caller class、method descriptor、target 与 invocation ordinal。Agent 与目标同 JVM，恶意目标理论上可以干扰或伪造进程内状态，因此 Agent 永远不是安全或不可篡改边界；Worker 负责 trace 预算、摘要链、完整性和双次重放。
 
-替身层仅提供 loopback 固定 HTTP route、精确 SQL 规则结果、授权 tmpfs 文件和默认拒绝的进程模拟。每个结果绑定项目/制品/扫描/任务、policy digest、sequence、provenance、executed、预算与 stop reason；完整 transcript 有稳定摘要。替身不允许外部转发、真实 JDBC URL、宿主路径或任意进程。
+替身层提供 loopback 固定 HTTP route、精确 SQL 规则结果、有界 Redis RESP2/RESP3 子集、有界 MySQL Classic 子集、授权 tmpfs 文件和默认拒绝的进程模拟。每个结果绑定项目/制品/扫描/任务、policy digest、sequence、provenance、executed、预算与 stop reason；完整 transcript 有稳定摘要。替身不允许外部转发、宿主路径或任意进程。协议替身只覆盖声明的子集，未知命令、畸形帧和预算超限必须拒绝。
+
+### 17.1 动态状态持久化与恢复
+
+- SQLite V007 保存 `WorkerTaskSpec`、任务生命周期、租约、checkpoint、失败原因、trace chunk、前序摘要和 trace 幂等键；V011 继续保存控制面 request-to-resource 幂等绑定、审计流水线 cursor 和有界 probe plan。写入前仍由内存合约校验 scope、摘要链、资源预算和状态转换。
+- 控制面启动时恢复任务和 trace，已提交 chunk 重新校验链连续性；`LEASED/RUNNING/PAUSED` 任务清除旧租约并以 `CONTROL_PLANE_RESTART_RECOVERY` 回到 `QUEUED`，避免把旧 worker 身份当成仍然有效。完成任务可从持久化 trace 重建动态路径投影。
+- 控制面重启时，持久化 `QUEUED/RUNNING` AI job 会保留为不可变的 `FAILED/PROCESS_RESTARTED` 历史记录，恢复器依据 cursor 创建下一阶段新 job，不改写旧记录或复制已完成阶段。该能力是单节点 SQLite 恢复，不是分布式队列、exactly-once、租约服务或不可变归档；SSE 客户端历史、跨节点调度和防篡改审计仍需后续设计。
 
 不受信制品的生产能力发布前必须具备最近 30 天内、由受信 verifier 验证的完整 P0 证据：网络、DNS、metadata、宿主挂载、Docker socket、非 root、只读根、capability、资源耗尽、trace 篡改、Agent 缺失与沙箱逃逸套件。当前仓库未执行真实 gVisor/Kata 逃逸测试；本地 `TRUSTED_DOCKER` 即使可用，也不能据此标记强化动态能力已通过发布门禁。
 
@@ -349,13 +358,19 @@ Agent 使用 startup-only Byte Buddy 插桩，不修改 bootstrap class：Spring
 - 两类协议先转换为 canonical `ToolCall`。服务端固定注册表再检查角色 allowlist、scope、JSON schema/深度/字节、调用次数、deadline 和结果预算；模型字段不能携带权限、审批、网络、沙箱或租户覆盖。
 - OpenAI 使用 strict function schema、`parallel_tool_calls=false` 和相邻 `role=tool` 结果；Anthropic 使用 `disable_parallel_tool_use=true` 和紧邻 `tool_result`。截断、过滤、拒绝、畸形参数、重复 ID、未知 block 或缺失结果均不执行工具。
 - 生产传输只允许经过 Provider 边界验证的显式 HTTP(S) endpoint，禁止重定向，并限制连接、请求、响应和读取时间。为兼容受信内网网关可使用明文 HTTP，但这会暴露凭据与模型数据，公网部署应强制 HTTPS。凭据只在最短解密作用域内进入 header；响应原始字节在解析后清零。
-- 当前工具只读取同一 project/artifact/scan 的入口、依赖、sink、静态证据和动态安全摘要，不能执行制品、联网、调用 shell、反编译或创建动态任务。持久化只保留状态、停止原因、请求 ID、耗时、轮次、工具决策摘要和脱敏截断的 `INFERENCE`。
+- 当前工具只读取同一 project/artifact/scan 的入口、依赖、sink、静态证据和动态安全摘要；动态验证与漏洞研判可调用服务端 `sandbox_probe`，但不能执行制品、访问外部网络、调用 shell 或反编译。持久化只保留状态、停止原因、请求 ID、耗时、轮次、工具决策摘要和脱敏截断的 `INFERENCE`。
 - 真实 Provider 首轮互操作失败定位为 dotted function names 被 Provider 拒绝。代码侧名称固定改为 snake_case：`facts_search`、`evidence_get`、`plan_propose`；Provider 不能借此注册新工具或扩大角色 allowlist。
 - SQLite V005 为单个 AI job 最多追加 128 条顺序事件：Provider 请求/结果仅保留协议、轮次、输出语言、限额、HTTP 状态、耗时、请求 ID、停止原因和工具数等有界元数据；工具参数只保留 shape/field count/encoded bytes，以及白名单化的事实类别、limit、合法证据引用、候选数量和原始敏感字段的存在/字节数，另存工具结果状态、脱敏截断的模型摘要和失败诊断。
 - 事件接口不保存或返回 Provider 原始响应、API Key、完整工具参数、模型隐藏推理或 chain-of-thought。`modelInferenceSummary` 是经过脱敏和 16 KiB 截断的用户可见模型文本，不是推理轨迹，结论仍固定为 `INFERENCE`。
 - 当前仍是本地单节点、进程内执行器，未完成真实供应商互操作、生产 egress/DNS rebinding 防护、流式协议、成本计量或多租户调度；Azure/LOCAL 聊天保持 disabled。
 
 ## 19. 静态信号与本地 Provider 兼容边界
+
+## 19.1 固定 AI 审计流水线
+
+控制面固定编排 `PRE_ANALYSIS → DYNAMIC_OBSERVATION（沙箱执行，不是 AI 角色）→ DYNAMIC_VERIFICATION → PATH_EXPLORATION → VULNERABILITY_TRIAGE → REPORT_GENERATION`。前置建模结束后先由授权沙箱基于静态入口执行基础观察；动态验证角色可调用 `sandbox_probe` 提出同一容器 loopback 内的发包计划，由服务端受控执行器发包并保存请求/响应结果。AI 只提交入口引用和有界输入提示，不能控制网络请求的权限边界；路径探索只能消费已保存结果。漏洞研判没有入口命中、参数绑定、触发点执行和可重放动态调试闭环时，不得把候选标记为漏洞存在或 `VERIFIED`。
+
+角色绑定现在包含 `promptZh` 与 `promptEn`，由 V010 持久化；创建 AI Job 时将对应提示词写入不可变 policy snapshot，执行时按 `outputLanguage` 选择语言。提示词属于不可信任务输入，不能修改工具、网络、沙箱、预算或验证状态。
 
 - 类名包含 `File`、`Path`、`Exec` 等词不是 sink 事实。class-name 规则只对无法解析有效 classfile 元数据的对象降级启用；可正常解析的 Spring Boot loader、框架类和应用类不会仅凭名称生成 sink。
 - 静态发现的 severity 表示排查优先级，不表示漏洞严重度。没有入口绑定的信号固定为 `info`；静态绑定的 file/command 信号最高为 `low`/`medium`，不得显示为 `high/critical`。
@@ -367,9 +382,10 @@ Docker Desktop/WSL2 提供 Linux runc，但当前 runtime inventory 没有 runsc
 
 - public 动态请求 body 只允许 `authorized=true`；Control Plane 从不可变 scan 快照选择入口并从 artifact catalog 解析内容寻址副本，浏览器不能提供镜像、命令、路径、挂载或 capability；
 - 执行前复核文件身份、大小、ZIP signature 和 SHA-256，只挂载一个目标 JAR 到固定 `/opt/veyrion/artifact/application.jar`，且 mount 为只读；
-- 容器固定 `--network none`、只读 rootfs、专用有界 trace tmpfs、`65532:65532`、cap-drop ALL、no-new-privileges、PID/内存/CPU 限制；
-- 容器创建后以 `docker inspect` 复核网络、mount、身份、rootfs、capability、tmpfs 和资源配置，并以非 root probe 验证 rootfs 不可写、trace tmpfs 可写；
-- runtime 内以固定 `java -javaagent:... -jar /opt/veyrion/artifact/application.jar` 启动目标，`java.io.tmpdir` 指向有界 tmpfs，Agent class prefix 由 scan 入口声明类的包名派生，避免框架启动类淹没 trace。若进程存活，Agent helper 从同一容器访问目标 JVM loopback 入口；`--network none` 同时阻断外部 DNS 和外部网络，该 loopback probe 不会离开容器；
+- 容器固定 `--network none`、专用有界 trace tmpfs、单个只读 artifact mount 和 PID/内存/CPU 限制；个人本地 `TRUSTED_DOCKER` 不强制只读 rootfs、非 root 或 cap-drop，以兼容需要写日志或 root 启动的受信应用；
+- 容器创建后以 `docker inspect` 复核网络、artifact mount、tmpfs 和资源配置，并验证 root 用户与 trace 目录可写。该兼容策略只属于受信开发后端，不得作为恶意制品隔离证据；
+- runtime 内以固定 `java -javaagent:... -jar /opt/veyrion/artifact/application.jar` 启动目标，`java.io.tmpdir` 指向有界 tmpfs，Agent class prefix 由 scan 入口声明类的包名派生，避免框架启动类淹没 trace。若进程存活，Agent helper 从同一容器访问目标 JVM loopback 入口；`--network none` 阻断外部连接，Agent 同时记录 HTTP、Socket、URL、DNS 和 JNDI 尝试，使 JNDI/URLDNS 候选具备“尝试发生且被断网阻断”的动态证据；
+- 动态验证角色可调用 `sandbox_probe`。模型只提交已存在的 `entry:*` 和有界输入提示，服务端从不可变 scan 解析路由、固定 `NetworkPolicy.DENY`、挂载和预算，将 `name=value` 候选裁剪为最多 8 个入口参数请求并生成服务端 probe plan，创建至多一个 job-scoped 动态任务并返回任务/入口证据；流水线在该任务仍运行时不会推进路径探索；模型不能直接获得命令、网络、UID、挂载或预算控制权。V011 将 plan 元数据和 job 绑定持久化，重启后按 hash 校验并恢复原任务，异常则 fail-closed。
 - Worker 仍通过独立 token 的 HTTP contract 拉取任务、租约、提交 trace 和完成任务；任何 Docker 或策略检查失败均 fail-closed，不存在宿主 Java fallback。
 
 该 backend 是显式开发能力，不是 OpenSandbox 故障降级，也不是 gVisor/Kata 强化隔离。它只适用于操作员信任的内部 JAR；恶意或不受信制品的生产执行仍须部署到支持 runsc/Kata 的 Linux Worker 并通过 P0 release gate。本机真实 Docker 回归要求通过 `VEYRION_TEST_ARTIFACT_JAR` 显式提供后端管理的可执行测试 JAR，覆盖 public 排队、断网运行、loopback HTTP、不可变 trace commit 和 dashboard `DYNAMIC_SUSPECTED` 投影。

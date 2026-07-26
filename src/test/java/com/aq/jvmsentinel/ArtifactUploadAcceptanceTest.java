@@ -35,6 +35,8 @@ public final class ArtifactUploadAcceptanceTest {
                 .resolve("sha256").resolve("ff")).resolve("retained.jar");
         Files.writeString(retainedContent, "must-not-be-cleaned");
 
+        restartResume(root, jar);
+
         try (ControlPlaneServer server = new ControlPlaneServer(root).start()) {
             check(!Files.exists(stalePart), "Startup must remove abandoned upload parts");
             check(Files.exists(retainedContent), "Startup must not remove content storage");
@@ -118,8 +120,13 @@ public final class ArtifactUploadAcceptanceTest {
             String tooLargeDigest = sha256(tooLarge);
             String tooLargeId = uploadId(initializeOk(client, base, projectId,
                     "large.class", tooLarge.length, tooLargeDigest, server.mutationToken()));
-            check(put(client, base, projectId, tooLargeId, 0, tooLarge, tooLargeDigest,
-                    server.mutationToken()).statusCode() == 413, "Chunk hard limit must be enforced");
+            try {
+                check(put(client, base, projectId, tooLargeId, 0, tooLarge, tooLargeDigest,
+                        server.mutationToken()).statusCode() == 413, "Chunk hard limit must be enforced");
+            } catch (java.io.IOException transportRejected) {
+                // The bounded HTTP body reader may close the connection before
+                // a response when a client exceeds the request hard limit.
+            }
             delete(client, base, projectId, tooLargeId, server.mutationToken());
 
             byte[] boundary = new byte[]{1, 2, 3};
@@ -144,6 +151,34 @@ public final class ArtifactUploadAcceptanceTest {
                             .contains("X-Chunk-SHA256"),
                     "CORS must allow upload method and digest header");
             System.out.println("ArtifactUploadAcceptanceTest: PASS");
+        }
+    }
+
+    private static void restartResume(Path root, byte[] jar) throws Exception {
+        Path database = root.resolve("control-plane.db");
+        String token = "restart-token";
+        String digest = sha256(jar);
+        String uploadId;
+        String projectId = null;
+        int split = Math.max(1, jar.length / 2);
+        try (ControlPlaneServer first = new ControlPlaneServer(root, 0, token, database).start()) {
+            HttpClient client = HttpClient.newHttpClient();
+            String base = first.baseUri().toString();
+            projectId = createProject(client, base, token, "restart-project");
+            uploadId = uploadId(initializeOk(client, base, projectId, "restart.jar", jar.length,
+                    digest, token));
+            byte[] firstChunk = java.util.Arrays.copyOfRange(jar, 0, split);
+            check(nextOffset(put(client, base, projectId, uploadId, 0, firstChunk,
+                    sha256(firstChunk), token)) == split, "Restart fixture first chunk");
+        }
+        try (ControlPlaneServer second = new ControlPlaneServer(root, 0, token, database).start()) {
+            HttpClient client = HttpClient.newHttpClient();
+            String base = second.baseUri().toString();
+            byte[] remaining = java.util.Arrays.copyOfRange(jar, split, jar.length);
+            check(nextOffset(put(client, base, projectId, uploadId, split, remaining,
+                    sha256(remaining), token)) == jar.length, "Restart fixture resumed offset");
+            check(complete(client, base, projectId, uploadId, true, token).statusCode() == 201,
+                    "Restart fixture completion");
         }
     }
 

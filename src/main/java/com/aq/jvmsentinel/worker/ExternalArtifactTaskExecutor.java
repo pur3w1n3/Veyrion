@@ -32,6 +32,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /**
  * Executes a catalog-owned executable JAR only after a fresh digest check.
@@ -405,7 +407,13 @@ public final class ExternalArtifactTaskExecutor {
         }
         // Do not force server.port/address: the JAR keeps its own listen config.
         // Readiness uses WaitHttpReady (process LISTEN → HTTP classify) to avoid fragile shell quoting.
-        return writeProgress("启动应用 JAR（保留制品自身端口；javaagent hook + 依赖替身；容器断网）")
+        boolean mysqlConnector = containsMysqlConnector(registration.path());
+        String datasource = mysqlConnector
+                ? "jdbc:mysql://127.0.0.1:3306/veyrion?connectTimeout=1000&socketTimeout=1000&useSSL=false"
+                : "jdbc:veyrion-mock:mem:veyrion";
+        String driver = mysqlConnector ? "" : " --spring.datasource.driver-class-name="
+                + "com.aq.jvmsentinel.instrumentation.mock.VeyrionMockDriver";
+        return writeProgress("启动应用 JAR（保留制品自身端口；javaagent hook + 协议级依赖替身；容器断网）")
                 + "; java"
                 + " -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
                 + " -Dveyrion.sandbox.traceDir.authorized=true"
@@ -418,9 +426,8 @@ public final class ExternalArtifactTaskExecutor {
                 + " -jar " + ARTIFACT_PATH
                 // Fail-open pools + protocol mock URL so deny-all jars can bind loopback for probes.
                 + " --spring.main.lazy-initialization=true"
-                + " --spring.datasource.url=jdbc:veyrion-mock:mem:veyrion"
-                + " --spring.datasource.driver-class-name="
-                + "com.aq.jvmsentinel.instrumentation.mock.VeyrionMockDriver"
+                + " --spring.datasource.url=" + datasource
+                + driver
                 + " --spring.datasource.hikari.initialization-fail-timeout=-1"
                 + " --spring.datasource.hikari.connection-timeout=1000"
                 + " --spring.datasource.druid.initial-size=0"
@@ -487,6 +494,25 @@ public final class ExternalArtifactTaskExecutor {
                 + "; if [ \"$probe_status\" -eq 0 ]; then exit 0; else exit 70; fi"
                 + "; else wait \"$APP_PID\"; app_status=$?"
                 + "; if [ \"$probe_status\" -ne 0 ]; then exit 70; else exit \"$app_status\"; fi; fi";
+    }
+
+    /** Select protocol-level MySQL only when Connector/J is present in the catalog JAR. */
+    static boolean containsMysqlConnector(Path artifact) {
+        int entries = 0;
+        try (ZipFile zip = new ZipFile(artifact.toFile())) {
+            var iterator = zip.entries();
+            while (iterator.hasMoreElements() && entries++ < 100_000) {
+                ZipEntry entry = iterator.nextElement();
+                if (entry.isDirectory()) continue;
+                String name = entry.getName().toLowerCase(java.util.Locale.ROOT);
+                if (name.contains("mysql-connector")
+                        && (name.endsWith(".jar") || name.endsWith(".zip"))) return true;
+            }
+            return false;
+        } catch (IOException ignored) {
+            // Digest/signature validation rejects malformed artifacts before command construction.
+            return false;
+        }
     }
 
     /** One JVM probes the whole plan file so hundreds of entries stay inside the wall clock. */

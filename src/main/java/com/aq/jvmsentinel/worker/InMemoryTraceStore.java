@@ -15,12 +15,20 @@ public final class InMemoryTraceStore {
     private static final int MAX_IDEMPOTENCY_KEYS = 100_000;
 
     private final Clock clock;
+    private final TracePersistence persistence;
     private final Map<TaskScope, List<TraceChunk>> traces = new HashMap<>();
     private final Map<ReplayKey, TraceChunk> replays = new LinkedHashMap<>();
     private int chunkCount;
 
     public InMemoryTraceStore(Clock clock) {
+        this(clock, List.of(), (key, chunk) -> { });
+    }
+
+    public InMemoryTraceStore(Clock clock, List<StoredTrace> restored, TracePersistence persistence) {
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.persistence = Objects.requireNonNull(persistence, "persistence");
+        Objects.requireNonNull(restored, "restored");
+        for (StoredTrace item : restored) restore(item);
     }
 
     public synchronized TraceChunk append(String idempotencyKey, TraceChunk chunk) {
@@ -56,6 +64,7 @@ public final class InMemoryTraceStore {
         String calculated = TraceChunk.calculateDigest(chunk.schemaVersion(), chunk.scope(), chunk.sequence(),
                 chunk.previousDigest(), chunk.emittedAt(), chunk.payload());
         if (!calculated.equals(chunk.digest())) throw new IllegalStateException("trace content was tampered");
+        persistence.append(key, chunk);
         current.add(chunk);
         chunkCount++;
         replays.put(replayKey, chunk);
@@ -120,6 +129,39 @@ public final class InMemoryTraceStore {
     public synchronized TraceChunk head(TaskScope scope) {
         List<TraceChunk> chunks = traces.get(scope);
         return chunks == null || chunks.isEmpty() ? null : chunks.get(chunks.size() - 1);
+    }
+
+    private void restore(StoredTrace item) {
+        Objects.requireNonNull(item, "stored trace");
+        TraceChunk chunk = item.chunk();
+        String key = WorkerContracts.id(item.idempotencyKey(), "idempotencyKey");
+        List<TraceChunk> current = traces.computeIfAbsent(chunk.scope(), ignored -> new ArrayList<>());
+        if (traces.size() > MAX_TASKS || chunkCount >= MAX_CHUNKS_TOTAL
+                || replays.size() >= MAX_IDEMPOTENCY_KEYS) {
+            throw new IllegalStateException("restored trace limits exceeded");
+        }
+        String previous = current.isEmpty() ? null : current.get(current.size() - 1).digest();
+        if (chunk.sequence() != current.size() || !Objects.equals(previous, chunk.previousDigest())) {
+            throw new IllegalStateException("restored trace chain is not contiguous");
+        }
+        ReplayKey replayKey = new ReplayKey(chunk.scope(), key);
+        if (replays.putIfAbsent(replayKey, chunk) != null) {
+            throw new IllegalStateException("duplicate restored trace idempotency key");
+        }
+        current.add(chunk);
+        chunkCount++;
+    }
+
+    @FunctionalInterface
+    public interface TracePersistence {
+        void append(String idempotencyKey, TraceChunk chunk);
+    }
+
+    public record StoredTrace(String idempotencyKey, TraceChunk chunk) {
+        public StoredTrace {
+            WorkerContracts.id(idempotencyKey, "idempotencyKey");
+            Objects.requireNonNull(chunk, "chunk");
+        }
     }
 
     private record ReplayKey(TaskScope scope, String key) { }

@@ -13,10 +13,14 @@ public record BytecodeFactIndex(
         List<MethodFact> methods,
         List<MemberAccessFact> memberAccesses,
         List<CallEdge> callEdges,
-        List<UnresolvedDynamicFact> unresolvedDynamics) {
+        List<UnresolvedDynamicFact> unresolvedDynamics,
+        List<ResolvedCallEdge> artifactCallGraph,
+        List<TaintPath> taintPaths,
+        AnalysisCoverage analysisCoverage) {
 
     public static final BytecodeFactIndex EMPTY =
-            new BytecodeFactIndex(List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+            new BytecodeFactIndex(List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+                    List.of(), List.of(), AnalysisCoverage.empty());
 
     public BytecodeFactIndex {
         classes = copy(classes);
@@ -25,6 +29,25 @@ public record BytecodeFactIndex(
         memberAccesses = copy(memberAccesses);
         callEdges = copy(callEdges);
         unresolvedDynamics = copy(unresolvedDynamics);
+        artifactCallGraph = copy(artifactCallGraph);
+        taintPaths = copy(taintPaths);
+        analysisCoverage = analysisCoverage == null ? AnalysisCoverage.empty() : analysisCoverage;
+    }
+
+    public BytecodeFactIndex(List<ClassFact> classes, List<FieldFact> fields, List<MethodFact> methods,
+                             List<MemberAccessFact> memberAccesses, List<CallEdge> callEdges,
+                             List<UnresolvedDynamicFact> unresolvedDynamics) {
+        this(classes, fields, methods, memberAccesses, callEdges, unresolvedDynamics,
+                List.of(), List.of(), AnalysisCoverage.empty());
+    }
+
+    /** Compatibility-friendly names for consumers that treat the index as a graph/flow result. */
+    public List<ResolvedCallEdge> callGraph() {
+        return artifactCallGraph;
+    }
+
+    public List<TaintPath> interproceduralTaintPaths() {
+        return taintPaths;
     }
 
     private static <T> List<T> copy(List<T> values) {
@@ -82,7 +105,7 @@ public record BytecodeFactIndex(
     }
 
     public enum EdgeKind {
-        DIRECT, CONSERVATIVE_CHA, UNRESOLVED
+        DIRECT, CHA, CONSERVATIVE_CHA, UNRESOLVED
     }
 
     public record CallEdge(String callerOwner, String callerName, String callerDescriptor,
@@ -99,6 +122,55 @@ public record BytecodeFactIndex(
         public UnresolvedDynamicFact {
             require(mechanism, detail);
             Objects.requireNonNull(evidence, "evidence");
+        }
+    }
+
+    /** A target resolved against classes and methods present in this artifact only. */
+    public record ResolvedCallEdge(String callerOwner, String callerName, String callerDescriptor,
+                                   String declaredOwner, String targetOwner, String targetName,
+                                   String targetDescriptor, EdgeKind kind, String limitation,
+                                   InstructionEvidence evidence) {
+        public ResolvedCallEdge {
+            require(callerOwner, callerName, callerDescriptor, declaredOwner, targetOwner,
+                    targetName, targetDescriptor, limitation);
+            Objects.requireNonNull(kind, "kind");
+            Objects.requireNonNull(evidence, "evidence");
+        }
+    }
+
+    public record TaintStep(String kind, String symbol, String edgeKind,
+                            String evidence, String explanation) {
+        public TaintStep {
+            require(kind, symbol, edgeKind, evidence, explanation);
+        }
+    }
+
+    /** Static source-to-sink candidate. It is never runtime or replay verification. */
+    public record TaintPath(String id, String sourceOwner, String sourceMethod,
+                            String sourceDescriptor, int sourceParameter, String sinkOwner,
+                            String sinkMethod, String sinkDescriptor, String category,
+                            List<TaintStep> steps, String status) {
+        public TaintPath {
+            require(id, sourceOwner, sourceMethod, sourceDescriptor, sinkOwner, sinkMethod,
+                    sinkDescriptor, category, status);
+            if (sourceParameter < 0) throw new IllegalArgumentException("sourceParameter must be non-negative");
+            steps = copy(steps);
+        }
+    }
+
+    public record AnalysisCoverage(int callGraphEdgeBudget, int taintStateBudget,
+                                   int callGraphEdgesProduced, int taintStatesVisited,
+                                   boolean complete, List<String> stopReasons) {
+        public AnalysisCoverage {
+            if (callGraphEdgeBudget < 0 || taintStateBudget < 0 || callGraphEdgesProduced < 0
+                    || taintStatesVisited < 0) {
+                throw new IllegalArgumentException("analysis coverage counts must be non-negative");
+            }
+            stopReasons = copy(stopReasons);
+        }
+
+        public static AnalysisCoverage empty() {
+            return new AnalysisCoverage(0, 0, 0, 0, true, List.of());
         }
     }
 

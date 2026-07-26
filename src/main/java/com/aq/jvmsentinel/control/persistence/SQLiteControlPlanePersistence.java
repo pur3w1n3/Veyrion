@@ -1,7 +1,11 @@
 package com.aq.jvmsentinel.control.persistence;
 
+import com.aq.jvmsentinel.artifact.ArtifactUploadService;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
+import com.aq.jvmsentinel.event.EventContext;
+import com.aq.jvmsentinel.event.IdempotencyKey;
+import com.aq.jvmsentinel.event.VersionedEvent;
 import com.aq.jvmsentinel.model.ArtifactDescriptor;
 import com.aq.jvmsentinel.model.ArtifactType;
 import com.aq.jvmsentinel.provider.AgentRole;
@@ -9,6 +13,19 @@ import com.aq.jvmsentinel.provider.ProviderContracts.ProviderKind;
 import com.aq.jvmsentinel.security.ProviderSecretCipher.EncryptedSecret;
 import com.aq.jvmsentinel.security.ProviderSecretCipher.SecretScope;
 import com.aq.jvmsentinel.security.auth.OperatorRole;
+import com.aq.jvmsentinel.policy.NetworkMode;
+import com.aq.jvmsentinel.worker.InMemoryTraceStore;
+import com.aq.jvmsentinel.worker.NetworkPolicy;
+import com.aq.jvmsentinel.worker.ResourceBudget;
+import com.aq.jvmsentinel.worker.StopReason;
+import com.aq.jvmsentinel.worker.TaskCheckpoint;
+import com.aq.jvmsentinel.worker.TaskLifecycle;
+import com.aq.jvmsentinel.worker.TaskScope;
+import com.aq.jvmsentinel.worker.TaskSnapshot;
+import com.aq.jvmsentinel.worker.TraceChunk;
+import com.aq.jvmsentinel.worker.WorkerCapability;
+import com.aq.jvmsentinel.worker.WorkerLease;
+import com.aq.jvmsentinel.worker.WorkerTaskSpec;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -51,7 +68,12 @@ public final class SQLiteControlPlanePersistence {
             "db/migration/V003__provider_protocols.sql",
             "db/migration/V004__bounded_ai_jobs.sql",
             "db/migration/V005__bounded_ai_job_events.sql",
-            "db/migration/V006__dynamic_verification_role.sql");
+            "db/migration/V006__dynamic_verification_role.sql",
+            "db/migration/V007__persistent_worker_state.sql",
+            "db/migration/V008__persistent_artifact_uploads.sql",
+            "db/migration/V009__persistent_sse_events.sql",
+            "db/migration/V010__role_prompt_templates.sql",
+            "db/migration/V011__persistent_idempotency_and_pipeline.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 
@@ -67,6 +89,349 @@ public final class SQLiteControlPlanePersistence {
 
     public Path databasePath() {
         return databasePath;
+    }
+
+    public List<IdempotencyData> loadIdempotency() {
+        try (Connection connection = open();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT scope,idempotency_key,payload_hash,result_ref,result_json,created_at "
+                             + "FROM control_plane_idempotency ORDER BY created_at,scope,idempotency_key")) {
+            List<IdempotencyData> result = new ArrayList<>();
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    result.add(new IdempotencyData(rows.getString(1), rows.getString(2), rows.getString(3),
+                            rows.getString(4), rows.getString(5), rows.getString(6)));
+                }
+            }
+            if (result.size() > 50_000) throw new PersistenceException("persistent idempotency limit exceeded");
+            return List.copyOf(result);
+        } catch (SQLException failure) {
+            throw databaseFailure("could not load persistent idempotency records", failure);
+        }
+    }
+
+    /** Inserts an immutable record or returns the record already committed for the same scope/key. */
+    public IdempotencyData putIdempotency(IdempotencyData candidate) {
+        Objects.requireNonNull(candidate, "candidate");
+        try (Connection connection = open()) {
+            connection.setAutoCommit(false);
+            try {
+                try (PreparedStatement count = connection.prepareStatement(
+                        "SELECT count(*) FROM control_plane_idempotency")) {
+                    try (ResultSet rows = count.executeQuery()) {
+                        if (rows.next() && rows.getLong(1) >= 50_000) {
+                            try (PreparedStatement exists = connection.prepareStatement(
+                                    "SELECT 1 FROM control_plane_idempotency WHERE scope=? AND idempotency_key=?")) {
+                                exists.setString(1, candidate.scope());
+                                exists.setString(2, candidate.key());
+                                try (ResultSet found = exists.executeQuery()) {
+                                    if (!found.next()) throw new PersistenceException("persistent idempotency limit exceeded");
+                                }
+                            }
+                        }
+                    }
+                }
+                try (PreparedStatement insert = connection.prepareStatement(
+                        "INSERT OR IGNORE INTO control_plane_idempotency(scope,idempotency_key,payload_hash,result_ref,result_json,created_at) "
+                                + "VALUES(?,?,?,?,?,?)")) {
+                    insert.setString(1, candidate.scope());
+                    insert.setString(2, candidate.key());
+                    insert.setString(3, candidate.payloadHash());
+                    insert.setString(4, candidate.resultRef());
+                    insert.setString(5, candidate.resultJson());
+                    insert.setString(6, candidate.createdAt());
+                    insert.executeUpdate();
+                }
+                IdempotencyData stored;
+                try (PreparedStatement select = connection.prepareStatement(
+                        "SELECT scope,idempotency_key,payload_hash,result_ref,result_json,created_at "
+                                + "FROM control_plane_idempotency WHERE scope=? AND idempotency_key=?")) {
+                    select.setString(1, candidate.scope());
+                    select.setString(2, candidate.key());
+                    try (ResultSet rows = select.executeQuery()) {
+                        if (!rows.next()) throw new SQLException("idempotency record was not committed");
+                        stored = new IdempotencyData(rows.getString(1), rows.getString(2), rows.getString(3),
+                                rows.getString(4), rows.getString(5), rows.getString(6));
+                    }
+                }
+                connection.commit();
+                return stored;
+            } catch (Exception failure) {
+                rollback(connection, failure);
+                if (failure instanceof RuntimeException runtime) throw runtime;
+                throw new SQLException("idempotency transaction failed", failure);
+            } finally {
+                connection.setAutoCommit(true);
+            }
+        } catch (SQLException | RuntimeException failure) {
+            if (failure instanceof PersistenceException persistenceFailure) throw persistenceFailure;
+            throw databaseFailure("could not persist idempotency record", failure instanceof SQLException sql ? sql : new SQLException(failure));
+        }
+    }
+
+    public List<PipelineRunData> loadPipelineRuns() {
+        try (Connection connection = open(); Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery(
+                     "SELECT scan_id,project_id,actor_id,output_language,armed,next_stage,updated_at "
+                             + "FROM audit_pipeline_runs ORDER BY updated_at,scan_id")) {
+            List<PipelineRunData> result = new ArrayList<>();
+            while (rows.next()) result.add(new PipelineRunData(rows.getString(1), rows.getString(2), rows.getString(3),
+                    rows.getString(4), rows.getInt(5) != 0, rows.getString(6), rows.getString(7)));
+            if (result.size() > 20_000) throw new PersistenceException("persistent pipeline run limit exceeded");
+            return List.copyOf(result);
+        } catch (SQLException failure) {
+            throw databaseFailure("could not load pipeline runs", failure);
+        }
+    }
+
+    public void savePipelineRun(PipelineRunData run) {
+        Objects.requireNonNull(run, "run");
+        transaction("could not persist pipeline run", connection -> update(connection,
+                "INSERT INTO audit_pipeline_runs(scan_id,project_id,actor_id,output_language,armed,next_stage,updated_at) "
+                        + "VALUES(?,?,?,?,?,?,?) ON CONFLICT(scan_id) DO UPDATE SET project_id=excluded.project_id,"
+                        + "actor_id=excluded.actor_id,output_language=excluded.output_language,armed=excluded.armed,"
+                        + "next_stage=excluded.next_stage,updated_at=excluded.updated_at",
+                run.scanId(), run.projectId(), run.actorId(), run.outputLanguage(), run.armed() ? 1 : 0,
+                run.nextStage(), run.updatedAt()));
+    }
+
+    public List<ProbePlanData> loadProbePlans() {
+        try (Connection connection = open(); Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery(
+                     "SELECT task_id,project_id,artifact_digest,scan_id,target_entry_id,candidate_inputs_json,max_requests,plan_hash,created_at "
+                             + "FROM dynamic_probe_plans ORDER BY created_at,task_id")) {
+            List<ProbePlanData> result = new ArrayList<>();
+            while (rows.next()) result.add(new ProbePlanData(rows.getString(1), rows.getString(2), rows.getString(3),
+                    rows.getString(4), rows.getString(5), rows.getString(6), rows.getInt(7), rows.getString(8), rows.getString(9)));
+            if (result.size() > 20_000) throw new PersistenceException("persistent probe plan limit exceeded");
+            return List.copyOf(result);
+        } catch (SQLException failure) {
+            throw databaseFailure("could not load probe plans", failure);
+        }
+    }
+
+    public void saveProbePlan(ProbePlanData plan) {
+        Objects.requireNonNull(plan, "plan");
+        transaction("could not persist probe plan", connection -> update(connection,
+                "INSERT INTO dynamic_probe_plans(task_id,project_id,artifact_digest,scan_id,target_entry_id,candidate_inputs_json,max_requests,plan_hash,created_at) "
+                        + "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET candidate_inputs_json=excluded.candidate_inputs_json,"
+                        + "max_requests=excluded.max_requests,plan_hash=excluded.plan_hash",
+                plan.taskId(), plan.projectId(), plan.artifactDigest(), plan.scanId(), plan.targetEntryId(),
+                plan.candidateInputsJson(), plan.maxRequests(), plan.planHash(), plan.createdAt()));
+    }
+
+    public List<ArtifactUploadService.PersistedSession> loadArtifactUploads() {
+        try (Connection connection = open();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT upload_id,project_id,file_name,size_bytes,sha256,next_offset,created_at,expires_at " +
+                             "FROM artifact_upload_sessions ORDER BY upload_id");
+             ResultSet rows = statement.executeQuery()) {
+            List<ArtifactUploadService.PersistedSession> result = new ArrayList<>();
+            while (rows.next()) {
+                result.add(new ArtifactUploadService.PersistedSession(
+                        rows.getString(1), rows.getString(2), rows.getString(3), rows.getLong(4),
+                        rows.getString(5), rows.getLong(6), Instant.parse(rows.getString(7)),
+                        Instant.parse(rows.getString(8))));
+            }
+            if (result.size() > 256) throw new PersistenceException("persistent upload session limit exceeded");
+            return List.copyOf(result);
+        } catch (SQLException | RuntimeException failure) {
+            if (failure instanceof PersistenceException persistenceFailure) throw persistenceFailure;
+            throw databaseFailure("could not load persistent artifact uploads",
+                    failure instanceof SQLException sql ? sql : new SQLException(failure));
+        }
+    }
+
+    public void persistArtifactUpload(ArtifactUploadService.PersistedSession session) {
+        Objects.requireNonNull(session, "session");
+        transaction("could not persist artifact upload", connection -> update(connection,
+                "INSERT INTO artifact_upload_sessions(upload_id,project_id,file_name,size_bytes,sha256,next_offset,created_at,expires_at) " +
+                        "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(upload_id) DO UPDATE SET project_id=excluded.project_id," +
+                        "file_name=excluded.file_name,size_bytes=excluded.size_bytes,sha256=excluded.sha256," +
+                        "next_offset=excluded.next_offset,created_at=excluded.created_at,expires_at=excluded.expires_at",
+                session.uploadId(), session.projectId(), session.fileName(), session.sizeBytes(), session.sha256(),
+                session.nextOffset(), session.createdAt().toString(), session.expiresAt().toString()));
+    }
+
+    public void deleteArtifactUpload(String uploadId) {
+        if (uploadId == null || uploadId.isBlank()) return;
+        try (Connection connection = open();
+             PreparedStatement statement = connection.prepareStatement(
+                     "DELETE FROM artifact_upload_sessions WHERE upload_id=?")) {
+            statement.setString(1, uploadId);
+            statement.executeUpdate();
+        } catch (SQLException failure) {
+            throw databaseFailure("could not delete artifact upload", failure);
+        }
+    }
+
+    public List<VersionedEvent> loadSseEvents() {
+        try (Connection connection = open();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT event_id,scan_id,event_type,schema_version,occurred_at,project_id,artifact_digest," +
+                             "task_id,idempotency_scope,idempotency_value,payload_json FROM sse_events ORDER BY rowid");
+             ResultSet rows = statement.executeQuery()) {
+            List<VersionedEvent> result = new ArrayList<>();
+            while (rows.next()) {
+                EventContext context = rows.getString(6) == null ? null : new EventContext(
+                        rows.getString(6), rows.getString(7), rows.getString(2), rows.getString(8));
+                result.add(new VersionedEvent(rows.getString(1), rows.getString(3), rows.getInt(4),
+                        Instant.parse(rows.getString(5)), context,
+                        new IdempotencyKey(rows.getString(9), rows.getString(10)), rows.getString(11)));
+            }
+            if (result.size() > 100_000) throw new PersistenceException("persistent SSE event limit exceeded");
+            return List.copyOf(result);
+        } catch (SQLException | RuntimeException failure) {
+            if (failure instanceof PersistenceException persistenceFailure) throw persistenceFailure;
+            throw databaseFailure("could not load persistent SSE events",
+                    failure instanceof SQLException sql ? sql : new SQLException(failure));
+        }
+    }
+
+    public void persistSseEvent(String scanId, VersionedEvent event) {
+        Objects.requireNonNull(scanId, "scanId");
+        Objects.requireNonNull(event, "event");
+        transaction("could not persist SSE event", connection -> {
+            EventContext context = event.context();
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "INSERT OR IGNORE INTO sse_events(event_id,scan_id,event_type,schema_version,occurred_at," +
+                            "project_id,artifact_digest,task_id,idempotency_scope,idempotency_value,payload_json) " +
+                            "VALUES(?,?,?,?,?,?,?,?,?,?,?)")) {
+                statement.setString(1, event.eventId());
+                statement.setString(2, scanId);
+                statement.setString(3, event.eventType());
+                statement.setInt(4, event.schemaVersion());
+                statement.setString(5, event.occurredAt().toString());
+                statement.setString(6, context == null ? null : context.projectId());
+                statement.setString(7, context == null ? null : context.artifactDigest());
+                statement.setString(8, context == null ? null : context.taskId());
+                statement.setString(9, event.idempotencyKey().scope());
+                statement.setString(10, event.idempotencyKey().value());
+                statement.setString(11, event.payload());
+                statement.executeUpdate();
+            }
+            try (PreparedStatement trim = connection.prepareStatement(
+                    "DELETE FROM sse_events WHERE scan_id=? AND event_id NOT IN " +
+                            "(SELECT event_id FROM sse_events WHERE scan_id=? ORDER BY rowid DESC LIMIT 256)")) {
+                trim.setString(1, scanId);
+                trim.setString(2, scanId);
+                trim.executeUpdate();
+            }
+        });
+    }
+
+    public WorkerState loadWorkerState() {
+        try (Connection connection = open()) {
+            List<TaskSnapshot> tasks = new ArrayList<>();
+            try (Statement statement = connection.createStatement(); ResultSet rows = statement.executeQuery(
+                    "SELECT project_id,artifact_digest,scan_id,task_id,schema_version,target_entry_id,authorized," +
+                            "max_wall_clock_seconds,max_cpu_millis,max_memory_bytes,max_disk_bytes,max_trace_bytes," +
+                            "network_mode,network_allowlist,required_capability,lifecycle,lease_id,lease_worker_id," +
+                            "lease_capability,lease_issued_at,lease_heartbeat_at,lease_expires_at,checkpoint_id," +
+                            "checkpoint_trace_sequence,checkpoint_trace_head_digest,checkpoint_created_at,stop_reason," +
+                            "failure_code,updated_at FROM worker_tasks ORDER BY rowid")) {
+                while (rows.next()) tasks.add(readTask(rows));
+            }
+            if (tasks.size() > 20_000) throw new PersistenceException("persistent worker task limit exceeded");
+            Map<TaskScope, ResourceBudget> budgets = new LinkedHashMap<>();
+            for (TaskSnapshot task : tasks) budgets.put(task.scope(), task.spec().resourceBudget());
+            List<InMemoryTraceStore.StoredTrace> traces = new ArrayList<>();
+            long bytes = 0;
+            try (Statement statement = connection.createStatement(); ResultSet rows = statement.executeQuery(
+                    "SELECT project_id,artifact_digest,scan_id,task_id,sequence,idempotency_key,schema_version," +
+                            "previous_digest,emitted_at,payload,digest FROM worker_trace_chunks " +
+                            "ORDER BY project_id,artifact_digest,scan_id,task_id,sequence")) {
+                while (rows.next()) {
+                    TaskScope scope = new TaskScope(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4));
+                    if (!budgets.containsKey(scope)) throw new PersistenceException("trace has no task scope");
+                    byte[] payload = rows.getBytes(10);
+                    bytes = Math.addExact(bytes, payload.length);
+                    if (bytes > 1_073_741_824L) throw new PersistenceException("persistent trace byte limit exceeded");
+                    TraceChunk chunk = new TraceChunk(rows.getInt(7), scope, rows.getLong(5), rows.getString(8),
+                            Instant.parse(rows.getString(9)), payload, rows.getString(11));
+                    if (payload.length > budgets.get(scope).maxTraceBytes()) {
+                        throw new PersistenceException("trace exceeds task byte budget");
+                    }
+                    traces.add(new InMemoryTraceStore.StoredTrace(rows.getString(6), chunk));
+                }
+            }
+            if (traces.size() > 100_000) throw new PersistenceException("persistent trace chunk limit exceeded");
+            return new WorkerState(tasks, traces);
+        } catch (SQLException | ArithmeticException failure) {
+            throw databaseFailure("could not load persistent Worker state", failure instanceof SQLException sql ? sql : new SQLException(failure));
+        }
+    }
+
+    public void persistWorkerTask(TaskSnapshot snapshot) {
+        Objects.requireNonNull(snapshot, "snapshot");
+        transaction("could not persist Worker task", connection -> {
+            WorkerTaskSpec spec = snapshot.spec();
+            NetworkPolicy network = spec.networkPolicy();
+            WorkerLease lease = snapshot.lease();
+            TaskCheckpoint checkpoint = snapshot.checkpoint();
+            update(connection, "INSERT INTO worker_tasks(project_id,artifact_digest,scan_id,task_id,schema_version,target_entry_id,authorized," +
+                    "max_wall_clock_seconds,max_cpu_millis,max_memory_bytes,max_disk_bytes,max_trace_bytes,network_mode,network_allowlist," +
+                    "required_capability,lifecycle,lease_id,lease_worker_id,lease_capability,lease_issued_at,lease_heartbeat_at,lease_expires_at," +
+                    "checkpoint_id,checkpoint_trace_sequence,checkpoint_trace_head_digest,checkpoint_created_at,stop_reason,failure_code,updated_at) " +
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) " +
+                    "ON CONFLICT(project_id,artifact_digest,scan_id,task_id) DO UPDATE SET schema_version=excluded.schema_version,target_entry_id=excluded.target_entry_id," +
+                    "authorized=excluded.authorized,max_wall_clock_seconds=excluded.max_wall_clock_seconds,max_cpu_millis=excluded.max_cpu_millis,max_memory_bytes=excluded.max_memory_bytes," +
+                    "max_disk_bytes=excluded.max_disk_bytes,max_trace_bytes=excluded.max_trace_bytes,network_mode=excluded.network_mode,network_allowlist=excluded.network_allowlist," +
+                    "required_capability=excluded.required_capability,lifecycle=excluded.lifecycle,lease_id=excluded.lease_id,lease_worker_id=excluded.lease_worker_id," +
+                    "lease_capability=excluded.lease_capability,lease_issued_at=excluded.lease_issued_at,lease_heartbeat_at=excluded.lease_heartbeat_at,lease_expires_at=excluded.lease_expires_at," +
+                    "checkpoint_id=excluded.checkpoint_id,checkpoint_trace_sequence=excluded.checkpoint_trace_sequence,checkpoint_trace_head_digest=excluded.checkpoint_trace_head_digest," +
+                    "checkpoint_created_at=excluded.checkpoint_created_at,stop_reason=excluded.stop_reason,failure_code=excluded.failure_code,updated_at=excluded.updated_at",
+                    spec.projectId(), spec.artifactDigest(), spec.scanId(), spec.taskId(), snapshot.schemaVersion(), spec.targetEntryId(), spec.authorized() ? 1 : 0,
+                    spec.resourceBudget().maxWallClockSeconds(), spec.resourceBudget().maxCpuMillis(), spec.resourceBudget().maxMemoryBytes(), spec.resourceBudget().maxDiskBytes(), spec.resourceBudget().maxTraceBytes(),
+                    network.mode().name(), String.join("\n", network.allowlist()), spec.requiredCapability().name(), snapshot.lifecycle().name(),
+                    lease == null ? null : lease.leaseId(), lease == null ? null : lease.workerId(), lease == null ? null : lease.capability().name(),
+                    lease == null ? null : lease.issuedAt().toString(), lease == null ? null : lease.heartbeatAt().toString(), lease == null ? null : lease.expiresAt().toString(),
+                    checkpoint == null ? null : checkpoint.checkpointId(), checkpoint == null ? null : checkpoint.traceSequence(), checkpoint == null ? null : checkpoint.traceHeadDigest(), checkpoint == null ? null : checkpoint.createdAt().toString(),
+                    snapshot.stopReason() == null ? null : snapshot.stopReason().name(), snapshot.failureCode(), snapshot.updatedAt().toString());
+        });
+    }
+
+    public void persistWorkerTrace(String idempotencyKey, TraceChunk chunk) {
+        if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 128
+                || idempotencyKey.chars().anyMatch(Character::isWhitespace)) {
+            throw new IllegalArgumentException("idempotencyKey is invalid");
+        }
+        Objects.requireNonNull(chunk, "chunk");
+        transaction("could not persist Worker trace", connection -> {
+            TaskScope scope = chunk.scope();
+            try (PreparedStatement existing = connection.prepareStatement("SELECT sequence,schema_version,previous_digest,emitted_at,payload,digest FROM worker_trace_chunks WHERE project_id=? AND artifact_digest=? AND scan_id=? AND task_id=? AND idempotency_key=?")) {
+                existing.setString(1, scope.projectId()); existing.setString(2, scope.artifactDigest()); existing.setString(3, scope.scanId()); existing.setString(4, scope.taskId()); existing.setString(5, idempotencyKey);
+                try (ResultSet rows = existing.executeQuery()) {
+                    if (rows.next()) {
+                        TraceChunk prior = new TraceChunk(rows.getInt(2), scope, rows.getLong(1), rows.getString(3), Instant.parse(rows.getString(4)), rows.getBytes(5), rows.getString(6));
+                        if (!prior.equals(chunk)) throw new IllegalStateException("idempotency key payload conflict");
+                        return;
+                    }
+                }
+            }
+            try (PreparedStatement statement = connection.prepareStatement("SELECT sequence,digest FROM worker_trace_chunks WHERE project_id=? AND artifact_digest=? AND scan_id=? AND task_id=? ORDER BY sequence DESC LIMIT 1")) {
+                statement.setString(1, scope.projectId()); statement.setString(2, scope.artifactDigest()); statement.setString(3, scope.scanId()); statement.setString(4, scope.taskId());
+                try (ResultSet rows = statement.executeQuery()) {
+                    boolean found = rows.next();
+                    long sequence = found ? rows.getLong(1) + 1 : 0;
+                    String previous = found ? rows.getString(2) : null;
+                    if (chunk.sequence() != sequence || !Objects.equals(chunk.previousDigest(), previous)) throw new IllegalStateException("trace chain is not contiguous");
+                }
+            }
+            update(connection, "INSERT INTO worker_trace_chunks(project_id,artifact_digest,scan_id,task_id,sequence,idempotency_key,schema_version,previous_digest,emitted_at,payload,digest) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    scope.projectId(), scope.artifactDigest(), scope.scanId(), scope.taskId(), chunk.sequence(), idempotencyKey, chunk.schemaVersion(), chunk.previousDigest(), chunk.emittedAt().toString(), chunk.payload(), chunk.digest());
+        });
+    }
+
+    private TaskSnapshot readTask(ResultSet rows) throws SQLException {
+        TaskScope scope = new TaskScope(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4));
+        NetworkPolicy network = new NetworkPolicy(NetworkMode.valueOf(rows.getString(13)), rows.getString(14).isEmpty() ? List.of() : List.of(rows.getString(14).split("\\n", -1)));
+        WorkerTaskSpec spec = new WorkerTaskSpec(rows.getInt(5), scope.projectId(), scope.artifactDigest(), scope.scanId(), scope.taskId(), rows.getString(6), rows.getInt(7) != 0,
+                new ResourceBudget(rows.getLong(8), rows.getLong(9), rows.getLong(10), rows.getLong(11), rows.getLong(12)), network, WorkerCapability.valueOf(rows.getString(15)));
+        WorkerLease lease = rows.getString(17) == null ? null : new WorkerLease(rows.getInt(5), scope, rows.getString(17), rows.getString(18), WorkerCapability.valueOf(rows.getString(19)), Instant.parse(rows.getString(20)), Instant.parse(rows.getString(21)), Instant.parse(rows.getString(22)));
+        TaskCheckpoint checkpoint = rows.getString(23) == null ? null : new TaskCheckpoint(rows.getInt(5), scope, rows.getString(23), rows.getLong(24), rows.getString(25), Instant.parse(rows.getString(26)));
+        return new TaskSnapshot(rows.getInt(5), spec, TaskLifecycle.valueOf(rows.getString(16)), lease, checkpoint,
+                rows.getString(27) == null ? null : StopReason.valueOf(rows.getString(27)), rows.getString(28), Instant.parse(rows.getString(29)));
     }
 
     public Snapshot load() {
@@ -394,7 +759,7 @@ public final class SQLiteControlPlanePersistence {
     public List<RoleBindingData> listRoleBindings(String projectId) {
         try (Connection connection = open();
              PreparedStatement statement = connection.prepareStatement(
-                     "SELECT project_id,role,provider_id,model,updated_at"
+                     "SELECT project_id,role,provider_id,model,updated_at,prompt_zh,prompt_en"
                              + " FROM project_ai_role_bindings WHERE project_id=? ORDER BY role")) {
             statement.setString(1, projectId);
             List<RoleBindingData> result = new ArrayList<>();
@@ -414,10 +779,11 @@ public final class SQLiteControlPlanePersistence {
     public void saveRoleBinding(RoleBindingData binding, String actorId) {
         transaction("could not save role binding", connection -> {
             update(connection, "INSERT INTO project_ai_role_bindings(project_id,role,workspace_id,provider_id,"
-                            + "model,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,role) DO UPDATE SET "
-                            + "provider_id=excluded.provider_id,model=excluded.model,updated_at=excluded.updated_at",
+                            + "model,updated_at,prompt_zh,prompt_en) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id,role) DO UPDATE SET "
+                            + "provider_id=excluded.provider_id,model=excluded.model,updated_at=excluded.updated_at,"
+                            + "prompt_zh=excluded.prompt_zh,prompt_en=excluded.prompt_en",
                     binding.projectId(), binding.role().name(), LOCAL_WORKSPACE, binding.providerId(),
-                    binding.model(), binding.updatedAt());
+                    binding.model(), binding.updatedAt(), binding.promptZh(), binding.promptEn());
             audit(connection, binding.projectId(), actorId, "role.assign", "ai-role",
                     binding.role().name(), "{\"providerId\":\"" + binding.providerId() + "\"}", binding.updatedAt());
         });
@@ -789,7 +1155,7 @@ public final class SQLiteControlPlanePersistence {
 
     private static RoleBindingData binding(ResultSet rows) throws SQLException {
         return new RoleBindingData(rows.getString(1), AgentRole.valueOf(rows.getString(2)),
-                rows.getString(3), rows.getString(4), rows.getString(5));
+                rows.getString(3), rows.getString(4), rows.getString(5), rows.getString(6), rows.getString(7));
     }
 
     private static AiJobData job(ResultSet rows) throws SQLException {
@@ -965,6 +1331,8 @@ public final class SQLiteControlPlanePersistence {
     public record ProjectData(String projectId, String name, String status, String createdAt,
                               String updatedAt, String deletedAt) { }
     public record ArtifactData(String projectId, ArtifactDescriptor descriptor) { }
+    public record ArtifactUploadData(String uploadId, String projectId, String fileName, long sizeBytes,
+                                     String sha256, long nextOffset, String createdAt, String expiresAt) { }
     public record OperatorData(String operatorId, String username, OperatorRole role,
                                String createdAt, String updatedAt) { }
     public record ProviderData(String providerId, String name, ProviderKind kind, String baseUrl,
@@ -972,7 +1340,12 @@ public final class SQLiteControlPlanePersistence {
                                boolean hasCredential) { }
     public record StoredSecret(SecretScope scope, EncryptedSecret encrypted) { }
     public record RoleBindingData(String projectId, AgentRole role, String providerId,
-                                  String model, String updatedAt) { }
+                                  String model, String updatedAt, String promptZh, String promptEn) {
+        public RoleBindingData(String projectId, AgentRole role, String providerId,
+                               String model, String updatedAt) {
+            this(projectId, role, providerId, model, updatedAt, null, null);
+        }
+    }
     public record AiJobData(String aiJobId, String workspaceId, String projectId, String scanId,
                             String artifactDigest, AgentRole role, String providerId, String model,
                             String policySnapshotJson, boolean authorized, String status,
@@ -988,6 +1361,14 @@ public final class SQLiteControlPlanePersistence {
     public record AuditData(String auditEventId, String projectId, String operatorId, String action,
                             String targetType, String targetId, String outcome, String detailsJson,
                             String createdAt) { }
+    public record IdempotencyData(String scope, String key, String payloadHash, String resultRef,
+                                  String resultJson, String createdAt) { }
+    public record PipelineRunData(String scanId, String projectId, String actorId,
+                                  String outputLanguage, boolean armed, String nextStage,
+                                  String updatedAt) { }
+    public record ProbePlanData(String taskId, String projectId, String artifactDigest,
+                                String scanId, String targetEntryId, String candidateInputsJson,
+                                int maxRequests, String planHash, String createdAt) { }
     public record Snapshot(List<ProjectData> projects, List<ArtifactData> artifacts,
                            List<ControlPlaneStore.ScanRecord> scans) {
         public Snapshot {
@@ -995,6 +1376,13 @@ public final class SQLiteControlPlanePersistence {
             artifacts = List.copyOf(artifacts);
             scans = List.copyOf(scans);
         }
+    }
+    public record WorkerState(List<TaskSnapshot> tasks, List<InMemoryTraceStore.StoredTrace> traces) {
+        public WorkerState {
+            tasks = List.copyOf(tasks);
+            traces = List.copyOf(traces);
+        }
+        public static WorkerState empty() { return new WorkerState(List.of(), List.of()); }
     }
 
     public static class PersistenceException extends RuntimeException {

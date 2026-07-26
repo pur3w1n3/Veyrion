@@ -98,6 +98,13 @@ final class WorkerControlPlaneApi implements HttpHandler {
         this.traceStore = Objects.requireNonNull(traceStore, "traceStore");
         this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
         this.projectionService = Objects.requireNonNull(projectionService, "projectionService");
+        for (TaskSnapshot snapshot : coordinator.snapshots()) {
+            scopes.put(snapshot.scope(), Boolean.TRUE);
+            if (snapshot.lifecycle() == TaskLifecycle.COMPLETED) {
+                try { projectionService.publishCompleted(snapshot); }
+                catch (RuntimeException ignored) { /* invalid persisted evidence stays fail-closed */ }
+            }
+        }
     }
 
     void setTerminalListener(Consumer<TaskSnapshot> listener) {

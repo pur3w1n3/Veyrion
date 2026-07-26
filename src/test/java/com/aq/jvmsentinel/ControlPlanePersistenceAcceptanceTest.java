@@ -34,17 +34,17 @@ public final class ControlPlanePersistenceAcceptanceTest {
             check("SQLITE".equals(body(get(client, first.baseUri())).get("persistenceMode")),
                     "health exposes SQLite mode");
             Map<String, Object> project = body(send(client, uri(first, "/projects"),
-                    "POST", "{\"name\":\"restart fixture\"}", token));
+                    "POST", "{\"name\":\"restart fixture\"}", token, "persist-project"));
             projectId = text(project, "projectId");
 
             URI artifacts = uri(first, "/projects/" + projectId + "/artifacts");
             Map<String, Object> storedArtifact = body(send(client, artifacts, "POST",
-                    "{\"path\":\"" + escape(artifact.toString()) + "\"}", token));
+                    "{\"path\":\"" + escape(artifact.toString()) + "\"}", token, "persist-artifact"));
             digest = text(storedArtifact, "artifactDigest");
 
             URI scans = uri(first, "/projects/" + projectId + "/scans");
             Map<String, Object> scan = body(send(client, scans, "POST",
-                    "{\"artifactDigest\":\"" + digest + "\",\"authorized\":true}", token));
+                    "{\"artifactDigest\":\"" + digest + "\",\"authorized\":true}", token, "persist-scan"));
             scanId = text(scan, "scanId");
 
             Map<String, Object> evidence = body(get(client,
@@ -67,6 +67,25 @@ public final class ControlPlanePersistenceAcceptanceTest {
         }
 
         try (ControlPlaneServer restarted = new ControlPlaneServer(root, 0, token, database).start()) {
+            HttpResponse<String> projectReplay = send(client, uri(restarted, "/projects"), "POST",
+                    "{\"name\":\"restart fixture\"}", token, "persist-project");
+            check(projectReplay.statusCode() == 200
+                            && projectId.equals(body(projectReplay).get("projectId")),
+                    "project idempotency survives restart");
+            check(send(client, uri(restarted, "/projects"), "POST",
+                    "{\"name\":\"different\"}", token, "persist-project").statusCode() == 409,
+                    "project idempotency payload conflict survives restart");
+            HttpResponse<String> artifactReplay = send(client,
+                    uri(restarted, "/projects/" + projectId + "/artifacts"), "POST",
+                    "{\"path\":\"" + escape(artifact.toString()) + "\"}", token, "persist-artifact");
+            check(artifactReplay.statusCode() == 200
+                            && digest.equals(body(artifactReplay).get("artifactDigest")),
+                    "artifact idempotency survives restart");
+            HttpResponse<String> scanReplay = send(client,
+                    uri(restarted, "/projects/" + projectId + "/scans"), "POST",
+                    "{\"artifactDigest\":\"" + digest + "\",\"authorized\":true}", token, "persist-scan");
+            check(scanReplay.statusCode() == 200 && scanId.equals(body(scanReplay).get("scanId")),
+                    "scan idempotency survives restart");
             Map<String, Object> projects = body(get(client, uri(restarted, "/projects")));
             check(((List<?>) projects.get("projects")).size() == 1, "project list survives restart");
             Map<String, Object> project = body(get(client,
@@ -157,6 +176,52 @@ public final class ControlPlanePersistenceAcceptanceTest {
         expect(SQLiteControlPlanePersistence.MigrationException.class,
                 () -> ControlPlaneStore.sqlite(badV6Database, badV6Root),
                 "dynamic verification role migration checksum mismatch must fail closed");
+        Path badV7Root = Files.createTempDirectory("veyrion-bad-v007");
+        Path badV7Database = badV7Root.resolve("bad-v007.db");
+        ControlPlaneStore.sqlite(badV7Database, badV7Root);
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + badV7Database);
+             var statement = connection.createStatement()) {
+            statement.executeUpdate("UPDATE schema_migrations SET checksum='tampered' WHERE version=7");
+        }
+        expect(SQLiteControlPlanePersistence.MigrationException.class,
+                () -> ControlPlaneStore.sqlite(badV7Database, badV7Root),
+                "persistent worker migration checksum mismatch must fail closed");
+        Path badV8Root = Files.createTempDirectory("veyrion-bad-v008");
+        Path badV8Database = badV8Root.resolve("bad-v008.db");
+        ControlPlaneStore.sqlite(badV8Database, badV8Root);
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + badV8Database);
+             var statement = connection.createStatement()) {
+            statement.executeUpdate("UPDATE schema_migrations SET checksum='tampered' WHERE version=8");
+        }
+        expectFailure(() -> ControlPlaneStore.sqlite(badV8Database, badV8Root),
+                "artifact upload migration checksum mismatch must fail closed");
+        Path badV9Root = Files.createTempDirectory("veyrion-bad-v009");
+        Path badV9Database = badV9Root.resolve("bad-v009.db");
+        ControlPlaneStore.sqlite(badV9Database, badV9Root);
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + badV9Database);
+             var statement = connection.createStatement()) {
+            statement.executeUpdate("UPDATE schema_migrations SET checksum='tampered' WHERE version=9");
+        }
+        expectFailure(() -> ControlPlaneStore.sqlite(badV9Database, badV9Root),
+                "SSE event migration checksum mismatch must fail closed");
+        Path badV10Root = Files.createTempDirectory("veyrion-bad-v010");
+        Path badV10Database = badV10Root.resolve("bad-v010.db");
+        ControlPlaneStore.sqlite(badV10Database, badV10Root);
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + badV10Database);
+             var statement = connection.createStatement()) {
+            statement.executeUpdate("UPDATE schema_migrations SET checksum='tampered' WHERE version=10");
+        }
+        expectFailure(() -> ControlPlaneStore.sqlite(badV10Database, badV10Root),
+                "role prompt migration checksum mismatch must fail closed");
+        Path badV11Root = Files.createTempDirectory("veyrion-bad-v011");
+        Path badV11Database = badV11Root.resolve("bad-v011.db");
+        ControlPlaneStore.sqlite(badV11Database, badV11Root);
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + badV11Database);
+             var statement = connection.createStatement()) {
+            statement.executeUpdate("UPDATE schema_migrations SET checksum='tampered' WHERE version=11");
+        }
+        expectFailure(() -> ControlPlaneStore.sqlite(badV11Database, badV11Root),
+                "persistent idempotency migration checksum mismatch must fail closed");
         Path badV1Root = Files.createTempDirectory("veyrion-bad-v001");
         Path badV1Database = badV1Root.resolve("bad-v001.db");
         ControlPlaneStore.sqlite(badV1Database, badV1Root);
@@ -174,7 +239,9 @@ public final class ControlPlanePersistenceAcceptanceTest {
              var statement = connection.createStatement()) {
             statement.executeUpdate("PRAGMA foreign_keys=OFF");
             for (String table : List.of("ai_job_events", "audit_events", "ai_jobs", "project_ai_role_bindings",
-                    "provider_credentials", "providers", "operator_tokens", "operators")) {
+                    "provider_credentials", "providers", "operator_tokens", "operators",
+                    "dynamic_probe_plans", "audit_pipeline_runs", "control_plane_idempotency",
+                    "worker_trace_chunks", "worker_tasks", "artifact_upload_sessions", "sse_events")) {
                 statement.executeUpdate("DROP TABLE " + table);
             }
             statement.executeUpdate("DELETE FROM schema_migrations WHERE version>=2");
@@ -183,11 +250,22 @@ public final class ControlPlanePersistenceAcceptanceTest {
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + upgradeDatabase);
              var statement = connection.createStatement();
              var rows = statement.executeQuery("SELECT count(*) FROM schema_migrations")) {
-            check(rows.next() && rows.getInt(1) == 6, "V001 database upgrades through ordered V006");
+            check(rows.next() && rows.getInt(1) == 11, "V001 database upgrades through ordered V011");
         }
         expect(IllegalArgumentException.class,
                 () -> ControlPlaneStore.sqlite(root.getParent().resolve("outside.db"), root),
                 "database path outside the allowed root must be rejected");
+
+        Path planRoot = Files.createTempDirectory("veyrion-v011-probe-plan");
+        Path planDatabase = planRoot.resolve("plan.db");
+        SQLiteControlPlanePersistence planPersistence =
+                new SQLiteControlPlanePersistence(planDatabase, planRoot);
+        var plan = new SQLiteControlPlanePersistence.ProbePlanData(
+                "task-plan", "project-plan", "a".repeat(64), "scan-plan", "entry-plan",
+                "[\"q=marker\"]", 1, "b".repeat(64), "2026-07-26T00:00:00Z");
+        planPersistence.saveProbePlan(plan);
+        check(planPersistence.loadProbePlans().equals(List.of(plan)),
+                "V011 probe plan metadata survives persistence reconstruction");
 
         System.out.println("ControlPlanePersistenceAcceptanceTest: PASS");
     }
@@ -202,10 +280,16 @@ public final class ControlPlanePersistenceAcceptanceTest {
 
     private static HttpResponse<String> send(HttpClient client, URI uri, String method, String json, String token)
             throws Exception {
+        return send(client, uri, method, json, token, null);
+    }
+
+    private static HttpResponse<String> send(HttpClient client, URI uri, String method, String json,
+                                             String token, String idempotencyKey) throws Exception {
         HttpRequest.BodyPublisher publisher = json.isEmpty()
                 ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(json);
         HttpRequest.Builder request = HttpRequest.newBuilder(uri).header("Content-Type", "application/json");
         if (token != null) request.header("X-Sentinel-Authorization", token);
+        if (idempotencyKey != null) request.header("Idempotency-Key", idempotencyKey);
         return client.send(request.method(method, publisher).build(),
                 HttpResponse.BodyHandlers.ofString());
     }
@@ -241,6 +325,15 @@ public final class ControlPlanePersistenceAcceptanceTest {
             throw actual;
         }
         throw new AssertionError("expected " + type.getSimpleName() + ": " + message);
+    }
+
+    private static void expectFailure(ThrowingRunnable action, String message) throws Exception {
+        try {
+            action.run();
+        } catch (Throwable expected) {
+            return;
+        }
+        throw new AssertionError("expected failure: " + message);
     }
 
     private static void check(boolean condition, String message) {

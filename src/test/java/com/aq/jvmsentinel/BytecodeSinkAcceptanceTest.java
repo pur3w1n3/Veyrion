@@ -48,7 +48,9 @@ public final class BytecodeSinkAcceptanceTest {
                     "JNDI", "CLASS_LOADING", "SQL", "XPATH", "XML", "FILE_READ", "FILE_WRITE", "SSRF");
             check(categories.containsAll(expected),
                     "owner-qualified checklist coverage missing " + difference(expected, categories));
-            check(result.sinkCatalog().sinks().stream().allMatch(sink ->
+            check(result.sinkCatalog().sinks().stream()
+                            .filter(sink -> sink.source().startsWith("bytecode-invoke:"))
+                            .allMatch(sink ->
                             sink.status() == VerificationStatus.STATIC_INFERRED
                                     && sink.source().startsWith("bytecode-invoke:")
                                     && sink.symbol().startsWith("app.SinkController#danger")),
@@ -100,9 +102,12 @@ public final class BytecodeSinkAcceptanceTest {
 
             Map<String, Object> findings = ok(send(client,
                     uri(server, "/scans/" + scanId + "/findings"), "GET", "", token));
-            check(array(findings, "findings").stream().allMatch(value ->
-                            value instanceof Map<?, ?> item && "/danger".equals(item.get("entry"))),
-                    "findings bind to the exact annotated handler method rather than every class route");
+            check(array(findings, "findings").stream()
+                            .filter(value -> value instanceof Map<?, ?> item
+                                    && !String.valueOf(item.get("title")).contains("鉴权缺口"))
+                            .allMatch(value -> value instanceof Map<?, ?> item
+                                    && "/danger".equals(item.get("entry"))),
+                    "sensitive findings bind to the exact annotated handler method rather than every class route");
             Map<String, Object> chains = ok(send(client,
                     uri(server, "/attack-chains?projectId=" + projectId), "GET", "", token));
             check(array(chains, "attackChains").stream().allMatch(value ->

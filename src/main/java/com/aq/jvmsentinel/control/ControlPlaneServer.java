@@ -5,6 +5,9 @@ import com.aq.jvmsentinel.analysis.PreAnalysisInput;
 import com.aq.jvmsentinel.analysis.ArtifactMetadataReader;
 import com.aq.jvmsentinel.ai.AiJobOrchestrator;
 import com.aq.jvmsentinel.ai.AuditPipelineCoordinator;
+import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource;
+import com.aq.jvmsentinel.ai.tool.ToolDataSource;
+import com.aq.jvmsentinel.ai.tool.ToolExecutionContext;
 import com.aq.jvmsentinel.artifact.ArtifactRegistry;
 import com.aq.jvmsentinel.artifact.ArtifactUploadService;
 import com.aq.jvmsentinel.artifact.ArtifactValidationException;
@@ -37,6 +40,7 @@ import com.aq.jvmsentinel.security.auth.AuthContext;
 import com.aq.jvmsentinel.security.auth.Authorizer;
 import com.aq.jvmsentinel.security.auth.OperatorRole;
 import com.aq.jvmsentinel.security.auth.Permission;
+import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
 import com.aq.jvmsentinel.worker.InMemoryTaskCoordinator;
 import com.aq.jvmsentinel.worker.InMemoryTraceStore;
 import com.aq.jvmsentinel.worker.ExternalArtifactTaskExecutor;
@@ -52,6 +56,7 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -64,16 +69,20 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.security.MessageDigest;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -86,12 +95,14 @@ import java.util.jar.JarFile;
 /**
  * Dependency-free Java 17 Control Plane for the local MVP.
  *
- * <p>The server exposes only metadata analysis.  It never starts an imported
- * JAR/WAR/CLASS and never opens a network connection on behalf of an artifact.
- * The default bind address is loopback and all mutating routes require the
- * configured local authorization token.</p>
+ * <p>The server exposes metadata analysis and schedules artifact execution only
+ * through the policy-checked sandbox worker. It never starts an imported
+ * JAR/WAR/CLASS in the control-plane process; artifact requests stay inside the
+ * authorized sandbox loopback. The default bind address is loopback and all
+ * mutating routes require the configured local authorization token.</p>
  */
 public final class ControlPlaneServer implements AutoCloseable {
+    private static final ObjectMapper JSON = new ObjectMapper();
     public static final String API_PREFIX = "/api/v1";
     public static final String DEFAULT_TOKEN = "local-demo";
     private static final int MAX_BODY_BYTES = 1 * 1024 * 1024;
@@ -113,6 +124,13 @@ public final class ControlPlaneServer implements AutoCloseable {
     private final Map<String, String> idempotentScans = new ConcurrentHashMap<>();
     private final Map<String, AuditRunReplay> idempotentAuditRuns = new ConcurrentHashMap<>();
     private final Map<String, DynamicTaskReplay> idempotentDynamicTasks = new ConcurrentHashMap<>();
+    private final Map<String, FindingReplay> idempotentFindingReplays = new ConcurrentHashMap<>();
+    /** Durable idempotency index; the legacy typed maps remain an in-process fast path. */
+    private final Map<String, SQLiteControlPlanePersistence.IdempotencyData> durableIdempotency = new ConcurrentHashMap<>();
+    /** One server-owned probe task per AI job; model retries cannot fan out unbounded tasks. */
+    private final Map<String, TaskSnapshot> aiProbeTasks = new ConcurrentHashMap<>();
+    /** Server-generated probe plans keyed by task id; model input never becomes a command. */
+    private final Map<String, ProbePlan> dynamicProbePlans = new ConcurrentHashMap<>();
     /** Scan-scoped UNREACHED dynamic path placeholders for entries beyond the probe budget. */
     private final Map<String, List<ApiDtos.PathDto>> unreachedDynamicPaths = new ConcurrentHashMap<>();
     private final String mutationToken;
@@ -218,17 +236,25 @@ public final class ControlPlaneServer implements AutoCloseable {
                               ChatTransport chatTransport) {
         this.bindAddress = Objects.requireNonNull(bindAddress, "bindAddress");
         this.artifactRegistry = Objects.requireNonNull(artifactRegistry, "artifactRegistry");
-        this.artifactUploadService = new ArtifactUploadService(this.artifactRegistry);
         this.mutationToken = requireToken(mutationToken);
         this.clock = Objects.requireNonNull(clock, "clock");
         this.store = Objects.requireNonNull(store, "store");
         this.sseHub = Objects.requireNonNull(sseHub, "sseHub");
+        this.sseHub.attachPersistence(this.store.loadSseEvents(), this.store::persistSseEvent);
+        this.artifactUploadService = new ArtifactUploadService(this.artifactRegistry, this.clock,
+                256, 2L * 1024 * 1024 * 1024, java.time.Duration.ofHours(1),
+                this.store.artifactUploadPersistence());
         this.workerToken = newWorkerToken(this.mutationToken);
-        this.traceStore = new InMemoryTraceStore(this.clock);
-        this.taskCoordinator = new InMemoryTaskCoordinator(this.clock, this.traceStore);
+        var workerState = this.store.loadWorkerState();
+        this.traceStore = new InMemoryTraceStore(this.clock, workerState.traces(), this.store::persistWorkerTrace);
+        this.taskCoordinator = new InMemoryTaskCoordinator(this.clock, this.traceStore, workerState.tasks(), this.store::persistWorkerTask);
         this.traceProjectionService = new TraceProjectionService(this.traceStore);
         this.workerApi = new WorkerControlPlaneApi(this.workerToken, this.clock, this.store, this.sseHub,
                 this.traceStore, this.taskCoordinator, this.traceProjectionService);
+        for (var record : this.store.loadIdempotency()) {
+            durableIdempotency.put(idempotencyMapKey(record.scope(), record.key()), record);
+        }
+        restoreProbePlans();
         this.providerInventoryService = Objects.requireNonNull(
                 providerInventoryService, "providerInventoryService");
         if ("SQLITE".equals(this.store.persistenceMode())) {
@@ -236,7 +262,8 @@ public final class ControlPlaneServer implements AutoCloseable {
         }
         this.aiJobOrchestrator = new AiJobOrchestrator(this.store,
                 Objects.requireNonNull(chatTransport, "chatTransport"), this.clock,
-                this.traceProjectionService::evidenceForScan);
+                this.traceProjectionService::evidenceForScan,
+                this::requestSandboxProbe);
         this.auditPipeline = new AuditPipelineCoordinator(new AuditPipelineCoordinator.Actions() {
             @Override
             public boolean hasRoleJob(String projectId, String scanId, AgentRole role) {
@@ -246,12 +273,22 @@ public final class ControlPlaneServer implements AutoCloseable {
 
             @Override
             public boolean hasBusyDynamicTask(String scanId) {
+                return hasRunningDynamicTask(scanId);
+            }
+
+            @Override
+            public boolean hasRunningDynamicTask(String scanId) {
                 return workerApi.snapshots(store.requireScan(scanId).dto().projectId(), scanId).stream()
                         .anyMatch(snapshot -> snapshot.lifecycle() == TaskLifecycle.QUEUED
                                 || snapshot.lifecycle() == TaskLifecycle.LEASED
                                 || snapshot.lifecycle() == TaskLifecycle.RUNNING
-                                || snapshot.lifecycle() == TaskLifecycle.PAUSED
-                                || snapshot.lifecycle() == TaskLifecycle.COMPLETED);
+                                || snapshot.lifecycle() == TaskLifecycle.PAUSED);
+            }
+
+            @Override
+            public boolean hasCompletedDynamicTask(String scanId) {
+                return workerApi.snapshots(store.requireScan(scanId).dto().projectId(), scanId).stream()
+                        .anyMatch(snapshot -> snapshot.lifecycle() == TaskLifecycle.COMPLETED);
             }
 
             @Override
@@ -269,9 +306,63 @@ public final class ControlPlaneServer implements AutoCloseable {
             public void enqueueDynamic(String scanId, String actorId) {
                 enqueueDynamicForPipeline(scanId, actorId);
             }
+
+            @Override
+            public void persistState(AuditPipelineCoordinator.Arm arm, String nextStage, boolean armed) {
+                store.persistPipelineRun(new SQLiteControlPlanePersistence.PipelineRunData(
+                        arm.scanId(), arm.projectId(), arm.actorId(), arm.outputLanguage().name(),
+                        armed, nextStage, Instant.now(clock).toString()));
+            }
         });
         this.aiJobOrchestrator.setTerminalListener(auditPipeline::onAiJobFinished);
         this.workerApi.setTerminalListener(auditPipeline::onDynamicTaskFinished);
+        recoverAuditPipelines();
+    }
+
+    private void recoverAuditPipelines() {
+        for (SQLiteControlPlanePersistence.PipelineRunData run : store.loadPipelineRuns()) {
+            if (!run.armed()) continue;
+            ControlPlaneStore.ScanRecord scan = store.scan(run.scanId());
+            if (scan == null || !scan.dto().projectId().equals(run.projectId())) {
+                throw new SQLiteControlPlanePersistence.PersistenceException(
+                        "pipeline run scope does not match a persistent scan");
+            }
+            AiOutputLanguage language;
+            try {
+                language = AiOutputLanguage.valueOf(run.outputLanguage());
+            } catch (IllegalArgumentException invalid) {
+                throw new SQLiteControlPlanePersistence.PersistenceException(
+                        "pipeline run output language is invalid", invalid);
+            }
+            List<SQLiteControlPlanePersistence.AiJobData> jobs = store.aiJobs(run.projectId()).stream()
+                    .filter(job -> run.scanId().equals(job.scanId())).toList();
+            boolean pre = completed(jobs, AgentRole.PRE_ANALYSIS);
+            boolean dynamicVerification = completed(jobs, AgentRole.DYNAMIC_VERIFICATION);
+            boolean path = completed(jobs, AgentRole.PATH_EXPLORATION);
+            boolean triage = completed(jobs, AgentRole.VULNERABILITY_TRIAGE);
+            boolean report = completed(jobs, AgentRole.REPORT_GENERATION);
+            List<TaskSnapshot> tasks = workerApi.snapshots(run.projectId(), run.scanId());
+            boolean dynamicCompleted = tasks.stream()
+                    .anyMatch(task -> task.lifecycle() == TaskLifecycle.COMPLETED);
+            AuditPipelineCoordinator.PipelineStage stage;
+            if (report) stage = AuditPipelineCoordinator.PipelineStage.COMPLETE;
+            else if (triage) stage = AuditPipelineCoordinator.PipelineStage.REPORT_GENERATION;
+            else if (path) stage = AuditPipelineCoordinator.PipelineStage.VULNERABILITY_TRIAGE;
+            else if (dynamicVerification) stage = AuditPipelineCoordinator.PipelineStage.PATH_EXPLORATION;
+            else if (dynamicCompleted) stage = AuditPipelineCoordinator.PipelineStage.DYNAMIC_VERIFICATION;
+            else if (pre) stage = AuditPipelineCoordinator.PipelineStage.DYNAMIC_OBSERVATION;
+            else stage = AuditPipelineCoordinator.PipelineStage.PRE_ANALYSIS;
+            AuditPipelineCoordinator.Arm arm = new AuditPipelineCoordinator.Arm(
+                    run.scanId(), run.projectId(), run.actorId(), language);
+            auditPipeline.resumeAt(arm, stage);
+            store.auditChange(run.projectId(), run.actorId(), "audit-pipeline.recover", "scan",
+                    run.scanId(), "{\"stage\":\"" + stage.name() + "\"}",
+                    Instant.now(clock).toString());
+        }
+    }
+
+    private static boolean completed(List<SQLiteControlPlanePersistence.AiJobData> jobs, AgentRole role) {
+        return jobs.stream().anyMatch(job -> job.role() == role && "COMPLETED".equals(job.status()));
     }
 
     /** Starts listening; calling start more than once is idempotent. */
@@ -302,6 +393,9 @@ public final class ControlPlaneServer implements AutoCloseable {
         ExecutorService pool = executor;
         executor = null;
         if (pool != null) pool.shutdownNow();
+        aiProbeTasks.clear();
+        dynamicProbePlans.clear();
+        idempotentFindingReplays.clear();
         aiJobOrchestrator.close();
     }
 
@@ -587,20 +681,29 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private synchronized void createProject(HttpExchange exchange) throws IOException {
         String idempotencyHeader = requestIdempotencyKey(exchange);
-        ensureIdempotencyCapacity(idempotentProjects, idempotencyHeader);
+        Map<String, Object> body = readObject(exchange);
+        String payload = JsonCodec.stringify(body);
+        String durableScope = "project:create";
+        ensureIdempotencyCapacity(durableIdempotency,
+                idempotencyHeader == null ? null : idempotencyMapKey(durableScope, idempotencyHeader));
+        SQLiteControlPlanePersistence.IdempotencyData durable = existingDurableIdempotency(
+                durableScope, idempotencyHeader, payload);
         if (idempotencyHeader != null) {
             String existingId = idempotentProjects.get(idempotencyHeader);
+            if (existingId == null && durable != null) existingId = durable.resultRef();
             if (existingId != null) {
                 sendProject(exchange, existingId);
                 return;
             }
         }
-        Map<String, Object> body = readObject(exchange);
         String id = optionalText(body, "projectId", optionalText(body, "id", null));
         String name = optionalText(body, "name", optionalText(body, "displayName", null));
         ControlPlaneStore.ProjectRecord project = store.createProject(id, name, Instant.now(clock).toString(),
                 actor(exchange).operatorId());
-        if (idempotencyHeader != null) idempotentProjects.put(idempotencyHeader, project.projectId());
+        if (idempotencyHeader != null) {
+            idempotentProjects.put(idempotencyHeader, project.projectId());
+            rememberDurableIdempotency(durableScope, idempotencyHeader, payload, project.projectId(), null);
+        }
         sendJson(exchange, 201, projectMap(project));
     }
 
@@ -783,8 +886,10 @@ public final class ControlPlaneServer implements AutoCloseable {
         var provider = store.requireProvider(providerId);
         String model = optionalText(body, "model", provider.model());
         if (model == null) throw new ApiException(400, "MODEL_REQUIRED", "model is required");
+        String promptZh = optionalPrompt(body, "promptZh");
+        String promptEn = optionalPrompt(body, "promptEn");
         sendJson(exchange, 200, roleBindingMap(store.saveRoleBinding(projectId, role, providerId, model,
-                actor(exchange).operatorId(), Instant.now(clock).toString())));
+                promptZh, promptEn, actor(exchange).operatorId(), Instant.now(clock).toString())));
     }
 
     private void deleteRoleAssignment(HttpExchange exchange, String projectId, AgentRole role) throws IOException {
@@ -887,11 +992,18 @@ public final class ControlPlaneServer implements AutoCloseable {
         ensureIdempotencyCapacity(idempotentArtifacts,
                 idempotencyHeader == null ? null : projectId + ":" + idempotencyHeader);
         Map<String, Object> body = readObject(exchange);
+        String payload = JsonCodec.stringify(body);
+        String durableScope = "artifact:create:" + projectId;
+        ensureIdempotencyCapacity(durableIdempotency,
+                idempotencyHeader == null ? null : idempotencyMapKey(durableScope, idempotencyHeader));
         if (body.containsKey("authorized") && !requiredBoolean(body, "authorized")) {
             throw new ApiException(403, "AUTHORIZATION_REQUIRED", "artifact authorization was denied");
         }
+        SQLiteControlPlanePersistence.IdempotencyData durable = existingDurableIdempotency(
+                durableScope, idempotencyHeader, payload);
         if (idempotencyHeader != null) {
             String existingDigest = idempotentArtifacts.get(projectId + ":" + idempotencyHeader);
+            if (existingDigest == null && durable != null) existingDigest = durable.resultRef();
             if (existingDigest != null) {
                 ArtifactDescriptor existing = store.artifact(project, existingDigest);
                 if (existing != null) {
@@ -905,7 +1017,10 @@ public final class ControlPlaneServer implements AutoCloseable {
         ArtifactDescriptor descriptor = artifactRegistry.register(Path.of(rawPath));
         artifactRegistry.verifyUnchanged(descriptor);
         store.registerArtifact(project, descriptor, actor(exchange).operatorId());
-        if (idempotencyHeader != null) idempotentArtifacts.putIfAbsent(projectId + ":" + idempotencyHeader, descriptor.sha256());
+        if (idempotencyHeader != null) {
+            idempotentArtifacts.putIfAbsent(projectId + ":" + idempotencyHeader, descriptor.sha256());
+            rememberDurableIdempotency(durableScope, idempotencyHeader, payload, descriptor.sha256(), null);
+        }
         sendJson(exchange, 201, artifactMap(artifactDto(projectId, descriptor)));
     }
 
@@ -1038,7 +1153,17 @@ public final class ControlPlaneServer implements AutoCloseable {
                     "explicit PRE_ANALYSIS authorization is required");
         }
         String payload = JsonCodec.stringify(body);
+        String durableScope = "audit-run:create:" + projectId;
+        ensureIdempotencyCapacity(durableIdempotency, idempotencyMapKey(durableScope, key));
+        SQLiteControlPlanePersistence.IdempotencyData durable = existingDurableIdempotency(
+                durableScope, key, payload);
         AuditRunReplay replay = idempotentAuditRuns.get(replayKey);
+        if (replay == null && durable != null && durable.resultJson() != null) {
+            Map<String, Object> stored = JsonCodec.parseObject(durable.resultJson());
+            replay = new AuditRunReplay(payload, textValue(stored, "scanId"),
+                    textValue(stored, "preAnalysisJobId"));
+            idempotentAuditRuns.putIfAbsent(replayKey, replay);
+        }
         if (replay != null) {
             if (!replay.payload().equals(payload)) {
                 throw new ApiException(409, "IDEMPOTENCY_CONFLICT",
@@ -1065,6 +1190,9 @@ public final class ControlPlaneServer implements AutoCloseable {
         aiJobOrchestrator.submit(job, operatorId);
         idempotentAuditRuns.put(replayKey,
                 new AuditRunReplay(payload, started.scan().dto().scanId(), job.aiJobId()));
+        rememberDurableIdempotency(durableScope, key, payload, started.scan().dto().scanId(),
+                JsonCodec.stringify(Map.of("scanId", started.scan().dto().scanId(),
+                        "preAnalysisJobId", job.aiJobId())));
         sendJson(exchange, 202, auditRunMap(started.scan().dto(), job));
     }
 
@@ -1186,18 +1314,22 @@ public final class ControlPlaneServer implements AutoCloseable {
         ControlPlaneStore.ProjectRecord project = store.requireProject(projectId);
         ensureIdempotencyCapacity(idempotentScans,
                 idempotencyHeader == null ? null : projectId + ":" + idempotencyHeader);
+        String payload = JsonCodec.stringify(body);
+        String durableScope = "scan:create:" + projectId;
+        ensureIdempotencyCapacity(durableIdempotency,
+                idempotencyHeader == null ? null : idempotencyMapKey(durableScope, idempotencyHeader));
         // Parse and validate the consent flag before serving an idempotent
         // replay.  Reusing a key must not turn an omitted authorization field
         // into an implicit permission to analyze an artifact.
-        if (body.containsKey("authorized") && !requiredBoolean(body, "authorized")) {
-            throw new ApiException(403, "AUTHORIZATION_REQUIRED", "scan authorization was denied");
+        if (!optionalBoolean(body, "authorized", false)) {
+            throw new ApiException(403, "AUTHORIZATION_REQUIRED", "scan authorization is required");
         }
+        SQLiteControlPlanePersistence.IdempotencyData durable = existingDurableIdempotency(
+                durableScope, idempotencyHeader, payload);
         if (idempotencyHeader != null) {
             String existingId = idempotentScans.get(projectId + ":" + idempotencyHeader);
+            if (existingId == null && durable != null) existingId = durable.resultRef();
             if (existingId != null) {
-                if (!optionalBoolean(body, "authorized", false)) {
-                    throw new PolicyViolationException("scan authorization is required");
-                }
                 ControlPlaneStore.ScanRecord existing = store.scan(existingId);
                 if (existing != null) {
                     return new ScanStart(existing, true);
@@ -1246,6 +1378,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         store.saveScan(scanRecord, operatorId);
         if (idempotencyHeader != null) {
             idempotentScans.putIfAbsent(projectId + ":" + idempotencyHeader, scanId);
+            rememberDurableIdempotency(durableScope, idempotencyHeader, payload, scanId, null);
         }
         for (ApiDtos.FindingDto finding : build.findings()) {
             publishEvent(scanId, context, "FindingUpdated", finding.findingId(), Map.of(
@@ -1271,6 +1404,9 @@ public final class ControlPlaneServer implements AutoCloseable {
         }
 
         Map<String, Object> body = readObject(exchange);
+        String requestPayload = JsonCodec.stringify(body);
+        String durableScope = "dynamic-task:create:" + scanId;
+        ensureIdempotencyCapacity(durableIdempotency, idempotencyMapKey(durableScope, key));
         for (String field : body.keySet()) {
             if (!Set.of("authorized").contains(field)) {
                 throw new ApiException(400, "RUNTIME_FIELD_REJECTED",
@@ -1282,6 +1418,17 @@ public final class ControlPlaneServer implements AutoCloseable {
         }
         String operatorId = actor(exchange).operatorId();
         DynamicTaskReplay existing = idempotentDynamicTasks.get(replayKey);
+        SQLiteControlPlanePersistence.IdempotencyData durable = existingDurableIdempotency(
+                durableScope, key, requestPayload);
+        if (existing == null && durable != null) {
+            TaskSnapshot restored = workerApi.snapshots(store.requireScan(scanId).dto().projectId(), scanId).stream()
+                    .filter(value -> value.scope().taskId().equals(durable.resultRef())).findFirst().orElse(null);
+            if (restored != null) {
+                existing = new DynamicTaskReplay(new DynamicTaskPayload(
+                        scanId, restored.spec().artifactDigest(), restored.spec().targetEntryId()), restored);
+                idempotentDynamicTasks.putIfAbsent(replayKey, existing);
+            }
+        }
         TaskSnapshot snapshot;
         if (existing != null) {
             snapshot = existing.snapshot();
@@ -1297,10 +1444,170 @@ public final class ControlPlaneServer implements AutoCloseable {
             sendJson(exchange, 200, dynamicTaskMap(conflict.snapshot()));
             return;
         }
+        rememberDurableIdempotency(durableScope, key, requestPayload, snapshot.scope().taskId(), null);
         sendJson(exchange, 202, dynamicTaskMap(snapshot));
     }
 
+    private Optional<ToolDataSource.FactRecord> requestSandboxProbe(
+            String scanId, ToolExecutionContext.Scope scope, String principalId, String jobId,
+            String entrypointRef, List<String> candidateInputs, int maxRequests) {
+        if (!"local".equals(scope.workspaceId()) || principalId == null || principalId.isBlank()) {
+            throw new SecurityException("sandbox probe scope is invalid");
+        }
+        ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
+        if (!scope.projectId().equals(scan.dto().projectId())) {
+            throw new SecurityException("sandbox probe project scope mismatch");
+        }
+        if (entrypointRef == null || !entrypointRef.startsWith("entry:")) {
+            throw new IllegalArgumentException("sandbox probe requires an entry evidence reference");
+        }
+        String entryId = entrypointRef.substring("entry:".length());
+        ApiDtos.EntryDto entry = scan.dto().entries().stream()
+                .filter(value -> value.id().equals(entryId)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("sandbox probe entry is not in scan"));
+        if (!"HTTP".equalsIgnoreCase(entry.protocol()) || entry.route() == null
+                || entry.method() == null || maxRequests < 1 || maxRequests > 8) {
+            throw new IllegalArgumentException("sandbox probe entry is not an eligible HTTP endpoint");
+        }
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("entrypointRef", entrypointRef);
+        request.put("candidateInputs", candidateInputs == null ? List.of() : candidateInputs);
+        request.put("maxRequests", maxRequests);
+        String requestPayload = JsonCodec.stringify(request);
+        String durableScope = "sandbox-probe:job";
+        ensureIdempotencyCapacity(durableIdempotency, idempotencyMapKey(durableScope, jobId));
+        SQLiteControlPlanePersistence.IdempotencyData durable = existingDurableIdempotency(
+                durableScope, jobId, requestPayload);
+        TaskSnapshot existing = aiProbeTasks.get(jobId);
+        if (existing == null && durable != null) {
+            existing = workerApi.snapshots(scan.dto().projectId(), scanId).stream()
+                    .filter(value -> value.scope().taskId().equals(durable.resultRef())).findFirst()
+                    .orElseThrow(() -> new SQLiteControlPlanePersistence.PersistenceException(
+                            "sandbox probe replay has no persistent worker task"));
+            aiProbeTasks.putIfAbsent(jobId, existing);
+        }
+        if (existing != null) {
+            TaskSnapshot refreshed = refreshTaskSnapshot(scan.dto().projectId(), scanId, existing.scope().taskId())
+                    .orElse(existing);
+            aiProbeTasks.put(jobId, refreshed);
+            if (isActiveLifecycle(refreshed.lifecycle())) {
+                refreshed = awaitDynamicTaskTerminal(scan.dto().projectId(), scanId, refreshed.scope().taskId(),
+                        Duration.ofMinutes(8)).orElse(refreshed);
+                aiProbeTasks.put(jobId, refreshed);
+            }
+            return Optional.of(probeFact(scope, refreshed, entry, probeState(refreshed), candidateInputs, maxRequests));
+        }
+        boolean scanBusy = workerApi.snapshots(scan.dto().projectId(), scanId).stream()
+                .anyMatch(value -> isActiveLifecycle(value.lifecycle()));
+        if (scanBusy) {
+            // Do not bind a foreign in-flight task to the requested entry.
+            Map<String, Object> busy = new LinkedHashMap<>();
+            busy.put("schemaVersion", 1);
+            busy.put("state", "BUSY");
+            busy.put("scanId", scanId);
+            busy.put("entrypointRef", entrypointRef);
+            busy.put("method", entry.method());
+            busy.put("route", entry.route());
+            busy.put("networkMode", "DENY");
+            busy.put("executor", "SERVER_OWNED_TRUSTED_DOCKER");
+            busy.put("candidateCount", candidateInputs == null ? 0 : Math.min(16, candidateInputs.size()));
+            busy.put("requestLimit", Math.min(8, Math.max(1, maxRequests)));
+            busy.put("retryable", true);
+            return Optional.of(new ToolDataSource.FactRecord(scope, "sandbox-probe:busy:" + jobId,
+                    JSON.valueToTree(busy)));
+        }
+        TaskSnapshot snapshot = enqueueDynamicForPipeline(scanId, principalId, entryId, candidateInputs, maxRequests);
+        if (aiProbeTasks.size() >= MAX_IDEMPOTENCY_KEYS && !aiProbeTasks.containsKey(jobId)) {
+            throw new IllegalStateException("sandbox probe job limit reached");
+        }
+        aiProbeTasks.putIfAbsent(jobId, snapshot);
+        rememberDurableIdempotency(durableScope, jobId, requestPayload, snapshot.scope().taskId(), null);
+        TaskSnapshot finished = awaitDynamicTaskTerminal(scan.dto().projectId(), scanId, snapshot.scope().taskId(),
+                Duration.ofMinutes(8)).orElse(snapshot);
+        aiProbeTasks.put(jobId, finished);
+        return Optional.of(probeFact(scope, finished, entry, probeState(finished), candidateInputs, maxRequests));
+    }
+
+    private static boolean isActiveLifecycle(TaskLifecycle lifecycle) {
+        return lifecycle == TaskLifecycle.QUEUED
+                || lifecycle == TaskLifecycle.LEASED
+                || lifecycle == TaskLifecycle.RUNNING
+                || lifecycle == TaskLifecycle.PAUSED;
+    }
+
+    private static String probeState(TaskSnapshot snapshot) {
+        return switch (snapshot.lifecycle()) {
+            case COMPLETED -> "COMPLETED";
+            case FAILED -> "FAILED";
+            case CANCELLED -> "CANCELLED";
+            default -> "QUEUED";
+        };
+    }
+
+    private Optional<TaskSnapshot> refreshTaskSnapshot(String projectId, String scanId, String taskId) {
+        return workerApi.snapshots(projectId, scanId).stream()
+                .filter(value -> value.scope().taskId().equals(taskId))
+                .findFirst();
+    }
+
+    private Optional<TaskSnapshot> awaitDynamicTaskTerminal(String projectId, String scanId, String taskId,
+                                                            Duration timeout) {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        Optional<TaskSnapshot> latest = refreshTaskSnapshot(projectId, scanId, taskId);
+        while (System.nanoTime() < deadline) {
+            if (latest.isPresent() && !isActiveLifecycle(latest.get().lifecycle())) {
+                return latest;
+            }
+            try {
+                Thread.sleep(250L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return latest;
+            }
+            latest = refreshTaskSnapshot(projectId, scanId, taskId);
+        }
+        return latest;
+    }
+
+    private static ToolDataSource.FactRecord probeFact(ToolExecutionContext.Scope scope,
+                                                       TaskSnapshot snapshot,
+                                                       ApiDtos.EntryDto entry,
+                                                       String state,
+                                                       List<String> candidateInputs,
+                                                       int maxRequests) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("schemaVersion", 1);
+        value.put("state", state);
+        value.put("taskId", snapshot.scope().taskId());
+        value.put("scanId", snapshot.scope().scanId());
+        value.put("lifecycle", snapshot.lifecycle().name());
+        value.put("entrypointRef", "entry:" + entry.id());
+        value.put("method", entry.method());
+        value.put("route", entry.route());
+        value.put("networkMode", "DENY");
+        value.put("executor", "SERVER_OWNED_TRUSTED_DOCKER");
+        value.put("candidateCount", candidateInputs == null ? 0 : Math.min(16, candidateInputs.size()));
+        value.put("requestLimit", Math.min(8, Math.max(1, maxRequests)));
+        value.put("probePlanId", "probe-plan:" + snapshot.scope().taskId());
+        if (snapshot.stopReason() != null) value.put("stopReason", snapshot.stopReason().name());
+        if (snapshot.failureCode() != null) value.put("failureCode", snapshot.failureCode());
+        return new ToolDataSource.FactRecord(scope, "sandbox-probe:" + snapshot.scope().taskId(),
+                JSON.valueToTree(value));
+    }
+
     private synchronized TaskSnapshot enqueueDynamicForPipeline(String scanId, String actorId) {
+        return enqueueDynamicForPipeline(scanId, actorId, null, List.of(), 512);
+    }
+
+    private synchronized TaskSnapshot enqueueDynamicForPipeline(String scanId, String actorId,
+                                                                 String preferredEntryId) {
+        return enqueueDynamicForPipeline(scanId, actorId, preferredEntryId, List.of(), 512);
+    }
+
+    private synchronized TaskSnapshot enqueueDynamicForPipeline(String scanId, String actorId,
+                                                                 String preferredEntryId,
+                                                                 List<String> candidateInputs,
+                                                                 int maxRequests) {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         ControlPlaneStore.ProjectRecord project = store.requireProject(scan.dto().projectId());
         ArtifactDescriptor artifact = store.artifact(project, scan.dto().artifactDigest());
@@ -1310,7 +1617,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (artifact.type() != com.aq.jvmsentinel.model.ArtifactType.JAR) {
             throw new ApiException(409, "JAR_REQUIRED", "Docker dynamic execution currently requires a JAR");
         }
-        ProbePlan plan = buildProbePlan(scan, null);
+        ProbePlan plan = buildProbePlan(scan, null, preferredEntryId, candidateInputs, maxRequests);
         if (plan.primary() == null) {
             throw new ApiException(409, "TARGET_ENTRY_NOT_IN_SCAN",
                     "the scan has no entrypoint to observe");
@@ -1329,8 +1636,26 @@ public final class ControlPlaneServer implements AutoCloseable {
                 budget,
                 NetworkPolicy.denyAll(),
                 WorkerCapability.TRUSTED_DOCKER);
-        TaskSnapshot snapshot = workerApi.enqueueFromControlPlane(spec,
-                "pipeline-dynamic-" + UUID.randomUUID().toString().replace("-", ""));
+        dynamicProbePlans.put(taskId, plan);
+        TaskSnapshot snapshot;
+        try {
+            snapshot = workerApi.enqueueFromControlPlane(spec,
+                    "pipeline-dynamic-" + UUID.randomUUID().toString().replace("-", ""));
+        } catch (RuntimeException failure) {
+            dynamicProbePlans.remove(taskId, plan);
+            throw failure;
+        }
+        List<String> boundedInputs = candidateInputs == null ? List.of()
+                : candidateInputs.stream().filter(Objects::nonNull).limit(16).toList();
+        String inputsJson = JsonCodec.stringify(boundedInputs);
+        // V011 stores only bounded probe-input metadata (CHECK max_requests 1..8), not the
+        // full flood size; actual probe count remains in the in-memory / recovered plan.
+        int storedMaxRequests = Math.max(1, Math.min(8, maxRequests));
+        store.persistProbePlan(new SQLiteControlPlanePersistence.ProbePlanData(
+                taskId, scan.dto().projectId(), scan.dto().artifactDigest(), scanId,
+                plan.primary().id(), inputsJson, storedMaxRequests,
+                probePlanHash(scanId, plan.primary().id(), inputsJson, storedMaxRequests),
+                Instant.now(clock).toString()));
         store.auditChange(scan.dto().projectId(), actorId, "dynamic-task.enqueue",
                 "worker-task", taskId,
                 "{\"capability\":\"TRUSTED_DOCKER\",\"networkMode\":\"DENY\",\"source\":\"PIPELINE\","
@@ -1383,7 +1708,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (!hasExecutableMainClass(path)) {
             throw new SecurityException("registered JAR has no executable Main-Class");
         }
-        ProbePlan plan = buildProbePlan(scan, scope.taskId());
+        ProbePlan plan = dynamicProbePlans.getOrDefault(scope.taskId(), buildProbePlan(scan, scope.taskId()));
         if (plan.primary() == null) {
             throw new SecurityException("scan has no bounded HTTP probe target");
         }
@@ -1402,7 +1727,70 @@ public final class ControlPlaneServer implements AutoCloseable {
      * Builds a budgeted multi-entry probe plan for one TRUSTED_DOCKER task.
      * Entries beyond the budget become UNREACHED path placeholders (not silently dropped).
      */
+    private void restoreProbePlans() {
+        for (SQLiteControlPlanePersistence.ProbePlanData stored : store.loadProbePlans()) {
+            ControlPlaneStore.ScanRecord scan = store.scan(stored.scanId());
+            if (scan == null || !scan.dto().projectId().equals(stored.projectId())
+                    || !scan.dto().artifactDigest().equals(stored.artifactDigest())) {
+                throw new SQLiteControlPlanePersistence.PersistenceException("probe plan scope does not match scan");
+            }
+            TaskSnapshot task = workerApi.snapshots(stored.projectId(), stored.scanId()).stream()
+                    .filter(value -> value.scope().taskId().equals(stored.taskId())).findFirst()
+                    .orElseThrow(() -> new SQLiteControlPlanePersistence.PersistenceException(
+                            "probe plan has no persistent worker task"));
+            if (!task.spec().targetEntryId().equals(stored.targetEntryId())) {
+                throw new SQLiteControlPlanePersistence.PersistenceException("probe plan target does not match task");
+            }
+            List<String> inputs = persistedStringList(stored.candidateInputsJson());
+            String expectedHash = probePlanHash(stored.scanId(), stored.targetEntryId(),
+                    stored.candidateInputsJson(), stored.maxRequests());
+            if (!expectedHash.equals(stored.planHash())) {
+                throw new SQLiteControlPlanePersistence.PersistenceException("probe plan checksum mismatch");
+            }
+            ProbePlan plan = buildProbePlan(scan, stored.taskId(), stored.targetEntryId(),
+                    inputs, stored.maxRequests());
+            dynamicProbePlans.put(stored.taskId(), plan);
+        }
+    }
+
+    private static List<String> persistedStringList(String json) {
+        Object value;
+        try {
+            value = JsonCodec.parse(json);
+        } catch (IllegalArgumentException malformed) {
+            throw new SQLiteControlPlanePersistence.PersistenceException("probe plan inputs are malformed", malformed);
+        }
+        if (!(value instanceof List<?> list) || list.size() > 16) {
+            throw new SQLiteControlPlanePersistence.PersistenceException("probe plan input limit exceeded");
+        }
+        List<String> result = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof String text) || text.length() > 1024) {
+                throw new SQLiteControlPlanePersistence.PersistenceException("probe plan input is invalid");
+            }
+            result.add(text);
+        }
+        return List.copyOf(result);
+    }
+
+    private static String probePlanHash(String scanId, String targetEntryId,
+                                        String inputsJson, int maxRequests) {
+        return payloadHash(scanId + "\n" + targetEntryId + "\n" + inputsJson + "\n"
+                + Math.max(1, Math.min(8, maxRequests)));
+    }
+
     private ProbePlan buildProbePlan(ControlPlaneStore.ScanRecord scan, String taskIdHint) {
+        return buildProbePlan(scan, taskIdHint, null, List.of(), 512);
+    }
+
+    private ProbePlan buildProbePlan(ControlPlaneStore.ScanRecord scan, String taskIdHint,
+                                     String preferredEntryId) {
+        return buildProbePlan(scan, taskIdHint, preferredEntryId, List.of(), 512);
+    }
+
+    private ProbePlan buildProbePlan(ControlPlaneStore.ScanRecord scan, String taskIdHint,
+                                     String preferredEntryId, List<String> candidateInputs,
+                                     int requestedMaxRequests) {
         List<ApiDtos.EntryDto> httpEntries = scan.dto().entries().stream()
                 .filter(entry -> "HTTP".equalsIgnoreCase(entry.protocol()))
                 .filter(entry -> entry.route() != null
@@ -1419,6 +1807,13 @@ public final class ControlPlaneServer implements AutoCloseable {
         int maxProbes = Math.min(512, httpEntries.size());
         LinkedHashSet<String> selectedIds = new LinkedHashSet<>();
         List<ExternalArtifactTaskExecutor.ProbeTarget> probes = new ArrayList<>();
+        if (preferredEntryId != null) {
+            httpEntries.stream().filter(entry -> entry.id().equals(preferredEntryId)).findFirst()
+                    .ifPresent(entry -> {
+                        selectedIds.add(entry.id());
+                        probes.add(probeTargetFor(entry));
+                    });
+        }
         // Prefer the worker task's target entry when present in the scan.
         if (taskIdHint != null) {
             workerApi.snapshots(scan.dto().projectId(), scan.dto().scanId()).stream()
@@ -1427,8 +1822,7 @@ public final class ControlPlaneServer implements AutoCloseable {
                     .findFirst()
                     .flatMap(targetId -> httpEntries.stream().filter(entry -> entry.id().equals(targetId)).findFirst())
                     .ifPresent(entry -> {
-                        selectedIds.add(entry.id());
-                        probes.add(probeTargetFor(entry));
+                        if (selectedIds.add(entry.id())) probes.add(probeTargetFor(entry));
                     });
         }
         // Prefer entries named by PATH_EXPLORATION / plan_propose inferences (untrusted hints only).
@@ -1452,6 +1846,14 @@ public final class ControlPlaneServer implements AutoCloseable {
                 .filter(entry -> selectedIds.contains(entry.id()))
                 .findFirst()
                 .orElse(httpEntries.get(0));
+        List<ExternalArtifactTaskExecutor.ProbeTarget> candidateProbes = candidateProbeTargets(
+                primary, candidateInputs, requestedMaxRequests);
+        List<ExternalArtifactTaskExecutor.ProbeTarget> effectiveProbes = probes;
+        if (!candidateProbes.isEmpty()) {
+            effectiveProbes = candidateProbes;
+            selectedIds.clear();
+            selectedIds.add(primary.id());
+        }
         List<ApiDtos.PathDto> unreached = new ArrayList<>();
         for (ApiDtos.EntryDto entry : httpEntries) {
             if (selectedIds.contains(entry.id())) continue;
@@ -1464,7 +1866,49 @@ public final class ControlPlaneServer implements AutoCloseable {
                     List.of(new ApiDtos.PathStepDto(entry.method() + " " + entry.route(),
                             "超出本次断网探针预算，未动态刺激", "entry", "blocked", entry.evidenceRefs()))));
         }
-        return new ProbePlan(primary, List.copyOf(probes), List.copyOf(unreached));
+        return new ProbePlan(primary, List.copyOf(effectiveProbes), List.copyOf(unreached));
+    }
+
+    /** Converts only bounded name=value hints into URL query data for the selected entry. */
+    private static List<ExternalArtifactTaskExecutor.ProbeTarget> candidateProbeTargets(
+            ApiDtos.EntryDto entry, List<String> candidateInputs, int requestedMaxRequests) {
+        if (candidateInputs == null || candidateInputs.isEmpty()) return List.of();
+        int limit = Math.max(1, Math.min(8, requestedMaxRequests));
+        List<String> parameterNames = entry.parameters() == null ? List.of() : entry.parameters().stream()
+                .map(ControlPlaneServer::parameterName).filter(Objects::nonNull).limit(12).toList();
+        List<ExternalArtifactTaskExecutor.ProbeTarget> result = new ArrayList<>();
+        for (String candidate : candidateInputs) {
+            if (result.size() >= limit || candidate == null || candidate.length() > 1024) break;
+            String name;
+            String value;
+            int separator = candidate.indexOf('=');
+            if (separator > 0) {
+                name = candidate.substring(0, separator);
+                value = candidate.substring(separator + 1);
+            } else if (!parameterNames.isEmpty()) {
+                name = parameterNames.get(Math.min(result.size(), parameterNames.size() - 1));
+                value = candidate;
+            } else {
+                continue;
+            }
+            if (!name.matches("[A-Za-z][A-Za-z0-9_]{0,63}") || value.length() > 512
+                    || value.chars().anyMatch(character -> character < 0x20 || character == 0x7f)
+                    || parameterNames.isEmpty() || !parameterNames.contains(name)) continue;
+            String encoded = java.net.URLEncoder.encode(value, StandardCharsets.UTF_8);
+            result.add(new ExternalArtifactTaskExecutor.ProbeTarget(
+                    entry.method() == null || "UNKNOWN".equalsIgnoreCase(entry.method())
+                            ? "GET" : entry.method().toUpperCase(Locale.ROOT),
+                    materializeRoute(entry.route()), name + "=" + encoded));
+        }
+        return List.copyOf(result);
+    }
+
+    private static String parameterName(String parameter) {
+        if (parameter == null) return null;
+        int nameAt = parameter.indexOf("name=");
+        if (nameAt < 0) return null;
+        String name = parameter.substring(nameAt + 5).split("[,\\s]", 2)[0].trim();
+        return name.matches("[A-Za-z][A-Za-z0-9_]{0,63}") ? name : null;
     }
 
     private record ProbePlan(ApiDtos.EntryDto primary,
@@ -1579,12 +2023,84 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, findingMap(finding));
     }
 
-    private void replayFinding(HttpExchange exchange, String findingId) throws IOException {
+    private synchronized void replayFinding(HttpExchange exchange, String findingId) throws IOException {
         ApiDtos.FindingDto finding = store.finding(findingId);
         if (finding == null) throw new ApiException(404, "FINDING_NOT_FOUND", "finding not found");
-        // Dynamic replay is intentionally not implemented in this slice.  A
-        // 409 makes the distinction from a successful verification explicit.
-        throw new ApiException(409, "STATIC_ONLY", "replay requires an approved sandbox worker");
+        Map<String, Object> body = readObject(exchange);
+        String requestPayload = JsonCodec.stringify(body);
+        String durableScope = "finding:replay:" + findingId;
+        for (String field : body.keySet()) {
+            if (!Set.of("authorized").contains(field)) {
+                throw new ApiException(400, "REPLAY_FIELD_REJECTED", "finding replay body contains an unsupported field");
+            }
+        }
+        if (!requiredBoolean(body, "authorized")) {
+            throw new ApiException(403, "AUTHORIZATION_REQUIRED", "explicit authorization is required to replay a finding");
+        }
+        String key = requireIdempotencyKey(exchange);
+        String replayKey = finding.projectId() + ":" + findingId + ":" + key;
+        ensureIdempotencyCapacity(idempotentFindingReplays, replayKey);
+        ensureIdempotencyCapacity(durableIdempotency, idempotencyMapKey(durableScope, key));
+        FindingReplay existing = idempotentFindingReplays.get(replayKey);
+        SQLiteControlPlanePersistence.IdempotencyData durable = existingDurableIdempotency(
+                durableScope, key, requestPayload);
+        if (existing == null && durable != null) {
+            TaskSnapshot restored = workerApi.snapshots(finding.projectId(), finding.scanId()).stream()
+                    .filter(value -> value.scope().taskId().equals(durable.resultRef())).findFirst().orElse(null);
+            if (restored != null) {
+                existing = new FindingReplay(finding.scanId(), restored);
+                idempotentFindingReplays.putIfAbsent(replayKey, existing);
+            }
+        }
+        if (existing != null) {
+            ControlPlaneStore.ScanRecord scan = store.requireScan(existing.scanId());
+            sendJson(exchange, 200, findingReplayMap(finding, scan, existing.snapshot(), true));
+            return;
+        }
+        ControlPlaneStore.ScanRecord scan = store.requireScan(finding.scanId());
+        if (!finding.projectId().equals(scan.dto().projectId())
+                || !finding.artifactDigest().equals(scan.dto().artifactDigest())) {
+            throw new ApiException(409, "FINDING_SCOPE_INVALID", "finding is not bound to its scan");
+        }
+        if (scan.dto().entries().stream().noneMatch(entry -> entry.id().equals(finding.entrypointId()))) {
+            throw new ApiException(409, "ENTRY_NOT_FOUND", "finding entrypoint is not present in the scan");
+        }
+        String operatorId = actor(exchange).operatorId();
+        if (workerApi.snapshots(finding.projectId(), finding.scanId()).stream().anyMatch(snapshot ->
+                snapshot.lifecycle() == TaskLifecycle.QUEUED
+                        || snapshot.lifecycle() == TaskLifecycle.LEASED
+                        || snapshot.lifecycle() == TaskLifecycle.RUNNING
+                        || snapshot.lifecycle() == TaskLifecycle.PAUSED)) {
+            throw new ApiException(409, "DYNAMIC_TASK_BUSY", "a dynamic task is already active for this scan");
+        }
+        TaskSnapshot snapshot = enqueueDynamicForPipeline(finding.scanId(), operatorId, finding.entrypointId());
+        idempotentFindingReplays.put(replayKey, new FindingReplay(finding.scanId(), snapshot));
+        rememberDurableIdempotency(durableScope, key, requestPayload, snapshot.scope().taskId(), null);
+        store.auditChange(finding.projectId(), operatorId, "finding.replay", "finding", findingId,
+                "{\"scanId\":\"" + finding.scanId() + "\",\"entrypointId\":\""
+                        + finding.entrypointId() + "\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\"}",
+                Instant.now(clock).toString());
+        sendJson(exchange, 202, findingReplayMap(finding, scan, snapshot, false));
+    }
+
+    private static Map<String, Object> findingReplayMap(ApiDtos.FindingDto finding,
+                                                        ControlPlaneStore.ScanRecord scan,
+                                                        TaskSnapshot snapshot,
+                                                        boolean replayed) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", ApiDtos.SCHEMA_VERSION);
+        result.put("projectId", finding.projectId());
+        result.put("scanId", scan.dto().scanId());
+        result.put("findingId", finding.findingId());
+        result.put("entrypointId", finding.entrypointId());
+        result.put("taskId", snapshot.scope().taskId());
+        result.put("lifecycle", snapshot.lifecycle().name());
+        result.put("verificationStatus", "DYNAMIC_SUSPECTED");
+        result.put("dependencyMode", "MOCK");
+        result.put("replayed", replayed);
+        result.put("requiredCapability", snapshot.spec().requiredCapability().name());
+        result.put("dynamicExecutionMode", snapshot.spec().requiredCapability().name());
+        return result;
     }
 
     private void sendEvidence(HttpExchange exchange, String evidenceId) throws IOException {
@@ -2318,11 +2834,13 @@ public final class ControlPlaneServer implements AutoCloseable {
     private static Map<String, Object> roleBindingMap(
             com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.RoleBindingData binding) {
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("schemaVersion", 1);
+        result.put("schemaVersion", 2);
         result.put("projectId", binding.projectId());
         result.put("role", binding.role().name());
         result.put("providerId", binding.providerId());
         result.put("model", binding.model());
+        result.put("promptZh", binding.promptZh());
+        result.put("promptEn", binding.promptEn());
         result.put("updatedAt", binding.updatedAt());
         return result;
     }
@@ -2538,6 +3056,25 @@ public final class ControlPlaneServer implements AutoCloseable {
         return text;
     }
 
+    private static String textValue(Map<String, Object> body, String key) {
+        Object value = body.get(key);
+        if (!(value instanceof String text) || text.isBlank()) {
+            throw new IllegalStateException("persistent value is missing " + key);
+        }
+        return text;
+    }
+
+    private static String optionalPrompt(Map<String, Object> body, String key) {
+        Object value = body.get(key);
+        if (value == null) return null;
+        if (!(value instanceof String text) || text.length() > 16_384 || text.indexOf('\0') >= 0
+                || text.chars().anyMatch(ch -> Character.isISOControl(ch)
+                && ch != '\n' && ch != '\r' && ch != '\t')) {
+            throw new ApiException(400, "INVALID_FIELD", key + " is invalid");
+        }
+        return text.isBlank() ? null : text;
+    }
+
     private static String requestIdempotencyKey(HttpExchange exchange) {
         String value = exchange.getRequestHeaders().getFirst("Idempotency-Key");
         if (value == null) return null;
@@ -2558,6 +3095,48 @@ public final class ControlPlaneServer implements AutoCloseable {
     private static void ensureIdempotencyCapacity(Map<String, ?> keys, String key) {
         if (key != null && !keys.containsKey(key) && keys.size() >= MAX_IDEMPOTENCY_KEYS) {
             throw new ApiException(429, "IDEMPOTENCY_LIMIT", "idempotency key store is full");
+        }
+    }
+
+    private static String idempotencyMapKey(String scope, String key) {
+        return scope + "\u0000" + key;
+    }
+
+    private SQLiteControlPlanePersistence.IdempotencyData existingDurableIdempotency(
+            String scope, String key, String payload) {
+        if (key == null) return null;
+        SQLiteControlPlanePersistence.IdempotencyData record = durableIdempotency.get(idempotencyMapKey(scope, key));
+        if (record == null) return null;
+        if (!record.payloadHash().equals(payloadHash(payload))) {
+            throw new ApiException(409, "IDEMPOTENCY_CONFLICT",
+                    "Idempotency-Key was already used with a different request");
+        }
+        return record;
+    }
+
+    private SQLiteControlPlanePersistence.IdempotencyData rememberDurableIdempotency(
+            String scope, String key, String payload, String resultRef, String resultJson) {
+        if (key == null) return null;
+        String mapKey = idempotencyMapKey(scope, key);
+        ensureIdempotencyCapacity(durableIdempotency, mapKey);
+        SQLiteControlPlanePersistence.IdempotencyData candidate =
+                new SQLiteControlPlanePersistence.IdempotencyData(scope, key, payloadHash(payload),
+                        resultRef, resultJson, Instant.now(clock).toString());
+        SQLiteControlPlanePersistence.IdempotencyData stored = store.persistIdempotency(candidate);
+        if (!stored.payloadHash().equals(candidate.payloadHash())) {
+            throw new ApiException(409, "IDEMPOTENCY_CONFLICT",
+                    "Idempotency-Key was already used with a different request");
+        }
+        durableIdempotency.putIfAbsent(mapKey, stored);
+        return stored;
+    }
+
+    private static String payloadHash(String payload) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(payload.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
         }
     }
 
@@ -2675,6 +3254,7 @@ public final class ControlPlaneServer implements AutoCloseable {
     private record AuditRunReplay(String payload, String scanId, String preAnalysisJobId) { }
     private record DynamicTaskPayload(String scanId, String artifactDigest, String targetEntryId) { }
     private record DynamicTaskReplay(DynamicTaskPayload payload, TaskSnapshot snapshot) { }
+    private record FindingReplay(String scanId, TaskSnapshot snapshot) { }
 
     @FunctionalInterface
     public interface ProviderInventoryService {

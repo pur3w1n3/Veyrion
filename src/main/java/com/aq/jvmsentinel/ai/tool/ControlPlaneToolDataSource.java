@@ -20,6 +20,7 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
     private final ControlPlaneStore store;
     private final String scanId;
     private final DynamicEvidenceSource dynamicEvidenceSource;
+    private final DynamicProbeExecutor dynamicProbeExecutor;
 
     public ControlPlaneToolDataSource(ControlPlaneStore store, String scanId) {
         this(store, scanId, (projectId, artifactDigest, scopedScanId) -> List.of());
@@ -27,9 +28,17 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
 
     public ControlPlaneToolDataSource(ControlPlaneStore store, String scanId,
                                       DynamicEvidenceSource dynamicEvidenceSource) {
+        this(store, scanId, dynamicEvidenceSource, (scopedScanId, scope, principalId, jobId, entrypointRef,
+                candidateInputs, maxRequests) -> Optional.empty());
+    }
+
+    public ControlPlaneToolDataSource(ControlPlaneStore store, String scanId,
+                                      DynamicEvidenceSource dynamicEvidenceSource,
+                                      DynamicProbeExecutor dynamicProbeExecutor) {
         this.store = Objects.requireNonNull(store, "store");
         this.scanId = Objects.requireNonNull(scanId, "scanId");
         this.dynamicEvidenceSource = Objects.requireNonNull(dynamicEvidenceSource, "dynamicEvidenceSource");
+        this.dynamicProbeExecutor = Objects.requireNonNull(dynamicProbeExecutor, "dynamicProbeExecutor");
     }
 
     @Override
@@ -94,6 +103,17 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         return Optional.empty();
     }
 
+    @Override
+    public Optional<FactRecord> requestSandboxProbe(ToolExecutionContext.Scope scope,
+                                                    String principalId, String jobId,
+                                                    String entrypointRef,
+                                                    List<String> candidateInputs,
+                                                    int maxRequests) throws Exception {
+        scopedScan(scope);
+        return dynamicProbeExecutor.request(scanId, scope, principalId, jobId, entrypointRef,
+                candidateInputs == null ? List.of() : List.copyOf(candidateInputs), maxRequests);
+    }
+
     private ControlPlaneStore.ScanRecord scopedScan(ToolExecutionContext.Scope scope) {
         if (!"local".equals(scope.workspaceId())) throw new SecurityException("workspace scope mismatch");
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
@@ -143,5 +163,12 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
     public interface DynamicEvidenceSource {
         List<ApiDtos.EvidenceDto> evidenceForScan(
                 String projectId, String artifactDigest, String scanId);
+    }
+
+    @FunctionalInterface
+    public interface DynamicProbeExecutor {
+        Optional<FactRecord> request(String scanId, ToolExecutionContext.Scope scope, String principalId, String jobId,
+                                     String entrypointRef, List<String> candidateInputs, int maxRequests)
+                throws Exception;
     }
 }

@@ -1,6 +1,6 @@
 # 可扩展分析架构（JAR 先行）
 
-状态：已确认产品方向（2026-07-26）。本文件描述中立事实模型与插件边界；**当前实现仍以可执行 Spring Boot JAR + Spring/Blade 适配为主**，WAR/自研框架按同一骨架增强，而不是另起一套流水线。
+状态：已确认产品方向（2026-07-26）。本文件描述中立事实模型与插件边界；**当前实现仍以可执行 Spring Boot JAR + Spring/Blade 适配为主**，WAR/自研框架按同一骨架增强，而不是另起一套流水线。产品面向个人本地使用，不包含完整多租户/RBAC 或真实供应商生产互操作；任何动态适配都必须通过用户授权的沙箱，不能退回宿主机执行。
 
 ## 1. 目标
 
@@ -88,7 +88,7 @@ AI 与 checklist 只作候选目录，不能改工具权限或单独升 `VERIFIE
 
 ## 5. 动态与依赖替身
 
-- 依赖替身插件化：`JdbcMock`、`RedisRespMock` 等按需启用；主机侧替身引擎不偷偷放开 Docker 外连。
+- 依赖替身插件化：`JdbcMock`、`RedisRespMock`、`MysqlClassicMock` 等按需启用；主机侧替身引擎不偷偷放开 Docker 外连。当前实现是有界协议子集，不等同于完整 Redis/MySQL 兼容性。
 - 探针计划绑定不可变 scan；超预算入口记 `UNREACHED`，不静默丢弃。
 - 轨迹与结论：`MOCK` / `DYNAMIC_SUSPECTED` / `INFERENCE`；`VERIFIED` 仅在可重放门禁之后。
 
@@ -96,7 +96,7 @@ AI 与 checklist 只作候选目录，不能改工具权限或单独升 `VERIFIE
 
 1. 抽出中立模型与 AuthCoverage 矩阵语义（文档本文件；代码逐步对齐）。
 2. 将现有 Spring/Blade 规则视为第一个 FrameworkAdapter 输出。
-3. ExecutableJar Packager + 多入口探针 + JDBC/Redis mock（已在 JAR 切片推进）。
+3. ExecutableJar Packager + 多入口探针 + JDBC/Redis/MySQL 协议替身（JAR 切片已落地，均受预算和 `MOCK` provenance 约束）。
 4. 下一步：Servlet/Filter 适配器 → WAR 静态视图 → WAR LaunchPlan。
 5. 再下一步：结构推断 B 档与合成身份探针。
 

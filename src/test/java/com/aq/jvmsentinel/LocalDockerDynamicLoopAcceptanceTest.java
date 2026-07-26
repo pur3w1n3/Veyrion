@@ -110,8 +110,8 @@ public final class LocalDockerDynamicLoopAcceptanceTest {
                     Map.of("name", "E2E OpenAI", "kind", "OPENAI_CHAT",
                             "baseUrl", "http://127.0.0.1:3000", "model", "e2e-model",
                             "apiKey", "e2e-provider-secret", "enabled", true), token), "providerId");
-            for (String role : List.of("PRE_ANALYSIS", "PATH_EXPLORATION",
-                    "DYNAMIC_VERIFICATION", "VULNERABILITY_TRIAGE", "REPORT_GENERATION")) {
+            for (String role : List.of("PRE_ANALYSIS", "DYNAMIC_VERIFICATION",
+                    "PATH_EXPLORATION", "VULNERABILITY_TRIAGE", "REPORT_GENERATION")) {
                 patch(http, URI.create(server.baseUri() + "/projects/" + projectId
                                 + "/role-assignments/" + role),
                         Map.of("providerId", providerId, "model", "e2e-model"), token);

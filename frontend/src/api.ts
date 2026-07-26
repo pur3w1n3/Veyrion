@@ -86,6 +86,21 @@ export type Finding = {
   confidence?: number
 }
 
+export type FindingReplayDto = {
+  schemaVersion: number
+  projectId: string
+  scanId: string
+  findingId: string
+  entrypointId: string
+  taskId: string
+  lifecycle: string
+  verificationStatus: VerificationStatus
+  dependencyMode: DependencyMode
+  replayed: boolean
+  requiredCapability?: WorkerCapability
+  dynamicExecutionMode?: string
+}
+
 export type PathStep = {
   label: string
   detail: string
@@ -305,10 +320,14 @@ export type RoleAssignmentDto = {
   providerId: string
   model?: string
   updatedAt?: string
+  promptZh?: string
+  promptEn?: string
 }
 export type SaveRoleAssignmentRequest = {
   providerId: string
   model?: string
+  promptZh?: string
+  promptEn?: string
 }
 
 export type AiJobDto = {
@@ -453,6 +472,7 @@ export interface SentinelApi {
   startAudit(projectId: string, request: StartAuditRequest): Promise<AuditRunDto>
   createDynamicTask(scanId: string): Promise<DynamicTaskDto>
   listDynamicTasks(scanId: string): Promise<DynamicTaskDto[]>
+  replayFinding(findingId: string): Promise<FindingReplayDto>
   updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto>
   deleteScan(scanId: string): Promise<void>
   listProviders(): Promise<ProviderDto[]>
@@ -641,6 +661,25 @@ export const parseFinding = (item: unknown, context?: { schemaVersion?: number; 
     scanId: optionalText(item.scanId) ?? context?.scanId,
     evidenceRefs: refs,
     confidence: item.confidence === undefined ? undefined : asFiniteNumber(item.confidence, 'finding.confidence', 0, 1)
+  }
+}
+
+export const parseFindingReplay = (item: unknown): FindingReplayDto => {
+  if (!isRecord(item)) throw new Error('invalid finding replay response')
+  const status = statusOf(item.verificationStatus, 'findingReplay.verificationStatus')
+  return {
+    schemaVersion: asSafeInteger(item.schemaVersion, 'findingReplay.schemaVersion', 1),
+    projectId: asText(item.projectId, 'findingReplay.projectId'),
+    scanId: asText(item.scanId, 'findingReplay.scanId'),
+    findingId: asText(item.findingId, 'findingReplay.findingId'),
+    entrypointId: asText(item.entrypointId, 'findingReplay.entrypointId'),
+    taskId: asText(item.taskId, 'findingReplay.taskId'),
+    lifecycle: asText(item.lifecycle, 'findingReplay.lifecycle'),
+    verificationStatus: status,
+    dependencyMode: asText(item.dependencyMode, 'findingReplay.dependencyMode'),
+    replayed: asBoolean(item.replayed, 'findingReplay.replayed'),
+    requiredCapability: optionalText(item.requiredCapability) as WorkerCapability | undefined,
+    dynamicExecutionMode: optionalText(item.dynamicExecutionMode)
   }
 }
 
@@ -917,7 +956,9 @@ export const parseRoleAssignment = (value: unknown): RoleAssignmentDto => {
     role,
     providerId: asText(body.providerId, 'roleAssignment.providerId'),
     model: optionalText(body.model),
-    updatedAt: optionalText(body.updatedAt)
+    updatedAt: optionalText(body.updatedAt),
+    promptZh: optionalText(body.promptZh),
+    promptEn: optionalText(body.promptEn)
   }
 }
 
@@ -1512,6 +1553,16 @@ export class HttpSentinelApi implements SentinelApi {
     return parseList(response, 'dynamicTasks', parseDynamicTask)
   }
 
+  async replayFinding(findingId: string): Promise<FindingReplayDto> {
+    const response = await this.request(`findings/${encodeURIComponent(asText(findingId, 'findingId'))}/replay`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: mutationHeaders(this.token, generatedIdempotencyKey()),
+      body: JSON.stringify({ authorized: true })
+    }, 'replay finding')
+    return parseFindingReplay(response)
+  }
+
   async updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto> {
     const response = await this.request(`scans/${encodeURIComponent(asText(scanId, 'scanId'))}`, {
       method: 'PATCH', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(request)
@@ -1816,6 +1867,8 @@ export class MockSentinelApi implements SentinelApi {
   async listAiJobEvents(): Promise<AiJobEventDto[]> { return [] }
   async updateAiJob(): Promise<AiJobDto> { return this.unavailable('update ai job') }
   async deleteAiJob(): Promise<void> { return this.unavailable('delete ai job') }
+
+  async replayFinding(): Promise<FindingReplayDto> { return this.unavailable('replay finding') }
 
   async getEntries(): Promise<EntryDto[]> {
     return (await this.loadDashboard()).entries

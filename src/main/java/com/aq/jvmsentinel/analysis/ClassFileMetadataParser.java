@@ -9,9 +9,14 @@ import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Minimal, bounded classfile parser. It intentionally understands only the
@@ -63,6 +68,7 @@ final class ClassFileMetadataParser {
         private final List<BytecodeFactIndex.MemberAccessFact> memberAccessFacts = new ArrayList<>();
         private final List<BytecodeFactIndex.CallEdge> callEdges = new ArrayList<>();
         private final List<BytecodeFactIndex.UnresolvedDynamicFact> unresolvedDynamics = new ArrayList<>();
+        private final List<ClassMetadata.MethodFlowFact> methodFlows = new ArrayList<>();
 
         private Parser(byte[] bytes) {
             input = new Cursor(bytes, 0, bytes.length);
@@ -95,7 +101,7 @@ final class ClassFileMetadataParser {
             BytecodeFactIndex.ClassFact classFact = new BytecodeFactIndex.ClassFact(
                     className, superName, interfaceNames, accessFlags, "classfile:" + className);
             return new ClassMetadata(className, true, classAnnotations, resultMethods, classFact,
-                    fieldFacts, methodFacts, memberAccessFacts, callEdges, unresolvedDynamics);
+                    fieldFacts, methodFacts, memberAccessFacts, callEdges, unresolvedDynamics, methodFlows);
         }
 
         private void parseConstantPool() {
@@ -183,12 +189,154 @@ final class ClassFileMetadataParser {
             body.u2(); // max_locals
             long declaredLength = body.u4();
             if (declaredLength > MAX_CODE_BYTES) fail();
-            Cursor code = body.slice(declaredLength);
-            scanInstructions(code, method);
+            byte[] codeBytes = body.bytes((int) declaredLength);
+            scanInstructions(new Cursor(codeBytes, 0, codeBytes.length), method);
+            methodFlows.add(scanFlow(new Cursor(codeBytes, 0, codeBytes.length), method));
             int exceptionHandlers = bounded(body.u2(), MAX_MEMBERS);
             body.skip((long) exceptionHandlers * 8);
             parseAttributes(body, (attributeName, nested) -> { });
             if (body.remaining() != 0) fail();
+        }
+
+        private ClassMetadata.MethodFlowFact scanFlow(Cursor code, MutableMethod method) {
+            FlowFrame frame = FlowFrame.forMethod(method.descriptor, (method.accessFlags & 0x0008) != 0);
+            List<ClassMetadata.InvocationFlowFact> invocations = new ArrayList<>();
+            int ordinal = 0;
+            boolean complete = true;
+            while (code.remaining() > 0) {
+                int offset = code.position();
+                int opcode = code.u1();
+                BytecodeFactIndex.InstructionEvidence location = new BytecodeFactIndex.InstructionEvidence(
+                        currentClassName, method.name, method.descriptor, offset, ordinal++);
+                try {
+                    switch (opcode) {
+                        case 21, 22, 23, 24, 25 -> frame.push(frame.local(code.u1()));
+                        case 26, 30, 34, 38, 42 -> frame.push(frame.local(0));
+                        case 27, 31, 35, 39, 43 -> frame.push(frame.local(1));
+                        case 28, 32, 36, 40, 44 -> frame.push(frame.local(2));
+                        case 29, 33, 37, 41, 45 -> frame.push(frame.local(3));
+                        case 54, 55, 56, 57, 58 -> frame.store(code.u1(), frame.pop());
+                        case 59, 63, 67, 71, 75 -> frame.store(0, frame.pop());
+                        case 60, 64, 68, 72, 76 -> frame.store(1, frame.pop());
+                        case 61, 65, 69, 73, 77 -> frame.store(2, frame.pop());
+                        case 62, 66, 70, 74, 78 -> frame.store(3, frame.pop());
+                        case 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 -> frame.push(Set.of());
+                        case 16 -> { code.u1(); frame.push(Set.of()); }
+                        case 17 -> { code.u2(); frame.push(Set.of()); }
+                        case 18 -> { code.u1(); frame.push(Set.of()); }
+                        case 19, 20 -> { code.u2(); frame.push(Set.of()); }
+                        case 46, 47, 48, 49, 50, 51, 52, 53 -> {
+                            Set<Integer> index = frame.pop();
+                            frame.push(union(frame.pop(), index));
+                        }
+                        case 79, 80, 81, 82, 83, 84, 85, 86 -> { frame.pop(); frame.pop(); frame.pop(); }
+                        case 87 -> frame.pop();
+                        case 88 -> { frame.pop(); frame.pop(); }
+                        case 89 -> frame.push(frame.peek());
+                        case 90, 91, 92, 93, 94, 95 -> { complete = false; frame.clearStack(); }
+                        case 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
+                                108, 109, 110, 111, 112, 113, 114, 115, 120, 121, 122, 123,
+                                124, 125, 126, 127, 128, 129, 130, 131 ->
+                                frame.push(union(frame.pop(), frame.pop()));
+                        case 116, 117, 118, 119, 133, 134, 135, 136, 137, 138, 139, 140,
+                                141, 142, 143, 144, 145, 146, 147 -> { }
+                        case 132 -> { code.u1(); code.u1(); }
+                        case 148, 149, 150, 151, 152 -> { frame.pop(); frame.pop(); frame.push(Set.of()); }
+                        case 153, 154, 155, 156, 157, 158, 198, 199 -> { frame.pop(); code.u2(); complete = false; }
+                        case 159, 160, 161, 162, 163, 164, 165, 166 -> { frame.pop(); frame.pop(); code.u2(); complete = false; }
+                        case 167, 168 -> { code.u2(); complete = false; }
+                        case 169 -> { code.u1(); complete = false; }
+                        case 170 -> { skipTableSwitch(code); frame.clearStack(); complete = false; }
+                        case 171 -> { skipLookupSwitch(code); frame.clearStack(); complete = false; }
+                        case 172, 173, 174, 175, 176, 191 -> frame.pop();
+                        case 177 -> { }
+                        case 178 -> { code.u2(); frame.push(Set.of()); }
+                        case 179 -> { code.u2(); frame.pop(); }
+                        case 180 -> { code.u2(); frame.push(frame.pop()); }
+                        case 181 -> { code.u2(); frame.pop(); frame.pop(); }
+                        case 182, 183, 184 -> {
+                            int reference = code.u2();
+                            flowInvocation(opcode, reference, location, frame, invocations);
+                        }
+                        case 185 -> {
+                            int reference = code.u2(); code.u1(); code.u1();
+                            flowInvocation(opcode, reference, location, frame, invocations);
+                        }
+                        case 186 -> {
+                            int reference = code.u2(); code.u2();
+                            NameAndType target = nameAndType(((CpPair) constantPool[reference]).second);
+                            List<Set<Integer>> args = frame.popArguments(parameterCount(target.descriptor));
+                            if (returnType(target.descriptor) != 'V') frame.push(union(args));
+                        }
+                        case 187 -> { code.u2(); frame.push(Set.of()); }
+                        case 188 -> { code.u1(); frame.push(frame.pop()); }
+                        case 189 -> { code.u2(); frame.push(frame.pop()); }
+                        case 190 -> { frame.pop(); frame.push(Set.of()); }
+                        case 192 -> code.u2();
+                        case 193 -> { code.u2(); frame.pop(); frame.push(Set.of()); }
+                        case 194, 195 -> frame.pop();
+                        case 196 -> { skipWide(code); complete = false; }
+                        case 197 -> { code.u2(); int dimensions = code.u1(); for (int i = 0; i < dimensions; i++) frame.pop(); frame.push(Set.of()); }
+                        case 200, 201 -> { code.skip(4); complete = false; }
+                        default -> {
+                            int operands = fixedOperandLength(opcode);
+                            code.skip(operands);
+                        }
+                    }
+                } catch (FlowUnderflow ignored) {
+                    complete = false;
+                    frame.clearStack();
+                }
+            }
+            return new ClassMetadata.MethodFlowFact(currentClassName, method.name, method.descriptor,
+                    invocations, complete);
+        }
+
+        private void flowInvocation(int opcode, int reference, BytecodeFactIndex.InstructionEvidence location,
+                                    FlowFrame frame, List<ClassMetadata.InvocationFlowFact> invocations) {
+            MemberReference target = memberReference(reference);
+            List<Set<Integer>> arguments = frame.popArguments(parameterCount(target.descriptor));
+            Set<Integer> receiver = opcode == 184 ? Set.of() : frame.pop();
+            BytecodeFactIndex.EdgeKind kind = opcode == 184 || opcode == 183
+                    ? BytecodeFactIndex.EdgeKind.DIRECT : BytecodeFactIndex.EdgeKind.CONSERVATIVE_CHA;
+            BytecodeFactIndex.CallEdge edge = new BytecodeFactIndex.CallEdge(
+                    currentClassName, location.methodName(), location.methodDescriptor(), target.owner,
+                    target.name, target.descriptor, kind,
+                    kind == BytecodeFactIndex.EdgeKind.DIRECT
+                            ? "symbolic direct target; class-path resolution not performed"
+                            : "declared receiver target only; overrides and runtime receiver types are not resolved",
+                    location);
+            invocations.add(new ClassMetadata.InvocationFlowFact(edge, sorted(receiver),
+                    arguments.stream().map(Parser::sorted).toList()));
+            Set<Integer> result = union(arguments);
+            result = union(result, receiver);
+            if (opcode == 183 && "<init>".equals(target.name) && !frame.stackEmpty()) {
+                frame.replaceTop(union(frame.peek(), result));
+            } else if (returnType(target.descriptor) != 'V') {
+                frame.push(result);
+            }
+        }
+
+        private static List<Integer> sorted(Set<Integer> values) {
+            return values.stream().sorted().toList();
+        }
+
+        private static Set<Integer> union(Set<Integer> left, Set<Integer> right) {
+            LinkedHashSet<Integer> result = new LinkedHashSet<>(left);
+            result.addAll(right);
+            return Set.copyOf(result);
+        }
+
+        private static Set<Integer> union(List<Set<Integer>> values) {
+            LinkedHashSet<Integer> result = new LinkedHashSet<>();
+            for (Set<Integer> value : values) result.addAll(value);
+            return Set.copyOf(result);
+        }
+
+        private static char returnType(String descriptor) {
+            int close = descriptor.indexOf(')');
+            if (close < 0 || close + 1 >= descriptor.length()) fail();
+            return descriptor.charAt(close + 1);
         }
 
         private void scanInstructions(Cursor code, MutableMethod method) {
@@ -560,6 +708,72 @@ final class ClassFileMetadataParser {
         }
     }
 
+    private static final class FlowFrame {
+        private final Map<Integer, Set<Integer>> locals = new HashMap<>();
+        private final Deque<Set<Integer>> stack = new ArrayDeque<>();
+
+        private static FlowFrame forMethod(String descriptor, boolean isStatic) {
+            FlowFrame result = new FlowFrame();
+            int local = isStatic ? 0 : 1;
+            int parameter = 0;
+            int position = 1;
+            while (position < descriptor.length() && descriptor.charAt(position) != ')') {
+                int arrays = 0;
+                while (descriptor.charAt(position) == '[') { arrays++; position++; }
+                char type = descriptor.charAt(position++);
+                if (type == 'L') {
+                    position = descriptor.indexOf(';', position);
+                    if (position < 0) fail();
+                    position++;
+                }
+                result.locals.put(local, Set.of(parameter++));
+                local += arrays == 0 && (type == 'J' || type == 'D') ? 2 : 1;
+            }
+            return result;
+        }
+
+        private Set<Integer> local(int index) {
+            return locals.getOrDefault(index, Set.of());
+        }
+
+        private void store(int index, Set<Integer> value) {
+            locals.put(index, value);
+        }
+
+        private void push(Set<Integer> value) {
+            stack.addLast(value == null ? Set.of() : value);
+        }
+
+        private Set<Integer> pop() {
+            if (stack.isEmpty()) throw new FlowUnderflow();
+            return stack.removeLast();
+        }
+
+        private Set<Integer> peek() {
+            if (stack.isEmpty()) throw new FlowUnderflow();
+            return stack.peekLast();
+        }
+
+        private void replaceTop(Set<Integer> value) {
+            pop();
+            push(value);
+        }
+
+        private List<Set<Integer>> popArguments(int count) {
+            List<Set<Integer>> result = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) result.add(0, pop());
+            return result;
+        }
+
+        private boolean stackEmpty() {
+            return stack.isEmpty();
+        }
+
+        private void clearStack() {
+            stack.clear();
+        }
+    }
+
     private static final class Cursor {
         private final byte[] bytes;
         private final int start;
@@ -634,4 +848,5 @@ final class ClassFileMetadataParser {
     }
 
     private static final class MalformedClassFile extends RuntimeException { }
+    private static final class FlowUnderflow extends RuntimeException { }
 }

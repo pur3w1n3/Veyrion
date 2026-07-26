@@ -36,8 +36,10 @@ public final class VeyrionAgent {
             }
             writer.writeObserved("INSTRUMENTATION_CAPABILITY", VeyrionAgent.class.getName(), entryPoint,
                     Map.of("springServlet", "CONDITIONAL_NON_BOOTSTRAP_METHOD",
-                            "jdbc", config.dependencyMock ? "MOCK_DRIVER_AND_OBSERVE" : "NON_BOOTSTRAP_IMPLEMENTATION_METHOD",
-                            "redis", config.dependencyMock ? "LOOPBACK_RESP_STUB" : "UNSUPPORTED",
+                            "jdbc", config.dependencyMock ? "MOCK_DRIVER_OR_LOOPBACK_MYSQL_CLASSIC" : "NON_BOOTSTRAP_IMPLEMENTATION_METHOD",
+                            "redis", config.dependencyMock ? "LOOPBACK_RESP2_RESP3_SUBSET" : "UNSUPPORTED",
+                            "networkRequests", "APPLICATION_CALL_SITE",
+                            "dnsLookups", "APPLICATION_CALL_SITE",
                             "jdkHttpClient", "APPLICATION_CALL_SITE",
                             "fileWrite", "APPLICATION_CALL_SITE",
                             "process", "APPLICATION_CALL_SITE",

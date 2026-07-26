@@ -123,7 +123,7 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
         created.preAnalysisJob,
         ...current.filter((job) => job.aiJobId !== created.preAnalysisJob.aiJobId)
       ])
-      setMessage('审计流水线已启动：静态分析完成后，系统将自动推进前置建模、路径探索、断网容器观察、动态验证、漏洞研判与报告生成。')
+      setMessage('审计流水线已启动：系统将按前置建模、断网容器观察、动态验证、本地发包结果建模、漏洞研判与报告生成推进。')
       await onRefresh()
       await refreshJobs()
     }).catch((cause) => setError(`审计启动未完整完成：${errorMessage(cause)}`)).finally(() => setBusy(false))
@@ -148,7 +148,7 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
         dynamicTask.failureCode,
         dynamicTask.failureDiagnostic
       ].filter(Boolean).join(' · ')
-    : '路径探索完成后自动排队'
+    : '前置建模完成后自动排队'
   const retryStage = (stage: AuditRetryStage) => {
     if (!projectId || !activeScanId || activeScanId === 'unscanned') {
       setError('没有可重试的扫描')
@@ -182,10 +182,10 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
     { title: '目标摘要复核', state: snapshot?.artifactDigest ? 'completed' : 'waiting', detail: snapshot?.artifactDigest ?? '等待后端摘要' },
     { title: '静态事实与入口发现', state: snapshot?.entries.length ? 'completed' : 'waiting', detail: `${snapshot?.entries.length ?? 0} 个入口；事实层不由模型改写` },
     { title: '前置建模', state: jobState(preAnalysisJob), detail: jobDetail(preAnalysisJob, '流水线自动创建'), retryStage: jobState(preAnalysisJob) === 'unavailable' ? 'PRE_ANALYSIS' : undefined },
-    { title: '路径探索', state: jobState(pathJob), detail: jobDetail(pathJob, '前置建模完成后自动进入'), retryStage: jobState(pathJob) === 'unavailable' ? 'PATH_EXPLORATION' : undefined },
     { title: '断网容器动态观察', state: dynamicState, detail: dynamicDetail, retryStage: dynamicState === 'unavailable' ? 'DYNAMIC_OBSERVATION' : undefined },
-    { title: '动态验证', state: jobState(dynamicVerifyJob), detail: jobDetail(dynamicVerifyJob, '容器观察后自动对照路径假设验证'), retryStage: jobState(dynamicVerifyJob) === 'unavailable' ? 'DYNAMIC_VERIFICATION' : undefined },
-    { title: '漏洞研判', state: jobState(triageJob), detail: jobDetail(triageJob, '动态验证后自动进入'), retryStage: jobState(triageJob) === 'unavailable' ? 'VULNERABILITY_TRIAGE' : undefined },
+    { title: '动态验证与本地发包', state: jobState(dynamicVerifyJob), detail: jobDetail(dynamicVerifyJob, '沙箱反馈后按入口和参数进行授权 loopback 探索'), retryStage: jobState(dynamicVerifyJob) === 'unavailable' ? 'DYNAMIC_VERIFICATION' : undefined },
+    { title: '路径探索', state: jobState(pathJob), detail: jobDetail(pathJob, '动态验证结果保存后建立路径模型'), retryStage: jobState(pathJob) === 'unavailable' ? 'PATH_EXPLORATION' : undefined },
+    { title: '漏洞研判', state: jobState(triageJob), detail: jobDetail(triageJob, '前三个角色结果与动态调试闭环后进入'), retryStage: jobState(triageJob) === 'unavailable' ? 'VULNERABILITY_TRIAGE' : undefined },
     { title: '报告生成', state: jobState(reportJob), detail: jobDetail(reportJob, '研判完成后自动汇总'), retryStage: jobState(reportJob) === 'unavailable' ? 'REPORT_GENERATION' : undefined }
   ]
 
@@ -211,7 +211,7 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
             <label className="field"><span>超时（秒）</span><input name="timeout" type="number" min="10" max="3600" defaultValue="300" /></label>
             <label className="field"><span>内存（MiB）</span><input name="memory" type="number" min="128" max="8192" defaultValue="512" /></label>
           </div>
-          <div className="selected-ai"><small>自动流水线 · {language === 'ZH_CN' ? '简体中文输出' : 'English output'}</small><strong>{assignments.length}/5 个角色已绑定</strong><span>一次授权后，系统自动完成五个模型角色与断网容器观察；动态验证会独立对照路径探索假设。</span></div>
+          <div className="selected-ai"><small>自动流水线 · {language === 'ZH_CN' ? '简体中文输出' : 'English output'}</small><strong>{assignments.length}/5 个角色已绑定</strong><span>一次授权后，系统按前置建模、动态验证、路径探索、漏洞研判、报告生成推进；动态验证只能在授权沙箱内发包。</span></div>
           <label className="check-field"><input type="checkbox" name="authorized" />我确认该制品与范围已获授权，并接受无外网、危险动作空跑演练，以及整条审计流水线自动推进。</label>
           <button className="primary-button" disabled={!projectId || busy || artifacts.length === 0}>{busy ? '启动中…' : '开始审计（自动流水线）'}</button>
         </form>

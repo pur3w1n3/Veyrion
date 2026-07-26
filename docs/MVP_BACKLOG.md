@@ -70,6 +70,8 @@
 
 ### M1：制品接入与前置 AI
 
+> **范围修订**：MVP 面向个人本地使用。完整多租户/RBAC、SSO、跨租户调度以及真实供应商生产互操作取消，不再作为本版里程碑或验收条件。动态验收必须依赖用户授权的沙箱，未获授权或沙箱不可用时保持 fail-closed。五个 AI 角色固定按前置建模、动态验证、路径探索、漏洞研判、报告生成推进，提示词支持中英文项目级编辑并在 Job snapshot 中固化。
+
 **M1-01 JAR/WAR/CLASS 解析（P0）**
 
 - 提取 MANIFEST、依赖、配置、注解和类清单。
@@ -194,9 +196,9 @@
 - 对代码、配置、SQL 和模型文本统一转义和脱敏；危险操作按钮显示审批状态。
 - 验收：低权限账号不能通过前端接口读取其他项目或未脱敏轨迹；事件重连不会重复计数。
 
-- 当前状态：Control Plane REST/SSE MVP slice 已完成并通过本地验收。实现范围是 `/api/v1` 版本化 DTO、内存 store、鉴权、幂等项目/制品/扫描创建和 SSE 事件流；不等同于生产级 RBAC 或持久化。
-- 路由和协议：写操作使用 `X-Sentinel-Authorization` 或 `Authorization: Bearer`，扫描 body 须显式 `authorized: true`，制品登记显式 `authorized=false` 时拒绝；`Idempotency-Key` 用于项目/制品/扫描创建去重。`GET /api/v1/scans/{id}/events` 支持 `Last-Event-ID`，终态为 `ScanCompleted`/`TaskStopped`，断线后以幂等 GET 补偿。
-- 静态限制：health/DTO 明确 `IN_MEMORY_MVP`、`STATIC_METADATA_ONLY`、`MOCK`；Control Plane 不执行制品、不做真实字节码调用图、动态路径、沙箱、LLM 或真实依赖连接。
+- 当前状态：Control Plane REST/SSE MVP slice 已完成并通过本地验收。实现范围是 `/api/v1` 版本化 DTO、SQLite 控制面、鉴权、幂等项目/制品/扫描创建、分块上传恢复和 SSE 事件流；Worker task、租约、checkpoint、trace、上传会话以及 V011 的幂等绑定、流水线 cursor、probe plan 已纳入单节点恢复语义，但不等同于生产级 RBAC 或分布式队列。
+- 路由和协议：写操作使用 `X-Sentinel-Authorization` 或 `Authorization: Bearer`，扫描 body 须显式 `authorized: true`，制品登记显式 `authorized=false` 时拒绝；`Idempotency-Key` 用于项目/制品/扫描、audit-run、动态任务、finding replay 和 `sandbox_probe` job 绑定去重。`GET /api/v1/scans/{id}/events` 支持 `Last-Event-ID`，终态为 `ScanCompleted`/`TaskStopped`，断线后以幂等 GET 补偿。
+- 静态限制：health/DTO 明确持久化模式、`STATIC_METADATA_ONLY`、`MOCK`；Control Plane 不执行制品、不把预算内调用图/跨方法污点当作运行时事实，也不把协议替身、动态路径、沙箱或 LLM 输出升级为 `VERIFIED`。
 
 ### M6：验收与硬化
 
@@ -267,8 +269,10 @@ MVP 仅在演示项目和至少一个真实（已授权、脱敏）Spring Boot �
 
 ## 8. 当前实现状态
 
-- M0/M1 Java 17 本地元数据切片：已完成并通过编译和依赖无关验收主类。
-- Control Plane REST/SSE MVP slice：已完成 `/api/v1` 版本化路由、内存 store、写操作鉴权、`Idempotency-Key` 去重、SSE `Last-Event-ID` 续接和 `ScanCompleted`/`TaskStopped` 终态事件；仅支持静态元数据分析。
+- M0/M1 Java 17 本地元数据切片：已完成有界 classfile 事实、制品内调用图、跨方法污点候选和依赖无关验收主类；完整 classpath、反射/代理和复杂分支仍报告为未解析或不完整。
+- Control Plane REST/SSE MVP slice：已完成 `/api/v1` 版本化路由、SQLite 控制面、写操作鉴权、`Idempotency-Key` 去重、SSE `Last-Event-ID` 续接和 `ScanCompleted`/`TaskStopped` 终态事件；动态任务与 trace 已进入 V007 SQLite 恢复语义。
 - React/TypeScript/Vite GUI：已完成项目总览、入口地图、路径探索器、发现/攻击链画布，以及真实 `/api/v1` DTO/SSE 接入；Demo 仍必须通过 `VITE_DEMO_MODE=true` 显式开启。
-- 尚未完成：真实字节码调用图、JVM Agent、沙箱、动态路径执行、数据库替身、LLM、持久化、多租户/RBAC、生产级身份系统和真实依赖连接。
+- 结果工作台：已完成发现筛选、证据详情、按路径节点查看攻击链，以及 Markdown/HTML/JSON 报告导出；导出和画布均保留 `STATIC_INFERRED`/`DYNAMIC_SUSPECTED`/`VERIFIED` 边界，不自行改变后端结论。
+- 受限动态切片：已完成 JVM Agent、断网 `TRUSTED_DOCKER`、批量 loopback 探针、JDBC/Redis/MySQL 协议替身和动态证据投影；协议替身只支持声明子集，普通 Docker 不是恶意制品强化隔离。
+- 尚未完成：gVisor/Kata P0 验收、真实反编译器、完整 classpath/跨方法对象流、状态快照回溯、真实依赖连接和 `VERIFIED` 重放门禁；完整多租户/RBAC、企业 SSO、跨租户调度和真实供应商生产互操作已明确取消，不作为当前产品承诺。
 - 任何演示数据和规则 Stub 结果都不得标记为真实漏洞验证。

@@ -39,10 +39,28 @@ public final class AuditPipelineCoordinator {
 
         boolean hasBusyDynamicTask(String scanId);
 
+        /** True only while a dynamic task still needs to finish (QUEUED..PAUSED). */
+        default boolean hasRunningDynamicTask(String scanId) { return false; }
+
+        /** True when at least one dynamic task for the scan has completed successfully. */
+        default boolean hasCompletedDynamicTask(String scanId) { return false; }
+
         void enqueueRole(String projectId, String scanId, AgentRole role,
                          AiOutputLanguage language, String actorId);
 
         void enqueueDynamic(String scanId, String actorId);
+
+        default void persistState(Arm arm, String nextStage, boolean armed) { }
+    }
+
+    public enum PipelineStage {
+        PRE_ANALYSIS,
+        DYNAMIC_OBSERVATION,
+        DYNAMIC_VERIFICATION,
+        PATH_EXPLORATION,
+        VULNERABILITY_TRIAGE,
+        REPORT_GENERATION,
+        COMPLETE
     }
 
     private final ConcurrentHashMap<String, Arm> armed = new ConcurrentHashMap<>();
@@ -59,6 +77,25 @@ public final class AuditPipelineCoordinator {
 
     public void arm(Arm arm) {
         armed.put(arm.scanId(), arm);
+        actions.persistState(arm, PipelineStage.PRE_ANALYSIS.name(), true);
+    }
+
+    /** Restores a server-persisted arm and advances only the next derived stage. */
+    public void resumeAt(Arm arm, PipelineStage stage) {
+        Objects.requireNonNull(stage, "stage");
+        armed.put(arm.scanId(), arm);
+        actions.persistState(arm, stage.name(), stage != PipelineStage.COMPLETE);
+        async.execute(() -> {
+            switch (stage) {
+                case PRE_ANALYSIS -> safeEnqueueRole(arm, AgentRole.PRE_ANALYSIS);
+                case DYNAMIC_OBSERVATION -> safeEnqueueDynamic(arm);
+                case DYNAMIC_VERIFICATION -> safeEnqueueRole(arm, AgentRole.DYNAMIC_VERIFICATION);
+                case PATH_EXPLORATION -> waitForDynamicIdleThenPath(arm);
+                case VULNERABILITY_TRIAGE -> safeEnqueueRole(arm, AgentRole.VULNERABILITY_TRIAGE);
+                case REPORT_GENERATION -> safeEnqueueRole(arm, AgentRole.REPORT_GENERATION);
+                case COMPLETE -> disarm(arm, PipelineStage.COMPLETE.name());
+            }
+        });
     }
 
     public boolean isArmed(String scanId) {
@@ -70,7 +107,7 @@ public final class AuditPipelineCoordinator {
         Arm arm = armed.get(job.scanId());
         if (arm == null) return;
         if (!"COMPLETED".equals(job.status())) {
-            armed.remove(job.scanId());
+            disarm(arm, job.role().name() + "_FAILED");
             return;
         }
         async.execute(() -> advanceAfterRole(arm, job.role()));
@@ -82,41 +119,86 @@ public final class AuditPipelineCoordinator {
         Arm arm = armed.get(scanId);
         if (arm == null) return;
         if (snapshot.lifecycle() != TaskLifecycle.COMPLETED) {
-            armed.remove(scanId);
+            disarm(arm, PipelineStage.DYNAMIC_OBSERVATION.name() + "_FAILED");
             return;
         }
+        // The first sandbox pass is driven by the static/pre-analysis entry
+        // catalog. The dynamic role interprets those observations before path
+        // modeling is allowed to consume them.
+        actions.persistState(arm, PipelineStage.DYNAMIC_VERIFICATION.name(), true);
         async.execute(() -> safeEnqueueRole(arm, AgentRole.DYNAMIC_VERIFICATION));
     }
 
     private void advanceAfterRole(Arm arm, AgentRole completed) {
         switch (completed) {
-            case PRE_ANALYSIS -> safeEnqueueRole(arm, AgentRole.PATH_EXPLORATION);
-            case PATH_EXPLORATION -> safeEnqueueDynamic(arm);
-            case DYNAMIC_VERIFICATION -> safeEnqueueRole(arm, AgentRole.VULNERABILITY_TRIAGE);
+            case PRE_ANALYSIS -> safeEnqueueDynamic(arm);
+            case DYNAMIC_VERIFICATION -> waitForDynamicIdleThenPath(arm);
+            case PATH_EXPLORATION -> safeEnqueueRole(arm, AgentRole.VULNERABILITY_TRIAGE);
             case VULNERABILITY_TRIAGE -> safeEnqueueRole(arm, AgentRole.REPORT_GENERATION);
-            case REPORT_GENERATION -> armed.remove(arm.scanId());
+            case REPORT_GENERATION -> disarm(arm, PipelineStage.COMPLETE.name());
         }
     }
 
     private void safeEnqueueRole(Arm arm, AgentRole role) {
         try {
+            actions.persistState(arm, role.name(), true);
             if (actions.hasRoleJob(arm.projectId(), arm.scanId(), role)) return;
             actions.enqueueRole(arm.projectId(), arm.scanId(), role, arm.outputLanguage(), arm.actorId());
         } catch (RuntimeException ignored) {
-            armed.remove(arm.scanId());
+            disarm(arm, role.name() + "_ENQUEUE_FAILED");
         }
     }
 
     private void safeEnqueueDynamic(Arm arm) {
         try {
+            actions.persistState(arm, PipelineStage.DYNAMIC_OBSERVATION.name(), true);
+            if (actions.hasRunningDynamicTask(arm.scanId())) {
+                return;
+            }
+            if (actions.hasCompletedDynamicTask(arm.scanId())) {
+                // Observation already finished (recovery / prior pass); do not start a second Docker task.
+                actions.persistState(arm, PipelineStage.DYNAMIC_VERIFICATION.name(), true);
+                safeEnqueueRole(arm, AgentRole.DYNAMIC_VERIFICATION);
+                return;
+            }
             if (actions.hasBusyDynamicTask(arm.scanId())) {
-                // Dynamic already running/done; if completed, role stage will be armed by dynamic hook.
+                // Compatibility for stubs that only implement hasBusyDynamicTask after enqueue.
                 return;
             }
             actions.enqueueDynamic(arm.scanId(), arm.actorId());
         } catch (RuntimeException ignored) {
-            armed.remove(arm.scanId());
+            disarm(arm, PipelineStage.DYNAMIC_OBSERVATION.name() + "_ENQUEUE_FAILED");
         }
+    }
+
+    private void waitForDynamicIdleThenPath(Arm arm) {
+        if (!actions.hasRunningDynamicTask(arm.scanId())) {
+            actions.persistState(arm, PipelineStage.PATH_EXPLORATION.name(), true);
+            safeEnqueueRole(arm, AgentRole.PATH_EXPLORATION);
+            return;
+        }
+        async.execute(() -> {
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MINUTES.toNanos(10);
+            while (System.nanoTime() < deadline && armed.containsKey(arm.scanId())) {
+                if (!actions.hasRunningDynamicTask(arm.scanId())) {
+                    safeEnqueueRole(arm, AgentRole.PATH_EXPLORATION);
+                    return;
+                }
+                try {
+                    Thread.sleep(250L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    disarm(arm, PipelineStage.PATH_EXPLORATION.name() + "_INTERRUPTED");
+                    return;
+                }
+            }
+            disarm(arm, PipelineStage.PATH_EXPLORATION.name() + "_TIMEOUT");
+        });
+    }
+
+    private void disarm(Arm arm, String nextStage) {
+        armed.remove(arm.scanId());
+        actions.persistState(arm, nextStage, false);
     }
 
     public static Predicate<AiJobData> busyOrDoneFor(String scanId, AgentRole role) {

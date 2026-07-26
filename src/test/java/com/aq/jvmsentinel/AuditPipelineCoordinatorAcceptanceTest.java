@@ -55,9 +55,7 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
         coordinator.arm(new AuditPipelineCoordinator.Arm(
                 "scan-a", "project-a", "operator-a", AiOutputLanguage.ZH_CN));
         coordinator.onAiJobFinished(job("scan-a", AgentRole.PRE_ANALYSIS, "COMPLETED"));
-        check(path.await(3, TimeUnit.SECONDS), "PRE_ANALYSIS completion enqueues PATH_EXPLORATION");
-        coordinator.onAiJobFinished(job("scan-a", AgentRole.PATH_EXPLORATION, "COMPLETED"));
-        check(dynamic.await(3, TimeUnit.SECONDS), "PATH_EXPLORATION completion enqueues Docker dynamic");
+        check(dynamic.await(3, TimeUnit.SECONDS), "PRE_ANALYSIS completion enqueues Docker dynamic");
         WorkerTaskSpec spec = new WorkerTaskSpec(
                 1, "project-a", "a".repeat(64), "scan-a", "task-a", "entry-a", true,
                 new ResourceBudget(60, 30_000, 1024L * 1024 * 1024, 64L * 1024 * 1024, 512L * 1024),
@@ -65,7 +63,9 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
         coordinator.onDynamicTaskFinished(new TaskSnapshot(
                 1, spec, TaskLifecycle.COMPLETED, null, null, StopReason.COMPLETED, null, Instant.now()));
         check(verify.await(3, TimeUnit.SECONDS), "dynamic completion enqueues DYNAMIC_VERIFICATION");
-        coordinator.onAiJobFinished(job("scan-a", AgentRole.DYNAMIC_VERIFICATION, "FAILED"));
+        coordinator.onAiJobFinished(job("scan-a", AgentRole.DYNAMIC_VERIFICATION, "COMPLETED"));
+        check(path.await(3, TimeUnit.SECONDS), "DYNAMIC_VERIFICATION completion enqueues PATH_EXPLORATION");
+        coordinator.onAiJobFinished(job("scan-a", AgentRole.PATH_EXPLORATION, "FAILED"));
         Thread.sleep(200);
         List<String> snapshot = new ArrayList<>(actions);
         coordinator.onAiJobFinished(job("scan-a", AgentRole.VULNERABILITY_TRIAGE, "COMPLETED"));

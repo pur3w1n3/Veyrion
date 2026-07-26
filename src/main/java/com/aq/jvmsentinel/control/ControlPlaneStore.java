@@ -1,5 +1,7 @@
 package com.aq.jvmsentinel.control;
 
+import com.aq.jvmsentinel.artifact.ArtifactUploadService;
+import com.aq.jvmsentinel.event.VersionedEvent;
 import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
 import com.aq.jvmsentinel.model.ArtifactDescriptor;
 import com.aq.jvmsentinel.provider.AgentRole;
@@ -8,6 +10,9 @@ import com.aq.jvmsentinel.provider.ProviderContracts;
 import com.aq.jvmsentinel.security.ProviderSecretCipher;
 import com.aq.jvmsentinel.security.RootKeyStore;
 import com.aq.jvmsentinel.security.auth.OperatorRole;
+import com.aq.jvmsentinel.worker.InMemoryTraceStore;
+import com.aq.jvmsentinel.worker.TaskSnapshot;
+import com.aq.jvmsentinel.worker.TraceChunk;
 
 import javax.crypto.SecretKey;
 import java.io.IOException;
@@ -80,6 +85,72 @@ public class ControlPlaneStore {
 
     public String persistenceMode() {
         return persistence == null ? "IN_MEMORY_MVP" : "SQLITE";
+    }
+
+    public List<SQLiteControlPlanePersistence.IdempotencyData> loadIdempotency() {
+        return persistence == null ? List.of() : persistence.loadIdempotency();
+    }
+
+    public SQLiteControlPlanePersistence.IdempotencyData persistIdempotency(
+            SQLiteControlPlanePersistence.IdempotencyData candidate) {
+        if (persistence == null) return candidate;
+        return persistence.putIdempotency(candidate);
+    }
+
+    public List<SQLiteControlPlanePersistence.PipelineRunData> loadPipelineRuns() {
+        return persistence == null ? List.of() : persistence.loadPipelineRuns();
+    }
+
+    public void persistPipelineRun(SQLiteControlPlanePersistence.PipelineRunData run) {
+        if (persistence != null) persistence.savePipelineRun(run);
+    }
+
+    public List<SQLiteControlPlanePersistence.ProbePlanData> loadProbePlans() {
+        return persistence == null ? List.of() : persistence.loadProbePlans();
+    }
+
+    public void persistProbePlan(SQLiteControlPlanePersistence.ProbePlanData plan) {
+        if (persistence != null) persistence.saveProbePlan(plan);
+    }
+
+    public SQLiteControlPlanePersistence.WorkerState loadWorkerState() {
+        return persistence == null ? SQLiteControlPlanePersistence.WorkerState.empty() : persistence.loadWorkerState();
+    }
+
+    public void persistWorkerTask(TaskSnapshot snapshot) {
+        if (persistence != null) persistence.persistWorkerTask(snapshot);
+    }
+
+    public void persistWorkerTrace(String idempotencyKey, TraceChunk chunk) {
+        if (persistence != null) persistence.persistWorkerTrace(idempotencyKey, chunk);
+    }
+
+    public ArtifactUploadService.UploadPersistence artifactUploadPersistence() {
+        if (persistence == null) return ArtifactUploadService.UploadPersistence.NONE;
+        return new ArtifactUploadService.UploadPersistence() {
+            @Override
+            public List<ArtifactUploadService.PersistedSession> load() {
+                return persistence.loadArtifactUploads();
+            }
+
+            @Override
+            public void save(ArtifactUploadService.PersistedSession session) {
+                persistence.persistArtifactUpload(session);
+            }
+
+            @Override
+            public void delete(String uploadId) {
+                persistence.deleteArtifactUpload(uploadId);
+            }
+        };
+    }
+
+    public List<VersionedEvent> loadSseEvents() {
+        return persistence == null ? List.of() : persistence.loadSseEvents();
+    }
+
+    public void persistSseEvent(String scanId, VersionedEvent event) {
+        if (persistence != null) persistence.persistSseEvent(scanId, event);
     }
 
     public void bootstrapOperator(String token, String now) {
@@ -214,13 +285,34 @@ public class ControlPlaneStore {
 
     public SQLiteControlPlanePersistence.RoleBindingData saveRoleBinding(
             String projectId, AgentRole role, String providerId, String model, String actorId, String now) {
+        return saveRoleBinding(projectId, role, providerId, model, null, null, actorId, now);
+    }
+
+    public SQLiteControlPlanePersistence.RoleBindingData saveRoleBinding(
+            String projectId, AgentRole role, String providerId, String model,
+            String promptZh, String promptEn, String actorId, String now) {
         requireProject(projectId);
         requireProvider(providerId);
         validateManagementText(model, "model");
+        validatePrompt(promptZh, "promptZh");
+        validatePrompt(promptEn, "promptEn");
         SQLiteControlPlanePersistence.RoleBindingData binding =
-                new SQLiteControlPlanePersistence.RoleBindingData(projectId, role, providerId, model, now);
+                new SQLiteControlPlanePersistence.RoleBindingData(projectId, role, providerId, model, now,
+                        blankToNull(promptZh), blankToNull(promptEn));
         persistence.saveRoleBinding(binding, actorId);
         return binding;
+    }
+
+    private static void validatePrompt(String value, String name) {
+        if (value != null && (value.length() > 16_384 || value.indexOf('\0') >= 0
+                || value.chars().anyMatch(ch -> Character.isISOControl(ch)
+                && ch != '\n' && ch != '\r' && ch != '\t'))) {
+            throw new IllegalArgumentException(name + " is invalid");
+        }
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     public void deleteRoleBinding(String projectId, AgentRole role, String actorId, String now) {
@@ -297,6 +389,8 @@ public class ControlPlaneStore {
             policySnapshot.put("providerId", binding.providerId());
             policySnapshot.put("model", binding.model());
             policySnapshot.put("roleBindingUpdatedAt", binding.updatedAt());
+            if (binding.promptZh() != null) policySnapshot.put("promptZh", binding.promptZh());
+            if (binding.promptEn() != null) policySnapshot.put("promptEn", binding.promptEn());
         }
         if (provider != null) {
             policySnapshot.put("providerKind", provider.kind().name());

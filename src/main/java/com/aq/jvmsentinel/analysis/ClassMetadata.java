@@ -18,7 +18,8 @@ public record ClassMetadata(
         List<BytecodeFactIndex.MethodFact> methodFacts,
         List<BytecodeFactIndex.MemberAccessFact> memberAccessFacts,
         List<BytecodeFactIndex.CallEdge> callEdges,
-        List<BytecodeFactIndex.UnresolvedDynamicFact> unresolvedDynamics) {
+        List<BytecodeFactIndex.UnresolvedDynamicFact> unresolvedDynamics,
+        List<MethodFlowFact> methodFlows) {
 
     public ClassMetadata {
         Objects.requireNonNull(className, "className");
@@ -29,11 +30,24 @@ public record ClassMetadata(
         memberAccessFacts = List.copyOf(memberAccessFacts == null ? List.of() : memberAccessFacts);
         callEdges = List.copyOf(callEdges == null ? List.of() : callEdges);
         unresolvedDynamics = List.copyOf(unresolvedDynamics == null ? List.of() : unresolvedDynamics);
+        methodFlows = List.copyOf(methodFlows == null ? List.of() : methodFlows);
+    }
+
+    public ClassMetadata(String className, boolean annotationMetadataValid,
+                         List<AnnotationMetadata> annotations, List<MethodMetadata> methods,
+                         BytecodeFactIndex.ClassFact classFact,
+                         List<BytecodeFactIndex.FieldFact> fieldFacts,
+                         List<BytecodeFactIndex.MethodFact> methodFacts,
+                         List<BytecodeFactIndex.MemberAccessFact> memberAccessFacts,
+                         List<BytecodeFactIndex.CallEdge> callEdges,
+                         List<BytecodeFactIndex.UnresolvedDynamicFact> unresolvedDynamics) {
+        this(className, annotationMetadataValid, annotations, methods, classFact, fieldFacts,
+                methodFacts, memberAccessFacts, callEdges, unresolvedDynamics, List.of());
     }
 
     public static ClassMetadata invalid(String fallbackClassName) {
         return new ClassMetadata(fallbackClassName, false, List.of(), List.of(), null,
-                List.of(), List.of(), List.of(), List.of(), List.of());
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
     }
 
     public record MethodMetadata(
@@ -77,6 +91,28 @@ public record ClassMetadata(
 
         public List<String> values(String name) {
             return values.getOrDefault(name, List.of());
+        }
+    }
+
+    record MethodFlowFact(String owner, String name, String descriptor,
+                          List<InvocationFlowFact> invocations, boolean complete) {
+        MethodFlowFact {
+            invocations = List.copyOf(invocations == null ? List.of() : invocations);
+        }
+    }
+
+    record InvocationFlowFact(BytecodeFactIndex.CallEdge edge, List<Integer> receiverParameterOrigins,
+                              List<List<Integer>> argumentParameterOrigins) {
+        InvocationFlowFact {
+            receiverParameterOrigins = List.copyOf(receiverParameterOrigins == null
+                    ? List.of() : receiverParameterOrigins);
+            List<List<Integer>> copy = new java.util.ArrayList<>();
+            if (argumentParameterOrigins != null) {
+                for (List<Integer> origins : argumentParameterOrigins) {
+                    copy.add(List.copyOf(origins == null ? List.of() : origins));
+                }
+            }
+            argumentParameterOrigins = List.copyOf(copy);
         }
     }
 }

@@ -4,6 +4,20 @@
 
 ## 1. 设计结论
 
+**个人本地版边界**：GUI 只承载本地项目、制品、扫描、证据和沙箱任务。当前不提供多租户切换、企业 RBAC/SSO 或真实供应商生产连接入口；Provider 和动态能力均须显示本地授权与沙箱状态，沙箱不可用时明确显示不可用，而不是提供宿主机执行按钮。
+
+模型服务页的五个角色卡片同时提供中文提示词和 English prompt 编辑器。保存时由后端校验长度、控制字符和项目作用域；任务创建时固化提示词快照。审计执行页按以下顺序显示阶段：
+
+```mermaid
+flowchart TD
+  S[静态接口与证据] --> P[前置建模\n可补充入口候选]
+  P --> O[沙箱动态观察]
+  O --> D[动态验证\n授权 loopback 发包]
+  D --> X[路径探索\n消费请求/响应]
+  X --> T[漏洞研判\n动态闭环门槛]
+  T --> R[报告生成]
+```
+
 GUI 不采用 Swing、JavaFX 或把页面嵌入 Java 进程。Java 负责 JVM 制品分析、任务编排、证据和沙箱控制；GUI 作为独立的 React/TypeScript 应用，通过受控 API 访问后端。
 
 推荐形态：
@@ -62,7 +76,7 @@ Java/Kotlin Control Plane
 │   ├── 制品导入与策略
 │   ├── 静态事实 / 入口发现
 │   ├── PRE_ANALYSIS 前置建模与计划评审
-│   └── 路径探索 / 动态观察 / 研判 / 报告时间线
+│   └── 沙箱动态观察 / 动态验证 / 路径探索 / 研判 / 报告时间线
 ├── 审计结果
 │   └── 入口、路径、发现、证据和攻击链
 ├── 模型服务
@@ -132,18 +146,18 @@ Java/Kotlin Control Plane
 - `POST /api/v1/findings/{id}/replay`
 - `GET /api/v1/attack-chains`
 
-Control Plane 当前使用本地 SQLite 保存项目、制品元数据、scan、Provider、角色、AI Job/Event 和审计记录；幂等窗口、SSE 历史、Worker 任务与动态 trace 仍是进程内有界状态。完整路由以实现为准，另包括：
+Control Plane 当前使用本地 SQLite 保存项目、制品元数据、scan、Provider、角色、AI Job/Event、审计记录、Worker task/trace、REST 幂等记录、probe plan 和流水线 cursor；这些恢复语义是单节点有界持久化，不是分布式 exactly-once。完整路由以实现为准，另包括：
 
 - `GET /api/v1/projects/{id}/dashboard`、`GET /api/v1/projects/{id}/evidence`；
 - `GET /api/v1/scans/{id}/paths`、`GET /api/v1/scans/{id}/evidence`、`GET /api/v1/scans/{id}/findings`；
 - `GET /api/v1/evidence/{id}`；
-- `POST /api/v1/findings/{id}/replay`（当前仅受限的静态元数据重放，不执行制品）。
+- `POST /api/v1/findings/{id}/replay`（显式授权后，由服务端创建绑定原 scan/entrypoint 的 `TRUSTED_DOCKER` 动态任务；返回 `202` 和 task 状态，不直接把 finding 标记为 `VERIFIED`）。请求体只允许 `{ "authorized": true }`，并要求 `Idempotency-Key`。
 
-写操作（创建项目、登记制品、创建扫描、组合审计、replay）要求 `X-Sentinel-Authorization: <token>`，也接受 `Authorization: Bearer <token>`。扫描 body 必须显式带 `authorized: true`；组合审计还必须独立带 `aiAuthorized:true`，并通过服务端一次编排创建 scan 与 PRE_ANALYSIS。令牌只完成本地调用认证，不代替授权同意。项目、制品、扫描和组合审计使用 `Idempotency-Key` 去重（非空、无空白、最多 256 字符）；每类最多保留 50,000 个键，幂等索引当前仅在进程内存中保存。
+写操作（创建项目、登记制品、创建扫描、组合审计、replay）要求 `X-Sentinel-Authorization: <token>`，也接受 `Authorization: Bearer <token>`。扫描 body 必须显式带 `authorized: true`；组合审计还必须独立带 `aiAuthorized:true`，并通过服务端一次编排创建 scan 与 PRE_ANALYSIS。令牌只完成本地调用认证，不代替授权同意。项目、制品、扫描、组合审计、动态任务、finding replay 和 AI `sandbox_probe` job 绑定使用 `Idempotency-Key` 去重（非空、无空白、最多 256 字符），记录写入 SQLite，最多 50,000 条，跨重启按 payload hash 复用；同键不同 payload 返回 409。删除、修改等其他 mutation 尚未全部纳入统一持久化幂等。
 
 SSE 路由 `GET /api/v1/scans/{id}/events` 支持 `Last-Event-ID` 续接。客户端必须处理 `ScanCreated`、`TaskLeased`、`FindingUpdated`、`ScanCompleted`、`TaskStopped` 等事件，并在断线、事件窗口不足或收到终态后调用幂等 GET 进行补偿。SSE 是增量通知，不是事实来源；最终状态以 `GET /api/v1/scans/{id}` 为准。事件 DTO 带 `schemaVersion`、`projectId`、`artifactDigest`、`scanId`、`verificationStatus`、`dependencyMode` 和 `evidenceRefs`。
 
-静态元数据限制必须在 UI 中持续可见：当前只读 ZIP/类名/配置元数据，不能把 `STATIC_INFERRED`、`MOCK` 或演示证据显示为真实动态验证；无真实字节码调用图、JVM Agent、沙箱、LLM、持久化和多租户。
+静态元数据限制必须在 UI 中持续可见：调用图和跨方法污点是预算内 `STATIC_INFERRED` 事实/候选；`MOCK`、沙箱 trace 和模型输出不能直接显示为 `VERIFIED`。动态验证仍必须依赖用户授权沙箱，个人本地版不承诺多租户/RBAC 或生产供应商互操作。
 
 DTO 必须带 `schemaVersion`、`projectId`、`artifactDigest`、`scanId`、`verificationStatus`、`dependencyMode` 和 `evidenceRefs`。前端只把事件当作增量提示，最终状态以幂等的查询接口为准。
 
@@ -177,4 +191,4 @@ DTO 必须带 `schemaVersion`、`projectId`、`artifactDigest`、`scanId`、`ver
 - 当前本地 MVP 的写操作使用 `VITE_API_TOKEN`；它只适合短期调试并会进入浏览器 bundle。生产级 HttpOnly 会话、CSRF、SSO/RBAC 和 SSE 会话鉴权尚未在 Java Control Plane 实现，不能把该配置说明当作生产安全承诺。
 - 真实模式连接失败时显示错误，不自动回退到 Mock，避免把演示数据误认为扫描事实。
 
-当前完成：React/TypeScript/Vite 原型、全局工作区切换、制品上传、静态扫描与 PRE_ANALYSIS 连续启动、阶段式审计时间线、Provider/角色配置、AI Job 事件审计、当前 scan 的最终 `AI INFERENCE` Markdown 报告、真实 API DTO 校验和 SSE 订阅边界。全局设置决定新 AI Job 使用中文或英文，默认中文；旧结果不可变。结果页安全渲染 Markdown 并支持下载，报告要求入口—触发点、多条推测链路和组合漏洞可能性。AI 审计事件可展开查看数据来源、组件流向、白名单工具决策和结果，但明确不记录模型隐藏思维链。动态安全摘要按 project/artifact/scan 复核后可供后续 AI 角色只读查询。当前 `TRUSTED_DOCKER` 仅用于本地受信内部 JAR 调试，普通 Docker 不是恶意制品强化隔离；容器任务完成也不表示入口已调用。生产级鉴权、多租户、完整反编译/污点/入口覆盖反馈、gVisor/Kata 验收和真实漏洞 `VERIFIED` 闭环仍未完成。
+当前完成：React/TypeScript/Vite 原型、全局工作区切换、制品上传、静态扫描与 PRE_ANALYSIS 连续启动、阶段式审计时间线、Provider/角色配置、AI Job 事件审计、当前 scan 的最终 `AI INFERENCE` Markdown 报告、真实 API DTO 校验和 SSE 订阅边界。全局设置决定新 AI Job 使用中文或英文，默认中文；旧结果不可变。结果页安全渲染 Markdown 并支持 Markdown/HTML/JSON 下载，发现列表支持筛选，选中发现后展示证据引用、前置条件和按节点查看的攻击链画布。AI 审计事件可展开查看数据来源、组件流向、白名单工具决策和结果，但明确不记录模型隐藏思维链。动态安全摘要按 project/artifact/scan 复核后可供后续 AI 角色只读查询。当前 `TRUSTED_DOCKER` 仅用于本地受信内部 JAR 调试，普通 Docker 不是恶意制品强化隔离；容器任务完成也不表示入口已调用。生产级鉴权、多租户、完整反编译/污点/入口覆盖反馈、gVisor/Kata 验收和真实漏洞 `VERIFIED` 闭环仍未完成。

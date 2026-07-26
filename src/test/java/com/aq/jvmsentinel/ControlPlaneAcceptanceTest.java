@@ -32,8 +32,11 @@ public final class ControlPlaneAcceptanceTest {
             String projectId = (String) project.get("projectId");
             HttpResponse<String> duplicateProject = request(client, URI.create(base + "/projects"), "POST",
                     "{\"name\":\"different\"}", server.mutationToken(), "project-once");
-            check(duplicateProject.statusCode() == 200, "idempotent project replay");
-            check(projectId.equals(JsonCodec.parseObject(duplicateProject.body()).get("projectId")), "idempotent project id");
+            check(duplicateProject.statusCode() == 409, "idempotent project payload conflict");
+            HttpResponse<String> replayProject = request(client, URI.create(base + "/projects"), "POST",
+                    "{\"name\":\"fixture\"}", server.mutationToken(), "project-once");
+            check(replayProject.statusCode() == 200, "idempotent project replay");
+            check(projectId.equals(JsonCodec.parseObject(replayProject.body()).get("projectId")), "idempotent project id");
 
             URI artifacts = URI.create(base + "/projects/" + projectId + "/artifacts");
             HttpResponse<String> artifactResponse = request(client, artifacts, "POST",
@@ -105,6 +108,16 @@ public final class ControlPlaneAcceptanceTest {
                     URI.create(base + "/findings/" + findingId)).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
             check(findingDetail.statusCode() == 200, "finding detail");
+            URI replayUri = URI.create(base + "/findings/" + findingId + "/replay");
+            HttpResponse<String> replayUnauthorized = request(client, replayUri, "POST",
+                    "{\"authorized\":false}", server.mutationToken(), "finding-replay-denied");
+            check(replayUnauthorized.statusCode() == 403, "finding replay requires explicit authorization");
+            HttpResponse<String> replayMissingKey = request(client, replayUri, "POST",
+                    "{\"authorized\":true}", server.mutationToken());
+            check(replayMissingKey.statusCode() == 400, "finding replay requires idempotency key");
+            HttpResponse<String> replay = request(client, replayUri, "POST",
+                    "{\"authorized\":true}", server.mutationToken(), "finding-replay-once");
+            check(replay.statusCode() == 409, "finding replay fails closed for non-JAR artifact");
 
             check(server.sseHub().history(scanId).stream().anyMatch(e -> e.eventType().equals("ScanCompleted")),
                     "SSE completion event retained");
@@ -112,6 +125,38 @@ public final class ControlPlaneAcceptanceTest {
             check(sse.contains("event: ScanCompleted"), "SSE replay");
             check(sse.contains("\"schemaVersion\":1"), "SSE schema version");
             System.out.println("ControlPlaneAcceptanceTest: PASS");
+        }
+        sseRestartAcceptance();
+    }
+
+    private static void sseRestartAcceptance() throws Exception {
+        Path root = Files.createTempDirectory("jvm-control-plane-sse-restart");
+        Path artifact = root.resolve("RestartController.class");
+        Files.writeString(artifact, "metadata-only fixture");
+        Path database = root.resolve("control.db");
+        String token = "sse-restart-token";
+        String scanId;
+        try (ControlPlaneServer server = new ControlPlaneServer(root, 0, token, database).start()) {
+            HttpClient client = HttpClient.newHttpClient();
+            URI base = server.baseUri();
+            String projectId = (String) JsonCodec.parseObject(request(client, URI.create(base + "/projects"),
+                    "POST", "{\"name\":\"sse restart\"}", token).body()).get("projectId");
+            HttpResponse<String> registered = request(client,
+                    URI.create(base + "/projects/" + projectId + "/artifacts"), "POST",
+                    "{\"path\":\"" + escape(artifact.toString()) + "\"}", token, "sse-artifact");
+            String digest = (String) JsonCodec.parseObject(registered.body()).get("artifactDigest");
+            HttpResponse<String> scan = request(client,
+                    URI.create(base + "/projects/" + projectId + "/scans"), "POST",
+                    "{\"artifactDigest\":\"" + digest + "\",\"authorized\":true}", token, "sse-scan");
+            scanId = (String) JsonCodec.parseObject(scan.body()).get("scanId");
+            check(server.sseHub().history(scanId).stream().anyMatch(e -> e.eventType().equals("ScanCompleted")),
+                    "SSE event persisted before restart");
+        }
+        try (ControlPlaneServer restarted = new ControlPlaneServer(root, 0, token, database).start()) {
+            check(restarted.sseHub().history(scanId).stream().anyMatch(e -> e.eventType().equals("ScanCompleted")),
+                    "SSE event history restored after restart");
+            String replay = readSse(restarted, scanId);
+            check(replay.contains("event: ScanCompleted"), "restored SSE event can be replayed");
         }
     }
 

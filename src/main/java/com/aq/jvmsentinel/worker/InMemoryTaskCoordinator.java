@@ -5,10 +5,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
  * Synchronized reference coordinator. It provides contract semantics only and does not launch processes
@@ -21,12 +23,27 @@ public final class InMemoryTaskCoordinator {
 
     private final Clock clock;
     private final InMemoryTraceStore traceStore;
+    private final Consumer<TaskSnapshot> persistence;
     private final Map<TaskScope, TaskSnapshot> tasks = new HashMap<>();
     private final Map<ReplayKey, Replay> replays = new LinkedHashMap<>();
 
     public InMemoryTaskCoordinator(Clock clock, InMemoryTraceStore traceStore) {
+        this(clock, traceStore, List.of(), snapshot -> { });
+    }
+
+    public InMemoryTaskCoordinator(Clock clock, InMemoryTraceStore traceStore,
+                                   List<TaskSnapshot> restored, Consumer<TaskSnapshot> persistence) {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.traceStore = Objects.requireNonNull(traceStore, "traceStore");
+        this.persistence = Objects.requireNonNull(persistence, "persistence");
+        Objects.requireNonNull(restored, "restored");
+        if (restored.size() > MAX_TASKS) throw new IllegalStateException("restored task limit exceeded");
+        for (TaskSnapshot snapshot : restored) {
+            TaskSnapshot recovered = recover(snapshot);
+            if (tasks.putIfAbsent(recovered.scope(), recovered) != null) {
+                throw new IllegalStateException("duplicate restored task scope");
+            }
+        }
     }
 
     public synchronized TaskSnapshot enqueue(WorkerTaskSpec spec, String idempotencyKey) {
@@ -39,7 +56,7 @@ public final class InMemoryTaskCoordinator {
         if (tasks.size() >= MAX_TASKS) throw new IllegalStateException("task limit reached");
         if (tasks.containsKey(scope)) throw new IllegalStateException("task already exists");
         TaskSnapshot result = new TaskSnapshot(1, spec, TaskLifecycle.QUEUED, null, null, null, null, now());
-        tasks.put(scope, result);
+        put(result);
         remember("enqueue", scope, idempotencyKey, spec, result);
         return result;
     }
@@ -66,7 +83,7 @@ public final class InMemoryTaskCoordinator {
         Instant issued = now();
         WorkerLease lease = new WorkerLease(1, scope, newId("lease"), workerId, required,
                 issued, issued, issued.plus(duration));
-        tasks.put(scope, copy(current, TaskLifecycle.LEASED, lease, current.checkpoint(), null, null));
+        put(copy(current, TaskLifecycle.LEASED, lease, current.checkpoint(), null, null));
         remember("lease", scope, idempotencyKey, request, lease);
         return lease;
     }
@@ -83,7 +100,7 @@ public final class InMemoryTaskCoordinator {
         WorkerLease lease = current.lease();
         WorkerLease renewed = new WorkerLease(1, scope, lease.leaseId(), lease.workerId(), lease.capability(),
                 lease.issuedAt(), heartbeat, heartbeat.plus(extension));
-        tasks.put(scope, copy(current, current.lifecycle(), renewed, current.checkpoint(), null, null));
+        put(copy(current, current.lifecycle(), renewed, current.checkpoint(), null, null));
         remember("heartbeat", scope, idempotencyKey, payload, renewed);
         return renewed;
     }
@@ -123,7 +140,7 @@ public final class InMemoryTaskCoordinator {
         if (!Set.of(TaskLifecycle.QUEUED, TaskLifecycle.LEASED, TaskLifecycle.RUNNING, TaskLifecycle.PAUSED)
                 .contains(current.lifecycle())) transitionRejected(current, "cancel");
         TaskSnapshot result = copy(current, TaskLifecycle.CANCELLED, null, current.checkpoint(), reason, null);
-        tasks.put(scope, result);
+        put(result);
         remember("cancel", scope, idempotencyKey, payload, result);
         return result;
     }
@@ -148,6 +165,11 @@ public final class InMemoryTaskCoordinator {
         return require(scope);
     }
 
+    public synchronized List<TaskSnapshot> snapshots() {
+        reclaimExpired();
+        return List.copyOf(tasks.values());
+    }
+
     private TaskSnapshot transitionWithLease(String operation, TaskScope scope, String leaseId, String workerId,
                                              TaskCheckpoint checkpoint, Object detail, String idempotencyKey,
                                              Set<TaskLifecycle> allowed, TaskLifecycle target) {
@@ -165,7 +187,7 @@ public final class InMemoryTaskCoordinator {
         WorkerLease nextLease = Set.of(TaskLifecycle.COMPLETED, TaskLifecycle.FAILED, TaskLifecycle.CANCELLED)
                 .contains(target) ? null : current.lease();
         TaskSnapshot result = copy(current, target, nextLease, nextCheckpoint, stopReason, failureCode);
-        tasks.put(scope, result);
+        put(result);
         remember(operation, scope, idempotencyKey, payload, result);
         return result;
     }
@@ -194,8 +216,7 @@ public final class InMemoryTaskCoordinator {
     private void reclaim(TaskSnapshot current) {
         TaskSnapshot latest = tasks.get(current.scope());
         if (latest != current) return;
-        tasks.put(current.scope(), copy(current, TaskLifecycle.QUEUED, null, current.checkpoint(),
-                StopReason.LEASE_EXPIRED, null));
+        put(copy(current, TaskLifecycle.QUEUED, null, current.checkpoint(), StopReason.LEASE_EXPIRED, null));
     }
 
     private TaskSnapshot require(TaskScope scope) {
@@ -208,6 +229,22 @@ public final class InMemoryTaskCoordinator {
     private TaskSnapshot copy(TaskSnapshot current, TaskLifecycle lifecycle, WorkerLease lease,
                               TaskCheckpoint checkpoint, StopReason reason, String failureCode) {
         return new TaskSnapshot(1, current.spec(), lifecycle, lease, checkpoint, reason, failureCode, now());
+    }
+
+    private TaskSnapshot recover(TaskSnapshot snapshot) {
+        Objects.requireNonNull(snapshot, "restored task");
+        if (snapshot.lease() == null) return snapshot;
+        StopReason reason = snapshot.lease().expiredAt(now())
+                ? StopReason.LEASE_EXPIRED : StopReason.CONTROL_PLANE_RESTART_RECOVERY;
+        TaskSnapshot recovered = copy(snapshot, TaskLifecycle.QUEUED, null,
+                snapshot.checkpoint(), reason, null);
+        persistence.accept(recovered);
+        return recovered;
+    }
+
+    private void put(TaskSnapshot snapshot) {
+        persistence.accept(snapshot);
+        tasks.put(snapshot.scope(), snapshot);
     }
 
     private Object replay(String operation, TaskScope scope, String key, Object payload) {

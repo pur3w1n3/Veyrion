@@ -23,7 +23,7 @@ public final class WorkerContractAcceptanceTest {
         TaskSnapshot queued = coordinator.enqueue(spec, "enqueue-1");
         check(queued == coordinator.enqueue(spec, "enqueue-1"), "enqueue replay must return original result");
         expect(IllegalStateException.class, () -> coordinator.enqueue(spec("task-lifecycle", true), "enqueue-1-conflict"));
-        expect(SecurityException.class, () -> coordinator.enqueue(spec("task-denied", false), "denied"));
+        expect(IllegalArgumentException.class, () -> spec("task-denied", false));
 
         WorkerLease lease = coordinator.lease(spec.scope(), "worker-1", Set.of(WorkerCapability.TRUSTED_DOCKER),
                 Duration.ofSeconds(30), "lease-1");

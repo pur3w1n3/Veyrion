@@ -32,8 +32,10 @@ import java.util.concurrent.TimeUnit;
  * Local Docker backend for explicitly trusted, catalog-owned internal JARs.
  *
  * <p>This capability is separate from both fixture runc and release-gated hardened runtimes.
- * It never falls back to a host process. Docker's effective network, mount, identity, rootfs,
- * capability, tmpfs and resource policy is inspected before a handle is returned.</p>
+ * It never falls back to a host process. Docker's effective network, mount, identity, tmpfs and
+ * resource policy is inspected before a handle is returned. The trusted development mode keeps
+ * the container rootfs writable and runs as root for compatibility with application startup;
+ * the artifact mount itself remains read-only and all external egress remains denied.</p>
  */
 public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClient {
     /** Container-default identity (root for the trusted runtime image). Privileged listen ports like 80 must work. */
@@ -44,8 +46,8 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
     private static final int MAX_PIDS = 1_024;
     private static final Set<String> FEATURES = Set.of(
             "lifecycle-v1", "execd-command-v1", "network-deny-v1",
-            "resource-budget-v1", "container-root-v1", "read-only-rootfs-v1",
-            "writable-tmp-v1", "controlled-tmpfs-v1",
+            "resource-budget-v1", "container-root-v1", "writable-rootfs-v1",
+            "writable-tmp-v1", "controlled-tmpfs-v1", "network-observation-v1", "dns-observation-v1",
             "digest-pinned-readonly-artifact-v1");
     private static final RuntimeAttestation ATTESTATION = new RuntimeAttestation(
             "docker-cli-v1", WorkerCapability.TRUSTED_DOCKER, "docker-desktop-runc",
@@ -72,14 +74,13 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
         ReadOnlyArtifactMount mount = requireTrustedRequest(request);
         verifyArtifact(mount);
         String name = "veyrion-trusted-" + UUID.randomUUID().toString().replace("-", "");
-        // Boundary: deny-all egress (--network none) + read-only rootfs + digest-pinned artifact.
-        // Force root inside the container (image defaults to 65532) so JARs can bind privileged
-        // ports like 80; do not strip capabilities for complete startup under loopback probing.
+        // Boundary: deny-all egress (--network none) + digest-pinned read-only artifact.
+        // Keep the runtime rootfs writable and run as root for compatibility with trusted
+        // applications that write logs or require root during startup. This is not hardened.
         List<String> command = new ArrayList<>(List.of(
                 dockerExecutable, "run", "--detach", "--name", name,
                 "--label", "com.veyrion.trusted-docker=true",
                 "--network", "none",
-                "--read-only",
                 "--user", SANDBOX_UID + ":" + SANDBOX_GID,
                 "--tmpfs", "/tmp/veyrion-trace:rw,nosuid,nodev,size=" + request.tmpfsBytes()
                         + ",mode=1777,uid=" + SANDBOX_UID + ",gid=" + SANDBOX_GID,
@@ -135,8 +136,8 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
     public void uploadFile(String sandboxId, Path hostFile, String containerPath) {
         requireKnown(sandboxId);
         Objects.requireNonNull(hostFile, "hostFile");
-        // docker cp cannot write into --read-only rootfs containers even when the destination is
-        // a writable tmpfs; stream bytes through docker exec into /tmp/veyrion-trace instead.
+        // Keep uploads inside the dedicated trace tmpfs; stream bytes through docker exec so the
+        // host path never becomes a container mount or a model-controlled destination.
         if (containerPath == null
                 || !containerPath.matches(TRACE_TMP + "/[A-Za-z0-9._-]{1,200}")
                 || containerPath.contains("..")) {
@@ -202,7 +203,7 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
         boolean rootUser = "0:0".equals(fields[2]) || "0".equals(fields[2]) || "root".equals(fields[2]);
         if (fields.length != 10
                 || !"none".equals(fields[0])
-                || !"true".equalsIgnoreCase(fields[1])
+                || !"false".equalsIgnoreCase(fields[1])
                 || !rootUser
                 || !fields[3].contains("\"/tmp/veyrion-trace\"")
                 || Long.parseLong(fields[4]) != request.resourceBudget().maxMemoryBytes()
@@ -220,7 +221,8 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
                 dockerExecutable, "exec", "--user", SANDBOX_UID + ":" + SANDBOX_GID, sandboxId,
                 "/bin/sh", "-c",
                 "id -u | grep -qx " + SANDBOX_UID
-                        + " && ! touch /veyrion-rootfs-write-probe"
+                        + " && touch /veyrion-rootfs-write-probe"
+                        + " && rm -f /veyrion-rootfs-write-probe"
                         + " && touch /tmp/veyrion-trace/veyrion-tmpfs-probe"
                         + " && rm -f /tmp/veyrion-trace/agent-events.jsonl"),
                 Duration.ofSeconds(15));

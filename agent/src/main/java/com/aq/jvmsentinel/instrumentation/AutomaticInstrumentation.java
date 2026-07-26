@@ -405,6 +405,27 @@ final class AutomaticInstrumentation {
                     && ("send".equals(methodName) || "sendAsync".equals(methodName))) {
                 return "HTTP_CLIENT";
             }
+            if ("java/net/InetAddress".equals(owner)
+                    && ("getByName".equals(methodName) || "getAllByName".equals(methodName)
+                    || "getCanonicalHostName".equals(methodName))) {
+                return "DNS_LOOKUP_ATTEMPT";
+            }
+            if (("java/net/Socket".equals(owner) || "java/net/DatagramSocket".equals(owner))
+                    && ("connect".equals(methodName) || "send".equals(methodName))) {
+                return "NETWORK_CONNECT_ATTEMPT";
+            }
+            if ("java/net/URL".equals(owner)
+                    && ("openConnection".equals(methodName) || "openStream".equals(methodName))) {
+                return "NETWORK_REQUEST_ATTEMPT";
+            }
+            if ("java/net/URL".equals(owner)
+                    && ("hashCode".equals(methodName) || "equals".equals(methodName))) {
+                return "DNS_LOOKUP_ATTEMPT";
+            }
+            if (("javax/naming/InitialContext".equals(owner) || "javax/naming/Context".equals(owner))
+                    && "lookup".equals(methodName)) {
+                return "JNDI_LOOKUP_ATTEMPT";
+            }
             if ("java/lang/ProcessBuilder".equals(owner) && "start".equals(methodName)
                     || "java/lang/Runtime".equals(owner) && methodName.startsWith("exec")) {
                 return "PROCESS";

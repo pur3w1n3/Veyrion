@@ -23,6 +23,11 @@ public final class AuditRunAcceptanceTest {
         Path root = Files.createTempDirectory("veyrion-audit-run-");
         String token = "audit-run-token";
         HttpClient client = HttpClient.newHttpClient();
+        String projectId;
+        String body;
+        String scanId;
+        String jobId;
+        try {
         try (ControlPlaneServer server = new ControlPlaneServer(
                 root, 0, token, root.resolve("control.db"),
                 (provider, credential) -> { throw new AssertionError("inventory is not used"); },
@@ -34,7 +39,7 @@ public final class AuditRunAcceptanceTest {
                         "audit-request", 1)).start()) {
             Path artifact = root.resolve("AuditEntryController.class");
             Files.writeString(artifact, "metadata-only audit fixture");
-            String projectId = text(ok(send(client, uri(server, "/projects"), "POST",
+            projectId = text(ok(send(client, uri(server, "/projects"), "POST",
                     "{\"name\":\"Audit run\"}", token, "project")), "projectId");
             String artifactId = text(ok(send(client,
                     uri(server, "/projects/" + projectId + "/artifacts"), "POST",
@@ -50,7 +55,7 @@ public final class AuditRunAcceptanceTest {
                     token, "binding"));
 
             URI auditRuns = uri(server, "/projects/" + projectId + "/audit-runs");
-            String body = "{\"artifactId\":\"" + artifactId
+            body = "{\"artifactId\":\"" + artifactId
                     + "\",\"authorized\":true,\"aiAuthorized\":true,"
                     + "\"outputLanguage\":\"ZH_CN\","
                     + "\"networkMode\":\"DENY\",\"dangerousActionMode\":\"DRY_RUN\"}";
@@ -58,9 +63,9 @@ public final class AuditRunAcceptanceTest {
                     client, auditRuns, "POST", body, token, "audit-once");
             check(createdResponse.statusCode() == 202, "audit run is accepted");
             Map<String, Object> created = ok(createdResponse);
-            String scanId = text(created, "scanId");
+            scanId = text(created, "scanId");
             Map<String, Object> job = object(created, "preAnalysisJob");
-            String jobId = text(job, "aiJobId");
+            jobId = text(job, "aiJobId");
             check(scanId.equals(object(created, "scan").get("scanId"))
                             && scanId.equals(job.get("scanId"))
                             && "PRE_ANALYSIS".equals(job.get("role"))
@@ -103,6 +108,26 @@ public final class AuditRunAcceptanceTest {
             check(send(client, auditRuns, "POST",
                     body.replace("\"ZH_CN\"", "\"JA\""), token, "audit-language").statusCode() == 400,
                     "unsupported report language is rejected");
+        }
+        try (ControlPlaneServer restarted = new ControlPlaneServer(
+                root, 0, token, root.resolve("control.db"),
+                (provider, credential) -> { throw new AssertionError("inventory is not used"); },
+                (provider, credential, request, limits) -> new ProviderChatTransport.Response(
+                        200, "{\"choices\":[]}".getBytes(StandardCharsets.UTF_8),
+                        "restart-request", 1)).start()) {
+            HttpResponse<String> replayAfterRestart = send(client,
+                    uri(restarted, "/projects/" + projectId + "/audit-runs"),
+                    "POST", body, token, "audit-once");
+            check(replayAfterRestart.statusCode() == 200, "audit replay survives restart");
+            Map<String, Object> replay = ok(replayAfterRestart);
+            check(scanId.equals(replay.get("scanId"))
+                            && jobId.equals(object(replay, "preAnalysisJob").get("aiJobId")),
+                    "restart replay returns the original immutable audit resources");
+            Map<String, Object> jobs = ok(send(client,
+                    uri(restarted, "/projects/" + projectId + "/ai-jobs"), "GET", "", token, null));
+            check(jobs.get("aiJobs") instanceof List<?> values && values.size() == 2,
+                    "restart replay does not duplicate AI jobs");
+        }
         } finally {
             deleteTree(root);
         }

@@ -84,6 +84,15 @@
                             <mainClass>com.aq.jvmsentinel.instrumentation.AgentAcceptanceTest</mainClass>
                         </configuration>
                     </execution>
+                    <execution>
+                        <id>protocol-substitute-acceptance</id>
+                        <phase>test</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>com.aq.jvmsentinel.instrumentation.ProtocolSubstituteAcceptanceTest</mainClass>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>

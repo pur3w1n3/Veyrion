@@ -4,8 +4,10 @@ import com.aq.jvmsentinel.model.*;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /** Deterministic, static-only pre-analysis. It never loads or executes artifact classes. */
@@ -37,6 +39,7 @@ public final class PreAnalysisService {
         List<BytecodeFactIndex.MemberAccessFact> memberAccessFacts = new ArrayList<>();
         List<BytecodeFactIndex.CallEdge> callEdges = new ArrayList<>();
         List<BytecodeFactIndex.UnresolvedDynamicFact> unresolvedDynamics = new ArrayList<>();
+        Map<String, Integer> sinkByCallEvidence = new LinkedHashMap<>();
         int index = 0;
         Set<String> classesWithValidAnnotationMetadata = new LinkedHashSet<>();
         for (ClassMetadata metadata : input.classMetadata()) {
@@ -64,6 +67,7 @@ public final class PreAnalysisService {
                         "bytecode-invoke:" + match.ruleId() + "; edge=" + edge.kind().name()
                                 + "; no taint or runtime proof",
                         match.confidence(), List.of(evidenceId), VerificationStatus.STATIC_INFERRED));
+                sinkByCallEvidence.put(edge.evidence().stableKey(), sinks.size() - 1);
             }
             if (!metadata.annotationMetadataValid()) continue;
             classesWithValidAnnotationMetadata.add(metadata.className());
@@ -140,8 +144,38 @@ public final class PreAnalysisService {
                         0.70, List.of(id), VerificationStatus.STATIC_INFERRED));
             }
         }
+        InterproceduralTaintAnalyzer.Result interprocedural =
+                new InterproceduralTaintAnalyzer().analyze(input.classMetadata());
+        BytecodeFactIndex.AnalysisCoverage coverage = interprocedural.coverage();
+        evidence.add(new Evidence("call-graph-summary", ProvenanceKind.FACT, "classfile-call-graph",
+                1.0, "artifact-local call graph edges=" + interprocedural.graph().size()
+                        + "; direct/CHA/unresolved are retained with budget and stop reasons"));
+        evidence.add(new Evidence("taint-summary", ProvenanceKind.INFERENCE, "classfile-taint-summary",
+                0.78, "bounded cross-method taint paths=" + interprocedural.paths().size()
+                        + "; states=" + coverage.taintStatesVisited() + "/" + coverage.taintStateBudget()
+                        + "; complete=" + coverage.complete() + "; stopReasons="
+                        + String.join(",", coverage.stopReasons())));
+        for (BytecodeFactIndex.TaintPath path : interprocedural.paths()) {
+            if (path.steps().isEmpty()) continue;
+            String callEvidence = path.steps().get(path.steps().size() - 1).evidence();
+            Integer sinkPosition = sinkByCallEvidence.get(callEvidence);
+            if (sinkPosition == null) continue;
+            String pathEvidenceId = "flow-" + path.id();
+            evidence.add(new Evidence(pathEvidenceId, ProvenanceKind.INFERENCE,
+                    "classfile-taint:" + path.id(), 0.78,
+                    "bounded interprocedural parameter-origin path to " + path.sinkOwner() + "#"
+                            + path.sinkMethod() + path.sinkDescriptor()
+                            + "; static input control only; runtime reachability and exploitability not established"));
+            Sink candidate = sinks.get(sinkPosition);
+            List<String> refs = new ArrayList<>(candidate.evidenceRefs());
+            refs.add(pathEvidenceId);
+            sinks.set(sinkPosition, new Sink(candidate.id(), candidate.category(), candidate.symbol(),
+                    candidate.source() + "; taint-path=" + path.id() + "; bounded static inference",
+                    Math.max(candidate.confidence(), 0.78), refs, VerificationStatus.STATIC_INFERRED));
+        }
         BytecodeFactIndex factIndex = new BytecodeFactIndex(classFacts, fieldFacts, methodFacts,
-                memberAccessFacts, callEdges, unresolvedDynamics);
+                memberAccessFacts, callEdges, unresolvedDynamics, interprocedural.graph(),
+                interprocedural.paths(), coverage);
         return new PreAnalysisResult(new EntryCatalog(entries, evidence), new DependencyMap(dependencies),
                 new SinkCatalog(sinks), new PermissionMatrix(permissions), factIndex);
     }
