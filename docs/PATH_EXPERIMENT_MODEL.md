@@ -75,9 +75,19 @@ GUI、动态验证、路径探索与漏洞研判围绕 PathRun 组织；`AUTH_GA
 | `PROBE_BUDGET` | 预算用尽 |
 | `UNKNOWN` | 无法归入以上时 |
 
-## 6. 实验计划（AI 生成，服务端闸门）
+面向 GUI / AI 的解释边界：
 
-所有权：**M** — AI 角色生成；服务端校验预算与安全后执行。
+- `BUSINESS_TIMEOUT`：应用进程已就绪，单个业务请求在读响应阶段耗尽预算；这说明入口可能进入了业务逻辑或阻塞等待依赖，但不能单独证明漏洞或绕过。
+- `COLD_START`：连接失败、拒绝或冷启动窗口内不可达；优先解释为应用未监听或尚未完成启动，不应当被写成业务入口已执行。
+- `ENGINE_BUSY`：平台、工作流或应用引擎返回忙碌 / 锁定 / 限流 / 5xx 且不像依赖替身缺口；GUI 可提示稍后重试或收窄实验。
+- `TRANSPORT_ERROR`：连接重置、协议错误、EOF 等传输层异常；它不同于业务读超时，也不同于冷启动拒绝。
+- `AUTH_CHALLENGE`：401/403/登录跳转或明确鉴权拒绝；只有与其它身份轨形成对照时，才可用于鉴权绕过分析。
+
+任何超时或失败分类都**不能**单独触发 `DYNAMIC_CONFIRMED`；`DYNAMIC_CONFIRMED` 仍只来自 §7 的 SQL H3 服务端门禁，且模型不得单独升级。
+
+## 6. 实验计划与鉴权绕过 PoC（AI 生成，服务端闸门）
+
+所有权：**M** — AI 角色研判并**撰写结构化 PoC**；服务端校验 schema/预算/安全后由动态阶段执行并追踪。
 
 每入口 × 轨建议字段：
 
@@ -87,7 +97,16 @@ GUI、动态验证、路径探索与漏洞研判围绕 PathRun 组织；`AUTH_GA
 - 成功判据：HTTP（如 2xx）+ JSON 字段路径，和/或 Agent 事件类型
 - 预算内最大尝试次数
 
-服务端必须拒绝：非 allowlist content-type、超预算、非 `entry:*`、破坏性 payload、试图改变 `NetworkPolicy.DENY` / 挂载 / UID。
+鉴权绕过可行性（`bypassPoCs` / `bypassCandidates`）额外字段：
+
+- `entryRef`（`entry:<scanEntryId>`）
+- `techniqueId`（标签，可为 `ALG_NONE` / `CUSTOM_POC` 等）
+- `track`、`rationale`、`evidenceRefs`、`confidence`
+- **AI 撰写的** `authorizationHeader` / `bladeAuthHeader` / `query` / `bodyHint`（可含 JWT、alg-none、自定义 claims）
+
+交接契约：`AUTH_ANALYSIS`（及研判）→ 服务端 schema 校验并写入 conclusion → `DYNAMIC_VERIFICATION` 用户提示注入 `AUTH_BYPASS_FEASIBILITY` → `sandbox_probe` 携带 AI auth 材料执行 → PathRun/Agent 观测。已知 technique 合成器仅作**无 header 时的回退**，不是唯一路径。若扫描有 JWT/AUTH_GAP/鉴权标注入口而 AUTH 仍空 `bypassPoCs`，服务端发 `AUTH_BYPASS_POC_REQUIRED` 强制补写一轮；仍空则填充标明 `RULE_GENERATED` 的草案供 DYNAMIC 尝试（不升验证级）。
+
+服务端必须拒绝：非 `entry:*`、超长/非法字符头、破坏性 payload、试图改变 `NetworkPolicy.DENY` / 挂载 / UID / 命令。不得由模型单独升级 `DYNAMIC_CONFIRMED` / `VERIFIED`。
 
 ## 7. SQL 观测 D1–D3 与 DYNAMIC_CONFIRMED
 

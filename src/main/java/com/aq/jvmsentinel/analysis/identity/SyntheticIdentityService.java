@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.analysis.identity;
 
+import com.aq.jvmsentinel.model.AuthBypassTechnique;
 import com.aq.jvmsentinel.model.IdentityTrack;
 
 import java.io.ByteArrayOutputStream;
@@ -10,10 +11,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -89,6 +92,46 @@ public final class SyntheticIdentityService {
                 precondition, true);
     }
 
+    /**
+     * Fallback materialization for known technique labels when the AI PoC did not
+     * supply authorizationHeader. Prefer AI-authored PoC material when present.
+     */
+    public SyntheticIdentity synthesizeTechnique(AuthBypassTechnique technique, MaterialBundle materials) {
+        Objects.requireNonNull(technique, "technique");
+        IdentityTrack track = technique.defaultTrack();
+        return switch (technique) {
+            case MISSING_AUTH -> new SyntheticIdentity(track, "", "MOCK",
+                    "MISSING_AUTH: no Authorization header", true);
+            // Probe layer prefixes "Authorization: bearer "; a single space yields an empty-ish token.
+            case EMPTY_BEARER -> new SyntheticIdentity(track, " ", "RULE_GENERATED",
+                    "EMPTY_BEARER: blank bearer token", true);
+            case DEFAULT_SECRET_HS256, LOGOUT_TOKEN -> {
+                SyntheticIdentity minted = synthesize(IdentityTrack.BYPASS_CANDIDATE, materials);
+                if (!minted.available()) {
+                    yield minted;
+                }
+                yield new SyntheticIdentity(track, minted.authorizationHeader(), minted.provenance(),
+                        technique.name() + "; " + minted.precondition(), true);
+            }
+            case ALG_NONE -> new SyntheticIdentity(track,
+                    mintAlgNoneToken("administrator", track),
+                    "RULE_GENERATED",
+                    "ALG_NONE: unsigned JWT hypothesis (MOCK)", true);
+            case ROLE_CONFUSION -> {
+                if (materials == null || materials.jwtSecret().isEmpty()) {
+                    yield SyntheticIdentity.unavailable(track,
+                            "IDENTITY_UNAVAILABLE: no signing material for ROLE_CONFUSION");
+                }
+                String token = mintHs256Token(materials.jwtSecret().get(), "administrator", track);
+                yield new SyntheticIdentity(track, token, materials.secretProvenance(),
+                        "ROLE_CONFUSION: USER track carrying administrator claim; "
+                                + materials.secretProvenance(), true);
+            }
+            case CUSTOM_POC -> SyntheticIdentity.unavailable(track,
+                    "CUSTOM_POC requires AI-authored authorizationHeader");
+        };
+    }
+
     public Map<IdentityTrack, SyntheticIdentity> defaultTracks(Path artifactPath, boolean highValue) {
         MaterialBundle materials = harvest(artifactPath);
         Map<IdentityTrack, SyntheticIdentity> out = new LinkedHashMap<>();
@@ -101,7 +144,7 @@ public final class SyntheticIdentityService {
         } else if (admin.available()) {
             out.put(IdentityTrack.ADMIN, admin);
         }
-        return Map.copyOf(out);
+        return Collections.unmodifiableMap(new LinkedHashMap<>(out));
     }
 
     private static Optional<String> scanZipForSecret(Path jar, List<String> notes) throws IOException {
@@ -171,6 +214,16 @@ public final class SyntheticIdentityService {
         String sig = b64Url(hmacSha256(secret.getBytes(StandardCharsets.UTF_8),
                 signingInput.getBytes(StandardCharsets.UTF_8)));
         return signingInput + "." + sig;
+    }
+
+    /** Unsigned JWT used only for ALG_NONE hypothesis probes (RULE_GENERATED). */
+    static String mintAlgNoneToken(String role, IdentityTrack track) {
+        String header = b64Url("{\"alg\":\"none\",\"typ\":\"JWT\"}");
+        String payload = b64Url("{\"role\":\"" + role + "\",\"user_name\":\"" + role
+                + "\",\"account\":\"veyrion-" + track.name().toLowerCase(Locale.ROOT)
+                + "\",\"client_id\":\"sword\",\"license\":\"powered by bladex\","
+                + "\"iss\":\"veyrion-mock\",\"mock\":true,\"algNone\":true}");
+        return header + "." + payload + ".";
     }
 
     private static String b64Url(String value) {
