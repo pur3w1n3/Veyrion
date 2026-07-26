@@ -11,11 +11,13 @@ import com.aq.jvmsentinel.model.VerificationStatus;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -83,6 +85,7 @@ public final class TraceProjectionService {
         Map<String, List<String>> routeRefs = new LinkedHashMap<>();
         List<SqlEvent> jdbcSql = new ArrayList<>();
         List<ApiDtos.PathRunDto> pathRuns = new ArrayList<>();
+        Set<String> springBoundRouteKeys = new HashSet<>();
         String scopeDigest = WorkerContracts.sha256((snapshot.scope().projectId() + "\n"
                 + snapshot.scope().artifactDigest() + "\n" + snapshot.scope().scanId() + "\n"
                 + snapshot.scope().taskId()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -114,11 +117,19 @@ public final class TraceProjectionService {
             }
             if ("JDBC".equals(event.eventType())) {
                 SqlEvent sqlEvent = sqlEventFromDetail(event.detail());
-                jdbcSql.add(sqlEvent);
-                String sqlPreview = truncate(sqlEvent.sqlText(), 160);
-                summary = "JDBC " + sqlEvent.readWrite() + " observed (capture="
-                        + sqlEvent.captureMode() + ")"
-                        + (sqlPreview.isBlank() ? "" : ": " + sqlPreview);
+                if (sqlEvent != null) {
+                    jdbcSql.add(sqlEvent);
+                    String sqlPreview = truncate(sqlEvent.sqlText(), 160);
+                    summary = "JDBC " + sqlEvent.readWrite() + " observed (capture="
+                            + sqlEvent.captureMode() + ")"
+                            + (sqlPreview.isBlank() ? "" : ": " + sqlPreview);
+                } else {
+                    String capture = event.detail().getOrDefault("captureMode", "UNKNOWN");
+                    String protocolMeta = event.detail().getOrDefault("summary",
+                            event.detail().getOrDefault("operation", ""));
+                    summary = "JDBC dependency meta observed (capture=" + capture + ")"
+                            + (protocolMeta.isBlank() ? "" : ": " + truncate(protocolMeta, 160));
+                }
                 stepDetail = summary;
             }
             String snapshotRef = "task:" + snapshot.scope().taskId()
@@ -135,11 +146,15 @@ public final class TraceProjectionService {
                     event.eventType(), stepDetail, kind, "done", List.of(evidenceId),
                     "DYNAMIC_SUSPECTED", event.provenanceKind(), event.eventType(), event.sequence());
             steps.add(step);
+            if ("HTTP".equals(event.eventType())) {
+                rememberSpringParameterBound(event.detail(), route, httpMethod, springBoundRouteKeys);
+            }
             if ("HTTP".equals(event.eventType()) && !route.isBlank()) {
                 String routeKey = (httpMethod.isBlank() ? "GET" : httpMethod) + " " + route;
                 routeSteps.computeIfAbsent(routeKey, ignored -> new ArrayList<>()).add(step);
                 routeRefs.computeIfAbsent(routeKey, ignored -> new ArrayList<>()).add(evidenceId);
-                pathRuns.add(pathRunFromHttp(snapshot, event, evidenceId, httpAttempt++, jdbcSql));
+                pathRuns.add(pathRunFromHttp(
+                        snapshot, event, evidenceId, httpAttempt++, jdbcSql, springBoundRouteKeys));
             }
         }
         ApiDtos.PathDto path = new ApiDtos.PathDto(
@@ -194,11 +209,6 @@ public final class TraceProjectionService {
     private static ApiDtos.PathRunDto taskLevelPathRun(
             TaskSnapshot snapshot, List<String> evidenceRefs, List<SqlEvent> jdbcSql) {
         List<SqlEvent> sqlCopy = List.copyOf(jdbcSql);
-        List<ApiDtos.SqlEventDto> sqlDtos = sqlCopy.stream()
-                .map(sql -> new ApiDtos.SqlEventDto(sql.sqlText(), sql.parameterSummary(),
-                        sql.readWrite(), sql.parameterized(), sql.maliciousFragmentPresent(),
-                        sql.captureMode()))
-                .toList();
         String entryRef = "entry:" + snapshot.spec().targetEntryId();
         String stop = snapshot.stopReason() == null ? "COMPLETED" : snapshot.stopReason().name();
         String summary = "task observation without HTTP events; sqlEventCount=" + sqlCopy.size()
@@ -213,18 +223,13 @@ public final class TraceProjectionService {
                 sqlCopy, stop, VerificationStatus.DYNAMIC_SUSPECTED.name(),
                 List.copyOf(evidenceRefs), ApiDtos.MOCK, "no credentials");
         PathRun gated = DynamicConfirmedGate.apply(provisional, SqlDiffProbe.META_MARKER);
-        return new ApiDtos.PathRunDto(
-                ApiDtos.SCHEMA_VERSION, gated.pathRunId(), gated.scanId(), gated.entrypointRef(),
-                gated.track().name(), gated.attemptId(), gated.experimentPlanId(),
-                gated.method(), gated.contentType(), gated.requestSummary(),
-                gated.outcomeClass().name(), gated.httpStatus(), gated.entryHit(),
-                gated.parameterBound(), sqlDtos, gated.stopReason(), gated.verificationStatus(),
-                gated.evidenceRefs(), gated.identityProvenance(), gated.identityPrecondition());
+        return toPathRunDto(applyD2Differential(gated));
     }
 
     private static ApiDtos.PathRunDto pathRunFromHttp(
             TaskSnapshot snapshot, AgentJsonlTraceConverter.AgentEvent event,
-            String evidenceId, int attempt, List<SqlEvent> jdbcSql) {
+            String evidenceId, int attempt, List<SqlEvent> jdbcSql,
+            Set<String> springBoundRouteKeys) {
         Map<String, String> detail = event.detail();
         String route = detail.getOrDefault("route", "/");
         String method = detail.getOrDefault("httpMethod", "GET");
@@ -246,26 +251,128 @@ public final class TraceProjectionService {
         } catch (IllegalArgumentException ignored) {
             track = IdentityTrack.UNAUTH;
         }
+        String normalizedMethod = method.isBlank() ? "GET" : method.toUpperCase(Locale.ROOT);
+        String routeKey = normalizedMethod + " " + route;
+        Boolean entryHit = resolveEntryHit(detail, status);
+        Boolean parameterBound = resolveParameterBound(
+                detail, status, routeKey, springBoundRouteKeys);
         String attemptId = "attempt-" + attempt;
-        String entryRef = "entry:" + method.toUpperCase(Locale.ROOT) + ":" + route;
+        String entryRef = "entry:" + normalizedMethod + ":" + route;
         List<SqlEvent> sqlCopy = List.copyOf(jdbcSql);
-        List<ApiDtos.SqlEventDto> sqlDtos = sqlCopy.stream()
-                .map(sql -> new ApiDtos.SqlEventDto(sql.sqlText(), sql.parameterSummary(),
-                        sql.readWrite(), sql.parameterized(), sql.maliciousFragmentPresent(),
-                        sql.captureMode()))
-                .toList();
+        String requestSummary = normalizedMethod + " " + route + " track=" + track.name();
+        if (parameterBound == null) {
+            requestSummary = requestSummary + " parameterBound=unknown";
+        }
+        String stopReason = outcome.name();
+        if (parameterBound == null && status >= 200 && status < 500 && status != 404) {
+            stopReason = outcome.name() + ";parameterBound=unknown";
+        }
         PathRun provisional = new PathRun(
                 "pathrun-" + snapshot.scope().taskId() + "-" + attempt,
                 snapshot.scope().scanId(), entryRef, track, attemptId, null,
-                method.isBlank() ? "GET" : method.toUpperCase(Locale.ROOT),
+                normalizedMethod,
                 "application/json",
-                method + " " + route + " track=" + track.name(),
-                outcome, status, status >= 200 && status < 500, null,
-                sqlCopy, outcome.name(), VerificationStatus.DYNAMIC_SUSPECTED.name(),
+                requestSummary,
+                outcome, status, entryHit, parameterBound,
+                sqlCopy, stopReason, VerificationStatus.DYNAMIC_SUSPECTED.name(),
                 List.of(evidenceId), ApiDtos.MOCK,
                 track == IdentityTrack.UNAUTH ? "no credentials" : "synthetic identity");
         String marker = detail.getOrDefault("sqlProbeMarker", SqlDiffProbe.META_MARKER);
         PathRun gated = DynamicConfirmedGate.apply(provisional, marker);
+        return toPathRunDto(applyD2Differential(gated));
+    }
+
+    /**
+     * Prefer explicit event detail; otherwise honest status heuristics.
+     * Never invent {@code parameterBound=true} without observation or Spring handler evidence.
+     */
+    static Boolean resolveEntryHit(Map<String, String> detail, int status) {
+        Boolean explicit = parseTriState(detail == null ? null : detail.get("entryHit"));
+        if (explicit != null) return explicit;
+        if (status == 404 || status == 405) return Boolean.FALSE;
+        if (status == 401 || status == 403) return Boolean.TRUE;
+        if (status >= 200 && status < 400) return Boolean.TRUE;
+        // Timeout / connect / other statuses: unknown rather than inventing a hit.
+        return null;
+    }
+
+    static Boolean resolveParameterBound(Map<String, String> detail, int status,
+                                          String routeKey, Set<String> springBoundRouteKeys) {
+        Boolean explicit = parseTriState(detail == null ? null : detail.get("parameterBound"));
+        if (explicit != null) return explicit;
+        if (status == 404 || status == 405) return Boolean.FALSE;
+        if (springBoundRouteKeys != null && routeKey != null && springBoundRouteKeys.contains(routeKey)) {
+            return Boolean.TRUE;
+        }
+        // 2xx with only synthetic empty/marker request still leaves binding unobserved.
+        return null;
+    }
+
+    static Boolean parseTriState(String value) {
+        if (value == null || value.isBlank()) return null;
+        if ("true".equalsIgnoreCase(value)) return Boolean.TRUE;
+        if ("false".equalsIgnoreCase(value)) return Boolean.FALSE;
+        return null;
+    }
+
+    private static void rememberSpringParameterBound(Map<String, String> detail, String route,
+                                                      String httpMethod, Set<String> springBoundRouteKeys) {
+        if (detail == null || springBoundRouteKeys == null) return;
+        if (!"SPRING_MAPPING_ANNOTATION".equals(detail.get("captureMode"))) return;
+        if (!Boolean.TRUE.equals(parseTriState(detail.get("parameterBound")))) return;
+        if (route == null || route.isBlank()) return;
+        String method = httpMethod == null || httpMethod.isBlank()
+                ? "GET" : httpMethod.toUpperCase(Locale.ROOT);
+        springBoundRouteKeys.add(method + " " + route);
+    }
+
+    /**
+     * D2: when a task PathRun carries both a benign statement and a META_MARKER statement,
+     * attach a bounded structure-influence summary. Never upgrades to VERIFIED; H3 remains
+     * sole DYNAMIC_CONFIRMED upgrade via {@link DynamicConfirmedGate}.
+     */
+    static PathRun applyD2Differential(PathRun run) {
+        if (run == null || run.sqlEvents() == null || run.sqlEvents().size() < 2) {
+            return run;
+        }
+        SqlEvent benign = null;
+        SqlEvent meta = null;
+        String needle = SqlDiffProbe.META_MARKER.toLowerCase(Locale.ROOT);
+        for (SqlEvent event : run.sqlEvents()) {
+            if (event == null || event.sqlText() == null || event.sqlText().isBlank()) continue;
+            String sql = event.sqlText().toLowerCase(Locale.ROOT);
+            boolean hasMeta = sql.contains(needle) || event.maliciousFragmentPresent();
+            if (hasMeta) {
+                if (meta == null) meta = event;
+            } else if (benign == null) {
+                benign = event;
+            }
+        }
+        if (benign == null || meta == null) return run;
+        SqlDiffProbe.DiffResult diff = SqlDiffProbe.compare(benign, meta);
+        // D2 itself is capped at DYNAMIC_SUSPECTED; preserve any prior H3 DYNAMIC_CONFIRMED.
+        String tag = "D2: structureInfluenced=" + diff.structureInfluenced() + " (MOCK)";
+        String base = run.requestSummary() == null ? "" : run.requestSummary().trim();
+        if (base.contains("D2: structureInfluenced=")) return run;
+        String summary = base.isBlank() ? tag : truncate(base + "; " + tag, 512);
+        String status = run.verificationStatus();
+        if (VerificationStatus.VERIFIED.name().equals(status)) {
+            status = VerificationStatus.DYNAMIC_SUSPECTED.name();
+        }
+        return new PathRun(
+                run.pathRunId(), run.scanId(), run.entrypointRef(), run.track(), run.attemptId(),
+                run.experimentPlanId(), run.method(), run.contentType(), summary,
+                run.outcomeClass(), run.httpStatus(), run.entryHit(), run.parameterBound(),
+                run.sqlEvents(), run.stopReason(), status, run.evidenceRefs(),
+                run.identityProvenance(), run.identityPrecondition());
+    }
+
+    private static ApiDtos.PathRunDto toPathRunDto(PathRun gated) {
+        List<ApiDtos.SqlEventDto> sqlDtos = gated.sqlEvents().stream()
+                .map(sql -> new ApiDtos.SqlEventDto(sql.sqlText(), sql.parameterSummary(),
+                        sql.readWrite(), sql.parameterized(), sql.maliciousFragmentPresent(),
+                        sql.captureMode()))
+                .toList();
         return new ApiDtos.PathRunDto(
                 ApiDtos.SCHEMA_VERSION, gated.pathRunId(), gated.scanId(), gated.entrypointRef(),
                 gated.track().name(), gated.attemptId(), gated.experimentPlanId(),
@@ -275,24 +382,86 @@ public final class TraceProjectionService {
                 gated.evidenceRefs(), gated.identityProvenance(), gated.identityPrecondition());
     }
 
+    /**
+     * Projects only statement-level JDBC observations into PathRun.sqlEvents (D1).
+     * Protocol listen/handshake meta ({@code port=6379}, {@code sqlClass=…,bytes=N}, Redis RESP,
+     * auth accept) stays on dependency evidence steps and must not pretend to be SQL text.
+     */
     private static SqlEvent sqlEventFromDetail(Map<String, String> detail) {
-        String sql = detail.getOrDefault("sql", detail.getOrDefault("summary", ""));
+        if (!isStatementSqlObservation(detail)) return null;
+        String sql = detail.get("sql").trim();
         String rw = detail.getOrDefault("readWrite", inferReadWrite(sql));
         boolean parameterized = "true".equalsIgnoreCase(detail.getOrDefault("parameterized", "false"))
                 || sql.contains("?");
         boolean malicious = sql.toLowerCase(Locale.ROOT).contains(SqlDiffProbe.META_MARKER.toLowerCase(Locale.ROOT))
                 || "true".equalsIgnoreCase(detail.getOrDefault("maliciousFragmentPresent", "false"));
-        return new SqlEvent(sql, detail.getOrDefault("parameterSummary", ""), rw, parameterized,
-                malicious, detail.getOrDefault("dependencyMode", ApiDtos.MOCK));
+        String parameterSummary = detail.getOrDefault("parameterSummary", "");
+        if (parameterSummary.isBlank()) {
+            parameterSummary = statementMetaSummary(detail);
+        }
+        String captureMode = detail.getOrDefault("captureMode",
+                detail.getOrDefault("dependencyMode", ApiDtos.MOCK));
+        return new SqlEvent(sql, parameterSummary, rw, parameterized, malicious, captureMode);
+    }
+
+    private static String statementMetaSummary(Map<String, String> detail) {
+        String sqlClass = detail.getOrDefault("sqlClass", "").trim();
+        String outcome = detail.getOrDefault("outcome", "").trim();
+        if (sqlClass.isBlank() && outcome.isBlank()) return "";
+        if (sqlClass.isBlank()) return truncate("outcome=" + outcome, 512);
+        if (outcome.isBlank()) return truncate("sqlClass=" + sqlClass, 512);
+        return truncate("sqlClass=" + sqlClass + ",outcome=" + outcome, 512);
+    }
+
+    /** True only when detail carries truncated statement text usable for D1–D3 / H3. */
+    static boolean isStatementSqlObservation(Map<String, String> detail) {
+        if (detail == null) return false;
+        String sql = detail.get("sql");
+        if (sql == null || sql.isBlank()) return false;
+        String trimmed = sql.trim();
+        if (isProtocolMetaText(trimmed)) return false;
+        String protocol = detail.getOrDefault("protocol", "");
+        if ("REDIS_RESP".equalsIgnoreCase(protocol)) return false;
+        String capture = detail.getOrDefault("captureMode", "");
+        if ("DEPENDENCY_PROTOCOL_MOCK".equals(capture) && !looksLikeSqlStatement(trimmed)) {
+            return false;
+        }
+        return looksLikeSqlStatement(trimmed) || trimmed.contains("?");
+    }
+
+    private static boolean isProtocolMetaText(String value) {
+        String lower = value.toLowerCase(Locale.ROOT);
+        return lower.startsWith("port=")
+                || lower.startsWith("sqlclass=")
+                || lower.contains("accepted-without-credential")
+                || lower.equals("client-budget")
+                || lower.equals("operation-limit")
+                || lower.equals("ok")
+                || lower.equals("closed")
+                || lower.equals("reset")
+                || lower.equals("accepted");
+    }
+
+    private static boolean looksLikeSqlStatement(String value) {
+        String lower = value.trim().toLowerCase(Locale.ROOT);
+        return lower.startsWith("select") || lower.startsWith("insert") || lower.startsWith("update")
+                || lower.startsWith("delete") || lower.startsWith("replace") || lower.startsWith("with")
+                || lower.startsWith("show") || lower.startsWith("explain") || lower.startsWith("describe")
+                || lower.startsWith("desc") || lower.startsWith("set ") || lower.startsWith("use ")
+                || lower.startsWith("call ") || lower.startsWith("create") || lower.startsWith("alter")
+                || lower.startsWith("drop") || lower.startsWith("truncate") || lower.startsWith("begin")
+                || lower.startsWith("commit") || lower.startsWith("rollback") || lower.startsWith("start ");
     }
 
     private static String inferReadWrite(String sql) {
         String value = sql == null ? "" : sql.trim().toLowerCase(Locale.ROOT);
-        if (value.startsWith("select") || value.startsWith("show") || value.startsWith("explain")) {
+        if (value.startsWith("select") || value.startsWith("show") || value.startsWith("explain")
+                || value.startsWith("describe") || value.startsWith("desc") || value.startsWith("with")) {
             return "READ";
         }
         if (value.startsWith("insert") || value.startsWith("update") || value.startsWith("delete")
-                || value.startsWith("replace")) {
+                || value.startsWith("replace") || value.startsWith("create") || value.startsWith("alter")
+                || value.startsWith("drop") || value.startsWith("truncate")) {
             return "WRITE";
         }
         return "UNKNOWN";

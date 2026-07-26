@@ -15,6 +15,9 @@ public final class PathOutcomeClassifier {
     public static PathOutcomeClass classify(int httpStatus, String errorClass, String detail) {
         String error = errorClass == null ? "" : errorClass;
         String text = detail == null ? "" : detail.toLowerCase(Locale.ROOT);
+        if (error.contains("ConnectException")) {
+            return PathOutcomeClass.COLD_START;
+        }
         if (error.contains("SocketTimeout") || text.contains("read timed out")
                 || text.contains("timeout")) {
             if (text.contains("connect")) return PathOutcomeClass.COLD_START;

@@ -184,13 +184,15 @@ public final class ExternalArtifactTaskExecutor {
             CommandResult probeRead = sandbox.command(sandboxId, new CommandRequest(
                     "/bin/cat " + PROBE_TRACE_FILE + " 2>/dev/null || true",
                     WORKING_DIRECTORY, Duration.ofSeconds(10), SANDBOX_UID, SANDBOX_GID));
+            byte[] probeBytes = probeRead.stdout().getBytes(java.nio.charset.StandardCharsets.UTF_8);
             byte[] jsonl = mergeProbeEvents(
                     traceRead.stdout().getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                    probeRead.stdout().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    probeBytes);
             if (jsonl.length > budget.maxTraceBytes()) {
                 throw new ExternalArtifactExecutionException(
                         "TRACE_TOO_LARGE", "Agent trace exceeds the task budget", null);
             }
+            requireHttpProbeEvidence(registration, jsonl);
             List<TraceChunk> chunks = converter.convert(jsonl, request.scope(), budget);
             pulse(request.scope(), lease, heartbeatExtension,
                     "提交轨迹（" + chunks.size() + " 段）");
@@ -421,7 +423,8 @@ public final class ExternalArtifactTaskExecutor {
                 + " -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
                 + " -Dveyrion.sandbox.traceDir.authorized=true"
                 + " -Dveyrion.sandbox.dependencyMock=true"
-                + " -Djava.io.tmpdir=" + TRACE_DIRECTORY
+                // Keep app temps off the tiny trace tmpfs so probe-events.jsonl can still be written.
+                + " -Djava.io.tmpdir=/tmp"
                 + " -javaagent:" + AGENT_PATH + "=maxBytes=" + maxBytes + ",maxEvents=" + maxEvents
                 + ",dependencyMock=true"
                 + (registration.classPrefix().isEmpty()
@@ -451,14 +454,14 @@ public final class ExternalArtifactTaskExecutor {
                 + " --spring.data.redis.timeout=500ms"
                 + " --management.health.redis.enabled=false"
                 + " > " + TRACE_DIRECTORY + "/application.log 2>&1"
-                + " & APP_PID=$!; elapsed=0; probe_status=1; HTTP_PORT="
+                + " & APP_PID=$!; elapsed=0; probe_status=1; PROBE_JVM_OK=0; HTTP_PORT="
                 + "; rm -f " + TRACE_DIRECTORY + "/http-port.txt " + TRACE_DIRECTORY
                 + "/listen-ports.txt " + PROBE_TRACE_FILE
                 + "; " + writeProgress("等待应用就绪（分析进程 LISTEN 端口）")
                 + "; while kill -0 \"$APP_PID\" 2>/dev/null"
                 + " && [ \"$elapsed\" -lt " + startupSeconds + " ]"
                 + "; do"
-                + " if java -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
+                + " if java -Xmx64m -XX:MaxMetaspaceSize=64m -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
                 + " -cp " + AGENT_PATH
                 + " com.aq.jvmsentinel.agent.WaitHttpReady \"$APP_PID\" " + TRACE_DIRECTORY
                 + "; then HTTP_PORT=$(cat " + TRACE_DIRECTORY + "/http-port.txt 2>/dev/null | tr -d '\\r\\n');"
@@ -476,7 +479,7 @@ public final class ExternalArtifactTaskExecutor {
                 + " && [ \"$elapsed\" -lt " + runSeconds + " ]"
                 + "; do sleep 3; elapsed=$((elapsed+3))"
                 + "; " + writeProgress("仍在等待应用就绪（分析进程 LISTEN 端口）")
-                + "; if java -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
+                + "; if java -Xmx64m -XX:MaxMetaspaceSize=64m -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
                 + " -cp " + AGENT_PATH
                 + " com.aq.jvmsentinel.agent.WaitHttpReady \"$APP_PID\" " + TRACE_DIRECTORY
                 + "; then HTTP_PORT=$(cat " + TRACE_DIRECTORY + "/http-port.txt 2>/dev/null | tr -d '\\r\\n');"
@@ -485,7 +488,10 @@ public final class ExternalArtifactTaskExecutor {
                 + TRACE_DIRECTORY + "/progress.txt"
                 + "; " + businessProbes
                 + "; fi; done; fi"
-                + "; if [ \"$probe_status\" -eq 0 ]; then " + writeProgress("探测完成，停止应用进程")
+                + "; if [ \"$probe_status\" -eq 0 ] && [ \"$PROBE_JVM_OK\" -eq 1 ]; then "
+                + writeProgress("探测完成，停止应用进程")
+                + "; elif [ \"$probe_status\" -eq 0 ]; then "
+                + writeProgress("HTTP 端口已就绪但批量探针未写入事件，停止应用进程")
                 + "; else " + writeProgress("就绪超时，停止应用进程")
                 + "; fi"
                 + "; if kill -0 \"$APP_PID\" 2>/dev/null; then "
@@ -494,9 +500,13 @@ public final class ExternalArtifactTaskExecutor {
                 + "; do sleep 1; grace=$((grace+1)); done"
                 + "; if kill -0 \"$APP_PID\" 2>/dev/null; then kill -KILL \"$APP_PID\"; fi"
                 + "; wait \"$APP_PID\" 2>/dev/null || true"
-                + "; if [ \"$probe_status\" -eq 0 ]; then exit 0; else exit 70; fi"
+                + "; if [ \"$probe_status\" -ne 0 ]; then exit 70"
+                + "; elif [ \"$PROBE_JVM_OK\" -ne 1 ]; then exit 71"
+                + "; else exit 0; fi"
                 + "; else wait \"$APP_PID\"; app_status=$?"
-                + "; if [ \"$probe_status\" -ne 0 ]; then exit 70; else exit \"$app_status\"; fi; fi";
+                + "; if [ \"$probe_status\" -ne 0 ]; then exit 70"
+                + "; elif [ \"$PROBE_JVM_OK\" -ne 1 ]; then exit 71"
+                + "; else exit \"$app_status\"; fi; fi";
     }
 
     /** Select protocol-level MySQL only when Connector/J is present in the catalog JAR. */
@@ -521,11 +531,15 @@ public final class ExternalArtifactTaskExecutor {
     /** One JVM probes the whole plan file so hundreds of entries stay inside the wall clock. */
     private static String batchProbeStep(List<ProbeTarget> targets) {
         int count = targets == null ? 0 : targets.size();
+        // Bounded heap so the probe can start beside a large Blade app; do not swallow JVM death.
         return writeProgress("开始批量探测 " + count + " 个 HTTP 入口（单 JVM）")
-                + "; java -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
+                + "; java -Xmx64m -XX:MaxMetaspaceSize=64m -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
                 + " -cp " + AGENT_PATH
                 + " com.aq.jvmsentinel.agent.LoopbackHttpProbe @"
-                + TRACE_DIRECTORY + "/probe-plan.txt \"$HTTP_PORT\" || true";
+                + TRACE_DIRECTORY + "/probe-plan.txt \"$HTTP_PORT\""
+                + "; probe_jvm_status=$?"
+                + "; if [ \"$probe_jvm_status\" -eq 0 ] || [ \"$probe_jvm_status\" -eq 2 ]"
+                + "; then PROBE_JVM_OK=1; fi";
     }
 
     private static Path writeHostProbePlan(List<ProbeTarget> targets) {
@@ -536,7 +550,9 @@ public final class ExternalArtifactTaskExecutor {
                 plan.append(target.method()).append('\t').append(target.route()).append('\t')
                         .append(target.query() == null ? "" : target.query()).append('\t')
                         .append(target.track() == null ? "UNAUTH" : target.track()).append('\t')
-                        .append(target.authHeader() == null ? "" : target.authHeader()).append('\n');
+                        .append(target.authHeader() == null ? "" : target.authHeader()).append('\t')
+                        .append(target.bladeAuthHeader() == null ? "" : target.bladeAuthHeader())
+                        .append('\n');
             }
             Files.writeString(file, plan.toString());
             return file;
@@ -630,11 +646,39 @@ public final class ExternalArtifactTaskExecutor {
     private static String exitDiagnostic(int exitCode, String detail) {
         String prefix = "external artifact returned exit " + exitCode;
         if (exitCode == 70) {
-            prefix += " (loopback HTTP probe never succeeded; application likely failed to become ready"
-                    + " under deny-all network — often blocked by unavailable DB/external deps)";
+            prefix += " (loopback HTTP listen never classified as ready; application likely failed to bind"
+                    + " an HTTP port under deny-all — often blocked by unavailable DB/external deps)";
+        } else if (exitCode == 71) {
+            prefix += " (HTTP port looked ready but LoopbackHttpProbe wrote no usable probe events"
+                    + " — probe JVM may have OOM'd, crashed, or failed to write probe-events.jsonl)";
         }
         if (detail == null || detail.isBlank()) return prefix;
         return prefix + ": " + detail;
+    }
+
+    /**
+     * Flood/sandbox plans must produce at least one HTTP probe event. Per-target timeouts remain
+     * success with evidence; zero events after a non-empty plan is fail-closed.
+     */
+    static void requireHttpProbeEvidence(ArtifactRegistration registration, byte[] mergedJsonl) {
+        Objects.requireNonNull(registration, "registration");
+        Objects.requireNonNull(mergedJsonl, "mergedJsonl");
+        if (registration.probePlan() == null || registration.probePlan().isEmpty()) return;
+        if (countHttpEvents(mergedJsonl) > 0) return;
+        throw new ExternalArtifactExecutionException(
+                "EMPTY_PROBE_EVENTS",
+                "loopback HTTP probe produced no HTTP events despite a non-empty probe plan ("
+                        + registration.probePlan().size() + " targets)",
+                null);
+    }
+
+    static int countHttpEvents(byte[] jsonl) {
+        if (jsonl == null || jsonl.length == 0) return 0;
+        int count = 0;
+        for (String line : new String(jsonl, java.nio.charset.StandardCharsets.UTF_8).split("\n", -1)) {
+            if (line.contains("\"eventType\":\"HTTP\"")) count++;
+        }
+        return count;
     }
 
     private static String requireId(String value, String name) {
@@ -651,13 +695,19 @@ public final class ExternalArtifactTaskExecutor {
     }
 
     /** One bounded HTTP stimulus inside the deny-all container. */
-    public record ProbeTarget(String method, String route, String query, String track, String authHeader) {
+    public record ProbeTarget(String method, String route, String query, String track,
+                              String authHeader, String bladeAuthHeader) {
         public ProbeTarget(String method, String route) {
-            this(method, route, "", "UNAUTH", "");
+            this(method, route, "", "UNAUTH", "", "");
         }
 
         public ProbeTarget(String method, String route, String query) {
-            this(method, route, query, "UNAUTH", "");
+            this(method, route, query, "UNAUTH", "", "");
+        }
+
+        /** Auth-only constructor; Blade-Auth stays empty (channels are independent). */
+        public ProbeTarget(String method, String route, String query, String track, String authHeader) {
+            this(method, route, query, track, authHeader, "");
         }
 
         public ProbeTarget {
@@ -665,13 +715,16 @@ public final class ExternalArtifactTaskExecutor {
             query = query == null ? "" : query;
             track = track == null || track.isBlank() ? "UNAUTH" : track;
             authHeader = authHeader == null ? "" : authHeader;
+            bladeAuthHeader = bladeAuthHeader == null ? "" : bladeAuthHeader;
             if (!Set.of("GET", "POST", "PUT", "PATCH", "DELETE").contains(method)
                     || route == null
                     || !route.matches("/[A-Za-z0-9_./{}:-]{0,1023}")
                     || (!query.isEmpty() && !query.matches("[A-Za-z0-9_=&%./{}:-]{1,256}"))
                     || !track.matches("[A-Z_]{1,32}")
                     || authHeader.length() > 2048
-                    || authHeader.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {
+                    || authHeader.chars().anyMatch(c -> c < 0x20 || c == 0x7f)
+                    || bladeAuthHeader.length() > 2048
+                    || bladeAuthHeader.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {
                 throw new IllegalArgumentException("artifact probe target is invalid");
             }
         }

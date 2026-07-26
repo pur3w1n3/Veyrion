@@ -5,6 +5,8 @@ import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolCall;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolOutput;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolResult;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolStatus;
+import com.aq.jvmsentinel.ai.AuthBypassFeasibility;
+import com.aq.jvmsentinel.model.AuthBypassCandidate;
 import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.aq.jvmsentinel.model.IdentityTrack;
 import com.aq.jvmsentinel.provider.AgentRole;
@@ -110,6 +112,12 @@ public final class AiToolRegistry {
             return CanonicalToolContracts.error(call, ToolStatus.NOT_FOUND, exception.code);
         } catch (ScopeException exception) {
             return CanonicalToolContracts.error(call, ToolStatus.DENIED, "DATA_SOURCE_SCOPE_MISMATCH");
+        } catch (IllegalArgumentException exception) {
+            String code = argumentErrorCode(exception);
+            if (EntryRefResolver.CODE_NOT_FOUND.equals(code)) {
+                return CanonicalToolContracts.error(call, ToolStatus.NOT_FOUND, code);
+            }
+            return CanonicalToolContracts.error(call, ToolStatus.INVALID_ARGUMENTS, code);
         } catch (Exception exception) {
             return CanonicalToolContracts.error(call, ToolStatus.FAILED, "TOOL_EXECUTION_FAILED");
         }
@@ -152,6 +160,8 @@ public final class AiToolRegistry {
         ToolDefinition definition = new ToolDefinition("facts_search",
                 "Search already-indexed, read-only facts in the server-bound project. "
                         + "Kinds: SCAN, ENTRY, DEPENDENCY, SINK, EVIDENCE, DYNAMIC_EVIDENCE, PATH_RUN, ANY. "
+                        + "For PRE_ANALYSIS, query ENTRY with entry ids, routes, controller/class names, HTTP methods, "
+                        + "or English enum keywords; do not rely only on translated prose. "
                         + "PATH_RUN returns persisted HTTP status, outcomeClass, and SQL event detail.",
                 schema.jsonSchema(), OverflowPolicy.TRUNCATE);
         return new RegisteredTool(definition, schema, (call, context) -> {
@@ -185,24 +195,38 @@ public final class AiToolRegistry {
     }
 
     private RegisteredTool planPropose() {
-        ToolSchema schema = new ToolSchema(Map.of(
-                "entrypointRef", Field.string(1024),
-                "objective", Field.string(4096),
-                "candidateInputs", Field.stringArray(16, 1024),
-                "maxCandidates", Field.integer(1, 16),
-                "track", Field.string(32),
-                "method", Field.string(16),
-                "contentType", Field.string(128),
-                "maxAttempts", Field.integer(1, 8)), Set.of("entrypointRef", "objective"));
+        Map<String, Field> planFields = new LinkedHashMap<>();
+        planFields.put("entrypointRef", Field.string(1024));
+        planFields.put("objective", Field.string(4096));
+        planFields.put("candidateInputs", Field.stringArray(16, 1024));
+        planFields.put("maxCandidates", Field.integer(1, 16));
+        planFields.put("track", Field.string(32));
+        planFields.put("method", Field.string(16));
+        planFields.put("contentType", Field.string(128));
+        planFields.put("maxAttempts", Field.integer(1, 8));
+        planFields.put("techniqueId", Field.string(64));
+        planFields.put("rationale", Field.string(512));
+        planFields.put("confidence", Field.number(0, 1));
+        planFields.put("evidenceRefs", Field.stringArray(8, 256));
+        planFields.put("authorizationHeader", Field.string(2048));
+        planFields.put("bladeAuthHeader", Field.string(2048));
+        planFields.put("query", Field.string(256));
+        planFields.put("bodyHint", Field.string(1024));
+        ToolSchema schema = new ToolSchema(planFields, Set.of("entrypointRef", "objective"));
         ToolDefinition definition = new ToolDefinition("plan_propose",
-                "Create a non-executing, evidence-linked candidate plan; it grants no capabilities. "
-                        + "Optional experiment-plan fields are server-gated.",
+                "Create a non-executing, evidence-linked candidate plan or auth-bypass PoC; "
+                        + "it grants no capabilities. entrypointRef must resolve to a scan entry: prefer "
+                        + "entry:<scanEntryId> (for example entry:entry-ann-1); bare scanEntryId and unambiguous "
+                        + "entry:METHOD:route aliases are accepted. For AUTH_ANALYSIS, author structured PoCs with "
+                        + "techniqueId plus optional authorizationHeader/bladeAuthHeader/query/bodyHint "
+                        + "(AI-authored JWT/header material is accepted under length/charset gates). "
+                        + "Optional experiment-plan fields remain server-gated. Cannot change network/mount/command.",
                 schema.jsonSchema(), OverflowPolicy.DENY);
         return new RegisteredTool(definition, schema, (call, context) -> {
             String reference = call.arguments().get("entrypointRef").asText();
-            ToolDataSource.FactRecord entrypoint = source.findEvidence(context.scope(), reference)
-                    .orElseThrow(() -> new MissingException("ENTRYPOINT_NOT_FOUND"));
+            ToolDataSource.FactRecord entrypoint = requireExistingEntry(context.scope(), reference);
             requireScope(context, entrypoint);
+            String canonicalRef = entrypoint.reference();
             int maximum = call.arguments().has("maxCandidates")
                     ? call.arguments().get("maxCandidates").asInt() : 8;
             ArrayNode candidates = JSON.createArrayNode();
@@ -216,14 +240,14 @@ public final class AiToolRegistry {
             ObjectNode plan = JSON.createObjectNode();
             plan.put("role", context.role().name());
             plan.put("objective", call.arguments().get("objective").asText());
-            plan.put("sourceEvidenceRef", reference);
+            plan.put("sourceEvidenceRef", canonicalRef);
             plan.set("candidateInputs", candidates);
             // Server-gate optional PathRun experiment fields only when entry:* is proposed.
-            if (reference.startsWith("entry:")
-                    || call.arguments().has("track")
+            if (call.arguments().has("track")
                     || call.arguments().has("method")
                     || call.arguments().has("contentType")
-                    || call.arguments().has("maxAttempts")) {
+                    || call.arguments().has("maxAttempts")
+                    || call.arguments().has("techniqueId")) {
                 String trackName = call.arguments().has("track")
                         ? call.arguments().get("track").asText("UNAUTH") : "UNAUTH";
                 IdentityTrack track;
@@ -239,10 +263,9 @@ public final class AiToolRegistry {
                         : "application/json";
                 int maxAttempts = call.arguments().has("maxAttempts")
                         ? call.arguments().get("maxAttempts").asInt(2) : 2;
-                String entryRef = reference.startsWith("entry:") ? reference : "entry:synthetic";
                 ExperimentPlan experiment = new ExperimentPlan(
                         "plan:" + context.jobId() + ":" + call.callId(),
-                        entryRef, track, method, contentType, List.of(),
+                        canonicalRef, track, method, contentType, List.of(),
                         track != IdentityTrack.UNAUTH, "2xx", "", maxAttempts);
                 ExperimentPlanValidator.validate(experiment, 8);
                 plan.put("track", track.name());
@@ -250,6 +273,41 @@ public final class AiToolRegistry {
                 plan.put("contentType", experiment.contentType());
                 plan.put("maxAttempts", experiment.maxAttempts());
                 plan.put("serverGated", true);
+            }
+            boolean authPoc = (call.arguments().has("techniqueId")
+                    && !call.arguments().get("techniqueId").asText("").isBlank())
+                    || (call.arguments().has("authorizationHeader")
+                    && !call.arguments().get("authorizationHeader").asText("").isBlank())
+                    || (call.arguments().has("bladeAuthHeader")
+                    && !call.arguments().get("bladeAuthHeader").asText("").isBlank());
+            if (authPoc) {
+                Double confidence = call.arguments().has("confidence")
+                        && call.arguments().get("confidence").isNumber()
+                        ? call.arguments().get("confidence").asDouble() : null;
+                AuthBypassCandidate bypass = AuthBypassFeasibility.fromPlanPropose(
+                        canonicalRef,
+                        call.arguments().has("techniqueId")
+                                ? call.arguments().get("techniqueId").asText("CUSTOM_POC") : "CUSTOM_POC",
+                        plan.has("track") ? plan.get("track").asText() : null,
+                        call.arguments().has("rationale")
+                                ? call.arguments().get("rationale").asText("")
+                                : call.arguments().get("objective").asText(""),
+                        call.arguments().get("evidenceRefs"),
+                        confidence,
+                        call.arguments().has("authorizationHeader")
+                                ? call.arguments().get("authorizationHeader").asText("") : "",
+                        call.arguments().has("bladeAuthHeader")
+                                ? call.arguments().get("bladeAuthHeader").asText("") : "",
+                        call.arguments().has("query") ? call.arguments().get("query").asText("") : "",
+                        call.arguments().has("bodyHint") ? call.arguments().get("bodyHint").asText("") : "",
+                        null);
+                plan.put("techniqueId", bypass.techniqueId());
+                plan.put("track", bypass.track().name());
+                plan.put("rationale", bypass.rationale());
+                plan.put("confidence", bypass.confidence());
+                plan.set("bypassPoC", AuthBypassFeasibility.toJson(bypass));
+                plan.set("bypassCandidate", plan.get("bypassPoC"));
+                plan.put("classification", "INFERENCE");
             }
             plan.putArray("allowedActions").add("REVIEW_FACTS").add("SELECT_CANDIDATE_INPUTS");
             plan.put("executionRequested", false);
@@ -262,25 +320,123 @@ public final class AiToolRegistry {
         ToolSchema schema = new ToolSchema(Map.of(
                 "entrypointRef", Field.string(1024),
                 "candidateInputs", Field.stringArray(16, 1024),
-                "maxRequests", Field.integer(1, 8)), Set.of("entrypointRef"));
+                "maxRequests", Field.integer(1, 8),
+                "techniqueId", Field.string(64),
+                "authorizationHeader", Field.string(2048),
+                "bladeAuthHeader", Field.string(2048)), Set.of("entrypointRef"));
         ToolDefinition definition = new ToolDefinition("sandbox_probe",
                 "Request a bounded server-owned loopback probe for an existing entrypoint. "
-                        + "The model cannot choose the command, route, network, mount, or budget.",
+                        + "entrypointRef must resolve to a scan entry: prefer entry:<scanEntryId> "
+                        + "(for example entry:entry-ann-1); bare scanEntryId and unambiguous "
+                        + "entry:METHOD:route aliases from PathRun facts are accepted; raw paths are rejected. "
+                        + "Optional authorizationHeader and bladeAuthHeader are independent auth channels "
+                        + "(length/charset gated); omit them or pass \"\" for MISSING_AUTH / unauthenticated "
+                        + "probes — never invent a fake Bearer, and never assume one channel copies to the other. "
+                        + "Optional techniqueId labels the PoC or selects a server fallback synthesizer when no header "
+                        + "is supplied. The model cannot choose command, network, mount, UID, or budget. "
+                        + "Probe outcomes are facts with state/lifecycle/stopReason/failureCode.",
                 schema.jsonSchema(), OverflowPolicy.DENY);
         return new RegisteredTool(definition, schema, (call, context) -> {
             String reference = call.arguments().get("entrypointRef").asText();
+            ToolDataSource.FactRecord entrypoint = requireExistingEntry(context.scope(), reference);
+            requireScope(context, entrypoint);
+            String canonicalRef = entrypoint.reference();
             List<String> inputs = new ArrayList<>();
             if (call.arguments().has("candidateInputs")) {
                 for (JsonNode value : call.arguments().get("candidateInputs")) inputs.add(value.asText());
             }
             int maxRequests = call.arguments().has("maxRequests")
                     ? call.arguments().get("maxRequests").asInt() : 1;
-            ToolDataSource.FactRecord result = source.requestSandboxProbe(
-                    context.scope(), context.principalId(), context.jobId(), reference, inputs, maxRequests)
-                    .orElseThrow(() -> new MissingException("SANDBOX_PROBE_UNAVAILABLE"));
-            requireScope(context, result);
-            return List.of(new ToolOutput(OutputKind.FACT, result.reference(), result.value()));
+            String techniqueId = call.arguments().has("techniqueId")
+                    ? call.arguments().get("techniqueId").asText("").trim() : "";
+            if (!techniqueId.isEmpty() && !techniqueId.matches("[A-Za-z][A-Za-z0-9_]{1,63}")) {
+                throw new IllegalArgumentException("techniqueId is invalid");
+            }
+            String authorizationHeader = call.arguments().has("authorizationHeader")
+                    ? call.arguments().get("authorizationHeader").asText("") : "";
+            if (!authorizationHeader.isEmpty()) {
+                // Validate bounds via candidate constructor without requiring a technique enum.
+                AuthBypassCandidate.validateAuthMaterialOnly(authorizationHeader);
+            }
+            String bladeAuthHeader = call.arguments().has("bladeAuthHeader")
+                    ? call.arguments().get("bladeAuthHeader").asText("") : "";
+            if (!bladeAuthHeader.isEmpty()) {
+                AuthBypassCandidate.validateAuthMaterialOnly(bladeAuthHeader);
+            }
+            try {
+                ToolDataSource.FactRecord result = source.requestSandboxProbe(
+                        context.scope(), context.principalId(), context.jobId(), canonicalRef,
+                        inputs, maxRequests,
+                        techniqueId.isEmpty() ? null : techniqueId.toUpperCase(Locale.ROOT),
+                        authorizationHeader.isEmpty() ? null : authorizationHeader,
+                        bladeAuthHeader.isEmpty() ? null : bladeAuthHeader)
+                        .orElseThrow(() -> new MissingException("SANDBOX_PROBE_UNAVAILABLE"));
+                requireScope(context, result);
+                return List.of(new ToolOutput(OutputKind.FACT, result.reference(), result.value()));
+            } catch (MissingException | IllegalArgumentException | ScopeException exception) {
+                throw exception;
+            } catch (Exception exception) {
+                ObjectNode fact = probeFailureFact(canonicalRef, context.jobId(), exception);
+                return List.of(new ToolOutput(OutputKind.FACT,
+                        "sandbox-probe:failed:" + context.jobId(), fact));
+            }
         });
+    }
+
+    private ToolDataSource.FactRecord requireExistingEntry(ToolExecutionContext.Scope scope, String reference)
+            throws Exception {
+        try {
+            return source.resolveEntrypoint(scope, reference)
+                    .orElseThrow(() -> new MissingException(EntryRefResolver.CODE_NOT_FOUND));
+        } catch (IllegalArgumentException exception) {
+            String code = argumentErrorCode(exception);
+            if (EntryRefResolver.CODE_NOT_FOUND.equals(code)) {
+                throw new MissingException(EntryRefResolver.CODE_NOT_FOUND);
+            }
+            throw new IllegalArgumentException(code);
+        }
+    }
+
+    private static ObjectNode probeFailureFact(String canonicalRef, String jobId, Exception exception) {
+        ObjectNode fact = JSON.createObjectNode();
+        fact.put("schemaVersion", 1);
+        fact.put("state", "FAILED");
+        fact.put("lifecycle", "FAILED");
+        fact.put("entrypointRef", canonicalRef == null ? "" : canonicalRef);
+        fact.put("executor", "SERVER_OWNED_TRUSTED_DOCKER");
+        fact.put("networkMode", "DENY");
+        fact.put("retryable", false);
+        String failureCode = probeFailureCode(exception);
+        fact.put("failureCode", failureCode);
+        fact.put("stopReason", "WORKER_FAILURE");
+        if (jobId != null && !jobId.isBlank()) {
+            fact.put("jobId", jobId);
+        }
+        String detail = exception.getMessage();
+        if (detail != null && !detail.isBlank()) {
+            fact.put("detail", detail.length() > 240 ? detail.substring(0, 240) : detail);
+        }
+        return fact;
+    }
+
+    private static String probeFailureCode(Exception exception) {
+        String message = exception.getMessage();
+        if (message != null) {
+            String trimmed = message.trim();
+            if (trimmed.matches("[A-Z][A-Z0-9_]{2,127}")) {
+                return trimmed;
+            }
+            if (trimmed.contains("EMPTY_PROBE_EVENTS")) return "EMPTY_PROBE_EVENTS";
+            if (trimmed.contains("EXTERNAL_ARTIFACT")) return "EXTERNAL_ARTIFACT_EXECUTION_FAILED";
+            if (trimmed.contains("sandbox probe job limit")) return "SANDBOX_PROBE_JOB_LIMIT";
+        }
+        String simple = exception.getClass().getSimpleName();
+        if (simple != null && !simple.isBlank() && simple.length() <= 128) {
+            return "PROBE_" + simple.replaceAll("([a-z])([A-Z])", "$1_$2")
+                    .toUpperCase(Locale.ROOT)
+                    .replaceAll("[^A-Z0-9_]", "_");
+        }
+        return "TOOL_EXECUTION_FAILED";
     }
 
     private static void requireScope(ToolExecutionContext context, ToolDataSource.FactRecord record) {
@@ -328,6 +484,29 @@ public final class AiToolRegistry {
         return false;
     }
 
+    private static String argumentErrorCode(IllegalArgumentException exception) {
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) return "TOOL_ARGUMENT_REJECTED";
+        String trimmed = message.trim();
+        // Stable uppercase codes thrown by control-plane / candidate gates.
+        if (trimmed.matches("[A-Z][A-Z0-9_]{2,127}")) {
+            return trimmed;
+        }
+        return switch (trimmed) {
+            case "track is invalid" -> "EXPERIMENT_TRACK_INVALID";
+            case "method is not allowlisted" -> "EXPERIMENT_METHOD_NOT_ALLOWED";
+            case "contentType is not allowlisted" -> "EXPERIMENT_CONTENT_TYPE_NOT_ALLOWED";
+            case "destructive payload rejected" -> "EXPERIMENT_DESTRUCTIVE_PAYLOAD_REJECTED";
+            case "techniqueId is invalid" -> "TECHNIQUE_ID_INVALID";
+            case "authorization material exceeds bound" -> "AUTHORIZATION_HEADER_BOUND_EXCEEDED";
+            case "authorization material charset rejected" -> "AUTHORIZATION_HEADER_CHARSET_REJECTED";
+            case "sandbox probe requires an entry evidence reference" -> EntryRefResolver.CODE_MUST_BE_ENTRY;
+            case "sandbox probe entry is not in scan" -> EntryRefResolver.CODE_NOT_FOUND;
+            case "sandbox probe entry is not an eligible HTTP endpoint" -> "SANDBOX_PROBE_ENTRY_NOT_HTTP";
+            default -> "TOOL_ARGUMENT_REJECTED";
+        };
+    }
+
     public record ToolDefinition(String name, String description, JsonNode inputSchema,
                                  OverflowPolicy overflowPolicy) {
         public ToolDefinition {
@@ -362,7 +541,16 @@ public final class AiToolRegistry {
                 if (field == null) return "UNKNOWN_ARGUMENT";
                 if (!field.valid(argument.getValue())) return "ARGUMENT_SCHEMA_MISMATCH";
             }
-            for (String name : required) if (!arguments.has(name)) return "MISSING_ARGUMENT";
+            for (String name : required) {
+                if (!arguments.has(name)) return "MISSING_ARGUMENT";
+                // Required strings must be non-blank; optional strings may be "" (e.g. MISSING_AUTH).
+                Field field = fields.get(name);
+                if (field != null && field.kind() == Kind.STRING
+                        && arguments.get(name).isTextual()
+                        && arguments.get(name).asText().isBlank()) {
+                    return "MISSING_ARGUMENT";
+                }
+            }
             return null;
         }
 
@@ -381,16 +569,20 @@ public final class AiToolRegistry {
     private record Field(Kind kind, int maximum, int minimum) {
         static Field string(int maximum) { return new Field(Kind.STRING, maximum, 0); }
         static Field integer(int minimum, int maximum) { return new Field(Kind.INTEGER, maximum, minimum); }
+        static Field number(int minimum, int maximum) { return new Field(Kind.NUMBER, maximum, minimum); }
         static Field stringArray(int maximumItems, int maximumLength) {
             return new Field(Kind.STRING_ARRAY, maximumItems, maximumLength);
         }
 
         boolean valid(JsonNode node) {
             return switch (kind) {
-                case STRING -> node.isTextual() && !node.asText().isBlank()
+                // Optional strings may be blank (MISSING_AUTH authorizationHeader:"");
+                // required non-blank is enforced in ToolSchema.validate.
+                case STRING -> node.isTextual()
                         && node.asText().length() <= maximum && node.asText().indexOf('\0') < 0;
                 case INTEGER -> node.isIntegralNumber() && node.canConvertToInt()
                         && node.asInt() >= minimum && node.asInt() <= maximum;
+                case NUMBER -> node.isNumber() && node.asDouble() >= minimum && node.asDouble() <= maximum;
                 case STRING_ARRAY -> {
                     if (!node.isArray() || node.size() > maximum) yield false;
                     boolean valid = true;
@@ -415,6 +607,11 @@ public final class AiToolRegistry {
                     node.put("minimum", minimum);
                     node.put("maximum", maximum);
                 }
+                case NUMBER -> {
+                    node.put("type", "number");
+                    node.put("minimum", minimum);
+                    node.put("maximum", maximum);
+                }
                 case STRING_ARRAY -> {
                     node.put("type", "array");
                     node.put("maxItems", maximum);
@@ -425,7 +622,7 @@ public final class AiToolRegistry {
         }
     }
 
-    private enum Kind { STRING, INTEGER, STRING_ARRAY }
+    private enum Kind { STRING, INTEGER, NUMBER, STRING_ARRAY }
 
     private static final class MissingException extends RuntimeException {
         private final String code;

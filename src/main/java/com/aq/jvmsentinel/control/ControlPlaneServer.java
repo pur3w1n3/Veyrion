@@ -4,11 +4,13 @@ import com.aq.jvmsentinel.analysis.PreAnalysisResult;
 import com.aq.jvmsentinel.analysis.PreAnalysisInput;
 import com.aq.jvmsentinel.analysis.ArtifactMetadataReader;
 import com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService;
-import com.aq.jvmsentinel.analysis.pack.AnalysisPackRegistry;
+import com.aq.jvmsentinel.model.AuthBypassCandidate;
+import com.aq.jvmsentinel.model.AuthBypassTechnique;
 import com.aq.jvmsentinel.model.IdentityTrack;
 import com.aq.jvmsentinel.ai.AiJobOrchestrator;
 import com.aq.jvmsentinel.ai.AuditPipelineCoordinator;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource;
+import com.aq.jvmsentinel.ai.tool.EntryRefResolver;
 import com.aq.jvmsentinel.ai.tool.ToolDataSource;
 import com.aq.jvmsentinel.ai.tool.ToolExecutionContext;
 import com.aq.jvmsentinel.artifact.ArtifactRegistry;
@@ -115,6 +117,7 @@ public final class ControlPlaneServer implements AutoCloseable {
     private static final long DEFAULT_DISK_BYTES = 2L * 1024 * 1024 * 1024;
     private static final int MAX_IDEMPOTENCY_KEYS = 50_000;
     private static final int MAX_AI_JOB_EVENTS = 128;
+    private static final int MAX_DYNAMIC_PROBES = 512;
 
     private final InetSocketAddress bindAddress;
     private final ArtifactRegistry artifactRegistry;
@@ -128,6 +131,7 @@ public final class ControlPlaneServer implements AutoCloseable {
     private final Map<String, AuditRunReplay> idempotentAuditRuns = new ConcurrentHashMap<>();
     private final Map<String, DynamicTaskReplay> idempotentDynamicTasks = new ConcurrentHashMap<>();
     private final Map<String, FindingReplay> idempotentFindingReplays = new ConcurrentHashMap<>();
+    private final Map<String, EntryFocusProbe> idempotentEntryFocusProbes = new ConcurrentHashMap<>();
     /** Durable idempotency index; the legacy typed maps remain an in-process fast path. */
     private final Map<String, SQLiteControlPlanePersistence.IdempotencyData> durableIdempotency = new ConcurrentHashMap<>();
     /** One server-owned probe task per AI job; model retries cannot fan out unbounded tasks. */
@@ -415,6 +419,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         aiProbeTasks.clear();
         dynamicProbePlans.clear();
         idempotentFindingReplays.clear();
+        idempotentEntryFocusProbes.clear();
         aiJobOrchestrator.close();
     }
 
@@ -614,6 +619,12 @@ public final class ControlPlaneServer implements AutoCloseable {
         }
         if (path.size() == 3 && "findings".equals(path.get(0)) && "replay".equals(path.get(2))) {
             if ("POST".equals(method)) { requirePermission(exchange, Permission.RUN_SCANS); replayFinding(exchange, path.get(1)); return; }
+        }
+        if (path.size() == 5 && "scans".equals(path.get(0)) && "entries".equals(path.get(2))
+                && "focus-probe".equals(path.get(4)) && "POST".equals(method)) {
+            requirePermission(exchange, Permission.RUN_SCANS);
+            focusEntryProbe(exchange, path.get(1), path.get(3));
+            return;
         }
         if (path.size() == 1 && "operators".equals(path.get(0))) {
             requirePermission(exchange, Permission.MANAGE_OPERATOR_ACCESS);
@@ -1297,9 +1308,14 @@ public final class ControlPlaneServer implements AutoCloseable {
     private static ResourceBudget dynamicBudgetForArtifact(ArtifactDescriptor artifact, int probeCount) {
         long size = Math.max(0L, artifact.sizeBytes());
         int probes = Math.max(1, Math.min(512, probeCount));
-        // Cold start (~90s) + batched loopback probes (~0.2s each) + teardown margin.
+        // Cold start + parallel loopback probe waves (fast 800ms) plus capped slow
+        // retries (up to 128 × 2000ms). Keep margin for MOCK-dependency hangs.
         long baseWall = size >= 80L * 1024 * 1024 ? 420 : size >= 20L * 1024 * 1024 ? 300 : 180;
-        long wallSeconds = Math.min(3_600L, Math.max(baseWall, 150L + probes));
+        long probeWaves = (probes + 7L) / 8L;
+        long slowRetryCap = Math.min(128L, probes);
+        long slowWaves = (slowRetryCap + 7L) / 8L;
+        long wallSeconds = Math.min(3_600L,
+                Math.max(baseWall, baseWall + probeWaves * 2L + slowWaves * 4L + 90L));
         long memoryBytes = size >= 80L * 1024 * 1024 ? 3L * 1024 * 1024 * 1024 : 2L * 1024 * 1024 * 1024;
         // Keep room for agent events plus one APPLICATION_REPORTED HTTP line per probe.
         long traceBytes = Math.min(16L * 1024 * 1024,
@@ -1474,7 +1490,16 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     private Optional<ToolDataSource.FactRecord> requestSandboxProbe(
             String scanId, ToolExecutionContext.Scope scope, String principalId, String jobId,
-            String entrypointRef, List<String> candidateInputs, int maxRequests) {
+            String entrypointRef, List<String> candidateInputs, int maxRequests,
+            String techniqueId, String authorizationHeader) {
+        return requestSandboxProbe(scanId, scope, principalId, jobId, entrypointRef, candidateInputs,
+                maxRequests, techniqueId, authorizationHeader, null);
+    }
+
+    private Optional<ToolDataSource.FactRecord> requestSandboxProbe(
+            String scanId, ToolExecutionContext.Scope scope, String principalId, String jobId,
+            String entrypointRef, List<String> candidateInputs, int maxRequests,
+            String techniqueId, String authorizationHeader, String bladeAuthHeader) {
         if (!"local".equals(scope.workspaceId()) || principalId == null || principalId.isBlank()) {
             throw new SecurityException("sandbox probe scope is invalid");
         }
@@ -1482,21 +1507,42 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (!scope.projectId().equals(scan.dto().projectId())) {
             throw new SecurityException("sandbox probe project scope mismatch");
         }
-        if (entrypointRef == null || !entrypointRef.startsWith("entry:")) {
-            throw new IllegalArgumentException("sandbox probe requires an entry evidence reference");
+        EntryRefResolver.Resolution resolution = EntryRefResolver.resolve(scan.dto().entries(), entrypointRef);
+        if (!resolution.resolved()) {
+            throw new IllegalArgumentException(resolution.code());
         }
-        String entryId = entrypointRef.substring("entry:".length());
-        ApiDtos.EntryDto entry = scan.dto().entries().stream()
-                .filter(value -> value.id().equals(entryId)).findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("sandbox probe entry is not in scan"));
+        ApiDtos.EntryDto entry = resolution.entry();
+        String canonicalRef = resolution.canonicalRef();
+        String entryId = entry.id();
         if (!"HTTP".equalsIgnoreCase(entry.protocol()) || entry.route() == null
                 || entry.method() == null || maxRequests < 1 || maxRequests > 8) {
             throw new IllegalArgumentException("sandbox probe entry is not an eligible HTTP endpoint");
         }
+        String boundedTechnique = techniqueId == null ? "" : techniqueId.trim().toUpperCase(Locale.ROOT);
+        if (!boundedTechnique.isEmpty() && !boundedTechnique.matches("[A-Z][A-Z0-9_]{1,63}")) {
+            throw new IllegalArgumentException("techniqueId is invalid");
+        }
+        String boundedAuth = authorizationHeader == null ? "" : authorizationHeader;
+        if (!boundedAuth.isEmpty()) {
+            com.aq.jvmsentinel.model.AuthBypassCandidate.validateAuthMaterialOnly(boundedAuth);
+        }
+        String boundedBlade = bladeAuthHeader == null ? "" : bladeAuthHeader;
+        if (!boundedBlade.isEmpty()) {
+            com.aq.jvmsentinel.model.AuthBypassCandidate.validateAuthMaterialOnly(boundedBlade);
+        }
         Map<String, Object> request = new LinkedHashMap<>();
-        request.put("entrypointRef", entrypointRef);
+        request.put("entrypointRef", canonicalRef);
         request.put("candidateInputs", candidateInputs == null ? List.of() : candidateInputs);
         request.put("maxRequests", maxRequests);
+        if (!boundedTechnique.isEmpty()) request.put("techniqueId", boundedTechnique);
+        if (!boundedAuth.isEmpty()) {
+            request.put("authorizationHeaderBytes", boundedAuth.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+            request.put("authorizationHeaderSha256", payloadHash(boundedAuth));
+        }
+        if (!boundedBlade.isEmpty()) {
+            request.put("bladeAuthHeaderBytes", boundedBlade.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+            request.put("bladeAuthHeaderSha256", payloadHash(boundedBlade));
+        }
         String requestPayload = JsonCodec.stringify(request);
         String durableScope = "sandbox-probe:job";
         ensureIdempotencyCapacity(durableIdempotency, idempotencyMapKey(durableScope, jobId));
@@ -1506,50 +1552,98 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (existing == null && durable != null) {
             existing = workerApi.snapshots(scan.dto().projectId(), scanId).stream()
                     .filter(value -> value.scope().taskId().equals(durable.resultRef())).findFirst()
-                    .orElseThrow(() -> new SQLiteControlPlanePersistence.PersistenceException(
-                            "sandbox probe replay has no persistent worker task"));
+                    .orElse(null);
+            if (existing == null) {
+                return Optional.of(probeExecutionFailureFact(scope, jobId, scanId, canonicalRef, entry,
+                        candidateInputs, maxRequests, "SANDBOX_PROBE_REPLAY_MISSING",
+                        "sandbox probe replay has no persistent worker task"));
+            }
             aiProbeTasks.putIfAbsent(jobId, existing);
         }
-        if (existing != null) {
-            TaskSnapshot refreshed = refreshTaskSnapshot(scan.dto().projectId(), scanId, existing.scope().taskId())
-                    .orElse(existing);
-            aiProbeTasks.put(jobId, refreshed);
-            if (isActiveLifecycle(refreshed.lifecycle())) {
-                refreshed = awaitDynamicTaskTerminal(scan.dto().projectId(), scanId, refreshed.scope().taskId(),
-                        Duration.ofMinutes(8)).orElse(refreshed);
+        try {
+            if (existing != null) {
+                TaskSnapshot refreshed = refreshTaskSnapshot(scan.dto().projectId(), scanId, existing.scope().taskId())
+                        .orElse(existing);
                 aiProbeTasks.put(jobId, refreshed);
+                if (isActiveLifecycle(refreshed.lifecycle())) {
+                    refreshed = awaitDynamicTaskTerminal(scan.dto().projectId(), scanId, refreshed.scope().taskId(),
+                            Duration.ofMinutes(8)).orElse(refreshed);
+                    aiProbeTasks.put(jobId, refreshed);
+                }
+                return Optional.of(probeFact(scope, refreshed, entry, probeState(refreshed), candidateInputs, maxRequests));
             }
-            return Optional.of(probeFact(scope, refreshed, entry, probeState(refreshed), candidateInputs, maxRequests));
+            boolean scanBusy = workerApi.snapshots(scan.dto().projectId(), scanId).stream()
+                    .anyMatch(value -> isActiveLifecycle(value.lifecycle()));
+            if (scanBusy) {
+                // Do not bind a foreign in-flight task to the requested entry.
+                Map<String, Object> busy = new LinkedHashMap<>();
+                busy.put("schemaVersion", 1);
+                busy.put("state", "BUSY");
+                busy.put("scanId", scanId);
+                busy.put("entrypointRef", canonicalRef);
+                busy.put("method", entry.method());
+                busy.put("route", entry.route());
+                busy.put("networkMode", "DENY");
+                busy.put("executor", "SERVER_OWNED_TRUSTED_DOCKER");
+                busy.put("candidateCount", candidateInputs == null ? 0 : Math.min(16, candidateInputs.size()));
+                busy.put("requestLimit", Math.min(8, Math.max(1, maxRequests)));
+                busy.put("retryable", true);
+                return Optional.of(new ToolDataSource.FactRecord(scope, "sandbox-probe:busy:" + jobId,
+                        JSON.valueToTree(busy)));
+            }
+            TaskSnapshot snapshot = enqueueDynamicForPipeline(scanId, principalId, entryId, candidateInputs,
+                    maxRequests, boundedTechnique.isEmpty() ? null : boundedTechnique,
+                    boundedAuth.isEmpty() ? null : boundedAuth,
+                    boundedBlade.isEmpty() ? null : boundedBlade);
+            if (aiProbeTasks.size() >= MAX_IDEMPOTENCY_KEYS && !aiProbeTasks.containsKey(jobId)) {
+                return Optional.of(probeExecutionFailureFact(scope, jobId, scanId, canonicalRef, entry,
+                        candidateInputs, maxRequests, "SANDBOX_PROBE_JOB_LIMIT",
+                        "sandbox probe job limit reached"));
+            }
+            aiProbeTasks.putIfAbsent(jobId, snapshot);
+            rememberDurableIdempotency(durableScope, jobId, requestPayload, snapshot.scope().taskId(), null);
+            TaskSnapshot finished = awaitDynamicTaskTerminal(scan.dto().projectId(), scanId, snapshot.scope().taskId(),
+                    Duration.ofMinutes(8)).orElse(snapshot);
+            aiProbeTasks.put(jobId, finished);
+            return Optional.of(probeFact(scope, finished, entry, probeState(finished), candidateInputs, maxRequests));
+        } catch (ApiException apiException) {
+            return Optional.of(probeExecutionFailureFact(scope, jobId, scanId, canonicalRef, entry,
+                    candidateInputs, maxRequests, apiException.code,
+                    apiException.getMessage() == null ? apiException.code : apiException.getMessage()));
+        } catch (RuntimeException runtime) {
+            String code = runtime.getMessage() != null && runtime.getMessage().matches("[A-Z][A-Z0-9_]{2,127}")
+                    ? runtime.getMessage()
+                    : "SANDBOX_PROBE_EXECUTION_FAILED";
+            return Optional.of(probeExecutionFailureFact(scope, jobId, scanId, canonicalRef, entry,
+                    candidateInputs, maxRequests, code,
+                    runtime.getMessage() == null ? code : runtime.getMessage()));
         }
-        boolean scanBusy = workerApi.snapshots(scan.dto().projectId(), scanId).stream()
-                .anyMatch(value -> isActiveLifecycle(value.lifecycle()));
-        if (scanBusy) {
-            // Do not bind a foreign in-flight task to the requested entry.
-            Map<String, Object> busy = new LinkedHashMap<>();
-            busy.put("schemaVersion", 1);
-            busy.put("state", "BUSY");
-            busy.put("scanId", scanId);
-            busy.put("entrypointRef", entrypointRef);
-            busy.put("method", entry.method());
-            busy.put("route", entry.route());
-            busy.put("networkMode", "DENY");
-            busy.put("executor", "SERVER_OWNED_TRUSTED_DOCKER");
-            busy.put("candidateCount", candidateInputs == null ? 0 : Math.min(16, candidateInputs.size()));
-            busy.put("requestLimit", Math.min(8, Math.max(1, maxRequests)));
-            busy.put("retryable", true);
-            return Optional.of(new ToolDataSource.FactRecord(scope, "sandbox-probe:busy:" + jobId,
-                    JSON.valueToTree(busy)));
+    }
+
+    private ToolDataSource.FactRecord probeExecutionFailureFact(
+            ToolExecutionContext.Scope scope, String jobId, String scanId, String canonicalRef,
+            ApiDtos.EntryDto entry, List<String> candidateInputs, int maxRequests,
+            String failureCode, String detail) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("schemaVersion", 1);
+        value.put("state", "FAILED");
+        value.put("lifecycle", "FAILED");
+        value.put("scanId", scanId);
+        value.put("entrypointRef", canonicalRef);
+        value.put("method", entry.method());
+        value.put("route", entry.route());
+        value.put("networkMode", "DENY");
+        value.put("executor", "SERVER_OWNED_TRUSTED_DOCKER");
+        value.put("candidateCount", candidateInputs == null ? 0 : Math.min(16, candidateInputs.size()));
+        value.put("requestLimit", Math.min(8, Math.max(1, maxRequests)));
+        value.put("failureCode", failureCode == null || failureCode.isBlank()
+                ? "SANDBOX_PROBE_EXECUTION_FAILED" : failureCode);
+        value.put("stopReason", "WORKER_FAILURE");
+        value.put("retryable", false);
+        if (detail != null && !detail.isBlank()) {
+            value.put("detail", detail.length() > 240 ? detail.substring(0, 240) : detail);
         }
-        TaskSnapshot snapshot = enqueueDynamicForPipeline(scanId, principalId, entryId, candidateInputs, maxRequests);
-        if (aiProbeTasks.size() >= MAX_IDEMPOTENCY_KEYS && !aiProbeTasks.containsKey(jobId)) {
-            throw new IllegalStateException("sandbox probe job limit reached");
-        }
-        aiProbeTasks.putIfAbsent(jobId, snapshot);
-        rememberDurableIdempotency(durableScope, jobId, requestPayload, snapshot.scope().taskId(), null);
-        TaskSnapshot finished = awaitDynamicTaskTerminal(scan.dto().projectId(), scanId, snapshot.scope().taskId(),
-                Duration.ofMinutes(8)).orElse(snapshot);
-        aiProbeTasks.put(jobId, finished);
-        return Optional.of(probeFact(scope, finished, entry, probeState(finished), candidateInputs, maxRequests));
+        return new ToolDataSource.FactRecord(scope, "sandbox-probe:failed:" + jobId, JSON.valueToTree(value));
     }
 
     private static boolean isActiveLifecycle(TaskLifecycle lifecycle) {
@@ -1639,18 +1733,39 @@ public final class ControlPlaneServer implements AutoCloseable {
     }
 
     private synchronized TaskSnapshot enqueueDynamicForPipeline(String scanId, String actorId) {
-        return enqueueDynamicForPipeline(scanId, actorId, null, List.of(), 512);
+        return enqueueDynamicForPipeline(scanId, actorId, null, List.of(), 512, null, null, null);
     }
 
     private synchronized TaskSnapshot enqueueDynamicForPipeline(String scanId, String actorId,
                                                                  String preferredEntryId) {
-        return enqueueDynamicForPipeline(scanId, actorId, preferredEntryId, List.of(), 512);
+        return enqueueDynamicForPipeline(scanId, actorId, preferredEntryId, List.of(), 512, null, null, null);
     }
 
     private synchronized TaskSnapshot enqueueDynamicForPipeline(String scanId, String actorId,
                                                                  String preferredEntryId,
                                                                  List<String> candidateInputs,
                                                                  int maxRequests) {
+        return enqueueDynamicForPipeline(scanId, actorId, preferredEntryId, candidateInputs,
+                maxRequests, null, null, null);
+    }
+
+    private synchronized TaskSnapshot enqueueDynamicForPipeline(String scanId, String actorId,
+                                                                 String preferredEntryId,
+                                                                 List<String> candidateInputs,
+                                                                 int maxRequests,
+                                                                 String techniqueId,
+                                                                 String authorizationHeader) {
+        return enqueueDynamicForPipeline(scanId, actorId, preferredEntryId, candidateInputs,
+                maxRequests, techniqueId, authorizationHeader, null);
+    }
+
+    private synchronized TaskSnapshot enqueueDynamicForPipeline(String scanId, String actorId,
+                                                                 String preferredEntryId,
+                                                                 List<String> candidateInputs,
+                                                                 int maxRequests,
+                                                                 String techniqueId,
+                                                                 String authorizationHeader,
+                                                                 String bladeAuthHeader) {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         ControlPlaneStore.ProjectRecord project = store.requireProject(scan.dto().projectId());
         ArtifactDescriptor artifact = store.artifact(project, scan.dto().artifactDigest());
@@ -1660,7 +1775,8 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (artifact.type() != com.aq.jvmsentinel.model.ArtifactType.JAR) {
             throw new ApiException(409, "JAR_REQUIRED", "Docker dynamic execution currently requires a JAR");
         }
-        ProbePlan plan = buildProbePlan(scan, null, preferredEntryId, candidateInputs, maxRequests);
+        ProbePlan plan = buildProbePlan(scan, null, preferredEntryId, candidateInputs, maxRequests,
+                techniqueId, authorizationHeader, bladeAuthHeader, artifact.normalizedPath());
         if (plan.primary() == null) {
             throw new ApiException(409, "TARGET_ENTRY_NOT_IN_SCAN",
                     "the scan has no entrypoint to observe");
@@ -1791,7 +1907,7 @@ public final class ControlPlaneServer implements AutoCloseable {
                 throw new SQLiteControlPlanePersistence.PersistenceException("probe plan checksum mismatch");
             }
             ProbePlan plan = buildProbePlan(scan, stored.taskId(), stored.targetEntryId(),
-                    inputs, stored.maxRequests());
+                    inputs, stored.maxRequests(), null, null, null);
             dynamicProbePlans.put(stored.taskId(), plan);
         }
     }
@@ -1823,17 +1939,34 @@ public final class ControlPlaneServer implements AutoCloseable {
     }
 
     private ProbePlan buildProbePlan(ControlPlaneStore.ScanRecord scan, String taskIdHint) {
-        return buildProbePlan(scan, taskIdHint, null, List.of(), 512);
+        return buildProbePlan(scan, taskIdHint, null, List.of(), 512, null, null, null, null);
     }
 
     private ProbePlan buildProbePlan(ControlPlaneStore.ScanRecord scan, String taskIdHint,
                                      String preferredEntryId) {
-        return buildProbePlan(scan, taskIdHint, preferredEntryId, List.of(), 512);
+        return buildProbePlan(scan, taskIdHint, preferredEntryId, List.of(), 512, null, null, null, null);
     }
 
     private ProbePlan buildProbePlan(ControlPlaneStore.ScanRecord scan, String taskIdHint,
                                      String preferredEntryId, List<String> candidateInputs,
                                      int requestedMaxRequests) {
+        return buildProbePlan(scan, taskIdHint, preferredEntryId, candidateInputs, requestedMaxRequests,
+                null, null, null, null);
+    }
+
+    private ProbePlan buildProbePlan(ControlPlaneStore.ScanRecord scan, String taskIdHint,
+                                     String preferredEntryId, List<String> candidateInputs,
+                                     int requestedMaxRequests, String techniqueId,
+                                     String authorizationHeader, Path artifactPath) {
+        return buildProbePlan(scan, taskIdHint, preferredEntryId, candidateInputs, requestedMaxRequests,
+                techniqueId, authorizationHeader, null, artifactPath);
+    }
+
+    private ProbePlan buildProbePlan(ControlPlaneStore.ScanRecord scan, String taskIdHint,
+                                     String preferredEntryId, List<String> candidateInputs,
+                                     int requestedMaxRequests, String techniqueId,
+                                     String authorizationHeader, String bladeAuthHeader,
+                                     Path artifactPath) {
         List<ApiDtos.EntryDto> httpEntries = scan.dto().entries().stream()
                 .filter(entry -> "HTTP".equalsIgnoreCase(entry.protocol()))
                 .filter(entry -> entry.route() != null
@@ -1846,8 +1979,20 @@ public final class ControlPlaneServer implements AutoCloseable {
         if (httpEntries.isEmpty()) {
             return new ProbePlan(null, List.of(), List.of());
         }
-        // Cover every discovered HTTP entry in one batched probe JVM (hard cap matches worker).
-        int maxProbes = Math.min(512, httpEntries.size());
+        boolean focusedPoc = preferredEntryId != null
+                && ((authorizationHeader != null && !authorizationHeader.isBlank())
+                || (bladeAuthHeader != null && !bladeAuthHeader.isBlank())
+                || (techniqueId != null && !techniqueId.isBlank()));
+        if (focusedPoc) {
+            return buildFocusedAiPocPlan(scan, httpEntries, preferredEntryId, candidateInputs,
+                    requestedMaxRequests, techniqueId, authorizationHeader, bladeAuthHeader, artifactPath);
+        }
+        // Cover discovered HTTP entries, but leave room for identity-track expansion.
+        int maxProbes = MAX_DYNAMIC_PROBES;
+        int maxBaseProbes = Math.min(httpEntries.size(), maxProbes);
+        if (httpEntries.size() >= maxProbes) {
+            maxBaseProbes = maxProbes * 3 / 4;
+        }
         LinkedHashSet<String> selectedIds = new LinkedHashSet<>();
         List<ExternalArtifactTaskExecutor.ProbeTarget> probes = new ArrayList<>();
         if (preferredEntryId != null) {
@@ -1872,7 +2017,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         String explorationHint = pathExplorationHintText(scan);
         if (!explorationHint.isBlank()) {
             for (ApiDtos.EntryDto entry : httpEntries) {
-                if (probes.size() >= maxProbes) break;
+                if (probes.size() >= maxBaseProbes) break;
                 if (!(explorationHint.contains(entry.id()) || explorationHint.contains(entry.route()))) {
                     continue;
                 }
@@ -1881,7 +2026,13 @@ public final class ControlPlaneServer implements AutoCloseable {
             }
         }
         for (ApiDtos.EntryDto entry : httpEntries) {
-            if (probes.size() >= maxProbes) break;
+            if (probes.size() >= maxBaseProbes) break;
+            if (!isHighValueRoute(entry.route())) continue;
+            if (!selectedIds.add(entry.id())) continue;
+            probes.add(probeTargetFor(entry));
+        }
+        for (ApiDtos.EntryDto entry : httpEntries) {
+            if (probes.size() >= maxBaseProbes) break;
             if (!selectedIds.add(entry.id())) continue;
             probes.add(probeTargetFor(entry));
         }
@@ -1897,8 +2048,10 @@ public final class ControlPlaneServer implements AutoCloseable {
             selectedIds.clear();
             selectedIds.add(primary.id());
         }
-        effectiveProbes = expandProbesByIdentityTracks(scan, httpEntries, effectiveProbes, maxProbes);
-        List<ApiDtos.PathDto> unreached = new ArrayList<>();
+        IdentityExpansionResult expansion = expandProbesByIdentityTracksDetailed(
+                scan, httpEntries, effectiveProbes, maxProbes);
+        effectiveProbes = expansion.probes();
+        List<ApiDtos.PathDto> unreached = new ArrayList<>(expansion.identityUnreached());
         for (ApiDtos.EntryDto entry : httpEntries) {
             if (selectedIds.contains(entry.id())) continue;
             unreached.add(new ApiDtos.PathDto(
@@ -1914,6 +2067,131 @@ public final class ControlPlaneServer implements AutoCloseable {
     }
 
     /** Converts only bounded name=value hints into URL query data for the selected entry. */
+    /**
+     * Focused DYNAMIC probe for one AI-authored auth PoC. Uses AI authorizationHeader /
+     * bladeAuthHeader independently when present; otherwise falls back to a known
+     * {@link AuthBypassTechnique} synthesizer.
+     */
+    private ProbePlan buildFocusedAiPocPlan(
+            ControlPlaneStore.ScanRecord scan,
+            List<ApiDtos.EntryDto> httpEntries,
+            String preferredEntryId,
+            List<String> candidateInputs,
+            int requestedMaxRequests,
+            String techniqueId,
+            String authorizationHeader,
+            String bladeAuthHeader,
+            Path artifactPath) {
+        ApiDtos.EntryDto primary = httpEntries.stream()
+                .filter(entry -> entry.id().equals(preferredEntryId))
+                .findFirst()
+                .orElseThrow(() -> new ApiException(409, "TARGET_ENTRY_NOT_IN_SCAN",
+                        "AI PoC entry is not in the scan"));
+        String method = primary.method() == null || "UNKNOWN".equalsIgnoreCase(primary.method())
+                ? "GET" : primary.method().toUpperCase(Locale.ROOT);
+        String route = materializeRoute(primary.route());
+        String query = syntheticQuery(primary);
+        List<ExternalArtifactTaskExecutor.ProbeTarget> candidateProbes =
+                candidateProbeTargets(primary, candidateInputs, requestedMaxRequests);
+        if (!candidateProbes.isEmpty()) {
+            query = candidateProbes.get(0).query();
+        }
+        AuthMaterialized materialized = materializeAiPocAuth(
+                techniqueId, authorizationHeader, bladeAuthHeader, artifactPath);
+        List<ApiDtos.PathDto> unreached = new ArrayList<>();
+        List<ExternalArtifactTaskExecutor.ProbeTarget> probes;
+        if (!materialized.identityAvailable()) {
+            // Keep intentional UNAUTH stimulus; do not attach empty tokens to ADMIN/USER.
+            probes = List.of(new ExternalArtifactTaskExecutor.ProbeTarget(
+                    method, route, query, IdentityTrack.UNAUTH.name(), "", ""));
+            unreached.add(new ApiDtos.PathDto(
+                    ApiDtos.SCHEMA_VERSION, scan.dto().projectId(), scan.dto().artifactDigest(),
+                    scan.dto().scanId(),
+                    "path-unreached-" + scan.dto().scanId() + "-" + primary.id()
+                            + "-" + materialized.track().name(),
+                    primary.id(), ApiDtos.UNREACHED, ApiDtos.MOCK,
+                    List.of(materialized.provenance() == null || materialized.provenance().isBlank()
+                            ? "IDENTITY_UNAVAILABLE" : materialized.provenance()),
+                    "IDENTITY_UNAVAILABLE", List.of(),
+                    List.of(new ApiDtos.PathStepDto(
+                            materialized.track().name() + " " + method + " " + route,
+                            "synthetic identity unavailable; probe skipped",
+                            "identity", "blocked", primary.evidenceRefs()))));
+        } else {
+            probes = List.of(new ExternalArtifactTaskExecutor.ProbeTarget(
+                    method, route, query, materialized.track().name(),
+                    materialized.authToken(), materialized.bladeAuthToken()));
+        }
+        for (ApiDtos.EntryDto entry : httpEntries) {
+            if (entry.id().equals(primary.id())) continue;
+            unreached.add(new ApiDtos.PathDto(
+                    ApiDtos.SCHEMA_VERSION, scan.dto().projectId(), scan.dto().artifactDigest(),
+                    scan.dto().scanId(),
+                    "path-unreached-" + scan.dto().scanId() + "-" + entry.id(),
+                    entry.id(), ApiDtos.UNREACHED, ApiDtos.MOCK,
+                    entry.preconditions(), "FOCUSED_AI_POC", List.of(),
+                    List.of(new ApiDtos.PathStepDto(entry.method() + " " + entry.route(),
+                            "本次仅执行 AI PoC 焦点探针，未批量刺激", "entry", "blocked", entry.evidenceRefs()))));
+        }
+        return new ProbePlan(primary, probes, List.copyOf(unreached));
+    }
+
+    /** Package-visible for acceptance tests of MISSING_AUTH / AI PoC materialization. */
+    record AuthMaterialized(IdentityTrack track, String authToken, String bladeAuthToken,
+                            String provenance, boolean identityAvailable) {
+        AuthMaterialized(IdentityTrack track, String authToken, String provenance) {
+            this(track, authToken, "", provenance, true);
+        }
+    }
+
+    /** Package-visible for acceptance tests of MISSING_AUTH / AI PoC materialization. */
+    static AuthMaterialized materializeAiPocAuth(
+            String techniqueId, String authorizationHeader, Path artifactPath) {
+        return materializeAiPocAuth(techniqueId, authorizationHeader, null, artifactPath);
+    }
+
+    /** Package-visible for acceptance tests of MISSING_AUTH / AI PoC materialization. */
+    static AuthMaterialized materializeAiPocAuth(
+            String techniqueId, String authorizationHeader, String bladeAuthHeader, Path artifactPath) {
+        Optional<AuthBypassTechnique> technique = AuthBypassTechnique.tryParse(techniqueId);
+        String bladeToken = normalizeProbeToken(bladeAuthHeader);
+        if (!bladeToken.isEmpty()) {
+            AuthBypassCandidate.validateAuthMaterialOnly(bladeAuthHeader);
+        }
+        // MISSING_AUTH is an intentional unauthenticated probe: never invent Bearer / Blade-Auth.
+        if (technique.isPresent() && technique.get() == AuthBypassTechnique.MISSING_AUTH) {
+            if ((authorizationHeader != null && !authorizationHeader.isBlank()) || !bladeToken.isEmpty()) {
+                throw new IllegalArgumentException("MISSING_AUTH_MUST_OMIT_AUTHORIZATION");
+            }
+            return new AuthMaterialized(IdentityTrack.UNAUTH, "", "", "MISSING_AUTH", true);
+        }
+        boolean hasAuth = authorizationHeader != null && !authorizationHeader.isBlank();
+        if (hasAuth || !bladeToken.isEmpty()) {
+            String authToken = "";
+            if (hasAuth) {
+                AuthBypassCandidate.validateAuthMaterialOnly(authorizationHeader);
+                authToken = normalizeProbeToken(authorizationHeader);
+            }
+            IdentityTrack track = technique
+                    .map(AuthBypassTechnique::defaultTrack)
+                    .orElse(IdentityTrack.BYPASS_CANDIDATE);
+            return new AuthMaterialized(track, authToken, bladeToken, "AI_POC", true);
+        }
+        if (technique.isEmpty() || technique.get() == AuthBypassTechnique.CUSTOM_POC) {
+            return new AuthMaterialized(IdentityTrack.BYPASS_CANDIDATE, "", "", "AI_POC_NO_MATERIAL", true);
+        }
+        SyntheticIdentityService identity = new SyntheticIdentityService();
+        SyntheticIdentityService.MaterialBundle materials = identity.harvest(artifactPath);
+        SyntheticIdentityService.SyntheticIdentity synth =
+                identity.synthesizeTechnique(technique.get(), materials);
+        if (!synth.available()) {
+            return new AuthMaterialized(technique.get().defaultTrack(), "", "",
+                    synth.precondition(), false);
+        }
+        String token = normalizeProbeToken(synth.authorizationHeader());
+        return new AuthMaterialized(synth.track(), token, "", synth.provenance(), true);
+    }
+
     private static List<ExternalArtifactTaskExecutor.ProbeTarget> candidateProbeTargets(
             ApiDtos.EntryDto entry, List<String> candidateInputs, int requestedMaxRequests) {
         if (candidateInputs == null || candidateInputs.isEmpty()) return List.of();
@@ -1969,14 +2247,25 @@ public final class ControlPlaneServer implements AutoCloseable {
 
     /**
      * T2+T3: high-value entries probe all synthesizable tracks; others UNAUTH + ADMIN when available.
-     * Total probes remain capped by {@code maxProbes}.
+     * Total probes remain capped by {@code maxProbes}. Unavailable synth tracks become
+     * {@code IDENTITY_UNAVAILABLE} unreached paths instead of empty-auth probes.
      */
-    private List<ExternalArtifactTaskExecutor.ProbeTarget> expandProbesByIdentityTracks(
+    List<ExternalArtifactTaskExecutor.ProbeTarget> expandProbesByIdentityTracks(
             ControlPlaneStore.ScanRecord scan,
             List<ApiDtos.EntryDto> httpEntries,
             List<ExternalArtifactTaskExecutor.ProbeTarget> base,
             int maxProbes) {
-        if (base == null || base.isEmpty()) return List.of();
+        return expandProbesByIdentityTracksDetailed(scan, httpEntries, base, maxProbes).probes();
+    }
+
+    private IdentityExpansionResult expandProbesByIdentityTracksDetailed(
+            ControlPlaneStore.ScanRecord scan,
+            List<ApiDtos.EntryDto> httpEntries,
+            List<ExternalArtifactTaskExecutor.ProbeTarget> base,
+            int maxProbes) {
+        if (base == null || base.isEmpty()) {
+            return new IdentityExpansionResult(List.of(), List.of());
+        }
         Path artifactPath = null;
         try {
             ControlPlaneStore.ProjectRecord project = store.requireProject(scan.dto().projectId());
@@ -1985,38 +2274,174 @@ public final class ControlPlaneServer implements AutoCloseable {
         } catch (RuntimeException ignored) {
             artifactPath = null;
         }
+        return expandProbesByIdentityTracksDetailed(
+                scan.dto().projectId(), scan.dto().artifactDigest(), scan.dto().scanId(),
+                artifactPath, httpEntries, base, maxProbes);
+    }
+
+    static List<ExternalArtifactTaskExecutor.ProbeTarget> expandProbesByIdentityTracks(
+            Path artifactPath,
+            List<ApiDtos.EntryDto> httpEntries,
+            List<ExternalArtifactTaskExecutor.ProbeTarget> base,
+            int maxProbes) {
+        return expandProbesByIdentityTracksDetailed(
+                "project-test", "a".repeat(64), "scan-test",
+                artifactPath, httpEntries, base, maxProbes).probes();
+    }
+
+    record IdentityExpansionResult(List<ExternalArtifactTaskExecutor.ProbeTarget> probes,
+                                   List<ApiDtos.PathDto> identityUnreached) {
+        IdentityExpansionResult {
+            probes = List.copyOf(probes == null ? List.of() : probes);
+            identityUnreached = List.copyOf(identityUnreached == null ? List.of() : identityUnreached);
+        }
+    }
+
+    static IdentityExpansionResult expandProbesByIdentityTracksDetailed(
+            String projectId, String artifactDigest, String scanId,
+            Path artifactPath,
+            List<ApiDtos.EntryDto> httpEntries,
+            List<ExternalArtifactTaskExecutor.ProbeTarget> base,
+            int maxProbes) {
+        if (base == null || base.isEmpty()) {
+            return new IdentityExpansionResult(List.of(), List.of());
+        }
         SyntheticIdentityService identity = new SyntheticIdentityService();
-        List<String> routes = httpEntries.stream().map(ApiDtos.EntryDto::route).toList();
-        boolean packMatch = !AnalysisPackRegistry.matching(artifactPath, routes).isEmpty();
+        SyntheticIdentityService.MaterialBundle materials = identity.harvest(artifactPath);
         Map<String, ApiDtos.EntryDto> byRoute = new LinkedHashMap<>();
         for (ApiDtos.EntryDto entry : httpEntries) {
             byRoute.putIfAbsent(materializeRoute(entry.route()), entry);
         }
-        List<ExternalArtifactTaskExecutor.ProbeTarget> expanded = new ArrayList<>();
+        List<TrackExpansion> expansions = new ArrayList<>();
         for (ExternalArtifactTaskExecutor.ProbeTarget probe : base) {
-            if (expanded.size() >= maxProbes) break;
             ApiDtos.EntryDto entry = byRoute.get(probe.route());
-            boolean highValue = packMatch || isHighValueRoute(probe.route());
-            Map<IdentityTrack, SyntheticIdentityService.SyntheticIdentity> tracks =
-                    identity.defaultTracks(artifactPath, highValue);
-            for (Map.Entry<IdentityTrack, SyntheticIdentityService.SyntheticIdentity> item : tracks.entrySet()) {
+            boolean highValue = isHighValueRoute(probe.route()) || (entry != null && isHighValueEntry(entry));
+            expansions.add(new TrackExpansion(probe, entry,
+                    tracksFor(identity, materials, highValue), highValue));
+        }
+        List<ExternalArtifactTaskExecutor.ProbeTarget> expanded = new ArrayList<>();
+        List<ApiDtos.PathDto> identityUnreached = new ArrayList<>();
+        int unauthCoverageLimit = expansions.size() >= maxProbes ? Math.max(1, maxProbes * 3 / 4) : maxProbes;
+        for (TrackExpansion expansion : expansions) {
+            if (expanded.size() >= unauthCoverageLimit) break;
+            addTrackProbe(expanded, identityUnreached, projectId, artifactDigest, scanId,
+                    expansion, expansion.tracks().get(0), maxProbes);
+        }
+        for (TrackExpansion expansion : expansions) {
+            if (expanded.size() >= maxProbes) break;
+            if (!expansion.highValue()) continue;
+            for (int trackIndex = 1; trackIndex < expansion.tracks().size(); trackIndex++) {
                 if (expanded.size() >= maxProbes) break;
-                SyntheticIdentityService.SyntheticIdentity synth = item.getValue();
-                if (!synth.available() && item.getKey() != IdentityTrack.UNAUTH) continue;
-                expanded.add(new ExternalArtifactTaskExecutor.ProbeTarget(
-                        probe.method(), probe.route(), probe.query(),
-                        item.getKey().name(),
-                        synth.available() ? synth.authorizationHeader() : ""));
+                addTrackProbe(expanded, identityUnreached, projectId, artifactDigest, scanId,
+                        expansion, expansion.tracks().get(trackIndex), maxProbes);
             }
         }
-        return List.copyOf(expanded.isEmpty() ? base : expanded);
+        int maxTrackCount = expansions.stream().mapToInt(expansion -> expansion.tracks().size()).max().orElse(1);
+        for (int trackIndex = 1; trackIndex < maxTrackCount && expanded.size() < maxProbes; trackIndex++) {
+            for (TrackExpansion expansion : expansions) {
+                if (expanded.size() >= maxProbes) break;
+                if (expansion.highValue() || trackIndex >= expansion.tracks().size()) continue;
+                addTrackProbe(expanded, identityUnreached, projectId, artifactDigest, scanId,
+                        expansion, expansion.tracks().get(trackIndex), maxProbes);
+            }
+        }
+        List<ExternalArtifactTaskExecutor.ProbeTarget> probes =
+                List.copyOf(expanded.isEmpty() ? base : expanded);
+        return new IdentityExpansionResult(probes, identityUnreached);
+    }
+
+    private record TrackExpansion(ExternalArtifactTaskExecutor.ProbeTarget probe,
+                                  ApiDtos.EntryDto entry,
+                                  List<SyntheticIdentityService.SyntheticIdentity> tracks,
+                                  boolean highValue) {
+        private TrackExpansion {
+            tracks = List.copyOf(tracks);
+            if (tracks.isEmpty()) throw new IllegalArgumentException("at least UNAUTH track is required");
+        }
+    }
+
+    private static List<SyntheticIdentityService.SyntheticIdentity> tracksFor(
+            SyntheticIdentityService identity,
+            SyntheticIdentityService.MaterialBundle materials,
+            boolean highValue) {
+        List<IdentityTrack> desired = highValue
+                ? List.of(IdentityTrack.UNAUTH, IdentityTrack.USER, IdentityTrack.ADMIN, IdentityTrack.BYPASS_CANDIDATE)
+                : List.of(IdentityTrack.UNAUTH, IdentityTrack.ADMIN);
+        List<SyntheticIdentityService.SyntheticIdentity> result = new ArrayList<>();
+        for (IdentityTrack track : desired) {
+            // Keep unavailable tracks so callers can emit IDENTITY_UNAVAILABLE (not silent skip).
+            result.add(identity.synthesize(track, materials));
+        }
+        return List.copyOf(result);
+    }
+
+    private static void addTrackProbe(List<ExternalArtifactTaskExecutor.ProbeTarget> expanded,
+                                      List<ApiDtos.PathDto> identityUnreached,
+                                      String projectId, String artifactDigest, String scanId,
+                                      TrackExpansion expansion,
+                                      SyntheticIdentityService.SyntheticIdentity synth,
+                                      int maxProbes) {
+        if (expanded.size() >= maxProbes) return;
+        ExternalArtifactTaskExecutor.ProbeTarget probe = expansion.probe();
+        if (!synth.available()) {
+            if (synth.track() == IdentityTrack.UNAUTH) {
+                expanded.add(new ExternalArtifactTaskExecutor.ProbeTarget(
+                        probe.method(), probe.route(), probe.query(), "UNAUTH", "", ""));
+                return;
+            }
+            ApiDtos.EntryDto entry = expansion.entry();
+            String entryId = entry != null ? entry.id()
+                    : ("entry-route-" + Integer.toHexString(probe.route().hashCode()));
+            List<String> evidenceRefs = entry != null ? entry.evidenceRefs() : List.of();
+            String reason = synth.precondition() == null || synth.precondition().isBlank()
+                    ? "IDENTITY_UNAVAILABLE" : synth.precondition();
+            identityUnreached.add(new ApiDtos.PathDto(
+                    ApiDtos.SCHEMA_VERSION, projectId, artifactDigest, scanId,
+                    "path-unreached-" + scanId + "-" + entryId + "-" + synth.track().name(),
+                    entryId, ApiDtos.UNREACHED, ApiDtos.MOCK,
+                    List.of(reason), "IDENTITY_UNAVAILABLE", List.of(),
+                    List.of(new ApiDtos.PathStepDto(
+                            synth.track().name() + " " + probe.method() + " " + probe.route(),
+                            "synthetic identity unavailable; probe skipped",
+                            "identity", "blocked", evidenceRefs))));
+            return;
+        }
+        String token = normalizeProbeToken(synth.authorizationHeader());
+        expanded.add(new ExternalArtifactTaskExecutor.ProbeTarget(
+                probe.method(), probe.route(), probe.query(),
+                synth.track().name(), token, ""));
+    }
+
+    /** Strip a leading Bearer scheme for probe Authorization / Blade-Auth tokens. */
+    private static String normalizeProbeToken(String authorizationHeader) {
+        if (authorizationHeader == null) return "";
+        String token = authorizationHeader.trim();
+        if (token.regionMatches(true, 0, "Bearer ", 0, 7)) {
+            return token.substring(7).trim();
+        }
+        // Preserve intentional blankish material (e.g. EMPTY_BEARER " ") that trim would erase.
+        if (token.isEmpty() && !authorizationHeader.isEmpty()) return authorizationHeader;
+        return token;
+    }
+
+    private static boolean isHighValueEntry(ApiDtos.EntryDto entry) {
+        return containsHighValueSignal(entry.declaringClass())
+                || containsHighValueSignal(entry.module())
+                || entry.preconditions().stream().anyMatch(ControlPlaneServer::containsHighValueSignal)
+                || entry.evidenceRefs().stream().anyMatch(ControlPlaneServer::containsHighValueSignal);
     }
 
     private static boolean isHighValueRoute(String route) {
-        String value = route == null ? "" : route.toLowerCase(Locale.ROOT);
-        return value.contains("admin") || value.contains("upload") || value.contains("deploy")
-                || value.contains("token") || value.contains("exec") || value.contains("flowable")
-                || value.contains("bpmn") || value.contains("oauth") || value.contains("blade-");
+        return containsHighValueSignal(route);
+    }
+
+    private static boolean containsHighValueSignal(String value) {
+        String lower = value == null ? "" : value.toLowerCase(Locale.ROOT);
+        return lower.contains("admin") || lower.contains("upload") || lower.contains("deploy")
+                || lower.contains("token") || lower.contains("exec") || lower.contains("flowable")
+                || lower.contains("bpmn") || lower.contains("oauth") || lower.contains("blade-")
+                || lower.contains("sink") || lower.contains("sql") || lower.contains("jndi")
+                || lower.contains("ssrf") || lower.contains("deserial");
     }
 
     /** Replace `{pathVar}` templates with a bounded synthetic token for loopback probes. */
@@ -2199,6 +2624,137 @@ public final class ControlPlaneServer implements AutoCloseable {
         return result;
     }
 
+    /**
+     * Operator-facing single-entry debug probe. Reuses finding-replay / sandbox_probe gates:
+     * operator auth, explicit authorized:true, Idempotency-Key, HTTP entry belonging to the scan,
+     * and DYNAMIC_TASK_BUSY when another dynamic task is active. Sandbox policy remains
+     * server-owned; never upgrades to VERIFIED.
+     */
+    private synchronized void focusEntryProbe(HttpExchange exchange, String scanId, String entryId)
+            throws IOException {
+        ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
+        Map<String, Object> body = readObject(exchange);
+        String requestPayload = JsonCodec.stringify(body);
+        String durableScope = "entry:focus-probe:" + scanId + ":" + entryId;
+        Set<String> allowed = Set.of("authorized", "techniqueId", "authorizationHeader",
+                "bladeAuthHeader", "candidateInputs", "maxRequests");
+        for (String field : body.keySet()) {
+            if (!allowed.contains(field)) {
+                throw new ApiException(400, "FOCUS_PROBE_FIELD_REJECTED",
+                        "entry focus-probe body contains an unsupported field");
+            }
+        }
+        if (!requiredBoolean(body, "authorized")) {
+            throw new ApiException(403, "AUTHORIZATION_REQUIRED",
+                    "explicit authorization is required to focus-probe an entry");
+        }
+        ApiDtos.EntryDto entry = scan.dto().entries().stream()
+                .filter(value -> value.id().equals(entryId))
+                .findFirst()
+                .orElseThrow(() -> new ApiException(404, "ENTRY_NOT_FOUND",
+                        "entry is not present in the scan"));
+        if (!"HTTP".equalsIgnoreCase(entry.protocol()) || entry.route() == null || entry.method() == null) {
+            throw new ApiException(409, "ENTRY_NOT_HTTP",
+                    "focus-probe requires an HTTP scan entry with method and route");
+        }
+        String techniqueId = body.containsKey("techniqueId")
+                ? optionalText(body, "techniqueId", null) : null;
+        String authorizationHeader = body.containsKey("authorizationHeader")
+                ? optionalText(body, "authorizationHeader", null) : null;
+        String bladeAuthHeader = body.containsKey("bladeAuthHeader")
+                ? optionalText(body, "bladeAuthHeader", null) : null;
+        List<String> candidateInputs = stringList(body.get("candidateInputs"), "candidateInputs");
+        if (candidateInputs.size() > 16) {
+            throw new ApiException(400, "INVALID_FIELD", "candidateInputs is limited to 16 values");
+        }
+        long maxRequestsLong = positiveLong(body, "maxRequests", 1);
+        if (maxRequestsLong > 8) {
+            throw new ApiException(400, "INVALID_FIELD", "maxRequests must be 1..8");
+        }
+        int maxRequests = (int) maxRequestsLong;
+        String boundedTechnique = techniqueId == null ? "" : techniqueId.trim().toUpperCase(Locale.ROOT);
+        if (!boundedTechnique.isEmpty() && !boundedTechnique.matches("[A-Z][A-Z0-9_]{1,63}")) {
+            throw new ApiException(400, "INVALID_FIELD", "techniqueId is invalid");
+        }
+        if (authorizationHeader != null && !authorizationHeader.isBlank()) {
+            AuthBypassCandidate.validateAuthMaterialOnly(authorizationHeader);
+        }
+        if (bladeAuthHeader != null && !bladeAuthHeader.isBlank()) {
+            AuthBypassCandidate.validateAuthMaterialOnly(bladeAuthHeader);
+        }
+        // Prefer buildFocusedAiPocPlan: without technique/auth the shared plan still floods.
+        if (boundedTechnique.isEmpty()
+                && (authorizationHeader == null || authorizationHeader.isBlank())
+                && (bladeAuthHeader == null || bladeAuthHeader.isBlank())) {
+            boundedTechnique = AuthBypassTechnique.CUSTOM_POC.name();
+        }
+
+        String key = requireIdempotencyKey(exchange);
+        String replayKey = scan.dto().projectId() + ":" + scanId + ":" + entryId + ":" + key;
+        ensureIdempotencyCapacity(idempotentEntryFocusProbes, replayKey);
+        ensureIdempotencyCapacity(durableIdempotency, idempotencyMapKey(durableScope, key));
+        EntryFocusProbe existing = idempotentEntryFocusProbes.get(replayKey);
+        SQLiteControlPlanePersistence.IdempotencyData durable = existingDurableIdempotency(
+                durableScope, key, requestPayload);
+        if (existing == null && durable != null) {
+            TaskSnapshot restored = workerApi.snapshots(scan.dto().projectId(), scanId).stream()
+                    .filter(value -> value.scope().taskId().equals(durable.resultRef())).findFirst()
+                    .orElse(null);
+            if (restored != null) {
+                existing = new EntryFocusProbe(scanId, entryId, restored);
+                idempotentEntryFocusProbes.putIfAbsent(replayKey, existing);
+            }
+        }
+        if (existing != null) {
+            ControlPlaneStore.ScanRecord current = store.requireScan(existing.scanId());
+            sendJson(exchange, 200, entryFocusProbeMap(current, existing.entryId(),
+                    existing.snapshot(), true));
+            return;
+        }
+        String operatorId = actor(exchange).operatorId();
+        if (workerApi.snapshots(scan.dto().projectId(), scanId).stream().anyMatch(snapshot ->
+                snapshot.lifecycle() == TaskLifecycle.QUEUED
+                        || snapshot.lifecycle() == TaskLifecycle.LEASED
+                        || snapshot.lifecycle() == TaskLifecycle.RUNNING
+                        || snapshot.lifecycle() == TaskLifecycle.PAUSED)) {
+            throw new ApiException(409, "DYNAMIC_TASK_BUSY",
+                    "a dynamic task is already active for this scan");
+        }
+        TaskSnapshot snapshot = enqueueDynamicForPipeline(scanId, operatorId, entryId, candidateInputs,
+                maxRequests,
+                boundedTechnique.isEmpty() ? null : boundedTechnique,
+                authorizationHeader == null || authorizationHeader.isBlank() ? null : authorizationHeader,
+                bladeAuthHeader == null || bladeAuthHeader.isBlank() ? null : bladeAuthHeader);
+        idempotentEntryFocusProbes.put(replayKey, new EntryFocusProbe(scanId, entryId, snapshot));
+        rememberDurableIdempotency(durableScope, key, requestPayload, snapshot.scope().taskId(), null);
+        store.auditChange(scan.dto().projectId(), operatorId, "entry.focus-probe", "entry", entryId,
+                "{\"scanId\":\"" + scanId + "\",\"entrypointId\":\"" + entryId
+                        + "\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\",\"maxRequests\":"
+                        + maxRequests + "}",
+                Instant.now(clock).toString());
+        sendJson(exchange, 202, entryFocusProbeMap(scan, entryId, snapshot, false));
+    }
+
+    private static Map<String, Object> entryFocusProbeMap(ControlPlaneStore.ScanRecord scan,
+                                                          String entryId,
+                                                          TaskSnapshot snapshot,
+                                                          boolean replayed) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", ApiDtos.SCHEMA_VERSION);
+        result.put("projectId", scan.dto().projectId());
+        result.put("scanId", scan.dto().scanId());
+        result.put("findingId", null);
+        result.put("entrypointId", entryId);
+        result.put("taskId", snapshot.scope().taskId());
+        result.put("lifecycle", snapshot.lifecycle().name());
+        result.put("verificationStatus", "DYNAMIC_SUSPECTED");
+        result.put("dependencyMode", "MOCK");
+        result.put("replayed", replayed);
+        result.put("requiredCapability", snapshot.spec().requiredCapability().name());
+        result.put("dynamicExecutionMode", snapshot.spec().requiredCapability().name());
+        return result;
+    }
+
     private void sendEvidence(HttpExchange exchange, String evidenceId) throws IOException {
         ApiDtos.EvidenceDto item = store.evidence(evidenceId);
         if (item == null) item = traceProjectionService.evidence(evidenceId);
@@ -2298,13 +2854,19 @@ public final class ControlPlaneServer implements AutoCloseable {
         List<Object> entries = new ArrayList<>();
         for (ApiDtos.EntryDto entry : dto.entries()) entries.add(entryMap(entry));
         List<Object> findings = new ArrayList<>();
-        int authGapCount = 0;
+        int authGapFindingCount = 0;
         for (ApiDtos.FindingDto finding : dto.findings()) {
             if (isAuthGapFinding(finding)) {
-                authGapCount++;
+                authGapFindingCount++;
                 continue;
             }
             findings.add(findingMap(finding));
+        }
+        int authGapSinkCount = 0;
+        for (ApiDtos.SinkDto sink : dto.sinks()) {
+            if (sink.category() != null && "AUTH_GAP".equalsIgnoreCase(sink.category())) {
+                authGapSinkCount++;
+            }
         }
         List<Object> paths = new ArrayList<>();
         for (ApiDtos.PathDto path : dto.paths()) paths.add(pathMap(path));
@@ -2315,7 +2877,10 @@ public final class ControlPlaneServer implements AutoCloseable {
         for (ApiDtos.PathStepDto step : flattened) path.add(pathStepMap(step));
         body.put("entries", entries);
         body.put("findings", findings);
-        body.put("authGapFindingCount", authGapCount);
+        // authGapFindingCount = demoted secondary finding rows omitted from findings[].
+        // authGapSinkCount = AUTH_GAP sink signals (often much larger; not finding rows).
+        body.put("authGapFindingCount", authGapFindingCount);
+        body.put("authGapSinkCount", authGapSinkCount);
         body.put("paths", paths);
         body.put("pathRuns", pathRunMaps);
         body.put("path", path);
@@ -3440,6 +4005,7 @@ public final class ControlPlaneServer implements AutoCloseable {
     private record DynamicTaskPayload(String scanId, String artifactDigest, String targetEntryId) { }
     private record DynamicTaskReplay(DynamicTaskPayload payload, TaskSnapshot snapshot) { }
     private record FindingReplay(String scanId, TaskSnapshot snapshot) { }
+    private record EntryFocusProbe(String scanId, String entryId, TaskSnapshot snapshot) { }
 
     @FunctionalInterface
     public interface ProviderInventoryService {

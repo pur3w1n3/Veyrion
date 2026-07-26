@@ -26,6 +26,22 @@ public final class DynamicConfirmedGateAcceptanceTest {
         PathRun applied = DynamicConfirmedGate.apply(injected, "'\"veyrion-sqli-meta");
         check(VerificationStatus.DYNAMIC_CONFIRMED.name().equals(applied.verificationStatus()),
                 "apply upgrades PathRun status");
+
+        PathRun protocolMeta = run(new SqlEvent(
+                "port=6379", "", "UNKNOWN", false, true, "DEPENDENCY_PROTOCOL_MOCK"));
+        check(DynamicConfirmedGate.evaluate(protocolMeta, "'\"veyrion-sqli-meta")
+                        == VerificationStatus.DYNAMIC_SUSPECTED,
+                "Redis/MySQL listen meta must not confirm");
+
+        // D2 compare is advisory/suspected only; H3 gate remains the sole DYNAMIC_CONFIRMED upgrade.
+        SqlDiffProbe.DiffResult d2 = SqlDiffProbe.compare(
+                new SqlEvent("select * from t where id='1'", "", "READ", false, false, "MOCK"),
+                new SqlEvent("select * from t where id=''\"veyrion-sqli-meta", "", "READ", false, true, "MOCK"));
+        check(d2.structureInfluenced(), "D2 detects structural influence");
+        check(d2.status() == VerificationStatus.DYNAMIC_SUSPECTED,
+                "D2 itself never exceeds DYNAMIC_SUSPECTED");
+        check(d2.status() != VerificationStatus.VERIFIED, "D2 never VERIFIED");
+
         System.out.println("DynamicConfirmedGateAcceptanceTest passed");
     }
 

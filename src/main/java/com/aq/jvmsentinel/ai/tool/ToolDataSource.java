@@ -18,15 +18,49 @@ public interface ToolDataSource {
             throws Exception;
 
     /**
-     * Requests a server-owned, bounded loopback probe. The model supplies only an
-     * evidence reference and candidate input hints; the implementation must derive
-     * the actual route, sandbox, network policy and budget from persisted state.
+     * Resolves an AI/PathRun entry alias onto a canonical {@code entry:&lt;scanEntryId&gt;} fact.
+     * Default implementation only accepts an exact evidence ref; control-plane sources may
+     * accept bare scan ids and unambiguous {@code entry:METHOD:route} aliases.
+     */
+    default Optional<FactRecord> resolveEntrypoint(ToolExecutionContext.Scope scope, String entrypointRef)
+            throws Exception {
+        return findEvidence(scope, entrypointRef);
+    }
+
+    /**
+     * Requests a server-owned, bounded loopback probe. The model supplies an
+     * evidence reference, candidate input hints, and optional AI-authored auth PoC
+     * material; the implementation derives route, sandbox, network policy and budget
+     * from persisted state and validates PoC bounds.
      */
     default Optional<FactRecord> requestSandboxProbe(ToolExecutionContext.Scope scope,
                                                      String principalId, String jobId,
                                                      String entrypointRef,
                                                      List<String> candidateInputs,
                                                      int maxRequests) throws Exception {
+        return requestSandboxProbe(scope, principalId, jobId, entrypointRef, candidateInputs,
+                maxRequests, null, null, null);
+    }
+
+    default Optional<FactRecord> requestSandboxProbe(ToolExecutionContext.Scope scope,
+                                                     String principalId, String jobId,
+                                                     String entrypointRef,
+                                                     List<String> candidateInputs,
+                                                     int maxRequests,
+                                                     String techniqueId,
+                                                     String authorizationHeader) throws Exception {
+        return requestSandboxProbe(scope, principalId, jobId, entrypointRef, candidateInputs,
+                maxRequests, techniqueId, authorizationHeader, null);
+    }
+
+    default Optional<FactRecord> requestSandboxProbe(ToolExecutionContext.Scope scope,
+                                                     String principalId, String jobId,
+                                                     String entrypointRef,
+                                                     List<String> candidateInputs,
+                                                     int maxRequests,
+                                                     String techniqueId,
+                                                     String authorizationHeader,
+                                                     String bladeAuthHeader) throws Exception {
         return Optional.empty();
     }
 

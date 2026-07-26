@@ -122,6 +122,17 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
             expect(IllegalArgumentException.class,
                     () -> new ExternalArtifactTaskExecutor.RuntimePolicy("runtime:latest", releaseDecision()),
                     "unpinned runtime image");
+
+            check(ExternalArtifactTaskExecutor.countHttpEvents(
+                    MockServices.probeJsonl().getBytes(StandardCharsets.UTF_8)) == 1,
+                    "HTTP probe event counter");
+            expect(ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.class,
+                    () -> ExternalArtifactTaskExecutor.requireHttpProbeEvidence(
+                            registration, MockServices.agentJsonl().getBytes(StandardCharsets.UTF_8)),
+                    "empty probe events fail closed");
+            ExternalArtifactTaskExecutor.requireHttpProbeEvidence(
+                    registration, MockServices.probeJsonl().getBytes(StandardCharsets.UTF_8));
+
             System.out.println("ExternalArtifactTaskExecutorAcceptanceTest: PASS");
         } finally {
             mock.close();
@@ -230,9 +241,10 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         @Override
         public CommandResult command(String sandboxId, CommandRequest request) {
             check(created && sandboxId.equals("trusted-sandbox-1"), "known trusted sandbox");
-            String stdout = request.command().equals(
-                    "/bin/cat /tmp/veyrion-trace/agent-events.jsonl")
-                    ? MockServices.agentJsonl() : "";
+            String command = request.command();
+            String stdout = command.equals("/bin/cat /tmp/veyrion-trace/agent-events.jsonl")
+                    ? MockServices.agentJsonl()
+                    : command.contains("probe-events.jsonl") ? MockServices.probeJsonl() : "";
             return new CommandResult(null, stdout, "", 0);
         }
 
@@ -299,7 +311,8 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                         || commandText.contains("/opt/veyrion/artifact/application.jar");
                 if (artifactRun) lastCommand = command;
                 String stdout = commandText.equals("/bin/cat /tmp/veyrion-trace/agent-events.jsonl")
-                        ? agentJsonl() : "";
+                        ? agentJsonl()
+                        : commandText.contains("probe-events.jsonl") ? probeJsonl() : "";
                 respond(exchange, 200, Map.of(
                         "id", "command-1", "stdout", stdout, "stderr", "",
                         "exit_code", failCommand && artifactRun ? 17 : 0));
@@ -439,9 +452,15 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     && command.contains("-Dveyrion.sandbox.dependencyMock=true")
                     && command.contains("dependencyMock=true")
                     && command.contains("-javaagent:/opt/veyrion/agent/veyrion-agent.jar")
+                    && command.contains("-Djava.io.tmpdir=/tmp")
                     && command.contains("com.aq.jvmsentinel.agent.WaitHttpReady")
                     && command.contains("com.aq.jvmsentinel.agent.LoopbackHttpProbe @")
                     && command.contains("probe-plan.txt")
+                    && command.contains("-Xmx64m")
+                    && command.contains("PROBE_JVM_OK=0")
+                    && command.contains("probe_jvm_status=$?")
+                    && !command.contains(
+                            "LoopbackHttpProbe @/tmp/veyrion-trace/probe-plan.txt \"$HTTP_PORT\" || true")
                     && !command.contains("--server.port=")
                     && command.contains("--spring.main.lazy-initialization=true")
                     && command.contains("jdbc:veyrion-mock:mem:veyrion")
@@ -450,6 +469,7 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     && command.contains("--spring.flyway.enabled=false")
                     && command.contains("probe_status=1")
                     && command.contains("exit 70")
+                    && command.contains("exit 71")
                     && command.contains("kill -TERM \"$APP_PID\"")
                     && command.contains("kill -KILL \"$APP_PID\""),
                     "fixed command with process listen-port discovery");
@@ -473,6 +493,19 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     + "\"class\":\"com.aq.jvmsentinel.instrumentation.VeyrionAgent\","
                     + "\"method\":\"premain\",\"timestamp\":\"2026-07-24T00:00:00Z\","
                     + "\"thread\":\"main\",\"detail\":{\"captureMode\":\"test\"}}\n";
+        }
+
+        static String probeJsonl() {
+            return "{\"schemaVersion\":1,\"sequence\":0,\"eventType\":\"HTTP\","
+                    + "\"provenanceKind\":\"APPLICATION_REPORTED\","
+                    + "\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                    + "\"class\":\"com.aq.jvmsentinel.agent.LoopbackHttpProbe\","
+                    + "\"method\":\"main\",\"timestamp\":\"2026-07-24T00:00:00Z\","
+                    + "\"thread\":\"main\",\"detail\":{\"captureMode\":\"LOOPBACK_HTTP_PROBE\","
+                    + "\"httpMethod\":\"POST\",\"route\":\"/sample/http-entry\","
+                    + "\"requestTarget\":\"/sample/http-entry\",\"status\":\"200\","
+                    + "\"port\":\"8080\",\"error\":\"\",\"outcomeClass\":\"HTTP_OBSERVED\","
+                    + "\"track\":\"UNAUTH\"}}\n";
         }
 
         private static void respond(HttpExchange exchange, int status, Object value) throws IOException {

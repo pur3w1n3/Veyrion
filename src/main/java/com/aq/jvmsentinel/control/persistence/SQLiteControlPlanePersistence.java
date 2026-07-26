@@ -1286,7 +1286,10 @@ public final class SQLiteControlPlanePersistence {
         validateMetadataJson(event.toolArgumentsSummary(),
                 Set.of("shape", "fieldCount", "encodedBytes", "kind", "limit",
                         "queryPresent", "queryBytes", "evidenceRef", "entrypointRef",
-                        "candidateCount", "objectiveBytes"),
+                        "candidateCount", "objectiveBytes",
+                        // Bounded sandbox_probe / plan_propose redaction fields (no raw secrets).
+                        "techniqueId", "authorizationHeaderPresent", "authorizationHeaderBytes",
+                        "bladeAuthHeaderPresent", "bladeAuthHeaderBytes"),
                 "toolArgumentsSummary");
     }
 

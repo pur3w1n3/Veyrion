@@ -37,7 +37,8 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
     public ControlPlaneToolDataSource(ControlPlaneStore store, String scanId,
                                       DynamicEvidenceSource dynamicEvidenceSource) {
         this(store, scanId, dynamicEvidenceSource, (scopedScanId, scope, principalId, jobId, entrypointRef,
-                candidateInputs, maxRequests) -> Optional.empty());
+                candidateInputs, maxRequests, techniqueId, authorizationHeader, bladeAuthHeader)
+                -> Optional.empty());
     }
 
     public ControlPlaneToolDataSource(ControlPlaneStore store, String scanId,
@@ -117,12 +118,12 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         if (dynamic.isPresent()) {
             return Optional.of(new FactRecord(scope, evidenceRef, safeEvidence(dynamic.get())));
         }
-        if (evidenceRef.startsWith("entry:")) {
-            String id = evidenceRef.substring("entry:".length());
-            return scan.dto().entries().stream().filter(entry -> entry.id().equals(id)).findFirst()
-                    .map(entry -> new FactRecord(scope, evidenceRef, JSON.valueToTree(entry)));
+        EntryRefResolver.Resolution resolution = EntryRefResolver.resolve(scan.dto().entries(), evidenceRef);
+        if (resolution.resolved()) {
+            return Optional.of(new FactRecord(scope, resolution.canonicalRef(),
+                    JSON.valueToTree(resolution.entry())));
         }
-        if (evidenceRef.startsWith("pathrun:")) {
+        if (evidenceRef != null && evidenceRef.startsWith("pathrun:")) {
             String id = evidenceRef.substring("pathrun:".length());
             return pathRuns(scan).stream().filter(run -> run.pathRunId().equals(id)).findFirst()
                     .map(run -> new FactRecord(scope, evidenceRef, pathRunFact(run)));
@@ -131,14 +132,40 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
     }
 
     @Override
+    public Optional<FactRecord> resolveEntrypoint(ToolExecutionContext.Scope scope, String entrypointRef) {
+        ControlPlaneStore.ScanRecord scan = scopedScan(scope);
+        EntryRefResolver.Resolution resolution = EntryRefResolver.resolve(scan.dto().entries(), entrypointRef);
+        if (!resolution.resolved()) {
+            if (resolution.status() == EntryRefResolver.Status.AMBIGUOUS) {
+                throw new IllegalArgumentException(EntryRefResolver.CODE_AMBIGUOUS);
+            }
+            if (resolution.status() == EntryRefResolver.Status.MUST_BE_ENTRY) {
+                throw new IllegalArgumentException(EntryRefResolver.CODE_MUST_BE_ENTRY);
+            }
+            return Optional.empty();
+        }
+        return Optional.of(new FactRecord(scope, resolution.canonicalRef(),
+                JSON.valueToTree(resolution.entry())));
+    }
+
+    @Override
     public Optional<FactRecord> requestSandboxProbe(ToolExecutionContext.Scope scope,
                                                     String principalId, String jobId,
                                                     String entrypointRef,
                                                     List<String> candidateInputs,
-                                                    int maxRequests) throws Exception {
-        scopedScan(scope);
-        return dynamicProbeExecutor.request(scanId, scope, principalId, jobId, entrypointRef,
-                candidateInputs == null ? List.of() : List.copyOf(candidateInputs), maxRequests);
+                                                    int maxRequests,
+                                                    String techniqueId,
+                                                    String authorizationHeader,
+                                                    String bladeAuthHeader) throws Exception {
+        ControlPlaneStore.ScanRecord scan = scopedScan(scope);
+        ApiDtos.EntryDto entry = requireProbeEntry(scan, entrypointRef);
+        if (!"HTTP".equalsIgnoreCase(entry.protocol()) || entry.route() == null || entry.method() == null) {
+            throw new IllegalArgumentException("sandbox probe entry is not an eligible HTTP endpoint");
+        }
+        String canonical = EntryRefResolver.canonicalRef(entry);
+        return dynamicProbeExecutor.request(scanId, scope, principalId, jobId, canonical,
+                candidateInputs == null ? List.of() : List.copyOf(candidateInputs), maxRequests,
+                techniqueId, authorizationHeader, bladeAuthHeader);
     }
 
     private ControlPlaneStore.ScanRecord scopedScan(ToolExecutionContext.Scope scope) {
@@ -171,6 +198,14 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
             throw new SecurityException("path run scope mismatch");
         }
         return values;
+    }
+
+    private static ApiDtos.EntryDto requireProbeEntry(ControlPlaneStore.ScanRecord scan, String entrypointRef) {
+        EntryRefResolver.Resolution resolution = EntryRefResolver.resolve(scan.dto().entries(), entrypointRef);
+        if (resolution.resolved()) {
+            return resolution.entry();
+        }
+        throw new IllegalArgumentException(resolution.code());
     }
 
     private static JsonNode pathRunFact(ApiDtos.PathRunDto value) {
@@ -282,7 +317,8 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
     @FunctionalInterface
     public interface DynamicProbeExecutor {
         Optional<FactRecord> request(String scanId, ToolExecutionContext.Scope scope, String principalId, String jobId,
-                                     String entrypointRef, List<String> candidateInputs, int maxRequests)
+                                     String entrypointRef, List<String> candidateInputs, int maxRequests,
+                                     String techniqueId, String authorizationHeader, String bladeAuthHeader)
                 throws Exception;
     }
 

@@ -1,6 +1,6 @@
--- Durable PathRun projection. Worker traces remain the immutable source; this table
--- is a queryable, restart-safe view for GUI and AI facts_search.
-CREATE TABLE path_runs (
+-- Durable PathRun projection. Worker traces remain the immutable source.
+-- This table is a queryable, restart-safe view for GUI and AI facts_search.
+CREATE TABLE IF NOT EXISTS path_runs (
     path_run_id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
     artifact_digest TEXT NOT NULL,

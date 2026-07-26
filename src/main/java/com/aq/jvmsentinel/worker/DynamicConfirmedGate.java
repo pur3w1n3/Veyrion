@@ -24,6 +24,8 @@ public final class DynamicConfirmedGate {
         boolean hit = false;
         boolean parameterizedBlock = false;
         for (SqlEvent event : run.sqlEvents()) {
+            // Protocol listen/meta must never satisfy H3; only statement text counts.
+            if (!isStatementEvidence(event)) continue;
             String sql = event.sqlText() == null ? "" : event.sqlText().toLowerCase(Locale.ROOT);
             if (sql.contains(needle) || event.maliciousFragmentPresent()) {
                 hit = true;
@@ -44,5 +46,24 @@ public final class DynamicConfirmedGate {
                 run.outcomeClass(), run.httpStatus(), run.entryHit(), run.parameterBound(),
                 run.sqlEvents(), run.stopReason(), status.name(), run.evidenceRefs(),
                 run.identityProvenance(), run.identityPrecondition());
+    }
+
+    private static boolean isStatementEvidence(SqlEvent event) {
+        if (event == null) return false;
+        String sql = event.sqlText() == null ? "" : event.sqlText().trim();
+        if (sql.isBlank()) return false;
+        String lower = sql.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("port=") || lower.startsWith("sqlclass=")
+                || lower.contains("accepted-without-credential")) {
+            return false;
+        }
+        String capture = event.captureMode() == null ? "" : event.captureMode();
+        if ("DEPENDENCY_PROTOCOL_MOCK".equals(capture)
+                && !(lower.startsWith("select") || lower.startsWith("insert")
+                || lower.startsWith("update") || lower.startsWith("delete")
+                || lower.startsWith("replace") || lower.contains("?"))) {
+            return false;
+        }
+        return true;
     }
 }
