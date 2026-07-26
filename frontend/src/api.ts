@@ -106,6 +106,30 @@ export type FindingReplayDto = {
   dynamicExecutionMode?: string
 }
 
+export type FocusEntryProbeRequest = {
+  authorized: true
+  techniqueId?: string
+  authorizationHeader?: string
+  bladeAuthHeader?: string
+  candidateInputs?: string[]
+  maxRequests?: number
+}
+
+export type FocusEntryProbeDto = {
+  schemaVersion: number
+  projectId: string
+  scanId: string
+  findingId?: string | null
+  entrypointId: string
+  taskId: string
+  lifecycle: string
+  verificationStatus: VerificationStatus
+  dependencyMode: DependencyMode
+  replayed: boolean
+  requiredCapability?: WorkerCapability
+  dynamicExecutionMode?: string
+}
+
 export type PathStep = {
   label: string
   detail: string
@@ -142,8 +166,10 @@ export type DashboardSnapshot = {
   evidenceRefs?: EvidenceRef[]
   entries: Entry[]
   findings: Finding[]
-  /** AUTH_GAP findings omitted from findings[]; retained as a demoted count. */
+  /** Demoted secondary finding rows omitted from findings[] (not AUTH_GAP sink population). */
   authGapFindingCount?: number
+  /** AUTH_GAP category sink signals in the scan (often larger than authGapFindingCount). */
+  authGapSinkCount?: number
   path: PathStep[]
   paths: PathTrace[]
   pathRuns: PathRunDto[]
@@ -531,6 +557,7 @@ export interface SentinelApi {
   createDynamicTask(scanId: string): Promise<DynamicTaskDto>
   listDynamicTasks(scanId: string): Promise<DynamicTaskDto[]>
   replayFinding(findingId: string): Promise<FindingReplayDto>
+  focusEntryProbe(scanId: string, entryId: string, body?: FocusEntryProbeRequest): Promise<FocusEntryProbeDto>
   updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto>
   deleteScan(scanId: string): Promise<void>
   listProviders(): Promise<ProviderDto[]>
@@ -748,6 +775,26 @@ export const parseFindingReplay = (item: unknown): FindingReplayDto => {
   }
 }
 
+export const parseFocusEntryProbe = (item: unknown): FocusEntryProbeDto => {
+  if (!isRecord(item)) throw new Error('invalid entry focus-probe response')
+  const status = statusOf(item.verificationStatus, 'focusEntryProbe.verificationStatus')
+  if (status === 'VERIFIED') throw new Error('focus-probe must not return VERIFIED')
+  return {
+    schemaVersion: asSafeInteger(item.schemaVersion, 'focusEntryProbe.schemaVersion', 1),
+    projectId: asText(item.projectId, 'focusEntryProbe.projectId'),
+    scanId: asText(item.scanId, 'focusEntryProbe.scanId'),
+    findingId: item.findingId == null ? null : optionalText(item.findingId),
+    entrypointId: asText(item.entrypointId, 'focusEntryProbe.entrypointId'),
+    taskId: asText(item.taskId, 'focusEntryProbe.taskId'),
+    lifecycle: asText(item.lifecycle, 'focusEntryProbe.lifecycle'),
+    verificationStatus: status,
+    dependencyMode: asText(item.dependencyMode, 'focusEntryProbe.dependencyMode'),
+    replayed: asBoolean(item.replayed, 'focusEntryProbe.replayed'),
+    requiredCapability: optionalText(item.requiredCapability) as WorkerCapability | undefined,
+    dynamicExecutionMode: optionalText(item.dynamicExecutionMode)
+  }
+}
+
 export const parsePath = (item: unknown): PathStep => {
   if (!isRecord(item)) throw new Error('invalid path step')
   const refs = evidenceRefsOf(item.evidenceRefs, 'path.evidenceRefs')
@@ -815,6 +862,9 @@ export const parseDashboard = (value: unknown): DashboardSnapshot => {
     findings: findingsValue.map((item) => parseFinding(item, { schemaVersion: version, projectId, artifactDigest, scanId })),
     authGapFindingCount: typeof value.authGapFindingCount === 'number' && Number.isFinite(value.authGapFindingCount)
       ? Math.max(0, Math.floor(value.authGapFindingCount))
+      : undefined,
+    authGapSinkCount: typeof value.authGapSinkCount === 'number' && Number.isFinite(value.authGapSinkCount)
+      ? Math.max(0, Math.floor(value.authGapSinkCount))
       : undefined,
     path: pathValue.map(parsePath),
     paths: richPaths,
@@ -1689,6 +1739,21 @@ export class HttpSentinelApi implements SentinelApi {
     return parseFindingReplay(response)
   }
 
+  async focusEntryProbe(scanId: string, entryId: string, body?: FocusEntryProbeRequest): Promise<FocusEntryProbeDto> {
+    const payload: FocusEntryProbeRequest = { ...body, authorized: true }
+    const response = await this.request(
+      `scans/${encodeURIComponent(asText(scanId, 'scanId'))}/entries/${encodeURIComponent(asText(entryId, 'entryId'))}/focus-probe`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: mutationHeaders(this.token, generatedIdempotencyKey()),
+        body: JSON.stringify(payload)
+      },
+      'focus entry probe'
+    )
+    return parseFocusEntryProbe(response)
+  }
+
   async updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto> {
     const response = await this.request(`scans/${encodeURIComponent(asText(scanId, 'scanId'))}`, {
       method: 'PATCH', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey()), body: JSON.stringify(request)
@@ -1995,6 +2060,8 @@ export class MockSentinelApi implements SentinelApi {
   async deleteAiJob(): Promise<void> { return this.unavailable('delete ai job') }
 
   async replayFinding(): Promise<FindingReplayDto> { return this.unavailable('replay finding') }
+
+  async focusEntryProbe(): Promise<FocusEntryProbeDto> { return this.unavailable('focus entry probe') }
 
   async getEntries(): Promise<EntryDto[]> {
     return (await this.loadDashboard()).entries

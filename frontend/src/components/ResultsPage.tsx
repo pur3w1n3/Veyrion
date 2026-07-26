@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { api, type AiJobDto, type DashboardSnapshot, type FindingReplayDto, type OutputLanguage } from '../api'
+import { api, type AiJobDto, type DashboardSnapshot, type FindingReplayDto, type FocusEntryProbeDto, type OutputLanguage } from '../api'
 import { dependencyModeLabel, jobStatusLabel } from '../labels'
 import { errorMessage, Notice, PageHeader, StatusPill } from './Common'
 import { PathRunPanel } from './PathRunPanel'
@@ -19,6 +19,7 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
   const [showAuthGap, setShowAuthGap] = useState(false)
   const pathRuns = snapshot?.pathRuns ?? []
   const authGapFindingCount = snapshot?.authGapFindingCount ?? findings.filter(isAuthGapFinding).length
+  const authGapSinkCount = snapshot?.authGapSinkCount
   const [selectedFindingId, setSelectedFindingId] = useState<string>()
   const [selectedStepIndex, setSelectedStepIndex] = useState(0)
   const [replayLoading, setReplayLoading] = useState(false)
@@ -82,6 +83,13 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
     }
   }
 
+  const focusEntry = async (entryId: string): Promise<FocusEntryProbeDto> => {
+    if (!snapshot?.scanId || snapshot.scanId === 'unscanned') {
+      throw new Error(english ? 'No scan is available for a focused probe.' : '当前没有可用于焦点探针的扫描。')
+    }
+    return api.focusEntryProbe(snapshot.scanId, entryId, { authorized: true, maxRequests: 1 })
+  }
+
   useEffect(() => {
     if (selectedFinding && selectedFinding.id !== selectedFindingId) setSelectedFindingId(selectedFinding.id)
     if (!selectedFinding) setSelectedFindingId(undefined)
@@ -128,9 +136,15 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       <article className="metric"><span>{english ? 'PathRuns' : 'PathRun'}</span><strong>{pathRuns.length}</strong><small>{english ? 'Primary session view' : '路径会话主视图'}</small></article>
       <article className="metric"><span>{english ? 'Dynamic confirmed' : '动态确认'}</span><strong>{pathRuns.filter((item) => item.verificationStatus === 'DYNAMIC_CONFIRMED').length}</strong><small>{english ? 'SQL H3 (MOCK)' : 'SQL H3（MOCK）'}</small></article>
       <article className="metric"><span>{english ? 'Dynamic suspected' : '动态疑似'}</span><strong>{pathRuns.filter((item) => item.verificationStatus === 'DYNAMIC_SUSPECTED').length + findings.filter((item) => item.status === 'DYNAMIC_SUSPECTED').length}</strong><small>{english ? 'Needs closed loop' : '需闭环'}</small></article>
-      <article className="metric"><span>{english ? 'Secondary findings' : '次级发现'}</span><strong>{findings.filter((item) => !isAuthGapFinding(item)).length}</strong><small>{english ? `AUTH_GAP hidden: ${authGapFindingCount}` : `已隐藏 AUTH_GAP: ${authGapFindingCount}`}</small></article>
+      <article className="metric"><span>{english ? 'Secondary findings' : '次级发现'}</span><strong>{findings.filter((item) => !isAuthGapFinding(item)).length}</strong><small title={english ? 'authGapFindingCount = demoted finding rows; authGapSinkCount = AUTH_GAP sinks' : 'authGapFindingCount=降级 finding 行；authGapSinkCount=AUTH_GAP sink 数'}>{english ? `AUTH_GAP rows ${authGapFindingCount}${authGapSinkCount != null ? ` / sinks ${authGapSinkCount}` : ''}` : `AUTH_GAP 行 ${authGapFindingCount}${authGapSinkCount != null ? ` / sink ${authGapSinkCount}` : ''}`}</small></article>
     </div>
-    <PathRunPanel pathRuns={pathRuns} english={english} />
+    <PathRunPanel
+      pathRuns={pathRuns}
+      entries={entries}
+      scanId={snapshot?.scanId}
+      english={english}
+      onFocusEntry={focusEntry}
+    />
     <article className="panel section-gap">
       <div className="panel-head"><div><p className="eyebrow">{english ? 'FINAL REPORT' : '最终报告'}</p><h2>{english ? 'Final report' : '最终报告'}</h2></div><div className="button-row"><span className="inference-badge">{english ? 'MODEL INFERENCE' : '模型推断'}</span>{reportSummary && <><button type="button" className="secondary-button" onClick={downloadReport}>{english ? 'Download .md' : '下载 .md'}</button><button type="button" className="secondary-button" onClick={downloadHtml}>{english ? 'Export .html' : '导出 .html'}</button></>}{snapshot && <button type="button" className="secondary-button" onClick={downloadJson}>{english ? 'Export .json' : '导出 .json'}</button>}</div></div>
       {reportError && <Notice kind="error">{reportError}</Notice>}
