@@ -166,6 +166,11 @@ public final class TraceProjectionService {
                     snapshot.spec().requiredCapability().name(),
                     snapshot.spec().requiredCapability().name() + "_COMPLETED"));
         }
+        // Flood / cold-start tasks may emit JDBC/Agent evidence without HTTP events.
+        // Still materialize one PathRun so AI tools and dashboard retain SQL detail.
+        if (pathRuns.isEmpty()) {
+            pathRuns.add(taskLevelPathRun(snapshot, refs, jdbcSql));
+        }
         return new Projection(snapshot.scope(), path, List.copyOf(paths), List.copyOf(pathRuns),
                 projectedEvidence, snapshot.updatedAt().toString());
     }
@@ -184,6 +189,37 @@ public final class TraceProjectionService {
         Objects.requireNonNull(scope, "scope");
         Projection projection = projections.get(scope);
         return projection == null ? List.of() : projection.pathRuns();
+    }
+
+    private static ApiDtos.PathRunDto taskLevelPathRun(
+            TaskSnapshot snapshot, List<String> evidenceRefs, List<SqlEvent> jdbcSql) {
+        List<SqlEvent> sqlCopy = List.copyOf(jdbcSql);
+        List<ApiDtos.SqlEventDto> sqlDtos = sqlCopy.stream()
+                .map(sql -> new ApiDtos.SqlEventDto(sql.sqlText(), sql.parameterSummary(),
+                        sql.readWrite(), sql.parameterized(), sql.maliciousFragmentPresent(),
+                        sql.captureMode()))
+                .toList();
+        String entryRef = "entry:" + snapshot.spec().targetEntryId();
+        String stop = snapshot.stopReason() == null ? "COMPLETED" : snapshot.stopReason().name();
+        String summary = "task observation without HTTP events; sqlEventCount=" + sqlCopy.size()
+                + " evidenceCount=" + evidenceRefs.size();
+        PathOutcomeClass outcome = sqlCopy.isEmpty()
+                ? PathOutcomeClass.UNKNOWN
+                : PathOutcomeClass.DEPENDENCY_MOCK_GAP;
+        PathRun provisional = new PathRun(
+                "pathrun-" + snapshot.scope().taskId() + "-task",
+                snapshot.scope().scanId(), entryRef, IdentityTrack.UNAUTH, "attempt-task", null,
+                "GET", "application/json", summary, outcome, -1, null, null,
+                sqlCopy, stop, VerificationStatus.DYNAMIC_SUSPECTED.name(),
+                List.copyOf(evidenceRefs), ApiDtos.MOCK, "no credentials");
+        PathRun gated = DynamicConfirmedGate.apply(provisional, SqlDiffProbe.META_MARKER);
+        return new ApiDtos.PathRunDto(
+                ApiDtos.SCHEMA_VERSION, gated.pathRunId(), gated.scanId(), gated.entrypointRef(),
+                gated.track().name(), gated.attemptId(), gated.experimentPlanId(),
+                gated.method(), gated.contentType(), gated.requestSummary(),
+                gated.outcomeClass().name(), gated.httpStatus(), gated.entryHit(),
+                gated.parameterBound(), sqlDtos, gated.stopReason(), gated.verificationStatus(),
+                gated.evidenceRefs(), gated.identityProvenance(), gated.identityPrecondition());
     }
 
     private static ApiDtos.PathRunDto pathRunFromHttp(
