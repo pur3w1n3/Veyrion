@@ -241,8 +241,9 @@ public final class ControlPlanePersistenceAcceptanceTest {
             for (String table : List.of("ai_job_events", "audit_events", "ai_jobs", "project_ai_role_bindings",
                     "provider_credentials", "providers", "operator_tokens", "operators",
                     "dynamic_probe_plans", "audit_pipeline_runs", "control_plane_idempotency",
-                    "worker_trace_chunks", "worker_tasks", "artifact_upload_sessions", "sse_events")) {
-                statement.executeUpdate("DROP TABLE " + table);
+                    "worker_trace_chunks", "worker_tasks", "artifact_upload_sessions", "sse_events",
+                    "path_runs")) {
+                statement.executeUpdate("DROP TABLE IF EXISTS " + table);
             }
             statement.executeUpdate("DELETE FROM schema_migrations WHERE version>=2");
         }
@@ -250,7 +251,7 @@ public final class ControlPlanePersistenceAcceptanceTest {
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + upgradeDatabase);
              var statement = connection.createStatement();
              var rows = statement.executeQuery("SELECT count(*) FROM schema_migrations")) {
-            check(rows.next() && rows.getInt(1) == 11, "V001 database upgrades through ordered V011");
+            check(rows.next() && rows.getInt(1) == 13, "V001 database upgrades through ordered V013");
         }
         expect(IllegalArgumentException.class,
                 () -> ControlPlaneStore.sqlite(root.getParent().resolve("outside.db"), root),

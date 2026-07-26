@@ -146,13 +146,14 @@ public final class ManagementConfigurationAcceptanceTest {
         assertSecretAbsent(root, secret);
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + database);
              var statement = connection.createStatement()) {
-            statement.executeUpdate("DROP TABLE ai_job_events");
-            statement.executeUpdate("DROP TABLE dynamic_probe_plans");
-            statement.executeUpdate("DROP TABLE audit_pipeline_runs");
-            statement.executeUpdate("DROP TABLE control_plane_idempotency");
-            statement.executeUpdate("DROP TABLE sse_events");
-            statement.executeUpdate("DROP TABLE worker_trace_chunks");
-            statement.executeUpdate("DROP TABLE worker_tasks");
+            statement.executeUpdate("DROP TABLE IF EXISTS ai_job_events");
+            statement.executeUpdate("DROP TABLE IF EXISTS dynamic_probe_plans");
+            statement.executeUpdate("DROP TABLE IF EXISTS audit_pipeline_runs");
+            statement.executeUpdate("DROP TABLE IF EXISTS control_plane_idempotency");
+            statement.executeUpdate("DROP TABLE IF EXISTS sse_events");
+            statement.executeUpdate("DROP TABLE IF EXISTS worker_trace_chunks");
+            statement.executeUpdate("DROP TABLE IF EXISTS worker_tasks");
+            statement.executeUpdate("DROP TABLE IF EXISTS path_runs");
             statement.executeUpdate("""
                     CREATE TABLE project_ai_role_bindings_legacy (
                         project_id TEXT NOT NULL,
@@ -167,12 +168,15 @@ public final class ManagementConfigurationAcceptanceTest {
                     """);
             statement.executeUpdate("INSERT INTO project_ai_role_bindings_legacy "
                     + "SELECT project_id,role,workspace_id,provider_id,model,updated_at "
-                    + "FROM project_ai_role_bindings");
+                    + "FROM project_ai_role_bindings "
+                    + "WHERE role IN ('PRE_ANALYSIS','PATH_EXPLORATION','DYNAMIC_VERIFICATION',"
+                    + "'VULNERABILITY_TRIAGE','REPORT_GENERATION')");
             statement.executeUpdate("DROP TABLE project_ai_role_bindings");
             statement.executeUpdate("ALTER TABLE project_ai_role_bindings_legacy "
                     + "RENAME TO project_ai_role_bindings");
-            check(statement.executeUpdate("DELETE FROM schema_migrations WHERE version>=5") == 7,
-                    "V005-V011 are removed to emulate an existing V004 installation");
+            int removed = statement.executeUpdate("DELETE FROM schema_migrations WHERE version>=5");
+            check(removed == 9,
+                    "V005-V013 are removed to emulate an existing V004 installation");
             check(statement.executeUpdate("UPDATE ai_jobs SET status='FAILED', stop_reason='HTTP_500'") == 1,
                     "legacy fixture represents a failed job without detailed event rows");
         }

@@ -115,7 +115,8 @@ public final class AiJobOrchestrationAcceptanceTest {
         java.util.concurrent.atomic.AtomicBoolean englishPrompt = new java.util.concurrent.atomic.AtomicBoolean();
         ChatTransport englishTransport = (provider, credential, request, limits) -> {
             englishPrompt.set(request.toString().contains("Write all analyst-facing content in English")
-                    && request.toString().contains("Entrypoint-to-Trigger Matrix")
+                    && (request.toString().contains("Entrypoint-Track-PathRun Matrix")
+                    || request.toString().contains("Entrypoint-to-Trigger Matrix"))
                     && request.toString().contains("Combined Vulnerability Possibilities"));
             return new ProviderChatTransport.Response(200,
                     "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","

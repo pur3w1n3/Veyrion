@@ -31,12 +31,21 @@ public final class AuditRunAcceptanceTest {
         try (ControlPlaneServer server = new ControlPlaneServer(
                 root, 0, token, root.resolve("control.db"),
                 (provider, credential) -> { throw new AssertionError("inventory is not used"); },
-                (provider, credential, request, limits) -> new ProviderChatTransport.Response(
-                        200,
-                        ("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
-                                + "\"content\":\"evidence-linked pre-analysis\"}}]}")
-                                .getBytes(StandardCharsets.UTF_8),
-                        "audit-request", 1)).start()) {
+                (provider, credential, request, limits) -> {
+                    String requestText = request.toString();
+                    check(requestText.contains("SCAN_SUMMARY")
+                                    && requestText.contains("ENTRY_SUMMARY")
+                                    && requestText.contains("entryCount")
+                                    && requestText.contains("entry ids")
+                                    && requestText.contains("kind=ENTRY"),
+                            "PRE prompt includes bounded static scan and entry summaries");
+                    return new ProviderChatTransport.Response(
+                            200,
+                            ("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
+                                    + "\"content\":\"evidence-linked pre-analysis\"}}]}")
+                                    .getBytes(StandardCharsets.UTF_8),
+                            "audit-request", 1);
+                }).start()) {
             Path artifact = root.resolve("AuditEntryController.class");
             Files.writeString(artifact, "metadata-only audit fixture");
             projectId = text(ok(send(client, uri(server, "/projects"), "POST",
@@ -96,7 +105,11 @@ public final class AuditRunAcceptanceTest {
                     "replay returns the original scan and job");
             Map<String, Object> jobs = ok(send(client,
                     uri(server, "/projects/" + projectId + "/ai-jobs"), "GET", "", token, null));
-            check(jobs.get("aiJobs") instanceof List<?> values && values.size() == 2,
+            long preAnalysisJobs = jobs.get("aiJobs") instanceof List<?> values
+                    ? values.stream().filter(item -> item instanceof Map<?, ?> map
+                            && "PRE_ANALYSIS".equals(map.get("role"))).count()
+                    : -1L;
+            check(preAnalysisJobs == 2,
                     "idempotent replay does not duplicate either PRE_ANALYSIS job");
 
             check(send(client, auditRuns, "POST",
@@ -125,8 +138,12 @@ public final class AuditRunAcceptanceTest {
                     "restart replay returns the original immutable audit resources");
             Map<String, Object> jobs = ok(send(client,
                     uri(restarted, "/projects/" + projectId + "/ai-jobs"), "GET", "", token, null));
-            check(jobs.get("aiJobs") instanceof List<?> values && values.size() == 2,
-                    "restart replay does not duplicate AI jobs");
+            long preAnalysisJobs = jobs.get("aiJobs") instanceof List<?> values
+                    ? values.stream().filter(item -> item instanceof Map<?, ?> map
+                            && "PRE_ANALYSIS".equals(map.get("role"))).count()
+                    : -1L;
+            check(preAnalysisJobs == 2,
+                    "restart replay does not duplicate PRE_ANALYSIS jobs");
         }
         } finally {
             deleteTree(root);
@@ -194,7 +211,11 @@ public final class AuditRunAcceptanceTest {
         if (!Files.exists(root)) return;
         try (var paths = Files.walk(root)) {
             for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {
-                Files.deleteIfExists(path);
+                try {
+                    Files.deleteIfExists(path);
+                } catch (java.io.IOException ignored) {
+                    path.toFile().deleteOnExit();
+                }
             }
         }
     }

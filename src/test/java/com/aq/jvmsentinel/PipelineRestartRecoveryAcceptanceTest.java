@@ -46,9 +46,11 @@ public final class PipelineRestartRecoveryAcceptanceTest {
                         "{\"name\":\"pipeline provider\",\"kind\":\"OPENAI_CHAT\"," +
                                 "\"baseUrl\":\"http://127.0.0.1:3000\",\"model\":\"pipeline-model\"," +
                                 "\"apiKey\":\"pipeline-secret\"}", token, "provider")), "providerId");
-                ok(send(client, uri(first, "/projects/" + projectId + "/role-assignments/PRE_ANALYSIS"),
-                        "PATCH", "{\"providerId\":\"" + providerId + "\",\"model\":\"pipeline-model\"}",
-                        token, "binding"));
+                for (String role : List.of("PRE_ANALYSIS", "AUTH_ANALYSIS")) {
+                    ok(send(client, uri(first, "/projects/" + projectId + "/role-assignments/" + role),
+                            "PATCH", "{\"providerId\":\"" + providerId + "\",\"model\":\"pipeline-model\"}",
+                            token, "binding-" + role));
+                }
                 Map<String, Object> audit = ok(send(client,
                         uri(first, "/projects/" + projectId + "/audit-runs"), "POST",
                         "{\"artifactId\":\"" + artifactId + "\",\"authorized\":true,"
@@ -59,6 +61,9 @@ public final class PipelineRestartRecoveryAcceptanceTest {
                 String jobId = text(object(audit, "preAnalysisJob"), "aiJobId");
                 check("COMPLETED".equals(awaitJob(client, first, jobId, token).get("status")),
                         "PRE_ANALYSIS completes before restart");
+                String authJobId = awaitRoleJob(client, first, projectId, scanId, "AUTH_ANALYSIS", token);
+                check("COMPLETED".equals(awaitJob(client, first, authJobId, token).get("status")),
+                        "AUTH_ANALYSIS completes before dynamic observation");
                 Map<String, Object> task = awaitSingleTask(client, first, scanId, token);
                 taskId = text(task, "taskId");
                 check(List.of("QUEUED", "LEASED", "RUNNING", "PAUSED").contains(task.get("status")),
@@ -74,8 +79,13 @@ public final class PipelineRestartRecoveryAcceptanceTest {
                         "pipeline recovery does not enqueue a duplicate dynamic task");
                 Map<String, Object> jobs = ok(send(client,
                         uri(restarted, "/projects/" + projectId + "/ai-jobs"), "GET", "", token, null));
-                check(jobs.get("aiJobs") instanceof List<?> values && values.size() == 1,
-                        "pipeline recovery does not duplicate completed PRE_ANALYSIS");
+                long completedRoles = jobs.get("aiJobs") instanceof List<?> values
+                        ? values.stream().filter(item -> item instanceof Map<?, ?> map
+                                && List.of("PRE_ANALYSIS", "AUTH_ANALYSIS").contains(map.get("role"))
+                                && "COMPLETED".equals(map.get("status"))).count()
+                        : -1L;
+                check(completedRoles == 2,
+                        "pipeline recovery does not duplicate completed PRE/AUTH jobs");
             }
 
             try (var connection = DriverManager.getConnection("jdbc:sqlite:" + database);
@@ -171,6 +181,28 @@ public final class PipelineRestartRecoveryAcceptanceTest {
         throw new AssertionError("AI job did not finish");
     }
 
+    private static String awaitRoleJob(HttpClient client, ControlPlaneServer server, String projectId,
+                                       String scanId, String role, String token) throws Exception {
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (System.nanoTime() < deadline) {
+            Map<String, Object> jobs = ok(send(client,
+                    uri(server, "/projects/" + projectId + "/ai-jobs"), "GET", "", token, null));
+            if (jobs.get("aiJobs") instanceof List<?> values) {
+                for (Object item : values) {
+                    if (item instanceof Map<?, ?> map
+                            && scanId.equals(map.get("scanId"))
+                            && role.equals(map.get("role"))
+                            && map.get("aiJobId") instanceof String jobId
+                            && !jobId.isBlank()) {
+                        return jobId;
+                    }
+                }
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError(role + " job was not created");
+    }
+
     private static Map<String, Object> awaitSingleTask(HttpClient client, ControlPlaneServer server,
                                                        String scanId, String token) throws Exception {
         long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
@@ -228,7 +260,14 @@ public final class PipelineRestartRecoveryAcceptanceTest {
     private static void deleteTree(Path root) throws Exception {
         if (!Files.exists(root)) return;
         try (var paths = Files.walk(root)) {
-            for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
+            for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (java.io.IOException ignored) {
+                    // Windows may keep the SQLite WAL briefly locked after close.
+                    path.toFile().deleteOnExit();
+                }
+            }
         }
     }
 

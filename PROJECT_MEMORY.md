@@ -529,3 +529,127 @@ Control Plane API/SSE 和 GUI 真实 DTO 接入已完成一个受限 MVP slice�
 - `facts_search` 增加 `PATH_RUN`（及 `evidence_get pathrun:*`），回传 HTTP 状态、outcomeClass 与有界 SQL 明细；`sandbox_probe` 事实携带 `pathRuns` 摘要。
 - AI 用户提示注入有界 `PATH_RUN_FACTS`；AUTH/DYNAMIC 角色明确要求消费 PathRun。
 - `AUTH_GAP` 不再进入主 findings 列表（仍保留为 sink/事实）；dashboard 以 `authGapFindingCount` 计数，前端默认隐藏并可勾选显示。
+- **计数口径（诚实性）：** `authGapFindingCount` = 从主列表降级隐藏的 **finding 行**数（例如 AUTH 类标题含「鉴权缺口」的次级行）；`authGapSinkCount` = scan 中 `category=AUTH_GAP` 的 **sink** 数（常远大于 finding 行，如 156 vs 6）。二者不得混读。
+
+## 53. 洪水 HTTP 探针 fail-closed（2026-07-26）
+
+根因：容器 exit 0 只要求 `WaitHttpReady`，`LoopbackHttpProbe` 被 `|| true` 吞掉；探针 JVM OOM/写失败仍 COMPLETED，PathRun 仅剩 JDBC、`httpStatus=-1`。
+
+修复：
+
+- `WaitHttpReady` 跳过依赖替身端口，且要求响应行是 `HTTP/1.x` 或 `HTTP/2`。
+- `LoopbackHttpProbe` 统计写入；批量零事件 `System.exit(3)`；写失败打 stderr。
+- Worker shell：探针 `-Xmx64m`、去掉 `|| true`、`PROBE_JVM_OK`；就绪但无探针证据 exit **71**（从未就绪仍 **70**）；应用 `tmpdir` 改 `/tmp` 以免占满 64MiB trace tmpfs。
+- 合并后若 probe plan 非空且 JSONL 无 `"eventType":"HTTP"` → `EMPTY_PROBE_EVENTS` fail-closed。
+- 洪水 wall clock：`max(base, 180 + probes*4)`，覆盖 MOCK 下每入口 connect/read 满超时；旧 `150+probes` 会在真实探针跑起来后被 Docker deadline 杀掉并丢弃未回传事件。
+- 超时仍可 COMPLETED（有 HTTP 事件）；零 HTTP 不得冒充洪水成功。
+- 加速补强：`LoopbackHttpProbe` 批量模式默认 8 并发（硬上限 16），connect/read timeout 降至 800ms，JSONL 事件写入同步；wall clock 改按并发波次估算 `base + ceil(probes/8)*2 + 90`（上限仍 3600）。
+- 质量补强（双波）：wave-1 全量 800ms；对 `BUSINESS_TIMEOUT` 再跑 wave-2（2000ms，上限 128，优先 `UNAUTH`），每个目标只写一条最终 HTTP 事件，避免 PathRun 重复。wall 公式改为 `base + ceil(probes/8)*2 + ceil(min(128,probes)/8)*4 + 90`。并行不回退；零 HTTP 仍 fail-closed。预期：Blade MOCK 下 AUTH_CHALLENGE 占比上升，总墙钟仍远低于旧串行 ~10min。
+
+验证需 `-RebuildRuntimeImage`（Agent 打进 digest-pinned runtime）。未经验证前不得标记生产可用。
+
+## 54. 前置建模静态事实注入（2026-07-26）
+
+- `PRE_ANALYSIS` 用户提示现在由服务端注入有界 `SCAN_SUMMARY` 与最多 40 条 `ENTRY_SUMMARY`：包含入口数量、依赖/sink/证据计数、method/controller 分布、entry id、method、route、controller、参数、前置条件、鉴权相关注解/条件和 evidence refs。
+- 这些摘要仅是可信静态事实导航，模型仍必须通过 `facts_search` / `evidence_get` 引用证据做深层结论，且不得提升 `verificationStatus`；`facts_search` 提示要求优先使用 entry id、route、controller/class、HTTP method 和英文枚举关键词，避免只用中文自由文本导致误判“无事实”。
+
+## 55. AI 工具 entry 引用契约收紧（2026-07-26）
+
+- `plan_propose` 与 `sandbox_probe` 通过 `EntryRefResolver` 解析入口：规范引用为 `entry:<scanEntryId>`（如 `entry:entry-ann-1`）；同时接受裸 `scanEntryId`，以及在唯一匹配时接受 PathRun 风格的 `entry:METHOD:route`。原始 path / 非 entry 引用 → `ENTRYPOINT_REF_MUST_BE_ENTRY`；未知 → `ENTRYPOINT_NOT_FOUND`；多入口同 method+route → `ENTRYPOINT_REF_AMBIGUOUS`。不得用模型编造路由触发沙箱。
+- `sandbox_probe` 仍只创建服务端固定的 `TRUSTED_DOCKER` / `NetworkPolicy.DENY` 探针；模型不能扩大命令、网络、挂载、UID、预算或授权。忙碌与失败必须以模型可读 **fact** 暴露 `state`、`lifecycle`、`retryable`、`stopReason` 和 `failureCode`（如 `BUSY`、`EMPTY_PROBE_EVENTS`、`EXTERNAL_ARTIFACT_EXIT_NONZERO`）；任务/执行器异常不得只回空的 `TOOL_EXECUTION_FAILED`。
+
+## 56. 多身份轨洪水完整性与超时分类（2026-07-26）
+
+- `ControlPlaneServer` 的动态 probe plan 继续以 512 为硬上限，但身份轨扩展不再把上限提前消耗在单轨入口上：先保留未授权覆盖，再优先给高价值路由补齐 `USER` / `ADMIN` / `BYPASS_CANDIDATE`，普通路由在预算内补 `ADMIN`；饱和时也必须显式保留部分认证轨，而不是静默全变成 `UNAUTH`。
+- `PathOutcomeClassifier` 与 PathRun 事实口径固定：`SocketTimeoutException` → `BUSINESS_TIMEOUT`、`ConnectException` → `COLD_START`、401/403 → `AUTH_CHALLENGE`。这些分类只解释停止原因和对照证据，不能单独升级 `DYNAMIC_CONFIRMED` 或 `VERIFIED`。
+
+## 57. PathRun SQL D1 与协议元数据分离（2026-07-26）
+
+全量审计缺陷（scan-88b424bbe41f4429）：PathRun `sqlEvents` 被 Redis/MySQL 替身握手元数据污染（`port=6379`、`accepted-without-credential-capture`、`sqlClass=SELECT,bytes=N`），投影把 JDBC `summary` 误当成语句文本，阻断 D1–D3 / H3。
+
+修复：
+
+- `TraceProjectionService` 仅在 detail 含可用截断 `sql` 且非协议 meta 时写入 PathRun `sqlEvents`；Redis RESP / listen/auth meta 仍可出现在 dependency evidence，但不再冒充 SQL。
+- `LoopbackMysqlStub` 对 COM_QUERY / COM_STMT_PREPARE 记录截断 SQL + `sqlClass` + `outcome` + `readWrite`/`parameterized`。
+- Agent `JdbcAdvice` 在 `execute*(String)` 可见语句文本时记录 `JDBC_STATEMENT` 观测；无 SQL 参数则不发空 JDBC 事件。
+- `DynamicConfirmedGate` 忽略 `port=` / `sqlClass=` 类 meta，H3 仍要求真实语句文本中的恶意片段且非参数化。
+
+MOCK 诚实性：无语句级观测时 PathRun SQL 可为空并保持 `DYNAMIC_SUSPECTED`；`DYNAMIC_CONFIRMED` 仍只由服务端门禁触发，≠ 生产实库已证实。需重建 runtime 镜像后 Agent 侧语句捕获才进入沙箱制品。
+
+## 58. Entry 别名与 AUTH_GAP 计数诚实性（2026-07-26）
+
+全量审计 P1：`sandbox_probe` / `plan_propose` 在 `entry-ann-*`、`entry:entry-ann-*`、PathRun `entry:METHOD:route` 之间混淆，烧工具预算；探针执行异常只回 `TOOL_EXECUTION_FAILED`；`authGapFindingCount=6` 与 AUTH_GAP sink=156 易被误读。
+
+修复：
+
+- 共享 `EntryRefResolver` + 工具/控制面统一解析；探针事实始终回写规范 `entry:<scanEntryId>`。
+- 探针失败路径（含执行器异常）回传含 `failureCode`/`stopReason`/`lifecycle` 的 fact。
+- dashboard 保留 `authGapFindingCount`（降级 finding 行），新增 `authGapSinkCount`（AUTH_GAP sink 数）。
+
+## 59. 鉴权绕过 PoC 交接：AI 撰写 → 服务端校验 → 动态执行（2026-07-26）
+
+产品纠正：鉴权分析点名的可行性必须落到**可执行 PoC**，由动态验证追踪真实流向；不是“仅服务端 JWT 预设、模型不得写 header”。
+
+锁定所有权：
+
+1. **AUTH_ANALYSIS / triage AI** 研判并撰写结构化 `bypassPoCs`（`entryRef`、`techniqueId`、`track`、`rationale`、`evidenceRefs`、`confidence`，以及 AI 指定的 `authorizationHeader` / `bladeAuthHeader` / `query` / `bodyHint`，可含 JWT/alg-none/自定义 claims）。
+2. **服务端闸门**校验 entry 归属、长度/字符集、数量、破坏性关键字；**接受** AI PoC 内容，不替换为仅 `SyntheticIdentityService` 预设。已知 technique 合成器仅作无 header 时的回退。
+3. **DYNAMIC_VERIFICATION** 用户提示注入 `AUTH_BYPASS_FEASIBILITY`；经 `sandbox_probe(techniqueId, authorizationHeader)` 执行焦点探针，写回 PathRun/Agent/HTTP/SQL 观测。
+4. 验证状态仍证据门禁：LLM 不能单独写 `DYNAMIC_CONFIRMED` / `VERIFIED`；MOCK 诚实。
+
+实现要点：`AuthBypassCandidate` / `AuthBypassFeasibility`；AUTH conclusion 持久化 `bypassPoCs`；无效候选进 `rejectedCandidates`；`AuthBypassFeasibilityAcceptanceTest` 覆盖解析接受 AI JWT、拒绝非法项、注入 DYNAMIC prompt。
+
+仍阻止：非 `entry:*`、超长/控制字符头、破坏性 payload、改网络/挂载/命令/UID/预算、模型单独升验证级。Blade-Auth 与 Authorization 在探针层当前仍共用同一 token 通道（残余限制）。
+
+## 60. AUTH 鉴权面强制结构化 bypassPoCs（2026-07-26）
+
+Live E2E（scan-6bc7607e）证明 AUTH→DYNAMIC 交接管道可用，但模型可静默输出空 `bypassPoCs`（`NO_STRUCTURED_BYPASS_BLOCK`），导致 `sandbox_probe=0`。
+
+强制策略（不削弱证据门禁）：
+
+1. **鉴权面检测**：扫描含 JWT / AUTH_GAP（或 AUTH）sink、JWT/AUTH_GAP finding、或鉴权标注入口时，视为有鉴权面。
+2. **提示硬化**：AUTH 角色与 `AUTH_SURFACE` 块要求非空 `bypassPoCs`（可探针假设或逐条 infeasible）；仅零鉴权面允许空列表+`emptyReason`。
+3. **服务端闸门**：AUTH 完成时若有鉴权面且校验后 PoC 仍为空 → 事件 `AUTH_BYPASS_POC_REQUIRED`，**强制补写一轮**；仍空则 **RULE_GENERATED 草案填充**（`MISSING_AUTH` / `EMPTY_BEARER` / `ALG_NONE`），conclusion 标记 `enforcement=AUTH_BYPASS_POC_SEEDED`、`pocDraftSource=RULE_GENERATED`、`draftProvenance`；仍为 `INFERENCE`，不得单独升 VERIFIED。
+4. DYNAMIC 继续消费 `AUTH_BYPASS_FEASIBILITY` / `bypassPoCs`（含种子 header）并 `sandbox_probe`。
+
+验收：`AuthBypassFeasibilityAcceptanceTest` 覆盖有 JWT/AUTH_GAP 时静默空 PoC → re-ask → 非空 RULE_GENERATED 草案。
+
+## 61. DYNAMIC 非空可行性必须尝试 sandbox_probe（2026-07-26）
+
+Live（scan-3f4bc0cb754b4cf6）证明 AUTH 种子/AI PoC 已进入 DYNAMIC 提示，但模型可只做 `facts_search`/叙事，`DYNAMIC_VERIFICATION` 的 `sandbox_probe=0`，探针落在 TRIAGE。产品意图：AUTH 撰写/种子 → **DYNAMIC 必须尝试**并留下 PathRun。
+
+强制策略（不削弱证据门禁；TRIAGE 仍可探针，但不得成为唯一消费者）：
+
+1. **提示硬化**：`AUTH_BYPASS_FEASIBILITY` 非空时，DYNAMIC 须在结案前对 top-N（3–8，或不足 3 条时全部）调用 `sandbox_probe`（含 `techniqueId` / `authorizationHeader`）；禁止纯叙事。
+2. **服务端闸门**：DYNAMIC 完成时若可行性非空且本 job `sandbox_probe` 次数为 0 → 事件 `DYNAMIC_POC_ATTEMPT_REQUIRED`，**重新打开工具阶段补写一轮**；仍为 0 → **服务端自动入队**焦点探针（合成 jobId `:dyn-poc-N`，上限 3），conclusion 标记 `DYNAMIC_POC_ATTEMPT_SEEDED` / `SATISFIED`。
+3. 验收：`AuthBypassFeasibilityAcceptanceTest` 覆盖非空可行性 → re-ask → 模型探针，以及 re-ask 后仍零探针 → auto-enqueue。
+
+## 62. MISSING_AUTH sandbox_probe 空头合法（2026-07-26）
+
+Live DYNAMIC `ai-job-e019163ef1cb4b20`：`sandbox_probe=8` 中 **5× MISSING_AUTH → `ARGUMENT_SCHEMA_MISMATCH`**，3× ALG_NONE 成功。根因不是 technique 未入白名单，而是工具 schema 校验对**所有**字符串字段拒绝 blank，与对外 JSON Schema（无 `minLength`）及产品语义（MISSING_AUTH = 无 Authorization / Blade-Auth）冲突；模型按 PoC 传入 `authorizationHeader:""` 被拒。
+
+契约修正：
+
+1. 可选字符串允许 `""`；仅 **required** 字符串要求非 blank（否则 `MISSING_ARGUMENT`）。
+2. `MISSING_AUTH` 焦点探针固定 `UNAUTH` + 空 token，**禁止**合成假 Bearer；若同时带非空 `authorizationHeader` → `MISSING_AUTH_MUST_OMIT_AUTHORIZATION`。
+3. 鉴权头长度/字符集失败映射为稳定错误码；`LoopbackHttpProbe` 对空 authHeader 仍不写 Authorization/Blade-Auth。
+
+验收：`AiToolRegistryAcceptanceTest`（空/省略头）、`ControlPlaneProbeExpansionAcceptanceTest`（materialize）、`AuthBypassFeasibilityAcceptanceTest`（plan_propose MISSING_AUTH）。需重启 CP 后对同 scan 再跑 DYNAMIC 才验证 live PathRun。
+
+## 63. P0 单入口 debug 主脊收口（2026-07-26）
+
+本轮按 [`docs/MVP_BACKLOG.md`](docs/MVP_BACKLOG.md) §4.0–4.1 推进，全部以 acceptance 为准，**不得**标生产可用或 `VERIFIED`。
+
+### 已落地
+
+- **P0-01**：`POST /api/v1/scans/{scanId}/entries/{entryId}/focus-probe`（authorized + 幂等键；忙冲突 409）；GUI PathRun 入口×轨筛选与「只跑此入口」；`EntryFocusProbeAcceptanceTest`。
+- **P0-02**：探针/投影诚实填写 `entryHit` / `parameterBound`（未知写 `parameterBound=unknown`）；404→`REACHED_NO_BIND`；Spring handler 可证绑定；`EntryHitParameterBoundAcceptanceTest`。
+- **P0-03**：Authorization 与 Blade-Auth 独立通道（计划第 6 列、工具 `bladeAuthHeader`）；不可用合成身份→`IDENTITY_UNAVAILABLE` 未达路径，不再空 token 假探针。
+- **P0-04**：投影挂接 `SqlDiffProbe.compare`，D2 摘要封顶 `DYNAMIC_SUSPECTED`；H3 仍仅 `DynamicConfirmedGate`。
+- **P0-05**：AUTH 确认结论强制 `bypassConfirmation`（`HYPOTHESIS` / `DYNAMIC_CONTRAST` / `INSUFFICIENT_EVIDENCE`）；零 PathRun 证据不得 `DYNAMIC_CONTRAST`。
+
+### 仍开 / 阻塞
+
+- P1：SQL D3 实验卡、Blade/Flowable 语义包、召回基准、多语言、`VERIFIED`/强化隔离。
+- live Docker：JWT 过闸轨差分、baldex 单入口 SQL D2、重建 runtime 镜像后的 Agent 侧语句捕获——需授权环境复验。
+- 个人本地 `TRUSTED_DOCKER` 仍非恶意强化隔离；模型不得改网络/挂载/命令/UID/预算。
