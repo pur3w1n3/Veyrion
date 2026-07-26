@@ -289,7 +289,12 @@ public final class SQLiteControlPlanePersistence {
         List<ApiDtos.PathRunDto> runs = List.copyOf(pathRuns == null ? List.of() : pathRuns);
         if (runs.size() > 20_000) throw new PersistenceException("path run batch limit exceeded");
         transaction("could not persist path runs", connection -> {
-            update(connection, "DELETE FROM path_runs WHERE task_id=?", taskId);
+            // DELETE may affect 0 rows on first write; do not use update() which requires exactly one.
+            try (PreparedStatement delete = connection.prepareStatement(
+                    "DELETE FROM path_runs WHERE task_id=?")) {
+                delete.setString(1, taskId);
+                delete.executeUpdate();
+            }
             for (ApiDtos.PathRunDto run : runs) {
                 if (!scanId.equals(run.scanId())) {
                     throw new PersistenceException("path run scan scope mismatch");
