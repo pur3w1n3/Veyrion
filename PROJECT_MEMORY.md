@@ -837,3 +837,9 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 残余 Blade 命名字段（诚实）：`bladeAuthHeader`、`AuthMaterialized.bladeAuthToken`、probe TSV 第二通道、部分审计摘要键、pack id `blade-jwt-default`、适配器 id `spring-blade` 与 header 名 `Blade-Auth`（适配器本地）。
 
 验收：同 §77 列表 + `AnalysisPackAcceptanceTest`。不得标 VERIFIED / 生产可用。
+
+## 79. 审计目标保留原始文件名（2026-07-27）
+
+- **根因**：浏览器上传在会话里携带 `fileName`，但完成安装到内容寻址路径（`sha256.ext`）后，`ArtifactDescriptor` / `ArtifactDto` 未持久化原始 basename；UI 只能用短 digest `artifactId` 做标题（如 `JAR · e2aeb86bddca6f4b`）。
+- **修复**：描述符与 SQLite（V021 `original_file_name`）保存 `originalFileName`；wire 同时暴露 `fileName` / `displayName`；列表与审计选择器用原名作主标题，digest/大小为次要元数据。
+- 已导入且 DB 中无原名的制品需重新上传/登记才能恢复显示名。不得标生产可用。

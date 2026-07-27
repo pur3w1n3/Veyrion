@@ -37,7 +37,8 @@ public final class ApiDtos {
     public record ArtifactDto(int schemaVersion, String projectId, String artifactId,
                               String artifactType, String artifactDigest, long sizeBytes,
                               boolean staticOnly, String registeredAt, String verificationStatus,
-                              String dependencyMode, List<String> evidenceRefs) {
+                              String dependencyMode, List<String> evidenceRefs,
+                              String originalFileName) {
         public ArtifactDto {
             requireSchema(schemaVersion);
             requireText(projectId, "projectId");
@@ -49,6 +50,15 @@ public final class ApiDtos {
             requireText(dependencyMode, "dependencyMode");
             if (sizeBytes < 0) throw new IllegalArgumentException("sizeBytes must not be negative");
             evidenceRefs = List.copyOf(evidenceRefs == null ? List.of() : evidenceRefs);
+            if (originalFileName != null) {
+                originalFileName = originalFileName.trim();
+                if (originalFileName.isBlank()) originalFileName = null;
+            }
+        }
+
+        /** Primary UI label: original basename, else short artifact id. */
+        public String displayName() {
+            return originalFileName != null ? originalFileName : artifactId;
         }
     }
 

@@ -83,7 +83,8 @@ public final class SQLiteControlPlanePersistence {
             "db/migration/V017__taint_graph_and_ledger_diff.sql",
             "db/migration/V018__fuzz_strategy.sql",
             "db/migration/V019__root_cause.sql",
-            "db/migration/V020__verified_findings.sql");
+            "db/migration/V020__verified_findings.sql",
+            "db/migration/V021__artifact_original_file_name.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 
@@ -619,12 +620,17 @@ public final class SQLiteControlPlanePersistence {
             try (Statement statement = connection.createStatement();
                  ResultSet rows = statement.executeQuery(
                          "SELECT project_id,artifact_id,artifact_type,normalized_path,size_bytes,"
-                                 + "artifact_digest,static_only,registered_at FROM artifacts ORDER BY rowid")) {
+                                 + "artifact_digest,static_only,registered_at,original_file_name "
+                                 + "FROM artifacts ORDER BY rowid")) {
                 while (rows.next()) {
+                    String originalFileName = rows.getString(9);
+                    if (originalFileName == null || originalFileName.isBlank()) {
+                        originalFileName = Path.of(rows.getString(4)).getFileName().toString();
+                    }
                     ArtifactDescriptor descriptor = new ArtifactDescriptor(rows.getString(2),
                             ArtifactType.valueOf(rows.getString(3)), Path.of(rows.getString(4)),
                             rows.getLong(5), rows.getString(6), rows.getInt(7) != 0,
-                            Instant.parse(rows.getString(8)));
+                            Instant.parse(rows.getString(8)), originalFileName);
                     artifacts.add(new ArtifactData(rows.getString(1), descriptor));
                 }
             }
@@ -684,14 +690,16 @@ public final class SQLiteControlPlanePersistence {
     public void insertArtifact(String projectId, ArtifactDescriptor descriptor, String actorId) {
         transaction("could not register artifact", connection -> {
             update(connection, "INSERT INTO artifacts(project_id,artifact_digest,artifact_id,artifact_type,"
-                            + "normalized_path,size_bytes,static_only,registered_at) VALUES(?,?,?,?,?,?,?,?) "
+                            + "normalized_path,size_bytes,static_only,registered_at,original_file_name) "
+                            + "VALUES(?,?,?,?,?,?,?,?,?) "
                             + "ON CONFLICT(project_id,artifact_digest) DO UPDATE SET artifact_id=excluded.artifact_id,"
                             + "artifact_type=excluded.artifact_type,normalized_path=excluded.normalized_path,"
                             + "size_bytes=excluded.size_bytes,static_only=excluded.static_only,"
-                            + "registered_at=excluded.registered_at",
+                            + "registered_at=excluded.registered_at,"
+                            + "original_file_name=COALESCE(excluded.original_file_name,artifacts.original_file_name)",
                     projectId, descriptor.sha256(), descriptor.artifactId(), descriptor.type().name(),
                     descriptor.normalizedPath().toString(), descriptor.sizeBytes(), descriptor.staticOnly() ? 1 : 0,
-                    descriptor.registeredAt().toString());
+                    descriptor.registeredAt().toString(), descriptor.originalFileName());
             audit(connection, projectId, actorId, "artifact.register", "artifact",
                     descriptor.artifactId(), "{\"digest\":\"" + descriptor.sha256() + "\"}",
                     descriptor.registeredAt().toString());

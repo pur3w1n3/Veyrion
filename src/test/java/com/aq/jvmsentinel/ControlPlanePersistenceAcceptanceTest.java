@@ -263,7 +263,7 @@ public final class ControlPlanePersistenceAcceptanceTest {
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + upgradeDatabase);
              var statement = connection.createStatement();
              var rows = statement.executeQuery("SELECT count(*) FROM schema_migrations")) {
-            check(rows.next() && rows.getInt(1) == 20, "V001 database upgrades through ordered V020");
+            check(rows.next() && rows.getInt(1) == 21, "V001 database upgrades through ordered V021");
         }
         expect(IllegalArgumentException.class,
                 () -> ControlPlaneStore.sqlite(root.getParent().resolve("outside.db"), root),
@@ -308,7 +308,8 @@ public final class ControlPlanePersistenceAcceptanceTest {
         var project = store.createProject("project-rc", "root cause wire", now, "local-admin");
         String digest = "d".repeat(64);
         store.registerArtifact(project, new ArtifactDescriptor("artifact-rc", ArtifactType.CLASS,
-                artifactFile, Files.size(artifactFile), digest, true, Instant.parse(now)), "local-admin");
+                artifactFile, Files.size(artifactFile), digest, true, Instant.parse(now),
+                artifactFile.getFileName().toString()), "local-admin");
         var evidence = new ApiDtos.EvidenceDto(1, project.projectId(), digest, "scan-rc",
                 "evidence-rc-1", "FACT", "classfile", 1.0, "sql concat", now,
                 "test", "none", "snapshot-rc", "MOCK", "STATIC_INFERRED");

@@ -2925,7 +2925,8 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     private ApiDtos.ArtifactDto artifactDto(String projectId, ArtifactDescriptor descriptor) {
         return new ApiDtos.ArtifactDto(ApiDtos.SCHEMA_VERSION, projectId, descriptor.artifactId(),
                 descriptor.type().name(), descriptor.sha256(), descriptor.sizeBytes(), descriptor.staticOnly(),
-                descriptor.registeredAt().toString(), ApiDtos.STATIC_INFERRED, ApiDtos.MOCK, List.of());
+                descriptor.registeredAt().toString(), ApiDtos.STATIC_INFERRED, ApiDtos.MOCK, List.of(),
+                descriptor.originalFileName());
     }
 
     private static List<String> prefixRefs(List<String> refs, Map<String, String> mapping) {
@@ -2973,6 +2974,9 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         result.put("sizeBytes", dto.sizeBytes()); result.put("staticOnly", dto.staticOnly());
         result.put("registeredAt", dto.registeredAt()); result.put("verificationStatus", dto.verificationStatus());
         result.put("dependencyMode", dto.dependencyMode()); result.put("evidenceRefs", dto.evidenceRefs());
+        result.put("originalFileName", dto.originalFileName());
+        result.put("fileName", dto.originalFileName());
+        result.put("displayName", dto.displayName());
         return result;
     }
 

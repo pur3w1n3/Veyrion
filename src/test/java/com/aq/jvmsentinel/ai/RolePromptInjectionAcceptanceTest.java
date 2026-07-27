@@ -58,7 +58,7 @@ public final class RolePromptInjectionAcceptanceTest {
         Files.writeString(artifact, "fixture");
         String digest = "d".repeat(64);
         store.registerArtifact(project, new ArtifactDescriptor("artifact-role", ArtifactType.CLASS,
-                artifact, Files.size(artifact), digest, true, Instant.parse(now)), "local-admin");
+                artifact, Files.size(artifact), digest, true, Instant.parse(now), "Fixture.class"), "local-admin");
 
         var entry = new ApiDtos.EntryDto(1, project.projectId(), digest, "scan-role", "entry-1",
                 "HTTP", "GET", "/blade-auth/login", "org.springblade.AuthController", "blade",

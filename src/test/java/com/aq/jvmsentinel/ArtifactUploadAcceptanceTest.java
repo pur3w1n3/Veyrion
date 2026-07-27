@@ -79,8 +79,14 @@ public final class ArtifactUploadAcceptanceTest {
             HttpResponse<String> completed = complete(client, base, projectId, uploadId,
                     true, server.mutationToken());
             check(completed.statusCode() == 201, "Valid upload must complete");
-            check(digest.equals(JsonCodec.parseObject(completed.body()).get("artifactDigest")),
-                    "Completed artifact digest");
+            Map<?, ?> completedBody = JsonCodec.parseObject(completed.body());
+            check(digest.equals(completedBody.get("artifactDigest")), "Completed artifact digest");
+            check("fixture.jar".equals(completedBody.get("originalFileName")),
+                    "Completed artifact must preserve original file name");
+            check("fixture.jar".equals(completedBody.get("displayName")),
+                    "Completed artifact displayName must use original file name");
+            check("fixture.jar".equals(completedBody.get("fileName")),
+                    "Completed artifact fileName alias must use original file name");
 
             Path managed = root.resolve(".veyrion").resolve("artifacts").resolve("sha256")
                     .resolve(digest.substring(0, 2)).resolve(digest + ".jar");

@@ -188,7 +188,7 @@ public final class ArtifactUploadService {
         Path prefixRoot = secureDirectory(contentRoot, session.sha256.substring(0, 2));
         Path target = prefixRoot.resolve(session.sha256 + "." + session.extension);
         installAtomically(session.part, target, session.sizeBytes, session.sha256);
-        ArtifactDescriptor descriptor = registry.registerManaged(target);
+        ArtifactDescriptor descriptor = registry.registerManaged(target, session.fileName);
         registry.verifyUnchanged(descriptor);
         session.completed = descriptor;
         return descriptor;

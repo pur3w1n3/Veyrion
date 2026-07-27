@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { api, type AiJobDto, type ArtifactDto, type AuditRetryStage, type DashboardSnapshot, type DynamicTaskDto, type OutputLanguage, type RoleAssignmentDto, type ScanDto } from '../api'
+import { api, artifactLabel, type AiJobDto, type ArtifactDto, type AuditRetryStage, type DashboardSnapshot, type DynamicTaskDto, type OutputLanguage, type RoleAssignmentDto, type ScanDto } from '../api'
 import { confirmAiAuthorization } from '../aiAuthorization'
 import { dependencyModeLabel, jobStatusLabel, roleLabel, stopReasonLabel, timelineStateLabel } from '../labels'
 import { AI_ROLES } from '../labels'
@@ -219,7 +219,7 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
       <article className="panel">
         <div className="panel-head"><div><p className="eyebrow">启动审计</p><h2>审计范围与策略</h2></div><span>{loadingArtifacts ? '加载目标…' : `${artifacts.length} 个目标`}</span></div>
         <form className="stack-form" onSubmit={submit}>
-          <label className="field"><span>目标制品</span><select required name="artifactId" disabled={!projectId || loadingArtifacts}><option value="">{loadingArtifacts ? '正在加载目标' : artifacts.length ? '选择制品' : '当前工作区暂无制品'}</option>{artifacts.map((item) => <option key={item.artifactId} value={item.artifactId}>{item.type} · {item.artifactId}</option>)}</select></label>
+          <label className="field"><span>目标制品</span><select required name="artifactId" disabled={!projectId || loadingArtifacts}><option value="">{loadingArtifacts ? '正在加载目标' : artifacts.length ? '选择制品' : '当前工作区暂无制品'}</option>{artifacts.map((item) => <option key={item.artifactId} value={item.artifactId}>{artifactLabel(item)}</option>)}</select></label>
           <div className="form-grid">
             <label className="field"><span>执行模式（外部依赖）</span><select name="dependencyMode"><option value="MOCK">{dependencyModeLabel('MOCK')}：外部依赖用规则/协议模拟代替（当前唯一可用）</option></select></label>
             <label className="field"><span>网络策略</span><input value="禁止外网（固定）" readOnly /></label>

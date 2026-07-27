@@ -350,6 +350,19 @@ export type ArtifactDto = {
   evidenceRefs?: EvidenceRef[]
   projectId?: string
   registeredAt?: string
+  /** Original upload/path basename; preferred UI title over digest/artifactId. */
+  originalFileName?: string
+  fileName?: string
+  displayName?: string
+}
+
+/** Primary label for audit-target lists and selectors. */
+export const artifactLabel = (artifact: Pick<ArtifactDto, 'type' | 'artifactId' | 'originalFileName' | 'fileName' | 'displayName'>): string => {
+  const name = artifact.displayName
+    ?? artifact.originalFileName
+    ?? artifact.fileName
+    ?? artifact.artifactId
+  return `${artifact.type} · ${name}`
 }
 export type Artifact = ArtifactDto
 
@@ -1312,9 +1325,12 @@ export const parseArtifact = (value: unknown): ArtifactDto => {
   const body = unwrap(value, 'artifact')
   if (!isRecord(body)) throw new Error('invalid artifact response')
   const status = statusOf(body.verificationStatus ?? body.status, 'artifact.verificationStatus')
+  const artifactId = asText(body.artifactId ?? body.id, 'artifact.artifactId')
+  const originalFileName = optionalText(body.originalFileName) ?? optionalText(body.fileName)
+  const displayName = optionalText(body.displayName) ?? originalFileName ?? artifactId
   return {
     schemaVersion: schemaVersion(isRecord(value) ? value.schemaVersion : undefined, 'artifact.schemaVersion'),
-    artifactId: asText(body.artifactId ?? body.id, 'artifact.artifactId'),
+    artifactId,
     type: asText(body.type ?? body.artifactType, 'artifact.type').toUpperCase(),
     artifactType: asText(body.type ?? body.artifactType, 'artifact.type').toUpperCase(),
     artifactDigest: asText(body.artifactDigest ?? body.sha256, 'artifact.artifactDigest'),
@@ -1324,7 +1340,10 @@ export const parseArtifact = (value: unknown): ArtifactDto => {
     dependencyMode: optionalText(body.dependencyMode),
     evidenceRefs: evidenceRefsOf(body.evidenceRefs, 'artifact.evidenceRefs'),
     projectId: optionalText(body.projectId),
-    registeredAt: optionalText(body.registeredAt)
+    registeredAt: optionalText(body.registeredAt),
+    originalFileName,
+    fileName: originalFileName,
+    displayName
   }
 }
 
@@ -2400,11 +2419,40 @@ export class MockSentinelApi implements SentinelApi {
 
   async updateProject(): Promise<ProjectDto> { return this.unavailable('update project') }
   async deleteProject(): Promise<void> { return this.unavailable('delete project') }
-  async listArtifacts(): Promise<ArtifactDto[]> { return [] }
+  async listArtifacts(): Promise<ArtifactDto[]> {
+    return [{
+      schemaVersion: 1,
+      artifactId: 'demo-artifact',
+      type: 'JAR',
+      artifactDigest: '0'.repeat(64),
+      sizeBytes: 1_048_576,
+      staticOnly: true,
+      verificationStatus: 'STATIC_INFERRED',
+      registeredAt: new Date(0).toISOString(),
+      projectId: 'project-01',
+      originalFileName: 'demo-springblade-sample.jar',
+      fileName: 'demo-springblade-sample.jar',
+      displayName: 'demo-springblade-sample.jar'
+    }]
+  }
 
   async registerArtifact(request: RegisterArtifactRequest | string, _projectId?: string): Promise<ArtifactDto> {
     const path = typeof request === 'string' ? request : request.path
-    return { schemaVersion: 1, artifactId: 'demo-artifact', type: 'JAR', artifactDigest: '0'.repeat(64), sizeBytes: 0, staticOnly: true, verificationStatus: 'STATIC_INFERRED', registeredAt: new Date(0).toISOString(), projectId: 'project-01' }
+    const baseName = path.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'demo-sample.jar'
+    return {
+      schemaVersion: 1,
+      artifactId: 'demo-artifact',
+      type: 'JAR',
+      artifactDigest: '0'.repeat(64),
+      sizeBytes: 0,
+      staticOnly: true,
+      verificationStatus: 'STATIC_INFERRED',
+      registeredAt: new Date(0).toISOString(),
+      projectId: 'project-01',
+      originalFileName: baseName,
+      fileName: baseName,
+      displayName: baseName
+    }
   }
 
   uploadArtifact(): UploadTask {

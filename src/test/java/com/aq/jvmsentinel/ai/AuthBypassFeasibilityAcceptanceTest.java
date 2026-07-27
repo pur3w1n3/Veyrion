@@ -181,7 +181,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         Files.writeString(artifact, "fixture");
         String digest = "b".repeat(64);
         store.registerArtifact(project, new ArtifactDescriptor("artifact-poc", ArtifactType.CLASS,
-                artifact, Files.size(artifact), digest, true, Instant.parse(now)), "local-admin");
+                artifact, Files.size(artifact), digest, true, Instant.parse(now), "Fixture.class"), "local-admin");
         var entry = new ApiDtos.EntryDto(1, project.projectId(), digest, "scan-poc", "entry-ai",
                 "HTTP", "GET", "/api/admin", "example.AdminController", "example",
                 List.of(), List.of("auth=jwt"), "STATIC_INFERRED", 0.8, 0, List.of("evidence-ai"));
@@ -268,7 +268,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         Files.writeString(artifact, "fixture");
         String digest = "c".repeat(64);
         store.registerArtifact(project, new ArtifactDescriptor("artifact-surface", ArtifactType.CLASS,
-                artifact, Files.size(artifact), digest, true, Instant.parse(now)), "local-admin");
+                artifact, Files.size(artifact), digest, true, Instant.parse(now), "Fixture.class"), "local-admin");
         var entry = new ApiDtos.EntryDto(1, project.projectId(), digest, "scan-surface", "entry-jwt",
                 "HTTP", "GET", "/api/admin", "example.AdminController", "example",
                 List.of(), List.of("auth=jwt"), "STATIC_INFERRED", 0.8, 0, List.of("evidence-jwt"));
@@ -415,7 +415,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         Files.writeString(artifact, "fixture");
         String digest = "d".repeat(64);
         store.registerArtifact(project, new ArtifactDescriptor("artifact-dyn", ArtifactType.CLASS,
-                artifact, Files.size(artifact), digest, true, Instant.parse(now)), "local-admin");
+                artifact, Files.size(artifact), digest, true, Instant.parse(now), "Fixture.class"), "local-admin");
         var entry = new ApiDtos.EntryDto(1, project.projectId(), digest, "scan-dyn", "entry-dyn",
                 "HTTP", "GET", "/api/admin", "example.AdminController", "example",
                 List.of(), List.of("auth=jwt"), "STATIC_INFERRED", 0.8, 0, List.of("evidence-dyn"));
@@ -564,7 +564,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         Files.writeString(artifact, "fixture");
         String digest = "e".repeat(64);
         store.registerArtifact(project, new ArtifactDescriptor("artifact-auto", ArtifactType.CLASS,
-                artifact, Files.size(artifact), digest, true, Instant.parse(now)), "local-admin");
+                artifact, Files.size(artifact), digest, true, Instant.parse(now), "Fixture.class"), "local-admin");
         var entry = new ApiDtos.EntryDto(1, project.projectId(), digest, "scan-auto", "entry-auto",
                 "HTTP", "GET", "/api/admin", "example.AdminController", "example",
                 List.of(), List.of("auth=jwt"), "STATIC_INFERRED", 0.8, 0, List.of("evidence-auto"));

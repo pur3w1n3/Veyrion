@@ -271,7 +271,7 @@ public final class AiJobOrchestrationAcceptanceTest {
         Files.writeString(artifact, "fixture");
         String digest = "a".repeat(64);
         var descriptor = new ArtifactDescriptor("artifact-ai", ArtifactType.CLASS,
-                artifact, Files.size(artifact), digest, true, Instant.parse(now));
+                artifact, Files.size(artifact), digest, true, Instant.parse(now), "Fixture.class");
         store.registerArtifact(project, descriptor, "local-admin");
         var entry = new ApiDtos.EntryDto(1, project.projectId(), digest, "scan-ai", "entry-ai",
                 "HTTP", "GET", "/safe", "example.SafeController", "example",

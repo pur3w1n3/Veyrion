@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
-import { api, MAX_BROWSER_HASH_BYTES, type ArtifactDto, type UploadTask } from '../api'
+import { api, artifactLabel, MAX_BROWSER_HASH_BYTES, type ArtifactDto, type UploadTask } from '../api'
 import { errorMessage, Notice, StatusPill } from './Common'
 
 type Props = {
@@ -86,7 +86,7 @@ export function ArtifactImportPanel({ projectId, artifacts, onArtifactsChanged }
         </form>
       </details>
     </div>
-    <div className="card-list section-gap">{artifacts.map((artifact) => <div className="list-card" key={artifact.artifactId}><div><strong>{artifact.type} · {artifact.artifactId}</strong><small>{artifact.artifactDigest} · {formatBytes(artifact.sizeBytes)}</small></div><StatusPill status={artifact.verificationStatus} /></div>)}{artifacts.length === 0 && <p className="empty-state">当前工作区尚未导入审计目标。</p>}</div>
+    <div className="card-list section-gap">{artifacts.map((artifact) => <div className="list-card" key={artifact.artifactId}><div><strong>{artifactLabel(artifact)}</strong><small>{artifact.artifactDigest} · {formatBytes(artifact.sizeBytes)}</small></div><StatusPill status={artifact.verificationStatus} /></div>)}{artifacts.length === 0 && <p className="empty-state">当前工作区尚未导入审计目标。</p>}</div>
   </article>
 }
 

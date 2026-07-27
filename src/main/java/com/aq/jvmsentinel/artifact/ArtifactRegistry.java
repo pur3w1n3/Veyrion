@@ -61,7 +61,7 @@ public final class ArtifactRegistry {
     }
 
     public ArtifactDescriptor register(Path input) {
-        ArtifactDescriptor descriptor = inspect(input);
+        ArtifactDescriptor descriptor = inspect(input, null, null);
         byDigest.putIfAbsent(descriptor.sha256(), descriptor);
         return byDigest.get(descriptor.sha256());
     }
@@ -72,7 +72,7 @@ public final class ArtifactRegistry {
      * managed content storage.
      */
     public ArtifactDescriptor validate(Path input) {
-        return inspect(input);
+        return inspect(input, null, null);
     }
 
     /**
@@ -80,7 +80,8 @@ public final class ArtifactRegistry {
      * the artifact type solely from a separately validated display filename.
      */
     public ArtifactDescriptor validate(Path input, String fileName) {
-        return inspect(input, typeOf(Path.of(Objects.requireNonNull(fileName, "fileName"))));
+        String displayName = Objects.requireNonNull(fileName, "fileName");
+        return inspect(input, typeOf(Path.of(displayName)), displayName);
     }
 
     /**
@@ -90,7 +91,15 @@ public final class ArtifactRegistry {
      * into an upload registration.
      */
     public ArtifactDescriptor registerManaged(Path input) {
-        ArtifactDescriptor descriptor = inspect(input);
+        return registerManaged(input, null);
+    }
+
+    /**
+     * Registers a managed content-addressed copy while preserving the original
+     * upload/display basename for UI labels.
+     */
+    public ArtifactDescriptor registerManaged(Path input, String originalFileName) {
+        ArtifactDescriptor descriptor = inspect(input, null, originalFileName);
         byDigest.put(descriptor.sha256(), descriptor);
         return descriptor;
     }
@@ -104,11 +113,7 @@ public final class ArtifactRegistry {
         return maxArtifactBytes;
     }
 
-    private ArtifactDescriptor inspect(Path input) {
-        return inspect(input, null);
-    }
-
-    private ArtifactDescriptor inspect(Path input, ArtifactType requestedType) {
+    private ArtifactDescriptor inspect(Path input, ArtifactType requestedType, String originalFileName) {
         Objects.requireNonNull(input, "input");
         Path candidate = input.toAbsolutePath().normalize();
         if (!candidate.startsWith(allowedRoot)) {
@@ -122,7 +127,9 @@ public final class ArtifactRegistry {
             if (!path.startsWith(allowedRoot) || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
                 throw new ArtifactValidationException("artifact must be a regular file inside the allowed root");
             }
-            ArtifactType type = requestedType == null ? typeOf(path) : requestedType;
+            ArtifactType type = requestedType == null
+                    ? (originalFileName != null ? typeOf(Path.of(originalFileName)) : typeOf(path))
+                    : requestedType;
             long beforeSize = Files.size(path);
             if (beforeSize > maxArtifactBytes) {
                 throw new ArtifactValidationException("artifact exceeds the configured size limit");
@@ -133,8 +140,16 @@ public final class ArtifactRegistry {
             if (beforeSize != afterSize) {
                 throw new ArtifactValidationException("artifact changed while it was being read");
             }
+            final String displayName;
+            try {
+                displayName = ArtifactDescriptor.sanitizeOriginalFileName(
+                        originalFileName != null ? originalFileName : path.getFileName().toString());
+            } catch (IllegalArgumentException invalidName) {
+                throw new ArtifactValidationException("invalid original file name");
+            }
             ArtifactDescriptor descriptor = new ArtifactDescriptor(
-                    digest.substring(0, 16), type, path, afterSize, digest, type == ArtifactType.CLASS, Instant.now(clock));
+                    digest.substring(0, 16), type, path, afterSize, digest, type == ArtifactType.CLASS,
+                    Instant.now(clock), displayName);
             return descriptor;
         } catch (IOException e) {
             throw new ArtifactValidationException("cannot read artifact: " + e.getMessage());
