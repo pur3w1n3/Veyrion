@@ -206,11 +206,14 @@ public final class AiToolRegistry {
                 Set.of());
         ToolDefinition definition = new ToolDefinition("code_query",
                 "Bounded read-only auth/config/code query over the registered artifact. "
-                        + "Use for AUTH_ANALYSIS to inspect JWT sign-key defaults, secure skip-url patterns, "
+                        + "Use for AUTH_ANALYSIS to harvest JWT sign-key candidates (secretCandidates with "
+                        + "provenance FACT/RULE_GENERATED), skip-url patterns, @PreAuth/TokenFilter signals, "
                         + "and auth-related classes (SecureUtil/JwtUtil/BladeTokenEndPoint). "
-                        + "Returns FACT observations only; raw custom secrets stay redacted; "
+                        + "Returns FACT observations only; raw secrets stay redacted; "
                         + "never executes bytecode, opens network, or upgrades verificationStatus. "
-                        + "For SpringBlade, prefer DEFAULT_SECRET_HS256 + Blade-Auth over ALG_NONE.",
+                        + "Propose DEFAULT_SECRET_HS256 only when jwtSecretMaterialFound/mintable=true; "
+                        + "otherwise prefer MISSING_AUTH / EMPTY_BEARER / ALG_NONE. "
+                        + "FrameworkAdapter well-known keys are HINTS, not harvested FACT.",
                 schema.jsonSchema(), OverflowPolicy.TRUNCATE);
         return new RegisteredTool(definition, schema, (call, context) -> {
             String query = call.arguments().has("query") ? call.arguments().get("query").asText() : "";

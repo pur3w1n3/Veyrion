@@ -803,3 +803,20 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 - **根因**：阶段重试在仍存在任意 QUEUED/LEASED/RUNNING/PAUSED 任务时返回 `DYNAMIC_TASK_BUSY`。失败任务（如 `EXTERNAL_ARTIFACT_REJECTED`）本身应为终态；但同扫描上可能残留另一条未终态任务（双提交、回收后 zombie QUEUED、或失败重试前 `arm()` 留下武装态）。UI 按 taskId 字典序取「最新」时也可能显示 FAILED 却被兄弟活跃任务挡住。
 - **修复**：`audit-stage-retries` 对 `DYNAMIC_OBSERVATION` **先 supersede（control-plane cancel）活跃任务再入队**；终态 FAILED/COMPLETED/CANCELLED 不挡；focus-probe/finding-replay 仍 fail-closed busy。Worker 增加 `fail-queued`，执行器在 lease 前/fail 失败时尽量标 FAILED。任务列表按 `updatedAt` 排序；前端对 `DYNAMIC_TASK_BUSY` 给出可操作提示，不回退演示数据。
 - 验收：`DynamicStageRetryAcceptanceTest` / `EntryFocusProbeAcceptanceTest` PASS。不得标生产可用。
+
+## 77. 鉴权密钥：工具收获优先，禁止静默硬编码商业 Blade key（2026-07-27）
+
+产品纠正：通用平台**不得**为每个框架硬编码密钥并静默 mint 高置信 ADMIN JWT。AI 角色应通过 allowlist 工具（`code_query` 等）从授权制品提取鉴权逻辑与候选密钥，再推导 bypass PoC（AUTH_ANALYSIS → DYNAMIC_VERIFICATION）。LLM 仍不能单独 VERIFIED；证据来自沙箱。
+
+锁定架构：
+
+1. **检测字典 ≠ mint 源**：`WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY` / `LEGACY_ZERO` 仅作 JAR 内匹配字典 + `FRAMEWORK_ADAPTER_CONTEXT` 的 **HINT**（`jwtSecretHintNotes`），不得当作全局 FACT。
+2. **`code_query` / `AuthCodeQueryService`**：有界 ZIP 扫描 JWT property、skip-url、`@PreAuth`/TokenFilter、鉴权类；回传 `secretCandidates[]`（alias/provenance/classification/mintable，明文脱敏）与 `jwtSecretMaterialFound`。
+3. **`SyntheticIdentityService.harvest`**：仅当制品内收获到密钥（配置 FACT 或与字典匹配的 RULE_GENERATED）才填充 `jwtSecret`；**删除**“空则 MOCK 商业 Blade key”回退。无密钥时 HS256/`DEFAULT_SECRET_HS256` → `IDENTITY_UNAVAILABLE`；`MISSING_AUTH` / `EMPTY_BEARER` / `ALG_NONE` 仍可用。
+4. **`SpringBladeAdapter` / `BladeJwtCredentialPack.suggestJwtSecret`**：不再返回商业明文；仅在 harvest 成功时回传 `HARVESTED_REDACTED(...)`。
+5. **`AuthBypassFeasibility.seedRuleGeneratedDrafts`**：仅当 harvest 有密钥才种子 `DEFAULT_SECRET_HS256`（低置信 RULE_GENERATED）；Blade 面无密钥时种子无密钥技术。
+6. **AUTH 提示 / FRAMEWORK_ADAPTER_CONTEXT**：适配器信号标 HINT；强制先 `code_query`、引用 evidenceRefs；禁止把全局硬编码密钥当 FACT。
+
+残余限制：若 SpringBlade 样例 JAR 内无 sign-key 常量/配置，服务端不会伪造 ADMIN JWT，洪水/焦点轨可能大量 401 / `IDENTITY_UNAVAILABLE`——属诚实行为，需 AI/工具继续挖密钥或走无密钥技术；不得标 VERIFIED。
+
+验收：`AuthCodeQueryAcceptanceTest` / `SyntheticIdentityAcceptanceTest` / `FrameworkAdapterAcceptanceTest` / `RolePromptInjectionAcceptanceTest` / `AuthBypassFeasibilityAcceptanceTest` / `ControlPlaneProbeExpansionAcceptanceTest`。

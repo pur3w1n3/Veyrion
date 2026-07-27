@@ -537,8 +537,10 @@ public final class AuthBypassFeasibility {
 
     /**
      * Server draft candidates from static JWT/AUTH_GAP/auth-entry signals.
-     * When {@code artifactPath} is present, prefers Blade DEFAULT_SECRET_HS256 + Blade-Auth
-     * over ALG_NONE for SpringBlade surfaces discovered via code/config scan.
+     * DEFAULT_SECRET_HS256 is seeded only when harvest found mintable sign-key material
+     * in the artifact (low-confidence RULE_GENERATED). Blade surface alone never forges
+     * a commercial default JWT. Secret-less techniques (MISSING_AUTH / EMPTY_BEARER /
+     * ALG_NONE) remain available without harvested keys.
      */
     public static List<AuthBypassCandidate> seedRuleGeneratedDrafts(
             ApiDtos.ScanDto scan, java.nio.file.Path artifactPath) {
@@ -551,6 +553,7 @@ public final class AuthBypassFeasibility {
         SyntheticIdentityService.MaterialBundle materials = identity.harvest(artifactPath);
         boolean bladeSurface = materials.bladeSurface() || materials.preferBladeAuthHeader()
                 || looksBladeScan(scan);
+        boolean harvestedSecret = materials.jwtSecret().isPresent();
         SyntheticIdentityService.SyntheticIdentity defaultHs256 =
                 identity.synthesizeTechnique(AuthBypassTechnique.DEFAULT_SECRET_HS256, materials);
         SyntheticIdentityService.SyntheticIdentity algNone =
@@ -572,37 +575,41 @@ public final class AuthBypassFeasibility {
                             + "auth-annotated surface; AI omitted structured bypassPoCs",
                     refs, 0.25, "", "", "", ""));
             if (drafts.size() >= MAX_SEEDED_POCS) break;
-            if (jwtSignal && bladeSurface && defaultHs256.available()) {
+            if (jwtSignal && harvestedSecret && defaultHs256.available()) {
                 String token = defaultHs256.authorizationHeader();
+                String blade = bladeSurface
+                        ? SyntheticIdentityService.bladeAuthHeaderValue(token) : "";
                 drafts.add(AuthBypassCandidate.of(
                         entryRef,
                         AuthBypassTechnique.DEFAULT_SECRET_HS256.name(),
                         IdentityTrack.BYPASS_CANDIDATE,
-                        "RULE_GENERATED draft: Blade default HS256 JWT via code/config material; "
-                                + "dual-channel Authorization + Blade-Auth",
-                        refs, 0.55,
+                        "RULE_GENERATED draft: HS256 JWT minted from artifact-harvested sign-key ("
+                                + materials.secretProvenance() + "); not a global hardcoded FACT",
+                        refs, 0.45,
                         "Bearer " + token,
-                        SyntheticIdentityService.bladeAuthHeaderValue(token),
+                        blade,
                         "", ""));
             } else if (jwtSignal && emptyBearer.available()) {
                 drafts.add(AuthBypassCandidate.of(
                         entryRef,
                         AuthBypassTechnique.EMPTY_BEARER.name(),
                         IdentityTrack.BYPASS_CANDIDATE,
-                        "RULE_GENERATED draft: empty Bearer hypothesis for JWT/auth surface",
+                        "RULE_GENERATED draft: empty Bearer hypothesis for JWT/auth surface"
+                                + (bladeSurface && !harvestedSecret
+                                ? "; Blade surface without harvested sign-key" : ""),
                         refs, 0.28, emptyBearer.authorizationHeader(), "", "", ""));
             }
             if (drafts.size() >= MAX_SEEDED_POCS) break;
-            if (jwtSignal && !bladeSurface && algNone.available()) {
+            if (jwtSignal && algNone.available() && !(bladeSurface && harvestedSecret)) {
                 drafts.add(AuthBypassCandidate.of(
                         entryRef,
                         AuthBypassTechnique.ALG_NONE.name(),
                         IdentityTrack.BYPASS_CANDIDATE,
                         "RULE_GENERATED draft: alg-none JWT hypothesis for DYNAMIC sandbox_probe; "
                                 + "refine with AI headers when available",
-                        refs, 0.35,
+                        refs, 0.30,
                         "Bearer " + algNone.authorizationHeader(), "", "", ""));
-            } else if (jwtSignal && bladeSurface && emptyBearer.available()) {
+            } else if (jwtSignal && bladeSurface && harvestedSecret && emptyBearer.available()) {
                 drafts.add(AuthBypassCandidate.of(
                         entryRef,
                         AuthBypassTechnique.EMPTY_BEARER.name(),

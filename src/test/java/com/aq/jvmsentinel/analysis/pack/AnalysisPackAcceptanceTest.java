@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.analysis.pack;
 
+import com.aq.jvmsentinel.analysis.identity.AuthCodeQueryService;
 import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.aq.jvmsentinel.model.IdentityTrack;
 
@@ -20,9 +21,11 @@ public final class AnalysisPackAcceptanceTest {
         BladeJwtCredentialPack pack = new BladeJwtCredentialPack();
         check(pack.matches(null, List.of("/blade-auth/oauth/token")), "blade pack matches /blade-auth");
         check(!pack.matches(null, List.of("/api/orders")), "blade pack ignores unrelated routes");
-        check(pack.suggestJwtSecret(null).isPresent(), "blade pack suggests default secret");
-        check(BladeJwtCredentialPack.DEFAULT_SECRET.equals(pack.suggestJwtSecret(null).orElse("")),
-                "default Blade JWT secret documented");
+        check(pack.suggestJwtSecret(null).isEmpty(),
+                "blade pack does not invent JWT secrets without artifact harvest");
+        check(BladeJwtCredentialPack.DEFAULT_SECRET.equals(
+                        AuthCodeQueryService.WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY),
+                "detection dictionary alias documented for harvest matching only");
         List<ExperimentPlan> templates = pack.experimentTemplates("entry:e1", IdentityTrack.ADMIN);
         check(!templates.isEmpty(), "blade templates non-empty");
         check(templates.get(0).authRequired(), "ADMIN blade template authRequired");

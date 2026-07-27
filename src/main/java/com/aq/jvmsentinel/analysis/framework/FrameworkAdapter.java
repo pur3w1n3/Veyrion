@@ -20,7 +20,18 @@ public interface FrameworkAdapter {
 
     boolean preferBladeAuthHeader(SyntheticIdentityService.MaterialBundle materials);
 
+    /**
+     * Optional redacted harvest signal for dashboard/AI. Must not return raw commercial
+     * defaults as if they were FACT; prefer {@link #jwtSecretHintNotes()} for HINT inject.
+     */
     Optional<String> suggestJwtSecret(Path artifactPath);
+
+    /**
+     * Well-known / framework HINT notes for FRAMEWORK_ADAPTER_CONTEXT (not FACT, not mint).
+     */
+    default List<String> jwtSecretHintNotes() {
+        return List.of();
+    }
 
     List<AuthBypassTechnique> defaultBypassTechniques();
 }

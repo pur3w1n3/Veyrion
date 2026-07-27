@@ -110,7 +110,8 @@ public final class RolePromptInjectionAcceptanceTest {
                         "code_query kind=TAINT_GRAPH", "RANKED_SINK"));
         assertPrompt(store, AgentRole.AUTH_ANALYSIS, AiOutputLanguage.ZH_CN,
                 List.of("FRAMEWORK_ADAPTER_CONTEXT", "PARAMETER_CONSTRAINT_HINTS",
-                        "adapterId=spring-blade"));
+                        "adapterId=spring-blade", "HINT", "code_query",
+                        "wellKnownKeyHint"));
         assertPrompt(store, AgentRole.DYNAMIC_VERIFICATION, AiOutputLanguage.ZH_CN,
                 List.of("FUZZ_STRATEGY_CONTEXT", "BRANCH_CONSTRAINT_FACTS", "fuzz_strategy_get",
                         "selectedProbes"));

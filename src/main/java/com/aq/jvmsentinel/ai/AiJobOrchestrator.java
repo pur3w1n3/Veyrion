@@ -558,14 +558,18 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         """;
                 case AUTH_ANALYSIS -> """
                         基于静态事实与 PRE_ANALYSIS 假设，建立鉴权模型并输出结构化绕过可行性 PoC（假设，非已验证）。
-                        消费 FRAMEWORK_ADAPTER_CONTEXT 与 PARAMETER_CONSTRAINT_HINTS：用框架匹配结果与参数约束
-                        （等值/maxLen/类型）精化 authorizationHeader / claims / query / bodyHint。
+                        消费 FRAMEWORK_ADAPTER_CONTEXT 与 PARAMETER_CONSTRAINT_HINTS：适配器信号仅为 HINT，
+                        不得当作已提取密钥的 FACT；用参数约束精化 authorizationHeader / claims / query / bodyHint。
+                        必须先调用 code_query 从授权制品中收获 JWT sign-key、skip-url、@PreAuth、TokenFilter、
+                        Secure/Jwt 类等材料，再写 bypassPoCs，并用 code_query 证据 ID 填 evidenceRefs。
+                        不得假设全局硬编码商业密钥为 FACT；仅当 code_query 回报 jwtSecretMaterialFound/
+                        secretCandidates.mintable=true 时才可提出 DEFAULT_SECRET_HS256 并引用证据。
+                        无密钥材料时优先 MISSING_AUTH / EMPTY_BEARER / ALG_NONE 等不依赖密钥的技术。
                         必须通过 plan_propose 或最终回答中的 bypassPoCs/bypassCandidates JSON 给出条目：
                         entryRef、techniqueId、track、rationale、evidenceRefs、confidence，以及你研判需要的
                         authorizationHeader / bladeAuthHeader / query / bodyHint（可含 JWT、alg-none、自定义 claims）。
                         服务端只做 schema/边界校验后交给动态验证执行；不得改网络/挂载/命令。
-                        只能用 facts_search/evidence_get/plan_propose/code_query；
-                        鉴权分析必须先用 code_query 查 JWT 默认密钥、skip-url 与 Secure/Jwt 类，再写 bypassPoCs。
+                        只能用 facts_search/evidence_get/plan_propose/code_query。
                         有 PathRun 时用 kind=PATH_RUN 核对。
                         结论须含 bypassConfirmation：{status:HYPOTHESIS|DYNAMIC_CONTRAST, pathRunRefs:[...]}；
                         零动态 PathRun 证据不得宣称已绕过，也不得写 DYNAMIC_CONTRAST。
@@ -635,16 +639,18 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     """;
             case AUTH_ANALYSIS -> """
                     From static facts and PRE_ANALYSIS hypotheses, build the auth model and emit structured
-                    bypass-feasibility PoCs (hypotheses, not verified). Consume FRAMEWORK_ADAPTER_CONTEXT and
-                    PARAMETER_CONSTRAINT_HINTS to refine authorizationHeader/claims/query/bodyHint from
-                    framework match and parameter constraints (equals/maxLen/type). Use plan_propose and/or a final
+                    bypass-feasibility PoCs (hypotheses, not verified). FRAMEWORK_ADAPTER_CONTEXT signals are
+                    HINTS only — never treat them as harvested FACT keys. Call code_query first to harvest JWT
+                    sign-key material, skip-url patterns, @PreAuth, TokenFilter, and Secure/Jwt classes from the
+                    authorized artifact; cite code_query evidence IDs in evidenceRefs. Do not assume a global
+                    hardcoded commercial key is FACT; propose DEFAULT_SECRET_HS256 only when code_query reports
+                    jwtSecretMaterialFound / secretCandidates.mintable=true. Without harvested secrets prefer
+                    MISSING_AUTH / EMPTY_BEARER / ALG_NONE. Use PARAMETER_CONSTRAINT_HINTS to refine
+                    authorizationHeader/claims/query/bodyHint. Use plan_propose and/or a final
                     bypassPoCs/bypassCandidates JSON with entryRef, techniqueId, track, rationale, evidenceRefs,
                     confidence, and AI-authored authorizationHeader/bladeAuthHeader/query/bodyHint (JWT, alg-none,
                     custom claims allowed). The server schema-gates then DYNAMIC executes. Use only
-                    facts_search/evidence_get/plan_propose/code_query. Call code_query first for JWT
-                    defaults, skip-url patterns, and Secure/Jwt classes; for SpringBlade prefer
-                    DEFAULT_SECRET_HS256 with Blade-Auth (not ALG_NONE alone). Never change
-                    network/mounts/commands. Emit
+                    facts_search/evidence_get/plan_propose/code_query. Never change network/mounts/commands. Emit
                     bypassConfirmation:{status:HYPOTHESIS|DYNAMIC_CONTRAST,pathRunRefs:[...]}. Never claim bypass
                     or DYNAMIC_CONTRAST without PathRun evidence. AUTH_GAP is secondary. When the scan has JWT /
                     AUTH_GAP / auth-annotated entries, bypassPoCs MUST be non-empty (probe hypotheses or explicit
@@ -964,8 +970,14 @@ public final class AiJobOrchestrator implements AutoCloseable {
             List<FrameworkAdapter> matched = FrameworkAdapterRegistry.matching(artifactPath, routes);
             StringBuilder block = new StringBuilder();
             block.append(language == AiOutputLanguage.ZH_CN
-                    ? "FRAMEWORK_ADAPTER_CONTEXT（服务端匹配；非 VERIFIED）：\n"
-                    : "FRAMEWORK_ADAPTER_CONTEXT (server match; not VERIFIED):\n");
+                    ? "FRAMEWORK_ADAPTER_CONTEXT（服务端匹配 HINT；非 FACT；非 VERIFIED）：\n"
+                    : "FRAMEWORK_ADAPTER_CONTEXT (server match HINT; not FACT; not VERIFIED):\n");
+            block.append(language == AiOutputLanguage.ZH_CN
+                    ? "- 适配器信号仅为线索；必须用 code_query 从制品提取密钥/鉴权逻辑并引用证据，"
+                            + "不得把全局硬编码商业密钥当作 FACT。\n"
+                    : "- Adapter signals are hints only; call code_query to extract keys/auth logic from "
+                            + "the artifact and cite evidence; never treat a global hardcoded commercial "
+                            + "key as FACT.\n");
             if (matched.isEmpty()) {
                 block.append(language == AiOutputLanguage.ZH_CN
                         ? "- 未匹配专用 FrameworkAdapter；按通用 Spring/JWT 假设编写 bypassPoCs。\n"
@@ -974,15 +986,18 @@ public final class AiJobOrchestrator implements AutoCloseable {
             }
             for (FrameworkAdapter adapter : matched) {
                 block.append("- adapterId=").append(adapter.id());
-                adapter.suggestJwtSecret(artifactPath).ifPresent(secret ->
-                        block.append(" defaultKeyHintPresent=true keyLen=").append(secret.length()));
+                adapter.suggestJwtSecret(artifactPath).ifPresent(hint ->
+                        block.append(" harvestedSecretSignal=").append(hint));
                 if (adapter.preferBladeAuthHeader(null)) {
-                    block.append(" preferBladeAuthHeader=true");
+                    block.append(" preferBladeAuthHeaderHint=true");
                 }
                 if (!adapter.defaultBypassTechniques().isEmpty()) {
-                    block.append(" defaultTechniques=").append(adapter.defaultBypassTechniques());
+                    block.append(" techniqueLibrary=").append(adapter.defaultBypassTechniques());
                 }
                 block.append('\n');
+                for (String note : adapter.jwtSecretHintNotes()) {
+                    block.append("  - wellKnownKeyHint: ").append(note).append('\n');
+                }
             }
             return block.toString();
         } catch (RuntimeException ignored) {

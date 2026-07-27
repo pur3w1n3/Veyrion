@@ -3,9 +3,6 @@ package com.aq.jvmsentinel.analysis.identity;
 import com.aq.jvmsentinel.model.AuthBypassTechnique;
 import com.aq.jvmsentinel.model.IdentityTrack;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,22 +15,16 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 /**
- * Platform-owned synthetic identity materials inferred from artifact config/JWT defaults.
- * Provenance is always MOCK or RULE_GENERATED; never claimed as operator credentials.
+ * Platform-owned synthetic identity materials harvested from the authorized artifact.
+ * Provenance is MOCK / RULE_GENERATED / FACT (config in JAR); never claimed as operator credentials.
+ *
+ * <p>HS256 minting requires a secret actually extracted from the artifact (or a well-known
+ * string that was matched <em>inside</em> the artifact). There is no silent fallback to a
+ * commercial Blade default for arbitrary JARs.
  */
 public final class SyntheticIdentityService {
-    private static final Pattern JWT_SECRET = Pattern.compile(
-            "(?i)(?:jwt[_\\-.]?(?:secret|sign(?:ing)?[_\\-.]?key|key)|blade[_\\-.]?token[_\\-.]?sign[_\\-.]?key)"
-                    + "\\s*[=:]\\s*[\"']?([A-Za-z0-9+/=_\\-.]{8,128})");
-    private static final List<String> BLADE_DEFAULT_SECRETS = List.of(
-            AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY,
-            AuthCodeQueryService.BLADE_LEGACY_ZERO_KEY);
 
     public record SyntheticIdentity(
             IdentityTrack track,
@@ -62,36 +53,29 @@ public final class SyntheticIdentityService {
     public MaterialBundle harvest(Path artifactPath) {
         List<String> notes = new ArrayList<>();
         Optional<String> secret = Optional.empty();
-        String provenance = "MOCK";
+        String provenance = "NONE";
         boolean bladeSurface = false;
         if (artifactPath != null && Files.isRegularFile(artifactPath)) {
-            try {
-                AuthCodeQueryService.AuthCodeQueryResult code =
-                        new AuthCodeQueryService().query(artifactPath, "", 20);
-                bladeSurface = code.bladeSurface() || code.jwtDefaultKeyMatched();
-                if (code.jwtDefaultKeyMatched()) {
-                    secret = Optional.of(AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY);
-                    provenance = "RULE_GENERATED";
-                    notes.add("matched Blade default sign-key via code_query ("
-                            + code.preferredSignKeyProvenance() + ")");
-                } else {
-                    secret = scanZipForSecret(artifactPath, notes);
-                    if (secret.isPresent()) {
-                        provenance = "RULE_GENERATED";
-                    }
-                }
-            } catch (IOException ignored) {
-                notes.add("artifact scan failed; falling back to known defaults");
+            AuthCodeQueryService.AuthCodeQueryResult code =
+                    new AuthCodeQueryService().query(artifactPath, "", 20);
+            bladeSurface = code.bladeSurface();
+            if (code.mintSecret().isPresent()) {
+                secret = code.mintSecret();
+                String candidateClass = code.secretCandidates().isEmpty()
+                        ? "RULE_GENERATED"
+                        : code.secretCandidates().get(0).classification();
+                provenance = "FACT".equals(candidateClass) ? "FACT" : "RULE_GENERATED";
+                notes.add("harvested sign-key via code_query ("
+                        + code.preferredSignKeyProvenance() + "; classification="
+                        + candidateClass + ")");
+            } else {
+                notes.add("no mintable JWT secret harvested from artifact"
+                        + (bladeSurface ? " (Blade surface present)" : ""));
             }
+        } else {
+            notes.add("no artifact path; HS256 mint unavailable");
         }
-        if (secret.isEmpty()) {
-            // Prefer the well-known Blade sign-key over the legacy all-zero placeholder.
-            secret = Optional.of(AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY);
-            provenance = "MOCK";
-            notes.add("using platform MOCK Blade default sign-key (bladex…)");
-        }
-        boolean preferBlade = bladeSurface
-                || secret.map(AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY::equals).orElse(false);
+        boolean preferBlade = bladeSurface;
         return new MaterialBundle(secret, provenance, List.copyOf(notes), bladeSurface, preferBlade);
     }
 
@@ -100,7 +84,8 @@ public final class SyntheticIdentityService {
             return new SyntheticIdentity(track, "", "MOCK", "no credentials", true);
         }
         if (materials == null || materials.jwtSecret().isEmpty()) {
-            return SyntheticIdentity.unavailable(track, "IDENTITY_UNAVAILABLE: no signing material");
+            return SyntheticIdentity.unavailable(track,
+                    "IDENTITY_UNAVAILABLE: no signing material harvested from artifact");
         }
         String role = switch (track) {
             case ADMIN, BYPASS_CANDIDATE -> "administrator";
@@ -169,67 +154,10 @@ public final class SyntheticIdentityService {
         return Collections.unmodifiableMap(new LinkedHashMap<>(out));
     }
 
-    private static Optional<String> scanZipForSecret(Path jar, List<String> notes) throws IOException {
-        try (ZipInputStream zip = new ZipInputStream(Files.newInputStream(jar))) {
-            ZipEntry entry;
-            int scanned = 0;
-            while ((entry = zip.getNextEntry()) != null && scanned < 400) {
-                String name = entry.getName().toLowerCase(Locale.ROOT);
-                if (entry.isDirectory() || entry.getSize() > 256 * 1024) continue;
-                if (!(name.endsWith(".yml") || name.endsWith(".yaml") || name.endsWith(".properties")
-                        || name.endsWith(".json") || name.endsWith(".xml") || name.endsWith(".class"))) {
-                    continue;
-                }
-                scanned++;
-                byte[] bytes = readLimited(zip, 64 * 1024);
-                if (name.endsWith(".class")) {
-                    String latin = new String(bytes, StandardCharsets.ISO_8859_1);
-                    for (String known : BLADE_DEFAULT_SECRETS) {
-                        if (latin.contains(known)) {
-                            notes.add("found embedded default secret in " + entry.getName());
-                            return Optional.of(known);
-                        }
-                    }
-                    continue;
-                }
-                String text = new String(bytes, StandardCharsets.UTF_8);
-                Matcher matcher = JWT_SECRET.matcher(text);
-                if (matcher.find()) {
-                    notes.add("extracted signing material from " + entry.getName());
-                    return Optional.of(matcher.group(1));
-                }
-                for (String known : BLADE_DEFAULT_SECRETS) {
-                    if (text.contains(known)) {
-                        notes.add("matched known Blade default in " + entry.getName());
-                        return Optional.of(known);
-                    }
-                }
-            }
-        }
-        return Optional.empty();
-    }
-
-    private static byte[] readLimited(InputStream in, int max) throws IOException {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        byte[] buf = new byte[4096];
-        int total = 0;
-        int n;
-        while (total < max && (n = in.read(buf, 0, Math.min(buf.length, max - total))) >= 0) {
-            out.write(buf, 0, n);
-            total += n;
-        }
-        return out.toByteArray();
-    }
-
-    /**
-     * Minimal HS256 JWT without external crypto deps: header.payload.signature where
-     * signature is Base64URL of a deterministic HMAC-like digest over secret+payload.
-     * Enough for MOCK/RULE_GENERATED path experiments against apps that accept the default key.
-     */
     /**
      * Minimal HS256 JWT. Claims follow SpringBlade SecureUtil/TokenUtil shape
      * (tenant_id / user_id / role_name / client_id) so filters that read those
-     * claims are more likely to accept MOCK/RULE_GENERATED material.
+     * claims are more likely to accept harvested MOCK/RULE_GENERATED/FACT material.
      */
     static String mintHs256Token(String secret, String role, IdentityTrack track) {
         String header = b64Url("{\"alg\":\"HS256\",\"typ\":\"JWT\"}");

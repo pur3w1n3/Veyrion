@@ -27,7 +27,7 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 
 /**
- * AUTH code_query + Blade DEFAULT_SECRET_HS256 dual-header seed closed loop
+ * AUTH code_query harvest + DEFAULT_SECRET_HS256 seed only when key found in artifact
  * (acceptance only; not VERIFIED / production).
  */
 public final class AuthCodeQueryAcceptanceTest {
@@ -35,8 +35,11 @@ public final class AuthCodeQueryAcceptanceTest {
 
     public static void main(String[] args) throws Exception {
         codeQueryFindsBladeDefaultKey();
-        seedPrefersDefaultSecretHs256WithBladeAuth();
+        codeQueryBladeSurfaceWithoutKeyDoesNotMint();
+        seedPrefersDefaultSecretHs256WithBladeAuthWhenHarvested();
+        seedWithoutHarvestedKeySkipsDefaultSecret();
         harvestMarksBladeSurface();
+        harvestWithoutKeyLeavesSecretEmpty();
         authRoleAllowlistsCodeQuery();
         System.out.println("AuthCodeQueryAcceptanceTest: PASS");
     }
@@ -44,26 +47,47 @@ public final class AuthCodeQueryAcceptanceTest {
     private static void codeQueryFindsBladeDefaultKey() throws Exception {
         Path jar = Files.createTempFile("blade-auth-code-", ".jar");
         try {
-            writeBladeJar(jar);
+            writeBladeJarWithKnownKey(jar);
             AuthCodeQueryService.AuthCodeQueryResult result =
                     new AuthCodeQueryService().query(jar, "jwt", 20);
             check(result.bladeSurface(), "blade surface detected");
-            check(result.jwtDefaultKeyMatched(), "default sign-key matched");
+            check(result.jwtSecretMaterialFound(), "sign-key material harvested");
             check("Blade-Auth".equals(result.preferredHeaderChannel()), "prefer Blade-Auth");
             check(result.recommendedTechniques().contains("DEFAULT_SECRET_HS256"),
-                    "recommend DEFAULT_SECRET_HS256");
-            check(!JSON.writeValueAsString(AuthCodeQueryService.toToolMap(result))
-                            .contains(AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY),
+                    "recommend DEFAULT_SECRET_HS256 when mintable");
+            check(!result.secretCandidates().isEmpty(), "secretCandidates present");
+            check(result.secretCandidates().get(0).mintable(), "candidate mintable");
+            String toolJson = JSON.writeValueAsString(AuthCodeQueryService.toToolMap(result));
+            check(!toolJson.contains(AuthCodeQueryService.WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY),
                     "tool map must not leak raw sign-key");
+            check(toolJson.contains("secretCandidates"), "tool map exposes secretCandidates");
         } finally {
             Files.deleteIfExists(jar);
         }
     }
 
-    private static void seedPrefersDefaultSecretHs256WithBladeAuth() throws Exception {
+    private static void codeQueryBladeSurfaceWithoutKeyDoesNotMint() throws Exception {
+        Path jar = Files.createTempFile("blade-auth-nokey-", ".jar");
+        try {
+            writeBladeJarWithoutKey(jar);
+            AuthCodeQueryService.AuthCodeQueryResult result =
+                    new AuthCodeQueryService().query(jar, "", 20);
+            check(result.bladeSurface(), "blade surface without key still detected");
+            check(!result.jwtSecretMaterialFound(), "no mintable secret without key bytes");
+            check(result.mintSecret().isEmpty(), "mintSecret empty");
+            check(!result.recommendedTechniques().contains("DEFAULT_SECRET_HS256"),
+                    "do not recommend DEFAULT_SECRET_HS256 without harvest");
+            check(result.recommendedTechniques().contains("MISSING_AUTH"),
+                    "recommend MISSING_AUTH without secret");
+        } finally {
+            Files.deleteIfExists(jar);
+        }
+    }
+
+    private static void seedPrefersDefaultSecretHs256WithBladeAuthWhenHarvested() throws Exception {
         Path jar = Files.createTempFile("blade-auth-seed-", ".jar");
         try {
-            writeBladeJar(jar);
+            writeBladeJarWithKnownKey(jar);
             ApiDtos.ScanDto scan = bladeScan();
             List<AuthBypassCandidate> drafts =
                     AuthBypassFeasibility.seedRuleGeneratedDrafts(scan, jar);
@@ -71,10 +95,7 @@ public final class AuthCodeQueryAcceptanceTest {
             boolean hasDefault = drafts.stream()
                     .anyMatch(c -> AuthBypassTechnique.DEFAULT_SECRET_HS256.name()
                             .equals(c.techniqueId()));
-            check(hasDefault, "DEFAULT_SECRET_HS256 seeded for Blade");
-            boolean hasAlgNone = drafts.stream()
-                    .anyMatch(c -> AuthBypassTechnique.ALG_NONE.name().equals(c.techniqueId()));
-            check(!hasAlgNone, "ALG_NONE not preferred on Blade surface");
+            check(hasDefault, "DEFAULT_SECRET_HS256 seeded when harvested");
             AuthBypassCandidate hs = drafts.stream()
                     .filter(c -> AuthBypassTechnique.DEFAULT_SECRET_HS256.name().equals(c.techniqueId()))
                     .findFirst().orElseThrow();
@@ -89,23 +110,68 @@ public final class AuthCodeQueryAcceptanceTest {
         }
     }
 
+    private static void seedWithoutHarvestedKeySkipsDefaultSecret() throws Exception {
+        Path jar = Files.createTempFile("blade-auth-seed-nokey-", ".jar");
+        try {
+            writeBladeJarWithoutKey(jar);
+            List<AuthBypassCandidate> drafts =
+                    AuthBypassFeasibility.seedRuleGeneratedDrafts(bladeScan(), jar);
+            check(!drafts.isEmpty(), "seed still produces secret-less techniques");
+            boolean hasDefault = drafts.stream()
+                    .anyMatch(c -> AuthBypassTechnique.DEFAULT_SECRET_HS256.name()
+                            .equals(c.techniqueId()));
+            check(!hasDefault, "DEFAULT_SECRET_HS256 not seeded without harvest");
+            boolean hasMissing = drafts.stream()
+                    .anyMatch(c -> AuthBypassTechnique.MISSING_AUTH.name().equals(c.techniqueId()));
+            check(hasMissing, "MISSING_AUTH seeded without harvest");
+        } finally {
+            Files.deleteIfExists(jar);
+        }
+    }
+
     private static void harvestMarksBladeSurface() throws Exception {
         Path jar = Files.createTempFile("blade-auth-mat-", ".jar");
         try {
-            writeBladeJar(jar);
+            writeBladeJarWithKnownKey(jar);
             SyntheticIdentityService.MaterialBundle materials =
                     new SyntheticIdentityService().harvest(jar);
             check(materials.preferBladeAuthHeader() || materials.bladeSurface(),
                     "harvest marks Blade surface");
             check(materials.jwtSecret().isPresent()
-                            && AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY.equals(materials.jwtSecret().get()),
-                    "harvest prefers Blade default sign-key");
+                            && AuthCodeQueryService.WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY
+                            .equals(materials.jwtSecret().get()),
+                    "harvest uses key found in artifact");
+            check(!"MOCK".equals(materials.secretProvenance()),
+                    "harvest provenance is not silent MOCK default");
             String token = new SyntheticIdentityService()
                     .synthesizeTechnique(AuthBypassTechnique.DEFAULT_SECRET_HS256, materials)
                     .authorizationHeader();
-            check(token != null && token.contains("."), "DEFAULT_SECRET_HS256 mints JWT");
+            check(token != null && token.contains("."), "DEFAULT_SECRET_HS256 mints JWT after harvest");
             check(SyntheticIdentityService.bladeAuthHeaderValue(token).startsWith("bearer "),
                     "bladeAuthHeaderValue prefixes bearer");
+        } finally {
+            Files.deleteIfExists(jar);
+        }
+    }
+
+    private static void harvestWithoutKeyLeavesSecretEmpty() throws Exception {
+        Path jar = Files.createTempFile("blade-auth-empty-", ".jar");
+        try {
+            writeBladeJarWithoutKey(jar);
+            SyntheticIdentityService.MaterialBundle materials =
+                    new SyntheticIdentityService().harvest(jar);
+            check(materials.bladeSurface(), "blade surface without key");
+            check(materials.jwtSecret().isEmpty(), "no silent commercial-key fallback");
+            SyntheticIdentityService.SyntheticIdentity hs =
+                    new SyntheticIdentityService().synthesizeTechnique(
+                            AuthBypassTechnique.DEFAULT_SECRET_HS256, materials);
+            check(!hs.available(), "DEFAULT_SECRET_HS256 unavailable without harvest");
+            check(hs.precondition().contains("IDENTITY_UNAVAILABLE"),
+                    "IDENTITY_UNAVAILABLE when no signing material");
+            SyntheticIdentityService.SyntheticIdentity missing =
+                    new SyntheticIdentityService().synthesizeTechnique(
+                            AuthBypassTechnique.MISSING_AUTH, materials);
+            check(missing.available(), "MISSING_AUTH still available without secret");
         } finally {
             Files.deleteIfExists(jar);
         }
@@ -123,6 +189,7 @@ public final class AuthCodeQueryAcceptanceTest {
             public List<FactRecord> queryCode(ToolExecutionContext.Scope scope, String query, int limit) {
                 ObjectNode node = JSON.createObjectNode();
                 node.put("bladeSurface", true);
+                node.put("jwtSecretMaterialFound", false);
                 node.put("classification", "FACT");
                 return List.of(new FactRecord(scope, "code_query:auth-summary", node));
             }
@@ -176,11 +243,11 @@ public final class AuthCodeQueryAcceptanceTest {
                 List.of(), List.of());
     }
 
-    private static void writeBladeJar(Path jar) throws Exception {
+    private static void writeBladeJarWithKnownKey(Path jar) throws Exception {
         ByteArrayOutputStream classBytes = new ByteArrayOutputStream();
-        // Minimal fake "class" that embeds the known Blade sign-key string constant.
         classBytes.write(new byte[] {(byte) 0xCA, (byte) 0xFE, (byte) 0xBA, (byte) 0xBE});
-        classBytes.write(AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY.getBytes(StandardCharsets.UTF_8));
+        classBytes.write(AuthCodeQueryService.WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY
+                .getBytes(StandardCharsets.UTF_8));
         try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(jar))) {
             jos.putNextEntry(new JarEntry(
                     "BOOT-INF/classes/org/springblade/core/jwt/props/JwtProperties.class"));
@@ -188,6 +255,20 @@ public final class AuthCodeQueryAcceptanceTest {
             jos.closeEntry();
             jos.putNextEntry(new JarEntry("BOOT-INF/classes/application.yml"));
             jos.write(("blade:\n  secure:\n    skip-url:\n      - /blade-auth/oauth/token\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            jos.closeEntry();
+        }
+    }
+
+    private static void writeBladeJarWithoutKey(Path jar) throws Exception {
+        try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(jar))) {
+            jos.putNextEntry(new JarEntry(
+                    "BOOT-INF/classes/org/springblade/core/secure/utils/SecureUtil.class"));
+            jos.write(new byte[] {(byte) 0xCA, (byte) 0xFE, (byte) 0xBA, (byte) 0xBE, 0x00, 0x01});
+            jos.closeEntry();
+            jos.putNextEntry(new JarEntry("BOOT-INF/classes/application.yml"));
+            jos.write(("blade:\n  secure:\n    skip-url:\n      - /blade-auth/oauth/token\n"
+                    + "spring:\n  application:\n    name: blade-demo\n")
                     .getBytes(StandardCharsets.UTF_8));
             jos.closeEntry();
         }

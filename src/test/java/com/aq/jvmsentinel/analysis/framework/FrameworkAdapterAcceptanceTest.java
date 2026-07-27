@@ -28,14 +28,17 @@ public final class FrameworkAdapterAcceptanceTest {
 
     private static void bladeSuggestJwtSecretAligned() {
         SpringBladeAdapter adapter = new SpringBladeAdapter();
-        String suggested = adapter.suggestJwtSecret(null).orElse("");
-        check(AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY.equals(suggested),
-                "SpringBladeAdapter suggestJwtSecret matches AuthCodeQueryService default");
-        check(BladeJwtCredentialPack.DEFAULT_SECRET.equals(suggested),
-                "SpringBladeAdapter suggestJwtSecret matches BladeJwtCredentialPack");
-        check(!suggested.contains("upgradedversion")
-                        || suggested.equals(AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY),
-                "SpringBladeAdapter must not use truncated historical Blade key typo");
+        check(adapter.suggestJwtSecret(null).isEmpty(),
+                "SpringBladeAdapter does not silently return commercial default without harvest");
+        check(!adapter.jwtSecretHintNotes().isEmpty(),
+                "SpringBladeAdapter exposes well-known key HINTs for AI context");
+        check(adapter.jwtSecretHintNotes().stream().allMatch(n -> n.contains("HINT")),
+                "well-known key notes are labeled HINT");
+        check(AuthCodeQueryService.WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY
+                        .equals(BladeJwtCredentialPack.DEFAULT_SECRET),
+                "detection dictionary alias stays aligned for harvest matching");
+        check(adapter.preferBladeAuthHeader(null),
+                "SpringBladeAdapter prefers Blade-Auth as framework HINT");
     }
 
     private static void testOnlyAdapterInjectable() {

@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -23,17 +24,47 @@ import java.util.zip.ZipInputStream;
  * Bounded, load-free auth-surface query over a registered JAR/WAR.
  * Returns FACT-shaped observations for AI tools; never executes classes,
  * never opens network, and never elevates verification status.
+ *
+ * <p>Well-known Blade sign-key strings exist only as a <em>detection dictionary</em>
+ * and AI HINT material. They are not silent high-confidence mint sources for a
+ * general platform — mint only when the same material is harvested from the
+ * authorized artifact (config / class constant).
  */
 public final class AuthCodeQueryService {
-    public static final String BLADE_DEFAULT_SIGN_KEY =
+    /**
+     * Historical Blade/JwtProperties commercial default (detection + HINT only).
+     * Do not treat as FACT or mint unless harvested from the artifact.
+     */
+    public static final String WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY =
             "bladexisapowerfulmicroservicearchitectureupgradedandoptimizedfromacommercialproject";
-    public static final String BLADE_LEGACY_ZERO_KEY = "00000000000000000000000000000000";
+    /** Legacy all-zero Blade placeholder (detection + HINT only). */
+    public static final String WELL_KNOWN_BLADE_LEGACY_ZERO_KEY =
+            "00000000000000000000000000000000";
+
+    /** @deprecated Use {@link #WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY}; kept for test/fixture aliases. */
+    @Deprecated
+    public static final String BLADE_DEFAULT_SIGN_KEY = WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY;
+    /** @deprecated Use {@link #WELL_KNOWN_BLADE_LEGACY_ZERO_KEY}. */
+    @Deprecated
+    public static final String BLADE_LEGACY_ZERO_KEY = WELL_KNOWN_BLADE_LEGACY_ZERO_KEY;
+
+    private static final List<WellKnownKey> WELL_KNOWN_KEYS = List.of(
+            new WellKnownKey("WELL_KNOWN_BLADE_COMMERCIAL", WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY),
+            new WellKnownKey("WELL_KNOWN_BLADE_LEGACY_ZERO", WELL_KNOWN_BLADE_LEGACY_ZERO_KEY));
 
     private static final Pattern SKIP_URL = Pattern.compile(
             "(?i)(?:blade\\.)?secure\\.(?:skip[-_]?url|exclude[-_]?url|ignore[-_]?url)s?\\s*[=:]\\s*(.+)");
     private static final Pattern JWT_KEY_LINE = Pattern.compile(
-            "(?i)(?:jwt[_\\-.]?(?:secret|sign(?:ing)?[_\\-.]?key|key)|blade[_\\-.]?token[_\\-.]?sign[_\\-.]?key)"
+            "(?i)(?:jwt[_\\-.]?(?:secret|sign(?:ing)?[_\\-.]?key|key)"
+                    + "|blade[_\\-.]?token[_\\-.]?sign[_\\-.]?key"
+                    + "|token[_\\-.]?sign[_\\-.]?key"
+                    + "|spring\\.security\\.oauth2\\.resourceserver\\.jwt\\.secret[-_]?key)"
                     + "\\s*[=:]\\s*[\"']?([^\\s\"'#]+)");
+    private static final Pattern PRE_AUTH = Pattern.compile(
+            "(?i)@PreAuth|hasRole\\s*\\(|hasAnyRole\\s*\\(|PreAuthorize|RolesAllowed|Secured\\s*\\(");
+    private static final Pattern TOKEN_FILTER = Pattern.compile(
+            "(?i)TokenFilter|JwtAuth|JwtAuthentication|BearerToken|BladeSecure|"
+                    + "SecureInterceptor|AuthFilter|OncePerRequestFilter");
     private static final List<String> AUTH_CLASS_HINTS = List.of(
             "org/springblade/core/secure",
             "org/springblade/core/jwt",
@@ -43,7 +74,42 @@ public final class AuthCodeQueryService {
             "JwtProperties",
             "TokenUtil",
             "BladeTokenEndPoint",
-            "SecureRegistry");
+            "SecureRegistry",
+            "TokenFilter",
+            "JwtAuth",
+            "BearerToken");
+
+    public record WellKnownKey(String alias, String value) {
+        public WellKnownKey {
+            alias = Objects.requireNonNull(alias, "alias");
+            value = Objects.requireNonNull(value, "value");
+        }
+
+        public int keyLen() {
+            return value.length();
+        }
+    }
+
+    /**
+     * Redacted candidate for AI / tool output. Never carries raw secret bytes.
+     *
+     * @param classification FACT when value was present in artifact config/class;
+     *                       RULE_GENERATED when alias matched a well-known dictionary
+     *                       entry found in the artifact; HINT for adapter-only notes
+     */
+    public record SecretCandidateHint(
+            String alias,
+            String provenance,
+            String classification,
+            int keyLen,
+            boolean mintable
+    ) {
+        public SecretCandidateHint {
+            alias = alias == null ? "" : alias;
+            provenance = provenance == null ? "" : provenance;
+            classification = classification == null ? "HINT" : classification;
+        }
+    }
 
     public record AuthCodeFact(
             String id,
@@ -63,18 +129,33 @@ public final class AuthCodeQueryService {
 
     public record AuthCodeQueryResult(
             boolean bladeSurface,
-            boolean jwtDefaultKeyMatched,
+            boolean jwtSecretMaterialFound,
             String preferredSignKeyProvenance,
             String preferredHeaderChannel,
             List<String> recommendedTechniques,
-            List<AuthCodeFact> facts
+            List<AuthCodeFact> facts,
+            List<SecretCandidateHint> secretCandidates,
+            Optional<String> mintSecret
     ) {
         public AuthCodeQueryResult {
             preferredSignKeyProvenance = preferredSignKeyProvenance == null ? "" : preferredSignKeyProvenance;
             preferredHeaderChannel = preferredHeaderChannel == null ? "Authorization" : preferredHeaderChannel;
             recommendedTechniques = List.copyOf(recommendedTechniques == null ? List.of() : recommendedTechniques);
             facts = List.copyOf(facts == null ? List.of() : facts);
+            secretCandidates = List.copyOf(secretCandidates == null ? List.of() : secretCandidates);
+            mintSecret = mintSecret == null ? Optional.empty() : mintSecret;
         }
+
+        /** @deprecated Prefer {@link #jwtSecretMaterialFound()}. */
+        @Deprecated
+        public boolean jwtDefaultKeyMatched() {
+            return jwtSecretMaterialFound;
+        }
+    }
+
+    /** Well-known Blade key aliases for FRAMEWORK_ADAPTER_CONTEXT HINT injection (not FACT). */
+    public static List<WellKnownKey> wellKnownBladeKeyHints() {
+        return WELL_KNOWN_KEYS;
     }
 
     public AuthCodeQueryResult query(Path artifactPath, String query, int limit) {
@@ -82,19 +163,52 @@ public final class AuthCodeQueryService {
         String needle = query == null ? "" : query.toLowerCase(Locale.ROOT);
         List<AuthCodeFact> facts = new ArrayList<>();
         boolean bladeSurface = false;
-        boolean jwtDefaultKeyMatched = false;
+        boolean secretFound = false;
         String keyProvenance = "NONE";
+        String keyAlias = "";
+        Optional<String> mintSecret = Optional.empty();
+        List<SecretCandidateHint> candidates = new ArrayList<>();
         Set<String> skipUrls = new LinkedHashSet<>();
         Set<String> authClasses = new LinkedHashSet<>();
+        boolean preAuthSeen = false;
+        boolean tokenFilterSeen = false;
 
         if (artifactPath != null && Files.isRegularFile(artifactPath)) {
             try {
                 ScanAccumulator acc = scanArtifact(artifactPath);
                 bladeSurface = acc.bladeSurface;
-                jwtDefaultKeyMatched = acc.jwtDefaultKeyMatched;
+                secretFound = acc.mintSecret.isPresent();
                 keyProvenance = acc.keyProvenance;
+                keyAlias = acc.keyAlias;
+                mintSecret = acc.mintSecret;
                 skipUrls.addAll(acc.skipUrls);
                 authClasses.addAll(acc.authClasses);
+                preAuthSeen = acc.preAuthSeen;
+                tokenFilterSeen = acc.tokenFilterSeen;
+                if (secretFound) {
+                    String classification = keyProvenance.startsWith("CONFIG_KEY:")
+                            || keyProvenance.startsWith("CONFIG_OR_RESOURCE:")
+                            ? "FACT" : "RULE_GENERATED";
+                    if (keyAlias.startsWith("WELL_KNOWN_")) {
+                        classification = "RULE_GENERATED";
+                    } else if (keyAlias.equals("CUSTOM_CONFIG")
+                            || keyAlias.equals("CUSTOM_CLASS_CONSTANT")) {
+                        classification = "FACT";
+                    }
+                    candidates.add(new SecretCandidateHint(
+                            keyAlias.isBlank() ? "HARVESTED" : keyAlias,
+                            keyProvenance,
+                            classification,
+                            mintSecret.map(String::length).orElse(0),
+                            true));
+                } else if (acc.configKeyPresentRedacted) {
+                    candidates.add(new SecretCandidateHint(
+                            "CUSTOM_REDACTED",
+                            acc.keyProvenance,
+                            "FACT",
+                            0,
+                            false));
+                }
             } catch (IOException ignored) {
                 facts.add(new AuthCodeFact(
                         "auth-code:scan-failed",
@@ -120,18 +234,46 @@ public final class AuthCodeQueryService {
                     "",
                     Map.of("framework", "SpringBlade",
                             "preferredAuthHeader", "Blade-Auth",
-                            "jwtAlg", "HS256")));
+                            "jwtAlg", "HS256",
+                            "note", "adapter/framework HINT only until code_query harvests sign-key")));
         }
-        if (jwtDefaultKeyMatched) {
+        if (secretFound) {
             facts.add(new AuthCodeFact(
-                    "auth-code:jwt-default-key",
+                    "auth-code:jwt-secret-material",
                     "JWT_MATERIAL",
-                    "Known Blade JWT sign-key material matched in config or class constants "
-                            + "(use DEFAULT_SECRET_HS256; ALG_NONE is low-value for Blade SecureUtil)",
+                    "JWT sign-key material harvested from artifact (mintable; cite this evidence; "
+                            + "do not assume a global hardcoded key is FACT)",
                     "",
-                    Map.of("matched", "BLADE_DEFAULT_SIGN_KEY",
+                    Map.of("matched", keyAlias.isBlank() ? "HARVESTED" : keyAlias,
                             "provenance", keyProvenance,
-                            "secretRedacted", "true")));
+                            "secretRedacted", "true",
+                            "classification", candidates.isEmpty()
+                                    ? "RULE_GENERATED" : candidates.get(0).classification())));
+        } else if (bladeSurface) {
+            facts.add(new AuthCodeFact(
+                    "auth-code:jwt-secret-absent",
+                    "JWT_MATERIAL",
+                    "Blade surface seen but no mintable sign-key harvested from artifact; "
+                            + "prefer MISSING_AUTH / EMPTY_BEARER / ALG_NONE; use well-known aliases "
+                            + "only as HINT via FRAMEWORK_ADAPTER_CONTEXT after code_query",
+                    "",
+                    Map.of("mintable", "false")));
+        }
+        if (preAuthSeen) {
+            facts.add(new AuthCodeFact(
+                    "auth-code:preauth-signal",
+                    "AUTH_ANNOTATION",
+                    "@PreAuth / PreAuthorize / RolesAllowed / hasRole signals observed in resources",
+                    "",
+                    Map.of("signal", "PRE_AUTH")));
+        }
+        if (tokenFilterSeen) {
+            facts.add(new AuthCodeFact(
+                    "auth-code:token-filter-signal",
+                    "AUTH_FILTER",
+                    "Token/JWT filter or Secure interceptor class names observed",
+                    "",
+                    Map.of("signal", "TOKEN_FILTER")));
         }
         int skipIndex = 0;
         for (String skip : skipUrls) {
@@ -163,10 +305,14 @@ public final class AuthCodeQueryService {
         }
 
         List<String> techniques = new ArrayList<>();
-        if (jwtDefaultKeyMatched || bladeSurface) {
+        if (secretFound) {
             techniques.add("DEFAULT_SECRET_HS256");
             techniques.add("MISSING_AUTH");
             techniques.add("EMPTY_BEARER");
+        } else if (bladeSurface) {
+            techniques.add("MISSING_AUTH");
+            techniques.add("EMPTY_BEARER");
+            techniques.add("ALG_NONE");
         } else {
             techniques.add("MISSING_AUTH");
             techniques.add("ALG_NONE");
@@ -174,11 +320,13 @@ public final class AuthCodeQueryService {
         }
         return new AuthCodeQueryResult(
                 bladeSurface,
-                jwtDefaultKeyMatched,
+                secretFound,
                 keyProvenance,
                 bladeSurface ? "Blade-Auth" : "Authorization",
                 techniques,
-                filtered);
+                filtered,
+                candidates,
+                mintSecret);
     }
 
     private static boolean matches(AuthCodeFact fact, String needle) {
@@ -194,8 +342,12 @@ public final class AuthCodeQueryService {
 
     private static final class ScanAccumulator {
         boolean bladeSurface;
-        boolean jwtDefaultKeyMatched;
         String keyProvenance = "NONE";
+        String keyAlias = "";
+        Optional<String> mintSecret = Optional.empty();
+        boolean configKeyPresentRedacted;
+        boolean preAuthSeen;
+        boolean tokenFilterSeen;
         final Set<String> skipUrls = new LinkedHashSet<>();
         final Set<String> authClasses = new LinkedHashSet<>();
     }
@@ -216,21 +368,31 @@ public final class AuthCodeQueryService {
                     }
                 }
                 if (!(lower.endsWith(".yml") || lower.endsWith(".yaml") || lower.endsWith(".properties")
-                        || lower.endsWith(".json") || lower.endsWith(".xml") || lower.endsWith(".class"))) {
+                        || lower.endsWith(".json") || lower.endsWith(".xml") || lower.endsWith(".class")
+                        || lower.endsWith(".java"))) {
                     continue;
                 }
                 if (entry.getSize() > 256 * 1024) continue;
                 scanned++;
                 byte[] bytes = readLimited(zip, 64 * 1024);
-                if (lower.endsWith(".class")) {
+                if (lower.endsWith(".class") || lower.endsWith(".java")) {
                     String latin = new String(bytes, StandardCharsets.ISO_8859_1);
-                    if (latin.contains(BLADE_DEFAULT_SIGN_KEY)) {
-                        acc.jwtDefaultKeyMatched = true;
-                        acc.bladeSurface = true;
-                        acc.keyProvenance = "CLASS_CONSTANT:" + truncate(name, 160);
-                    } else if (latin.contains(BLADE_LEGACY_ZERO_KEY) && !acc.jwtDefaultKeyMatched) {
-                        acc.jwtDefaultKeyMatched = true;
-                        acc.keyProvenance = "CLASS_CONSTANT_ZERO_KEY:" + truncate(name, 160);
+                    if (PRE_AUTH.matcher(latin).find()) {
+                        acc.preAuthSeen = true;
+                    }
+                    if (TOKEN_FILTER.matcher(latin).find()) {
+                        acc.tokenFilterSeen = true;
+                    }
+                    if (acc.mintSecret.isEmpty()) {
+                        for (WellKnownKey known : WELL_KNOWN_KEYS) {
+                            if (latin.contains(known.value())) {
+                                acc.mintSecret = Optional.of(known.value());
+                                acc.bladeSurface = true;
+                                acc.keyAlias = known.alias();
+                                acc.keyProvenance = "CLASS_CONSTANT:" + truncate(name, 160);
+                                break;
+                            }
+                        }
                     }
                     continue;
                 }
@@ -238,29 +400,68 @@ public final class AuthCodeQueryService {
                 if (text.contains("blade") || text.contains("bladex") || text.contains("springblade")) {
                     acc.bladeSurface = true;
                 }
-                if (text.contains(BLADE_DEFAULT_SIGN_KEY)) {
-                    acc.jwtDefaultKeyMatched = true;
-                    acc.bladeSurface = true;
-                    acc.keyProvenance = "CONFIG_OR_RESOURCE:" + truncate(name, 160);
+                if (PRE_AUTH.matcher(text).find()) {
+                    acc.preAuthSeen = true;
+                }
+                if (TOKEN_FILTER.matcher(text).find()) {
+                    acc.tokenFilterSeen = true;
+                }
+                if (acc.mintSecret.isEmpty()) {
+                    for (WellKnownKey known : WELL_KNOWN_KEYS) {
+                        if (text.contains(known.value())) {
+                            acc.mintSecret = Optional.of(known.value());
+                            acc.bladeSurface = true;
+                            acc.keyAlias = known.alias();
+                            acc.keyProvenance = "CONFIG_OR_RESOURCE:" + truncate(name, 160);
+                            break;
+                        }
+                    }
                 }
                 Matcher skip = SKIP_URL.matcher(text);
                 while (skip.find() && acc.skipUrls.size() < 24) {
                     acc.skipUrls.add(skip.group(1).trim());
                 }
                 Matcher keyLine = JWT_KEY_LINE.matcher(text);
-                if (keyLine.find() && !acc.jwtDefaultKeyMatched) {
+                if (keyLine.find() && acc.mintSecret.isEmpty()) {
                     String value = keyLine.group(1).trim();
-                    if (BLADE_DEFAULT_SIGN_KEY.equals(value) || BLADE_LEGACY_ZERO_KEY.equals(value)) {
-                        acc.jwtDefaultKeyMatched = true;
+                    Optional<WellKnownKey> known = matchWellKnown(value);
+                    if (known.isPresent()) {
+                        acc.mintSecret = Optional.of(known.get().value());
+                        acc.keyAlias = known.get().alias();
+                        acc.keyProvenance = "CONFIG_KEY:" + truncate(name, 160);
+                        acc.bladeSurface = true;
+                    } else if (value.length() >= 8 && value.length() <= 256
+                            && looksPlausibleSecret(value)) {
+                        acc.mintSecret = Optional.of(value);
+                        acc.keyAlias = "CUSTOM_CONFIG";
                         acc.keyProvenance = "CONFIG_KEY:" + truncate(name, 160);
                     } else if (value.length() >= 8) {
-                        // Do not return raw custom secrets to the model; only note presence.
+                        acc.configKeyPresentRedacted = true;
                         acc.keyProvenance = "CONFIG_KEY_PRESENT_REDACTED:" + truncate(name, 160);
                     }
                 }
             }
         }
         return acc;
+    }
+
+    private static Optional<WellKnownKey> matchWellKnown(String value) {
+        for (WellKnownKey known : WELL_KNOWN_KEYS) {
+            if (known.value().equals(value)) {
+                return Optional.of(known);
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static boolean looksPlausibleSecret(String value) {
+        if (value == null || value.length() < 8) return false;
+        // Reject obvious placeholders / env refs that are not usable mint material.
+        String lower = value.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("${") || lower.contains("changeme") || lower.equals("null")) {
+            return false;
+        }
+        return value.chars().allMatch(ch -> ch >= 0x20 && ch < 0x7f);
     }
 
     private static boolean looksAuthClass(String lowerPath) {
@@ -288,12 +489,27 @@ public final class AuthCodeQueryService {
     public static Map<String, Object> toToolMap(AuthCodeQueryResult result) {
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("bladeSurface", result.bladeSurface());
-        root.put("jwtDefaultKeyMatched", result.jwtDefaultKeyMatched());
+        root.put("jwtSecretMaterialFound", result.jwtSecretMaterialFound());
+        root.put("jwtDefaultKeyMatched", result.jwtSecretMaterialFound()); // compat alias
         root.put("preferredSignKeyProvenance", result.preferredSignKeyProvenance());
         root.put("preferredHeaderChannel", result.preferredHeaderChannel());
         root.put("recommendedTechniques", result.recommendedTechniques());
         root.put("classification", "FACT");
         root.put("verificationStatus", "STATIC_INFERRED");
+        root.put("note", "Well-known Blade keys are HINT/detection only; mint only when "
+                + "jwtSecretMaterialFound=true with evidenceRefs from this query.");
+        List<Map<String, Object>> candidateMaps = new ArrayList<>();
+        for (SecretCandidateHint candidate : result.secretCandidates()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("alias", candidate.alias());
+            item.put("provenance", candidate.provenance());
+            item.put("classification", candidate.classification());
+            item.put("keyLen", candidate.keyLen());
+            item.put("mintable", candidate.mintable());
+            item.put("secretRedacted", true);
+            candidateMaps.add(item);
+        }
+        root.put("secretCandidates", candidateMaps);
         List<Map<String, Object>> facts = new ArrayList<>();
         for (AuthCodeFact fact : result.facts()) {
             Map<String, Object> item = new LinkedHashMap<>();
