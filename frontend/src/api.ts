@@ -2448,10 +2448,50 @@ export class MockSentinelApi implements SentinelApi {
   async listRoleAssignments(): Promise<RoleAssignmentDto[]> { return [] }
   async saveRoleAssignment(): Promise<RoleAssignmentDto> { return this.unavailable('save role assignment') }
   async deleteRoleAssignment(): Promise<void> { return this.unavailable('delete role assignment') }
-  async listAiJobs(): Promise<AiJobDto[]> { return [] }
+  async listAiJobs(): Promise<AiJobDto[]> {
+    return [{
+      schemaVersion: 1,
+      aiJobId: 'ai-job-demo-report',
+      projectId: 'project-01',
+      scanId: 'scan-07f2',
+      artifactDigest: '0'.repeat(64),
+      role: 'REPORT_GENERATION',
+      status: 'COMPLETED',
+      providerId: 'demo-provider',
+      model: 'demo-report',
+      outputLanguage: 'ZH_CN',
+      createdAt: new Date(0).toISOString()
+    }]
+  }
   async createAiJob(): Promise<AiJobDto> { return this.unavailable('create ai job') }
   async getAiJob(): Promise<AiJobDto> { return this.unavailable('get ai job') }
-  async listAiJobEvents(): Promise<AiJobEventDto[]> { return [] }
+  async listAiJobEvents(aiJobId: string): Promise<AiJobEventDto[]> {
+    if (aiJobId !== 'ai-job-demo-report') return []
+    return [{
+      schemaVersion: 1,
+      aiJobId,
+      sequence: 1,
+      projectId: 'project-01',
+      stage: 'MODEL_INFERENCE',
+      status: 'COMPLETED',
+      createdAt: new Date(0).toISOString(),
+      modelInferenceSummary: [
+        '# 溯脉 · Veyrion 演示报告',
+        '',
+        '本页为**演示模式**最终报告主视图。结论均为受证据约束的模型推断，**不等于 VERIFIED**。',
+        '',
+        '## 摘要',
+        '',
+        '- 演示扫描 `scan-07f2` 含上传路径与信息泄露等发现样本。',
+        '- PathRun / Sink 排序 / 对照账本等请通过审计结果子页面查看。',
+        '- 动态确认若出现，仍为 MOCK SQL 证据，不得宣传为生产实库已证实。',
+        '',
+        '## 限制',
+        '',
+        '演示适配器不连接控制面；下载与重放能力可能不可用。'
+      ].join('\n')
+    }]
+  }
   async updateAiJob(): Promise<AiJobDto> { return this.unavailable('update ai job') }
   async deleteAiJob(): Promise<void> { return this.unavailable('delete ai job') }
 

@@ -783,3 +783,10 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 - 工具白名单未放宽：PRE/PATH 既有 `code_query`；DYNAMIC 既有 `fuzz_strategy_get`。
 - 自定义 `role_bindings` 文案可覆盖默认 `roleInstruction`，服务端注入段仍始终追加。
 - 验收：`RolePromptInjectionAcceptanceTest` + `AiJobOrchestrationAcceptanceTest` PASS。不得标 live 六角色或 `VERIFIED` 生产可用。
+
+## 74. 审计结果默认最终报告 + 子视图（2026-07-27）
+
+- `ResultsPage`：默认主视图 `report`（REPORT_GENERATION 的 `MODEL_INFERENCE` markdown）；子视图用内部 view-state：`pathRuns` / `contrast`（Sink 排序+LedgerDiff）/ `findings`（次级发现+入口+攻击链+时间线）/ `verified` / `experiments`。
+- 报告空或扫描 `UNREACHED` 时诚实空态 + CTA 卡片跳转子视图；Demo 返回演示 REPORT 任务与摘要。
+- **诚实缺口**：Dashboard DTO **无**独立 `reportMarkdown`/`finalReport` 字段；仍从 AI job events 拉取。
+- 验证：`frontend/` `npm run build`。不得标 `VERIFIED` 生产可用。
