@@ -2125,7 +2125,8 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                     scan.dto().artifactDigest(),
                     PayloadSchemaGuard.withSchemaVersion(
                             JSON, plan, PayloadSchemaGuard.MIN_SCHEMA_VERSION),
-                    Instant.now(clock).toString()));
+                    Instant.now(clock).toString(),
+                    plan.fuzzStrategyJson()));
         } catch (RuntimeException failure) {
             throw new ApiException(500, "EXPERIMENT_PLAN_PERSIST_FAILED",
                     "could not persist experiment plan");
@@ -2140,9 +2141,19 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                 continue;
             }
             try {
-                ExperimentPlan plan = PayloadSchemaGuard.readIgnoringSchemaVersion(
+                ExperimentPlan decoded = PayloadSchemaGuard.readIgnoringSchemaVersion(
                                 JSON, stored.payloadJson(), ExperimentPlan.class,
                                 "experiment_plan " + stored.planId());
+                final ExperimentPlan plan =
+                        (decoded.fuzzStrategyJson() == null || decoded.fuzzStrategyJson().isBlank())
+                                && stored.fuzzStrategyJson() != null && !stored.fuzzStrategyJson().isBlank()
+                        ? new ExperimentPlan(
+                                decoded.planId(), decoded.entrypointRef(), decoded.track(), decoded.method(),
+                                decoded.contentType(), decoded.requiredParameters(), decoded.authRequired(),
+                                decoded.successHttpHint(), decoded.successJsonPath(), decoded.maxAttempts(),
+                                decoded.candidateInputs(), decoded.stopCondition(), decoded.packId(),
+                                stored.fuzzStrategyJson())
+                        : decoded;
                 ExperimentPlanValidator.validate(plan, 8);
                 List<ExperimentPlan> plans = scanExperimentPlans.computeIfAbsent(stored.scanId(),
                         ignored -> new ArrayList<>());
@@ -2520,6 +2531,9 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         result.put("stopCondition", plan.stopCondition());
         if (plan.packId() != null && !plan.packId().isBlank()) {
             result.put("packId", plan.packId());
+        }
+        if (plan.fuzzStrategyJson() != null && !plan.fuzzStrategyJson().isBlank()) {
+            result.put("fuzzStrategyJson", plan.fuzzStrategyJson());
         }
         result.put("boundForExecution", true);
         result.put("serverGated", true);
@@ -3043,6 +3057,9 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         result.put("evidenceRefs", dto.evidenceRefs()); result.put("evidenceCount", dto.evidenceCount());
         result.put("evidence", dto.evidenceCount()); result.put("confidence", dto.confidence());
         result.put("dependencyMode", dto.dependencyMode());
+        if (dto.rootCause() != null && !dto.rootCause().isEmpty()) {
+            result.put("rootCause", dto.rootCause());
+        }
         return result;
     }
 

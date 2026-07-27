@@ -1,9 +1,12 @@
 package com.aq.jvmsentinel;
 
+import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.ControlPlaneServer;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
 import com.aq.jvmsentinel.control.JsonCodec;
 import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
+import com.aq.jvmsentinel.model.ArtifactDescriptor;
+import com.aq.jvmsentinel.model.ArtifactType;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -12,6 +15,8 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.DriverManager;
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -275,7 +280,68 @@ public final class ControlPlanePersistenceAcceptanceTest {
         check(planPersistence.loadProbePlans().equals(List.of(plan)),
                 "V011 probe plan metadata survives persistence reconstruction");
 
+        rootCauseColumnRoundTripAndHttpWire();
+
         System.out.println("ControlPlanePersistenceAcceptanceTest: PASS");
+    }
+
+    /** V019 root_cause_json loads into FindingDto and findingMap emits rootCause. */
+    private static void rootCauseColumnRoundTripAndHttpWire() throws Exception {
+        Path root = Files.createTempDirectory("veyrion-root-cause-wire");
+        Path database = root.resolve("root-cause.db");
+        Path artifactFile = root.resolve("RootCauseFixture.class");
+        Files.writeString(artifactFile, "root-cause fixture");
+        String now = Instant.now().toString();
+        String token = "root-cause-wire-token";
+        Map<String, Object> rootCause = new LinkedHashMap<>();
+        rootCause.put("attackPath", List.of(Map.of(
+                "layer", "HTTP",
+                "label", "POST /api/user",
+                "evidenceRefs", List.of("evidence-rc-1"))));
+        rootCause.put("rootCauseStatement", "string concat into SQL");
+        rootCause.put("affectedComponent", "com.Example#query");
+        rootCause.put("cweId", "CWE-89");
+        rootCause.put("fixSuggestion", "use PreparedStatement");
+
+        ControlPlaneStore store = ControlPlaneStore.sqlite(database, root);
+        store.bootstrapOperator(token, now);
+        var project = store.createProject("project-rc", "root cause wire", now, "local-admin");
+        String digest = "d".repeat(64);
+        store.registerArtifact(project, new ArtifactDescriptor("artifact-rc", ArtifactType.CLASS,
+                artifactFile, Files.size(artifactFile), digest, true, Instant.parse(now)), "local-admin");
+        var evidence = new ApiDtos.EvidenceDto(1, project.projectId(), digest, "scan-rc",
+                "evidence-rc-1", "FACT", "classfile", 1.0, "sql concat", now,
+                "test", "none", "snapshot-rc", "MOCK", "STATIC_INFERRED");
+        var finding = new ApiDtos.FindingDto(1, project.projectId(), digest, "scan-rc",
+                "finding-rc-1", "静态推断的 SQL 注入信号", "high", "STATIC_INFERRED",
+                "entry-rc", "POST /api/user", "sink-rc", "SQL", "none", List.of(),
+                List.of("evidence-rc-1"), 1, 0.7, "MOCK", rootCause);
+        var scan = new ApiDtos.ScanDto(1, project.projectId(), digest, "scan-rc",
+                "COMPLETED", "STATIC_INFERRED", "MOCK", now, now,
+                List.of("evidence-rc-1"), List.of(), List.of(), List.of(),
+                List.of(finding), List.of());
+        store.saveScan(new ControlPlaneStore.ScanRecord(scan,
+                Map.of(evidence.evidenceId(), evidence), List.of(finding), List.of()), "local-admin");
+
+        ControlPlaneStore reloaded = ControlPlaneStore.sqlite(database, root);
+        ApiDtos.FindingDto loaded = reloaded.finding("finding-rc-1");
+        check(loaded != null && loaded.rootCause() != null, "root_cause_json populates FindingDto");
+        check("string concat into SQL".equals(loaded.rootCause().get("rootCauseStatement")),
+                "rootCauseStatement survives reload");
+
+        HttpClient client = HttpClient.newHttpClient();
+        try (ControlPlaneServer server = new ControlPlaneServer(root, 0, token, database).start()) {
+            Map<String, Object> detail = body(get(client,
+                    URI.create(server.baseUri() + "/findings/finding-rc-1")));
+            check(detail.get("rootCause") instanceof Map<?, ?> emitted
+                            && "string concat into SQL".equals(emitted.get("rootCauseStatement")),
+                    "findingMap emits rootCause for HTTP clients");
+            Map<String, Object> dashboard = body(get(client,
+                    URI.create(server.baseUri() + "/projects/" + project.projectId()
+                            + "/dashboard?scanId=scan-rc")));
+            check(dashboard.get("verifiedFindings") instanceof List<?> verified && verified.isEmpty(),
+                    "verifiedFindings remains empty scaffolding");
+        }
     }
 
     private static HttpResponse<String> get(HttpClient client, URI uri) throws Exception {

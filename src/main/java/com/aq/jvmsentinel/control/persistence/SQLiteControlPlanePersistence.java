@@ -233,13 +233,14 @@ public final class SQLiteControlPlanePersistence {
     public List<ExperimentPlanData> loadExperimentPlans() {
         try (Connection connection = open(); Statement statement = connection.createStatement();
              ResultSet rows = statement.executeQuery(
-                     "SELECT plan_id,scan_id,project_id,artifact_digest,payload_json,created_at "
-                             + "FROM experiment_plans ORDER BY created_at,plan_id")) {
+                     "SELECT plan_id,scan_id,project_id,artifact_digest,payload_json,created_at,"
+                             + "fuzz_strategy_json FROM experiment_plans ORDER BY created_at,plan_id")) {
             List<ExperimentPlanData> result = new ArrayList<>();
             while (rows.next()) {
                 result.add(new ExperimentPlanData(
                         rows.getString(1), rows.getString(2), rows.getString(3),
-                        rows.getString(4), rows.getString(5), rows.getString(6)));
+                        rows.getString(4), rows.getString(5), rows.getString(6),
+                        rows.getString(7)));
             }
             if (result.size() > 20_000) throw new PersistenceException("persistent experiment plan limit exceeded");
             return List.copyOf(result);
@@ -252,15 +253,17 @@ public final class SQLiteControlPlanePersistence {
         Objects.requireNonNull(scanId, "scanId");
         try (Connection connection = open();
              PreparedStatement statement = connection.prepareStatement(
-                     "SELECT plan_id,scan_id,project_id,artifact_digest,payload_json,created_at "
-                             + "FROM experiment_plans WHERE scan_id=? ORDER BY created_at,plan_id")) {
+                     "SELECT plan_id,scan_id,project_id,artifact_digest,payload_json,created_at,"
+                             + "fuzz_strategy_json FROM experiment_plans WHERE scan_id=? "
+                             + "ORDER BY created_at,plan_id")) {
             statement.setString(1, scanId);
             try (ResultSet rows = statement.executeQuery()) {
                 List<ExperimentPlanData> result = new ArrayList<>();
                 while (rows.next()) {
                     result.add(new ExperimentPlanData(
                             rows.getString(1), rows.getString(2), rows.getString(3),
-                            rows.getString(4), rows.getString(5), rows.getString(6)));
+                            rows.getString(4), rows.getString(5), rows.getString(6),
+                            rows.getString(7)));
                 }
                 if (result.size() > 256) throw new PersistenceException("per-scan experiment plan limit exceeded");
                 return List.copyOf(result);
@@ -272,12 +275,20 @@ public final class SQLiteControlPlanePersistence {
 
     public void saveExperimentPlan(ExperimentPlanData plan) {
         Objects.requireNonNull(plan, "plan");
+        String fuzz = plan.fuzzStrategyJson();
+        if ((fuzz == null || fuzz.isBlank()) && plan.payloadJson() != null) {
+            fuzz = extractFuzzStrategyJson(plan.payloadJson());
+        }
+        String fuzzColumn = fuzz == null || fuzz.isBlank() ? null : fuzz;
+        String finalFuzz = fuzzColumn;
         transaction("could not persist experiment plan", connection -> update(connection,
-                "INSERT INTO experiment_plans(plan_id,scan_id,project_id,artifact_digest,payload_json,created_at) "
-                        + "VALUES(?,?,?,?,?,?) ON CONFLICT(scan_id,plan_id) DO UPDATE SET "
-                        + "payload_json=excluded.payload_json,created_at=excluded.created_at",
+                "INSERT INTO experiment_plans(plan_id,scan_id,project_id,artifact_digest,payload_json,"
+                        + "created_at,fuzz_strategy_json) "
+                        + "VALUES(?,?,?,?,?,?,?) ON CONFLICT(scan_id,plan_id) DO UPDATE SET "
+                        + "payload_json=excluded.payload_json,created_at=excluded.created_at,"
+                        + "fuzz_strategy_json=excluded.fuzz_strategy_json",
                 plan.planId(), plan.scanId(), plan.projectId(), plan.artifactDigest(),
-                plan.payloadJson(), plan.createdAt()));
+                plan.payloadJson(), plan.createdAt(), finalFuzz));
     }
 
     public List<ApiDtos.PathRunDto> loadPathRunsForScan(String projectId, String artifactDigest, String scanId) {
@@ -701,8 +712,11 @@ public final class SQLiteControlPlanePersistence {
                             item.evidenceId(), dto.scanId(), dto.projectId(), write(item));
                 }
                 for (ApiDtos.FindingDto item : record.findings()) {
-                    update(connection, "INSERT INTO findings(finding_id,scan_id,project_id,payload_json) VALUES(?,?,?,?)",
-                            item.findingId(), dto.scanId(), dto.projectId(), write(item));
+                    update(connection,
+                            "INSERT INTO findings(finding_id,scan_id,project_id,payload_json,root_cause_json)"
+                                    + " VALUES(?,?,?,?,?)",
+                            item.findingId(), dto.scanId(), dto.projectId(), write(item),
+                            rootCauseColumnJson(item));
                 }
                 for (ApiDtos.AttackChainDto item : record.chains()) {
                     update(connection, "INSERT INTO attack_chains(chain_id,scan_id,project_id,payload_json) VALUES(?,?,?,?)",
@@ -1121,12 +1135,14 @@ public final class SQLiteControlPlanePersistence {
     private Map<String, List<ApiDtos.FindingDto>> loadFindings(Connection connection) throws SQLException {
         Map<String, List<ApiDtos.FindingDto>> result = new LinkedHashMap<>();
         try (Statement statement = connection.createStatement();
-             ResultSet rows = statement.executeQuery("SELECT finding_id,scan_id,payload_json FROM findings ORDER BY rowid")) {
+             ResultSet rows = statement.executeQuery(
+                     "SELECT finding_id,scan_id,payload_json,root_cause_json FROM findings ORDER BY rowid")) {
             while (rows.next()) {
                 ApiDtos.FindingDto dto = read(rows.getString(3), ApiDtos.FindingDto.class);
                 if (!rows.getString(1).equals(dto.findingId())) {
                     throw new PersistenceException("stored finding identifier does not match its payload");
                 }
+                dto = mergeRootCauseColumn(dto, rows.getString(4));
                 result.computeIfAbsent(rows.getString(2), ignored -> new ArrayList<>()).add(dto);
             }
         }
@@ -1453,6 +1469,39 @@ public final class SQLiteControlPlanePersistence {
         }
     }
 
+    private String rootCauseColumnJson(ApiDtos.FindingDto item) {
+        if (item == null || item.rootCause() == null || item.rootCause().isEmpty()) return null;
+        return write(item.rootCause());
+    }
+
+    private ApiDtos.FindingDto mergeRootCauseColumn(ApiDtos.FindingDto dto, String rootCauseJson) {
+        if (dto == null) return null;
+        if (dto.rootCause() != null && !dto.rootCause().isEmpty()) return dto;
+        if (rootCauseJson == null || rootCauseJson.isBlank()) return dto;
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> parsed = mapper.readValue(rootCauseJson, Map.class);
+            if (parsed == null || parsed.isEmpty()) return dto;
+            return dto.withRootCause(parsed);
+        } catch (JsonProcessingException failure) {
+            throw new PersistenceException("stored finding root_cause_json is invalid", failure);
+        }
+    }
+
+    private String extractFuzzStrategyJson(String payloadJson) {
+        if (payloadJson == null || payloadJson.isBlank()) return null;
+        try {
+            var root = mapper.readTree(payloadJson);
+            var node = root.get("fuzzStrategyJson");
+            if (node == null || node.isNull()) node = root.get("fuzzStrategy");
+            if (node == null || node.isNull() || !node.isTextual()) return null;
+            String text = node.asText();
+            return text == null || text.isBlank() ? null : text;
+        } catch (JsonProcessingException ignored) {
+            return null;
+        }
+    }
+
     private static String resource(String name) {
         try (InputStream stream = SQLiteControlPlanePersistence.class.getClassLoader().getResourceAsStream(name)) {
             if (stream == null) throw new MigrationException("database migration resource is missing");
@@ -1557,7 +1606,13 @@ public final class SQLiteControlPlanePersistence {
                                 String scanId, String targetEntryId, String candidateInputsJson,
                                 int maxRequests, String planHash, String createdAt) { }
     public record ExperimentPlanData(String planId, String scanId, String projectId,
-                                     String artifactDigest, String payloadJson, String createdAt) { }
+                                     String artifactDigest, String payloadJson, String createdAt,
+                                     String fuzzStrategyJson) {
+        public ExperimentPlanData(String planId, String scanId, String projectId,
+                                  String artifactDigest, String payloadJson, String createdAt) {
+            this(planId, scanId, projectId, artifactDigest, payloadJson, createdAt, null);
+        }
+    }
     public record Snapshot(List<ProjectData> projects, List<ArtifactData> artifacts,
                            List<ControlPlaneStore.ScanRecord> scans) {
         public Snapshot {

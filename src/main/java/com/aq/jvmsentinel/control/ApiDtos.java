@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.control;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -168,7 +169,19 @@ public final class ApiDtos {
                              String verificationStatus, String entrypointId, String entry,
                              String sinkId, String sink, String dependency, List<String> dependencyRefs,
                              List<String> evidenceRefs, int evidenceCount, double confidence,
-                             String dependencyMode) {
+                             String dependencyMode, Map<String, Object> rootCause) {
+        /** Compatibility constructor when MVP-5 rootCause is absent. */
+        public FindingDto(int schemaVersion, String projectId, String artifactDigest,
+                          String scanId, String findingId, String title, String severity,
+                          String verificationStatus, String entrypointId, String entry,
+                          String sinkId, String sink, String dependency, List<String> dependencyRefs,
+                          List<String> evidenceRefs, int evidenceCount, double confidence,
+                          String dependencyMode) {
+            this(schemaVersion, projectId, artifactDigest, scanId, findingId, title, severity,
+                    verificationStatus, entrypointId, entry, sinkId, sink, dependency, dependencyRefs,
+                    evidenceRefs, evidenceCount, confidence, dependencyMode, null);
+        }
+
         public FindingDto {
             requireSchema(schemaVersion);
             requireText(projectId, "projectId");
@@ -188,6 +201,13 @@ public final class ApiDtos {
             evidenceRefs = List.copyOf(evidenceRefs == null ? List.of() : evidenceRefs);
             if (evidenceCount < 0) throw new IllegalArgumentException("evidenceCount must not be negative");
             requireConfidence(confidence);
+            rootCause = copyRootCause(rootCause);
+        }
+
+        public FindingDto withRootCause(Map<String, Object> nextRootCause) {
+            return new FindingDto(schemaVersion, projectId, artifactDigest, scanId, findingId, title,
+                    severity, verificationStatus, entrypointId, entry, sinkId, sink, dependency,
+                    dependencyRefs, evidenceRefs, evidenceCount, confidence, dependencyMode, nextRootCause);
         }
     }
 
@@ -396,5 +416,52 @@ public final class ApiDtos {
         if (!Double.isFinite(value) || value < 0 || value > 1) {
             throw new IllegalArgumentException("confidence must be between 0 and 1");
         }
+    }
+
+    /** Wire-safe copy of RootCauseAnalysis-shaped maps for FindingDto / HTTP. */
+    private static Map<String, Object> copyRootCause(Map<String, Object> rootCause) {
+        if (rootCause == null || rootCause.isEmpty()) return null;
+        Map<String, Object> copy = new LinkedHashMap<>();
+        Object attackRaw = rootCause.get("attackPath");
+        if (attackRaw instanceof List<?> attackList) {
+            List<Object> steps = new ArrayList<>();
+            for (Object step : attackList) {
+                if (!(step instanceof Map<?, ?> stepMap)) continue;
+                Map<String, Object> stepCopy = new LinkedHashMap<>();
+                Object layer = stepMap.get("layer");
+                Object label = stepMap.get("label");
+                Object refs = stepMap.get("evidenceRefs");
+                stepCopy.put("layer", layer == null ? "unknown" : String.valueOf(layer));
+                stepCopy.put("label", label == null ? "" : String.valueOf(label));
+                if (refs instanceof List<?> refList) {
+                    List<String> evidenceRefs = new ArrayList<>();
+                    for (Object ref : refList) {
+                        if (ref != null && !String.valueOf(ref).isBlank()) {
+                            evidenceRefs.add(String.valueOf(ref));
+                        }
+                    }
+                    stepCopy.put("evidenceRefs", List.copyOf(evidenceRefs));
+                } else {
+                    stepCopy.put("evidenceRefs", List.of());
+                }
+                steps.add(Map.copyOf(stepCopy));
+            }
+            copy.put("attackPath", List.copyOf(steps));
+        } else {
+            copy.put("attackPath", List.of());
+        }
+        Object statement = rootCause.get("rootCauseStatement");
+        copy.put("rootCauseStatement", statement == null ? "" : String.valueOf(statement));
+        putOptionalText(copy, rootCause, "affectedComponent");
+        putOptionalText(copy, rootCause, "cweId");
+        putOptionalText(copy, rootCause, "fixSuggestion");
+        return Map.copyOf(copy);
+    }
+
+    private static void putOptionalText(Map<String, Object> target, Map<String, Object> source, String key) {
+        Object value = source.get(key);
+        if (value == null) return;
+        String text = String.valueOf(value);
+        if (!text.isBlank()) target.put(key, text);
     }
 }

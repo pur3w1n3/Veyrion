@@ -33,6 +33,7 @@ public final class ExperimentPlanPersistenceAcceptanceTest {
             String projectId;
             String scanId;
             String planId = "plan:persist-1";
+            String fuzzJson = "{\"sinkCategory\":\"SQL\",\"probeTemplates\":[\"union\"]}";
             try (ControlPlaneServer server = new ControlPlaneServer(root, 0, token, database).start()) {
                 URI base = server.baseUri();
                 projectId = text(request(client, URI.create(base + "/projects"), "POST",
@@ -52,7 +53,7 @@ public final class ExperimentPlanPersistenceAcceptanceTest {
                 server.acceptExperimentPlan(scanId, new ExperimentPlan(
                         planId, "entry:" + entryId, IdentityTrack.UNAUTH, "GET",
                         "application/json", List.of(), false, "2xx", "", 2,
-                        List.of("q=persisted"), "COMPLETED", ""));
+                        List.of("q=persisted"), "COMPLETED", "", fuzzJson));
                 Map<String, Object> dashboard = json(request(client,
                         URI.create(base + "/projects/" + projectId + "/dashboard?scanId=" + scanId),
                         "GET", null, token, null));
@@ -61,6 +62,11 @@ public final class ExperimentPlanPersistenceAcceptanceTest {
                         (List<Map<String, Object>>) dashboard.get("experimentPlans");
                 check(plans != null && plans.stream().anyMatch(row -> planId.equals(row.get("planId"))),
                         "plan visible before restart");
+                check(plans.stream().anyMatch(row -> planId.equals(row.get("planId"))
+                                && fuzzJson.equals(row.get("fuzzStrategyJson"))),
+                        "dashboard emits fuzzStrategyJson");
+                check(dashboard.get("verifiedFindings") instanceof List<?> verified && verified.isEmpty(),
+                        "verifiedFindings remains empty scaffolding");
             }
             try (ControlPlaneServer restarted = new ControlPlaneServer(root, 0, token, database).start()) {
                 Map<String, Object> dashboard = json(request(client,
@@ -72,6 +78,9 @@ public final class ExperimentPlanPersistenceAcceptanceTest {
                         (List<Map<String, Object>>) dashboard.get("experimentPlans");
                 check(plans != null && plans.stream().anyMatch(row -> planId.equals(row.get("planId"))),
                         "plan restored after restart");
+                check(plans.stream().anyMatch(row -> planId.equals(row.get("planId"))
+                                && fuzzJson.equals(row.get("fuzzStrategyJson"))),
+                        "fuzzStrategyJson restored after restart");
                 Map<String, Object> health = json(request(client,
                         URI.create(restarted.baseUri() + "/health"), "GET", null, token, null));
                 check(Boolean.FALSE.equals(health.get("verifiedAllowed")),
