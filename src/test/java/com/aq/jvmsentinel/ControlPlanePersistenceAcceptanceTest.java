@@ -251,7 +251,7 @@ public final class ControlPlanePersistenceAcceptanceTest {
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + upgradeDatabase);
              var statement = connection.createStatement();
              var rows = statement.executeQuery("SELECT count(*) FROM schema_migrations")) {
-            check(rows.next() && rows.getInt(1) == 14, "V001 database upgrades through ordered V014");
+            check(rows.next() && rows.getInt(1) == 15, "V001 database upgrades through ordered V015");
         }
         expect(IllegalArgumentException.class,
                 () -> ControlPlaneStore.sqlite(root.getParent().resolve("outside.db"), root),

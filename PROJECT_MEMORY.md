@@ -729,3 +729,11 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 
 - `StaticContrastProjectorAcceptanceTest` / `StaticDynamicContrasterAcceptanceTest` / `ContrastLedgerAcceptanceTest` / `NextExperimentStepsAcceptanceTest` 闸门回归。
 - **不得**标生产可用或 `VERIFIED`。后续可选：真正 sink→source 反向 BFS（仅当正向投影召回不足时）。
+
+## 68. 架构迁移 Step 1 + V015（2026-07-27）
+
+- 提取 `control/service/ProbePlanService`：探针计划构建、AI PoC 材料化、身份轨扩展；`ControlPlaneServer` 薄委托 + 测试门面。
+- `V015__add_schema_version.sql`：回填 `experiment_plans` / `path_runs` JSON `schemaVersion`，规范化 `worker_tasks.schema_version`。
+- `PayloadSchemaGuard`：读取端 `schemaVersion >= 1` 护栏；写入 experiment plan 时注入版本。
+- 验收：`ControlPlaneProbeExpansionAcceptanceTest` / `ExperimentPlanPersistenceAcceptanceTest` / `ControlPlanePersistenceAcceptanceTest`（迁移计数 15）。
+- **不得**标生产可用或 `VERIFIED`。

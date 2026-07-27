@@ -76,7 +76,8 @@ public final class SQLiteControlPlanePersistence {
             "db/migration/V011__persistent_idempotency_and_pipeline.sql",
             "db/migration/V012__auth_analysis_role.sql",
             "db/migration/V013__persistent_path_runs.sql",
-            "db/migration/V014__persistent_experiment_plans.sql");
+            "db/migration/V014__persistent_experiment_plans.sql",
+            "db/migration/V015__add_schema_version.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 
@@ -320,11 +321,21 @@ public final class SQLiteControlPlanePersistence {
 
     private ApiDtos.PathRunDto decodePathRun(String pathRunId, String payloadJson) {
         try {
+            PayloadSchemaGuard.requireJsonSchemaVersion(
+                    mapper, payloadJson, "path_run " + pathRunId);
             ApiDtos.PathRunDto run = mapper.readValue(payloadJson, ApiDtos.PathRunDto.class);
             if (!pathRunId.equals(run.pathRunId())) {
                 throw new PersistenceException("path run id mismatch for " + pathRunId);
             }
+            if (run.schemaVersion() < PayloadSchemaGuard.MIN_SCHEMA_VERSION) {
+                throw new PersistenceException(
+                        "path_run " + pathRunId + " lacks schemaVersion >= "
+                                + PayloadSchemaGuard.MIN_SCHEMA_VERSION
+                                + "; run V015 migration");
+            }
             return run;
+        } catch (PersistenceException failure) {
+            throw failure;
         } catch (JsonProcessingException | IllegalArgumentException failure) {
             throw new PersistenceException("persistent path run payload is invalid: " + pathRunId, failure);
         }
@@ -563,12 +574,15 @@ public final class SQLiteControlPlanePersistence {
 
     private TaskSnapshot readTask(ResultSet rows) throws SQLException {
         TaskScope scope = new TaskScope(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4));
+        int schemaVersion = rows.getInt(5);
+        PayloadSchemaGuard.requireColumnSchemaVersion(
+                schemaVersion, "worker_task " + scope.taskId());
         NetworkPolicy network = new NetworkPolicy(NetworkMode.valueOf(rows.getString(13)), rows.getString(14).isEmpty() ? List.of() : List.of(rows.getString(14).split("\\n", -1)));
-        WorkerTaskSpec spec = new WorkerTaskSpec(rows.getInt(5), scope.projectId(), scope.artifactDigest(), scope.scanId(), scope.taskId(), rows.getString(6), rows.getInt(7) != 0,
+        WorkerTaskSpec spec = new WorkerTaskSpec(schemaVersion, scope.projectId(), scope.artifactDigest(), scope.scanId(), scope.taskId(), rows.getString(6), rows.getInt(7) != 0,
                 new ResourceBudget(rows.getLong(8), rows.getLong(9), rows.getLong(10), rows.getLong(11), rows.getLong(12)), network, WorkerCapability.valueOf(rows.getString(15)));
-        WorkerLease lease = rows.getString(17) == null ? null : new WorkerLease(rows.getInt(5), scope, rows.getString(17), rows.getString(18), WorkerCapability.valueOf(rows.getString(19)), Instant.parse(rows.getString(20)), Instant.parse(rows.getString(21)), Instant.parse(rows.getString(22)));
-        TaskCheckpoint checkpoint = rows.getString(23) == null ? null : new TaskCheckpoint(rows.getInt(5), scope, rows.getString(23), rows.getLong(24), rows.getString(25), Instant.parse(rows.getString(26)));
-        return new TaskSnapshot(rows.getInt(5), spec, TaskLifecycle.valueOf(rows.getString(16)), lease, checkpoint,
+        WorkerLease lease = rows.getString(17) == null ? null : new WorkerLease(schemaVersion, scope, rows.getString(17), rows.getString(18), WorkerCapability.valueOf(rows.getString(19)), Instant.parse(rows.getString(20)), Instant.parse(rows.getString(21)), Instant.parse(rows.getString(22)));
+        TaskCheckpoint checkpoint = rows.getString(23) == null ? null : new TaskCheckpoint(schemaVersion, scope, rows.getString(23), rows.getLong(24), rows.getString(25), Instant.parse(rows.getString(26)));
+        return new TaskSnapshot(schemaVersion, spec, TaskLifecycle.valueOf(rows.getString(16)), lease, checkpoint,
                 rows.getString(27) == null ? null : StopReason.valueOf(rows.getString(27)), rows.getString(28), Instant.parse(rows.getString(29)));
     }
 
