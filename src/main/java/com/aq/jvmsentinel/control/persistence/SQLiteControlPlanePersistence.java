@@ -77,7 +77,8 @@ public final class SQLiteControlPlanePersistence {
             "db/migration/V012__auth_analysis_role.sql",
             "db/migration/V013__persistent_path_runs.sql",
             "db/migration/V014__persistent_experiment_plans.sql",
-            "db/migration/V015__add_schema_version.sql");
+            "db/migration/V015__add_schema_version.sql",
+            "db/migration/V016__branch_hit_map_and_contrast_ledger_snapshots.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 

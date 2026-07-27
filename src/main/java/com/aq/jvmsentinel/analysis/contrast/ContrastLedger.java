@@ -1,6 +1,7 @@
 package com.aq.jvmsentinel.analysis.contrast;
 
 import com.aq.jvmsentinel.control.ApiDtos;
+import com.aq.jvmsentinel.model.BytecodeFactIndex;
 import com.aq.jvmsentinel.model.ContrastStatus;
 import com.aq.jvmsentinel.model.StaticContrastRow;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -11,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Bounded CONTRAST_LEDGER for REPORT / PATH / TRIAGE prompts and server-side
@@ -30,10 +32,17 @@ public final class ContrastLedger {
     private ContrastLedger() { }
 
     public record Ledger(List<StaticContrastRow> rows, int staticOnlyCount, boolean truncated,
-                         String stopReason) {
+                         String stopReason, String snapshotId, int roundIndex) {
+        public Ledger(List<StaticContrastRow> rows, int staticOnlyCount, boolean truncated,
+                      String stopReason) {
+            this(rows, staticOnlyCount, truncated, stopReason, "", 0);
+        }
+
         public Ledger {
             rows = List.copyOf(rows == null ? List.of() : rows);
             stopReason = stopReason == null ? "" : stopReason;
+            snapshotId = snapshotId == null ? "" : snapshotId;
+            if (roundIndex < 0) throw new IllegalArgumentException("roundIndex must not be negative");
         }
 
         public List<StaticContrastRow> staticOnlyRows() {
@@ -50,16 +59,97 @@ public final class ContrastLedger {
             List<ApiDtos.SinkDto> sinks,
             Map<String, ApiDtos.EvidenceDto> evidence,
             List<ApiDtos.PathRunDto> pathRuns) {
+        List<BytecodeFactIndex.TaintPath> paths = taintPathsFromSinks(sinks);
+        int roundIndex = roundIndexFromPathRuns(pathRuns);
+        String snapshotId = "contrast-round-" + roundIndex + "-"
+                + Integer.toHexString(Objects.hash(
+                entries == null ? 0 : entries.size(),
+                sinks == null ? 0 : sinks.size(),
+                pathRuns == null ? 0 : pathRuns.size(),
+                roundIndex));
+        return build(entries, sinks, evidence, pathRuns, paths, snapshotId, roundIndex);
+    }
+
+    /** Stub paths from sink symbols so coverage join can mark DYNAMIC_REACHED. */
+    public static List<BytecodeFactIndex.TaintPath> taintPathsFromSinks(List<ApiDtos.SinkDto> sinks) {
+        if (sinks == null || sinks.isEmpty()) return List.of();
+        List<BytecodeFactIndex.TaintPath> paths = new ArrayList<>();
+        for (ApiDtos.SinkDto sink : sinks) {
+            ParsedSymbol parsed = parseSymbol(sink.symbol());
+            if (parsed == null) continue;
+            String pathId = extractTaintPathId(sink.source());
+            if (pathId.isBlank()) pathId = "tp-sink-" + sink.id();
+            paths.add(new BytecodeFactIndex.TaintPath(
+                    pathId, "_", "_", "()V", 0,
+                    parsed.owner, parsed.method, parsed.descriptor,
+                    sink.category() == null ? "UNKNOWN" : sink.category(),
+                    List.of(), "STATIC_INFERRED"));
+            if (paths.size() >= 256) break;
+        }
+        return List.copyOf(paths);
+    }
+
+    static int roundIndexFromPathRuns(List<ApiDtos.PathRunDto> pathRuns) {
+        if (pathRuns == null || pathRuns.isEmpty()) return 0;
+        int covered = 0;
+        for (ApiDtos.PathRunDto run : pathRuns) {
+            if (run != null && run.branchHitMap() != null && !run.branchHitMap().isEmpty()) {
+                covered++;
+            }
+        }
+        // First dynamic coverage observation opens round 1; more covered runs bump the round.
+        if (covered == 0) return 0;
+        return Math.min(covered, 32);
+    }
+
+    private static String extractTaintPathId(String source) {
+        if (source == null) return "";
+        int at = source.indexOf("taint-path=");
+        if (at < 0) return "";
+        String id = source.substring(at + "taint-path=".length()).split("[,\\s]", 2)[0].trim();
+        return id;
+    }
+
+    private static ParsedSymbol parseSymbol(String symbol) {
+        if (symbol == null || symbol.isBlank()) return null;
+        int hash = symbol.indexOf('#');
+        if (hash <= 0 || hash >= symbol.length() - 1) return null;
+        String owner = symbol.substring(0, hash).replace('/', '.');
+        String rest = symbol.substring(hash + 1);
+        int paren = rest.indexOf('(');
+        String method = paren < 0 ? rest : rest.substring(0, paren);
+        String descriptor = paren < 0 ? "()V" : rest.substring(paren);
+        if (owner.isBlank() || method.isBlank()) return null;
+        return new ParsedSymbol(owner, method, descriptor);
+    }
+
+    private record ParsedSymbol(String owner, String method, String descriptor) {
+    }
+
+    public static Ledger build(
+            List<ApiDtos.EntryDto> entries,
+            List<ApiDtos.SinkDto> sinks,
+            Map<String, ApiDtos.EvidenceDto> evidence,
+            List<ApiDtos.PathRunDto> pathRuns,
+            List<BytecodeFactIndex.TaintPath> taintPaths,
+            String snapshotId,
+            int roundIndex) {
+        if (snapshotId == null || snapshotId.isBlank()) {
+            throw new IllegalArgumentException("snapshotId cannot be blank");
+        }
+        if (roundIndex < 0) throw new IllegalArgumentException("roundIndex must not be negative");
         StaticContrastProjector.Projection projection = new StaticContrastProjector()
                 .projectFromScan(entries, sinks, evidence);
+        List<TaintPathCoverageJoiner.StatusUpgrade> upgrades =
+                new TaintPathCoverageJoiner().join(taintPaths, pathRuns);
         StaticDynamicContraster.Result joined = new StaticDynamicContraster()
-                .join(projection.rows(), pathRuns);
+                .join(projection.rows(), pathRuns, upgrades, snapshotId, roundIndex);
         String stop = projection.stopReason();
         if (joined.truncated() && (stop == null || stop.isBlank())) {
             stop = StaticContrastProjector.STOP_BUDGET;
         }
         return new Ledger(joined.rows(), joined.staticOnlyCount(),
-                projection.truncated() || joined.truncated(), stop);
+                projection.truncated() || joined.truncated(), stop, snapshotId, roundIndex);
     }
 
     public static String formatForPrompt(Ledger ledger, boolean english) {
@@ -78,6 +168,8 @@ public final class ContrastLedger {
             block.append(english ? "- (empty)\n" : "- （空）\n");
             return block.toString();
         }
+        block.append("- snapshotId=").append(ledger.snapshotId())
+                .append(" roundIndex=").append(ledger.roundIndex()).append('\n');
         int emitted = 0;
         for (StaticContrastRow row : ledger.rows()) {
             if (emitted >= MAX_PROMPT_ROWS) break;
@@ -173,6 +265,8 @@ public final class ContrastLedger {
         node.put("contrastStatus", row.contrastStatus().name());
         node.put("stopReason", row.stopReason());
         node.put("truncated", row.truncated());
+        node.put("snapshotId", row.snapshotId());
+        node.put("roundIndex", row.roundIndex());
         node.put("verificationStatus", "STATIC_INFERRED");
         node.put("classification", "INFERENCE");
         ArrayNode entries = node.putArray("entryRefs");

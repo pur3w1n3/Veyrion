@@ -18,8 +18,19 @@ public record StaticContrastRow(
         ContrastStatus contrastStatus,
         List<String> pathRunRefs,
         String stopReason,
-        boolean truncated
+        boolean truncated,
+        String snapshotId,
+        int roundIndex
 ) {
+    public StaticContrastRow(
+            String rowId, String sinkId, String category, String sinkSymbol,
+            List<String> entryRefs, String taintPathId, String track,
+            ContrastStatus contrastStatus, List<String> pathRunRefs,
+            String stopReason, boolean truncated) {
+        this(rowId, sinkId, category, sinkSymbol, entryRefs, taintPathId, track,
+                contrastStatus, pathRunRefs, stopReason, truncated, "", 0);
+    }
+
     public StaticContrastRow {
         Objects.requireNonNull(rowId, "rowId");
         Objects.requireNonNull(sinkId, "sinkId");
@@ -31,6 +42,8 @@ public record StaticContrastRow(
         track = track == null ? "" : track;
         pathRunRefs = List.copyOf(pathRunRefs == null ? List.of() : pathRunRefs);
         stopReason = stopReason == null ? "" : stopReason;
+        snapshotId = snapshotId == null ? "" : snapshotId;
+        if (roundIndex < 0) throw new IllegalArgumentException("roundIndex must not be negative");
     }
 
     public boolean hasTaintPath() {

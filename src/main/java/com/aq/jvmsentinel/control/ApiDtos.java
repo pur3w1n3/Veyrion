@@ -1,6 +1,8 @@
 package com.aq.jvmsentinel.control;
 
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 
 /** Versioned wire DTOs exposed by {@link ControlPlaneServer}. */
@@ -229,7 +231,22 @@ public final class ApiDtos {
                              Boolean entryHit, Boolean parameterBound,
                              List<SqlEventDto> sqlEvents, String stopReason,
                              String verificationStatus, List<String> evidenceRefs,
-                             String identityProvenance, String identityPrecondition) {
+                             String identityProvenance, String identityPrecondition,
+                             Map<String, List<Integer>> branchHitMap) {
+        public PathRunDto(
+                int schemaVersion, String pathRunId, String scanId, String entrypointRef,
+                String track, String attemptId, String experimentPlanId, String method,
+                String contentType, String requestSummary, String outcomeClass, int httpStatus,
+                Boolean entryHit, Boolean parameterBound, List<SqlEventDto> sqlEvents,
+                String stopReason, String verificationStatus, List<String> evidenceRefs,
+                String identityProvenance, String identityPrecondition) {
+            this(schemaVersion, pathRunId, scanId, entrypointRef, track, attemptId,
+                    experimentPlanId, method, contentType, requestSummary, outcomeClass,
+                    httpStatus, entryHit, parameterBound, sqlEvents, stopReason,
+                    verificationStatus, evidenceRefs, identityProvenance, identityPrecondition,
+                    Map.of());
+        }
+
         public PathRunDto {
             requireSchema(schemaVersion);
             requireText(pathRunId, "pathRunId");
@@ -248,6 +265,15 @@ public final class ApiDtos {
             identityProvenance = identityProvenance == null || identityProvenance.isBlank()
                     ? MOCK : identityProvenance;
             identityPrecondition = identityPrecondition == null ? "" : identityPrecondition;
+            Map<String, List<Integer>> safeBranches = new LinkedHashMap<>();
+            if (branchHitMap != null) {
+                branchHitMap.forEach((key, hits) -> {
+                    if (key != null && !key.isBlank()) {
+                        safeBranches.put(key, List.copyOf(hits == null ? List.of() : hits));
+                    }
+                });
+            }
+            branchHitMap = Map.copyOf(safeBranches);
         }
     }
 

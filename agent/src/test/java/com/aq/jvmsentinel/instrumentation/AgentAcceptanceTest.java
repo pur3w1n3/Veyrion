@@ -37,6 +37,7 @@ public final class AgentAcceptanceTest {
         check(Files.isRegularFile(agentJar), "agent jar does not exist: " + agentJar);
 
         verifyAutomaticObservation(agentJar, work.resolve("automatic"));
+        verifyBranchCoverage(agentJar, work.resolve("coverage"));
         verifyExplicitProbeProvenance(agentJar, work.resolve("explicit"));
         verifyBudgetStop(agentJar, work.resolve("budget"));
         verifyMalformedArgumentsFailClosed(agentJar, work.resolve("malformed"));
@@ -84,6 +85,30 @@ public final class AgentAcceptanceTest {
                 "automatic fixture must not rely on explicit probes");
         check(any(lines, "\"bootstrapClasses\":\"UNSUPPORTED_FAIL_EXPLICIT\""),
                 "bootstrap limitation must be explicit");
+        check(!any(lines, "\"eventType\":\"BRANCH_COVERAGE\""),
+                "branch coverage must be disabled by default");
+    }
+
+    private static void verifyBranchCoverage(Path agentJar, Path traceDirectory) throws Exception {
+        Files.createDirectory(traceDirectory);
+        ProcessResult result = runFixture(agentJar, traceDirectory, AutomaticFixture.class,
+                "maxEvents=200,maxBytes=131072,classPrefix=com.aq.fixture,"
+                        + AgentConfig.COVERAGE_ENABLED_PROPERTY + "=true", true);
+        check(result.exitCode == 0, "coverage fixture failed: " + result.output);
+        List<String> lines = Files.readAllLines(
+                traceDirectory.resolve(AgentConfig.TRACE_FILE_NAME), StandardCharsets.UTF_8);
+        List<String> coverage = lines.stream()
+                .filter(line -> line.contains("\"eventType\":\"BRANCH_COVERAGE\""))
+                .toList();
+        check(!coverage.isEmpty(), "branch coverage event is missing");
+        check(coverage.stream().allMatch(line ->
+                        line.contains("\"provenanceKind\":\"AGENT_INSTRUMENTED\"")),
+                "branch coverage provenance must be agent-instrumented");
+        check(coverage.stream().anyMatch(line ->
+                        line.contains("\"classname\":\"com.aq.fixture.AutomaticFixture\"")
+                                && line.contains("\"methodDesc\":\"branchWork(I)I\"")
+                                && line.contains("\"hits\":\"")),
+                "branch coverage detail shape is missing");
     }
 
     private static void verifyExplicitProbeProvenance(Path agentJar, Path traceDirectory) throws Exception {

@@ -13,6 +13,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -95,7 +96,8 @@ public final class TraceProjectionService {
             String evidenceId = "evidence-dynamic-" + scopeDigest + "-" + event.sequence();
             String kind = switch (event.eventType()) {
                 case "AGENT_STARTED", "HTTP" -> "entry";
-                case "CLASS_LOAD", "INSTRUMENTATION_CAPABILITY", "INSTRUMENTATION_ERROR" -> "transform";
+                case "CLASS_LOAD", "INSTRUMENTATION_CAPABILITY", "INSTRUMENTATION_ERROR",
+                        "BRANCH_COVERAGE" -> "transform";
                 case "HTTP_CLIENT", "FILE", "JDBC" -> "dependency";
                 case "PROCESS" -> "sink";
                 default -> throw new IllegalArgumentException("unsupported Agent event type");
@@ -155,6 +157,10 @@ public final class TraceProjectionService {
                 routeRefs.computeIfAbsent(routeKey, ignored -> new ArrayList<>()).add(evidenceId);
                 pathRuns.add(pathRunFromHttp(
                         snapshot, event, evidenceId, httpAttempt++, jdbcSql, springBoundRouteKeys));
+            }
+            if ("BRANCH_COVERAGE".equals(event.eventType()) && !pathRuns.isEmpty()) {
+                ApiDtos.PathRunDto last = pathRuns.remove(pathRuns.size() - 1);
+                pathRuns.add(mergeBranchCoverage(last, event));
             }
         }
         ApiDtos.PathDto path = new ApiDtos.PathDto(
@@ -364,7 +370,7 @@ public final class TraceProjectionService {
                 run.experimentPlanId(), run.method(), run.contentType(), summary,
                 run.outcomeClass(), run.httpStatus(), run.entryHit(), run.parameterBound(),
                 run.sqlEvents(), run.stopReason(), status, run.evidenceRefs(),
-                run.identityProvenance(), run.identityPrecondition());
+                run.identityProvenance(), run.identityPrecondition(), run.branchHitMap());
     }
 
     private static ApiDtos.PathRunDto toPathRunDto(PathRun gated) {
@@ -379,7 +385,51 @@ public final class TraceProjectionService {
                 gated.method(), gated.contentType(), gated.requestSummary(),
                 gated.outcomeClass().name(), gated.httpStatus(), gated.entryHit(),
                 gated.parameterBound(), sqlDtos, gated.stopReason(), gated.verificationStatus(),
-                gated.evidenceRefs(), gated.identityProvenance(), gated.identityPrecondition());
+                gated.evidenceRefs(), gated.identityProvenance(), gated.identityPrecondition(),
+                gated.branchHitMap());
+    }
+
+    /**
+     * BRANCH_COVERAGE events flush after their HTTP observation; attach hits to the latest PathRun.
+     * Encoding: COMMA_SEPARATED_HIT_INDICES in detail.hits (chunked by EventWriter limits).
+     */
+    public static ApiDtos.PathRunDto mergeBranchCoverage(
+            ApiDtos.PathRunDto run, AgentJsonlTraceConverter.AgentEvent event) {
+        if (run == null || event == null) return run;
+        Map<String, String> detail = event.detail();
+        String classname = detail.getOrDefault("classname",
+                event.className() == null ? "" : event.className());
+        String methodDesc = detail.getOrDefault("methodDesc",
+                event.method() == null ? "" : event.method());
+        if (classname.isBlank() || methodDesc.isBlank()) return run;
+        String key = classname.replace('/', '.') + "#" + methodDesc;
+        List<Integer> hits = decodeHitIndices(detail.getOrDefault("hits", ""));
+        if (hits.isEmpty()) return run;
+        Map<String, List<Integer>> merged = new LinkedHashMap<>(run.branchHitMap());
+        LinkedHashSet<Integer> combined = new LinkedHashSet<>(merged.getOrDefault(key, List.of()));
+        combined.addAll(hits);
+        List<Integer> ordered = new ArrayList<>(combined);
+        ordered.sort(Integer::compareTo);
+        merged.put(key, List.copyOf(ordered));
+        return new ApiDtos.PathRunDto(
+                run.schemaVersion(), run.pathRunId(), run.scanId(), run.entrypointRef(),
+                run.track(), run.attemptId(), run.experimentPlanId(), run.method(),
+                run.contentType(), run.requestSummary(), run.outcomeClass(), run.httpStatus(),
+                run.entryHit(), run.parameterBound(), run.sqlEvents(), run.stopReason(),
+                run.verificationStatus(), run.evidenceRefs(), run.identityProvenance(),
+                run.identityPrecondition(), Map.copyOf(merged));
+    }
+
+    static List<Integer> decodeHitIndices(String encoded) {
+        if (encoded == null || encoded.isBlank()) return List.of();
+        List<Integer> hits = new ArrayList<>();
+        for (String part : encoded.split(",")) {
+            String token = part.trim();
+            if (token.isEmpty() || !token.matches("[0-9]{1,9}")) continue;
+            hits.add(Integer.parseInt(token));
+            if (hits.size() >= 4_096) break;
+        }
+        return List.copyOf(hits);
     }
 
     /**

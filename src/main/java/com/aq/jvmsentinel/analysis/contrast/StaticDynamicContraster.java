@@ -26,15 +26,31 @@ public final class StaticDynamicContraster {
     public static final String STOP_DYNAMIC_ONLY = "DYNAMIC_ONLY_NO_STATIC_SINK";
 
     public record Result(List<StaticContrastRow> rows, int staticOnlyCount, int matchedCount,
-                         int partialCount, int dynamicOnlyCount, boolean truncated) {
+                         int partialCount, int dynamicReachedCount,
+                         int dynamicOnlyCount, boolean truncated) {
         public Result {
             rows = List.copyOf(rows == null ? List.of() : rows);
         }
     }
 
     public Result join(List<StaticContrastRow> staticRows, List<ApiDtos.PathRunDto> pathRuns) {
+        return join(staticRows, pathRuns, List.of(), "", 0);
+    }
+
+    public Result join(
+            List<StaticContrastRow> staticRows,
+            List<ApiDtos.PathRunDto> pathRuns,
+            List<TaintPathCoverageJoiner.StatusUpgrade> coverageUpgrades,
+            String snapshotId,
+            int roundIndex) {
         List<StaticContrastRow> projected = staticRows == null ? List.of() : staticRows;
         List<ApiDtos.PathRunDto> runs = pathRuns == null ? List.of() : pathRuns;
+        Map<String, TaintPathCoverageJoiner.StatusUpgrade> upgrades = new LinkedHashMap<>();
+        if (coverageUpgrades != null) {
+            for (TaintPathCoverageJoiner.StatusUpgrade upgrade : coverageUpgrades) {
+                upgrades.putIfAbsent(upgrade.taintPathId(), upgrade);
+            }
+        }
 
         Map<String, List<ApiDtos.PathRunDto>> byEntry = new LinkedHashMap<>();
         for (ApiDtos.PathRunDto run : runs) {
@@ -47,6 +63,7 @@ public final class StaticDynamicContraster {
         int staticOnly = 0;
         int matched = 0;
         int partial = 0;
+        int dynamicReached = 0;
         boolean truncated = false;
 
         for (StaticContrastRow row : projected) {
@@ -60,6 +77,13 @@ public final class StaticDynamicContraster {
             for (ApiDtos.PathRunDto run : related) {
                 consumedPathRuns.add(run.pathRunId());
             }
+            TaintPathCoverageJoiner.StatusUpgrade upgrade = upgrades.get(row.taintPathId());
+            ContrastStatus status = upgrade == null ? decision.status() : upgrade.status();
+            List<String> pathRunRefs = upgrade == null
+                    ? decision.pathRunRefs()
+                    : mergeRefs(decision.pathRunRefs(), upgrade.pathRunRefs());
+            String stopReason = upgrade == null ? decision.stopReason() : upgrade.stopReason();
+            for (String ref : pathRunRefs) consumedPathRuns.add(ref);
             String track = decision.preferredTrack();
             StaticContrastRow joined = new StaticContrastRow(
                     row.rowId(),
@@ -69,15 +93,18 @@ public final class StaticDynamicContraster {
                     row.entryRefs(),
                     row.taintPathId(),
                     track,
-                    decision.status(),
-                    decision.pathRunRefs(),
-                    decision.stopReason(),
-                    row.truncated());
+                    status,
+                    pathRunRefs,
+                    stopReason,
+                    row.truncated(),
+                    snapshotId,
+                    roundIndex);
             out.add(joined);
-            switch (decision.status()) {
+            switch (status) {
                 case STATIC_ONLY -> staticOnly++;
                 case MATCHED -> matched++;
                 case PARTIAL -> partial++;
+                case DYNAMIC_REACHED -> dynamicReached++;
                 default -> { }
             }
         }
@@ -101,10 +128,19 @@ public final class StaticDynamicContraster {
                     ContrastStatus.DYNAMIC_ONLY,
                     List.of(run.pathRunId()),
                     STOP_DYNAMIC_ONLY,
-                    truncated));
+                    truncated,
+                    snapshotId,
+                    roundIndex));
         }
 
-        return new Result(out, staticOnly, matched, partial, dynamicOnly, truncated);
+        return new Result(out, staticOnly, matched, partial, dynamicReached, dynamicOnly, truncated);
+    }
+
+    private static List<String> mergeRefs(List<String> first, List<String> second) {
+        LinkedHashSet<String> merged = new LinkedHashSet<>();
+        if (first != null) merged.addAll(first);
+        if (second != null) merged.addAll(second);
+        return List.copyOf(merged);
     }
 
     /**

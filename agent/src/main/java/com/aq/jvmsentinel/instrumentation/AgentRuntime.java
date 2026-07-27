@@ -1,5 +1,7 @@
 package com.aq.jvmsentinel.instrumentation;
 
+import java.util.BitSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -11,8 +13,11 @@ import java.util.Map;
  */
 public final class AgentRuntime {
     private static volatile EventWriter writer;
+    private static volatile boolean coverageEnabled;
     private static final ThreadLocal<Boolean> IN_AUTOMATIC_OBSERVATION =
             ThreadLocal.withInitial(() -> false);
+    private static final ThreadLocal<CoverageState> COVERAGE_STATE =
+            ThreadLocal.withInitial(CoverageState::new);
 
     private AgentRuntime() {
     }
@@ -62,6 +67,52 @@ public final class AgentRuntime {
         recordInstrumented(eventType, className, methodName, detail);
     }
 
+    /**
+     * Starts (or nests inside) an HTTP request coverage scope. Public because Byte Buddy advice is
+     * inlined into application and framework classes.
+     */
+    public static boolean beginCoverageRequest() {
+        if (!coverageEnabled) return false;
+        CoverageState state = COVERAGE_STATE.get();
+        if (state.depth == 0) state.hits.clear();
+        state.depth++;
+        return true;
+    }
+
+    /** Ends an HTTP scope and emits compact coverage events when the outermost boundary returns. */
+    public static void endCoverageRequest(boolean entered) {
+        if (!entered || !coverageEnabled) return;
+        CoverageState state = COVERAGE_STATE.get();
+        if (state.depth <= 0) {
+            COVERAGE_STATE.remove();
+            return;
+        }
+        state.depth--;
+        if (state.depth != 0) return;
+        try {
+            for (Map.Entry<MethodKey, BitSet> entry : state.hits.entrySet()) {
+                MethodKey method = entry.getKey();
+                for (Map<String, String> detail : CoverageEventSerializer.serialize(
+                        method.className, method.methodDescriptor, entry.getValue())) {
+                    recordInstrumented("BRANCH_COVERAGE", method.className,
+                            method.methodDescriptor, detail);
+                }
+            }
+        } finally {
+            COVERAGE_STATE.remove();
+        }
+    }
+
+    /** Records one reached conditional-branch or switch site in the active request scope. */
+    public static void recordBranchHit(String className, String methodDescriptor, int branchIndex) {
+        if (!coverageEnabled || branchIndex < 0) return;
+        CoverageState state = COVERAGE_STATE.get();
+        if (state.depth <= 0) return;
+        MethodKey key = new MethodKey(className == null ? "" : className,
+                methodDescriptor == null ? "" : methodDescriptor);
+        state.hits.computeIfAbsent(key, ignored -> new BitSet()).set(branchIndex);
+    }
+
     private static void recordInstrumented(String eventType, String className, String methodName,
                                            Map<String, String> detail) {
         EventWriter current = writer;
@@ -74,18 +125,31 @@ public final class AgentRuntime {
         }
     }
 
-    static void install(EventWriter eventWriter) {
+    static void install(EventWriter eventWriter, boolean enableCoverage) {
         if (writer != null) throw new IllegalStateException("agent runtime is already installed");
         writer = eventWriter;
+        coverageEnabled = enableCoverage;
     }
 
     static void uninstall(EventWriter eventWriter) {
-        if (writer == eventWriter) writer = null;
+        if (writer == eventWriter) {
+            coverageEnabled = false;
+            writer = null;
+            COVERAGE_STATE.remove();
+        }
     }
 
     static boolean record(String eventType, String className, String methodName, Map<String, String> detail) {
         EventWriter current = writer;
         return current != null && !current.isStopped()
                 && current.writeApplication(eventType, className, methodName, detail);
+    }
+
+    private record MethodKey(String className, String methodDescriptor) {
+    }
+
+    private static final class CoverageState {
+        private int depth;
+        private final Map<MethodKey, BitSet> hits = new LinkedHashMap<>();
     }
 }

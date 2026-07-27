@@ -6,6 +6,7 @@ import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolStatus;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource.DynamicProbeExecutor;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource.PathRunSource;
+import com.aq.jvmsentinel.analysis.CandidateRanker;
 import com.aq.jvmsentinel.analysis.contrast.ContrastLedger;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.ai.tool.ToolExecutionContext;
@@ -891,6 +892,7 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     .append(" entries=").append(dto.entries().size())
                     .append(" evidenceRefs=").append(dto.evidenceRefs().size()).append('\n');
         }
+        block.append(rankedSinkCatalogBlock(scan, language));
         block.append(language == AiOutputLanguage.ZH_CN
                 ? "这些是服务端已持久化事实的有界摘要，只用于导航；不得据此提升验证状态。"
                 + " 使用 entry ids、route、controller/class、HTTP method 与英文枚举关键词查询 facts_search，"
@@ -928,6 +930,45 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     + " more entries omitted; fetch with facts_search kind=ENTRY by entry id, route, or class.\n");
         }
         return block.toString();
+    }
+
+    private String rankedSinkCatalogBlock(
+            ControlPlaneStore.ScanRecord scan, AiOutputLanguage language) {
+        List<ApiDtos.PathRunDto> pathRuns = loadPathRunsForScanSafe(scan);
+        ContrastLedger.Ledger ledger = ContrastLedger.build(
+                scan.dto().entries(), scan.dto().sinks(), scan.evidence(), pathRuns);
+        List<CandidateRanker.RankedSinkView> ranked = CandidateRanker.rank(
+                scan.dto().sinks(), ContrastLedger.taintPathsFromSinks(scan.dto().sinks()),
+                scan.dto().entries(), ledger.rows());
+        StringBuilder block = new StringBuilder();
+        block.append(language == AiOutputLanguage.ZH_CN
+                ? "RANKED_SINK_CATALOG（服务端确定性排序，最多 20 条；非 VERIFIED）：\n"
+                : "RANKED_SINK_CATALOG (deterministic server ranking, top 20; not VERIFIED):\n");
+        if (ranked.isEmpty()) {
+            block.append(language == AiOutputLanguage.ZH_CN ? "- （空）\n" : "- (empty)\n");
+            return block.toString();
+        }
+        int emitted = 0;
+        for (CandidateRanker.RankedSinkView view : ranked) {
+            if (emitted >= 20) break;
+            block.append("- rank=").append(view.rank())
+                    .append(" sinkId=").append(view.sinkId())
+                    .append(" category=").append(view.category())
+                    .append(" score=").append(String.format(java.util.Locale.ROOT, "%.2f", view.score()))
+                    .append(" reasons=").append(view.rankReasons())
+                    .append('\n');
+            emitted++;
+        }
+        return block.toString();
+    }
+
+    private List<ApiDtos.PathRunDto> loadPathRunsForScanSafe(ControlPlaneStore.ScanRecord scan) {
+        try {
+            return List.copyOf(pathRunSource.pathRunsForScan(
+                    scan.dto().projectId(), scan.dto().artifactDigest(), scan.dto().scanId()));
+        } catch (RuntimeException ignored) {
+            return List.of();
+        }
     }
 
     private static Map<String, Object> scanPromptSummary(ApiDtos.ScanDto value) {

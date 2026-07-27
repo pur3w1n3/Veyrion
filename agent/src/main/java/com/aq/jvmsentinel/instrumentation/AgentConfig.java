@@ -11,6 +11,7 @@ import java.util.regex.Pattern;
 final class AgentConfig {
     static final String TRACE_DIR_PROPERTY = "veyrion.sandbox.traceDir";
     static final String TRACE_DIR_AUTHORIZED_PROPERTY = "veyrion.sandbox.traceDir.authorized";
+    static final String COVERAGE_ENABLED_PROPERTY = "veyrion.coverage.enabled";
     static final String TRACE_FILE_NAME = "agent-events.jsonl";
 
     private static final Pattern CLASS_PREFIX = Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(?:[./][A-Za-z_$][A-Za-z0-9_$]*)*[./]?");
@@ -29,15 +30,17 @@ final class AgentConfig {
     final String classPrefix;
     final List<String> excludedPrefixes;
     final boolean dependencyMock;
+    final boolean coverageEnabled;
 
     private AgentConfig(Path traceFile, long maxBytes, int maxEvents, String classPrefix,
-                        List<String> excludedPrefixes, boolean dependencyMock) {
+                        List<String> excludedPrefixes, boolean dependencyMock, boolean coverageEnabled) {
         this.traceFile = traceFile;
         this.maxBytes = maxBytes;
         this.maxEvents = maxEvents;
         this.classPrefix = classPrefix;
         this.excludedPrefixes = excludedPrefixes;
         this.dependencyMock = dependencyMock;
+        this.coverageEnabled = coverageEnabled;
     }
 
     static AgentConfig parse(String arguments) {
@@ -88,8 +91,11 @@ final class AgentConfig {
         }
         boolean dependencyMock = "true".equalsIgnoreCase(values.getOrDefault("dependencyMock", "false"))
                 || "true".equalsIgnoreCase(System.getProperty("veyrion.sandbox.dependencyMock", "false"));
+        boolean coverageEnabled = parseBoolean(values.get(COVERAGE_ENABLED_PROPERTY),
+                COVERAGE_ENABLED_PROPERTY)
+                || parseBoolean(System.getProperty(COVERAGE_ENABLED_PROPERTY), COVERAGE_ENABLED_PROPERTY);
         return new AgentConfig(traceFile, maxBytes, maxEvents, classPrefix, List.copyOf(excludedPrefixes),
-                dependencyMock);
+                dependencyMock, coverageEnabled);
     }
 
     boolean includes(String binaryName) {
@@ -113,7 +119,8 @@ final class AgentConfig {
             String key = entry.substring(0, separator);
             String value = entry.substring(separator + 1);
             if (!key.equals("maxBytes") && !key.equals("maxEvents") && !key.equals("classPrefix")
-                    && !key.equals("excludePrefixes") && !key.equals("dependencyMock")) {
+                    && !key.equals("excludePrefixes") && !key.equals("dependencyMock")
+                    && !key.equals(COVERAGE_ENABLED_PROPERTY)) {
                 throw new IllegalArgumentException("unsupported agent argument: " + key);
             }
             if (values.putIfAbsent(key, value) != null) {
@@ -121,6 +128,13 @@ final class AgentConfig {
             }
         }
         return values;
+    }
+
+    private static boolean parseBoolean(String value, String name) {
+        if (value == null) return false;
+        if ("true".equalsIgnoreCase(value)) return true;
+        if ("false".equalsIgnoreCase(value)) return false;
+        throw new IllegalArgumentException(name + " must be true or false");
     }
 
     private static long parseLong(String value, long defaultValue, long minimum, long maximum, String name) {

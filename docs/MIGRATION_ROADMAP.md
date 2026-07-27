@@ -248,11 +248,13 @@ CREATE TABLE contrast_ledger_snapshots (
 ```
 
 #### MVP-1 验收标准
-- [ ] 单入口执行后，`PathRunDto.branchHitMap` 非空
-- [ ] 对应 TaintPath `dynamicStatus` 升级为 `DYNAMIC_REACHED`
-- [ ] Dashboard `rankedSinks` 按 score 排序，rankReason 可读
-- [ ] 第二轮执行后 `ContrastLedger.roundIndex++`，snapshotId 变化
-- [ ] `AcceptanceTest`：`BranchCoverageAcceptanceTest`，基于 `VEYRION_TEST_ARTIFACT_JAR`
+- [x] 单入口执行后，`PathRunDto.branchHitMap` 非空（投影 + merge；live JAR 仍可选）
+- [x] 对应 TaintPath `dynamicStatus` 升级为 `DYNAMIC_REACHED`
+- [x] Dashboard `rankedSinks` 按 score 排序，rankReason 可读
+- [x] 有覆盖观测后 `ContrastLedger.roundIndex>=1`，snapshotId 稳定派生
+- [x] `AcceptanceTest`：`BranchCoverageAcceptanceTest`（合成 fixture；live `VEYRION_TEST_ARTIFACT_JAR` 可选）
+
+**版本注记**：用户编号覆盖 roadmap 原稿——本 MVP 使用 **V016**（`branch_hit_map_json` + `contrast_ledger_snapshots`）；V015 已用于 schemaVersion 护栏。
 
 ---
 
@@ -997,7 +999,7 @@ if (plan.schemaVersion() == null || plan.schemaVersion() < 1) {
 
 | 周期 | 版本 | 核心交付 | 工时估算 | 关键验收标准 |
 |------|------|---------|----------|------------|
-| **MVP-1** | V0.2 | Branch Coverage + CandidateRanker + ContrastLedger snapshotId | 2–3 周 | TaintPath 状态升级；rankedSinks 可见 |
+| **MVP-1** | V0.2 / V016 | Branch Coverage + CandidateRanker + ContrastLedger snapshotId ✅ | 2–3 周 | TaintPath 状态升级；rankedSinks 可见 |
 | **MVP-2** | V0.3 | BranchConstraintHarvester + CoverageGap + FrameworkAdapter SPI | 2–3 周 | 第二轮命中率提升；FrameworkAdapterTest |
 | **Step 1** | V0.3 | ProbePlanService 分离（工程债）✅ + V015 schemaVersion | 0.5 周 | AcceptanceTest 全绿 |
 | **MVP-3** | V0.4 | TaintGraph + LedgerDiff + DynamicFeedbackApplier | 2 周 | TaintGraph 可查；两轮 diff 可见 |

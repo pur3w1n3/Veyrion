@@ -737,3 +737,13 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 - `PayloadSchemaGuard`：读取端 `schemaVersion >= 1` 护栏；写入 experiment plan 时注入版本。
 - 验收：`ControlPlaneProbeExpansionAcceptanceTest` / `ExperimentPlanPersistenceAcceptanceTest` / `ControlPlanePersistenceAcceptanceTest`（迁移计数 15）。
 - **不得**标生产可用或 `VERIFIED`。
+
+## 69. 架构迁移 MVP-1 Branch Coverage + Ranking（2026-07-27）
+
+- Agent：`BranchCoverageInstrumentation` + `CoverageEventSerializer`；executor 启用 `-Dveyrion.coverage.enabled=true`。
+- `AgentJsonlTraceConverter` 允许 `BRANCH_COVERAGE`；`TraceProjectionService` 将 hits 合并进 `PathRunDto.branchHitMap`。
+- `TaintPathCoverageJoiner` → `DYNAMIC_REACHED`；`ContrastLedger` 按覆盖观测派生 round/snapshot。
+- `CandidateRanker` + dashboard `rankedSinks` + PRE_ANALYSIS `RANKED_SINK_CATALOG`（最多 20）。
+- `V016__branch_hit_map_and_contrast_ledger_snapshots.sql`。
+- 验收：`BranchCoverageAcceptanceTest` PASS（合成）；live JAR 覆盖仍可选。
+- **不得**标生产可用或 `VERIFIED`。

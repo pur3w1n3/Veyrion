@@ -423,10 +423,11 @@ public final class ExternalArtifactTaskExecutor {
                 + " -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
                 + " -Dveyrion.sandbox.traceDir.authorized=true"
                 + " -Dveyrion.sandbox.dependencyMock=true"
+                + " -Dveyrion.coverage.enabled=true"
                 // Keep app temps off the tiny trace tmpfs so probe-events.jsonl can still be written.
                 + " -Djava.io.tmpdir=/tmp"
                 + " -javaagent:" + AGENT_PATH + "=maxBytes=" + maxBytes + ",maxEvents=" + maxEvents
-                + ",dependencyMock=true"
+                + ",dependencyMock=true,veyrion.coverage.enabled=true"
                 + (registration.classPrefix().isEmpty()
                 ? "" : ",classPrefix=" + registration.classPrefix())
                 + " -jar " + ARTIFACT_PATH

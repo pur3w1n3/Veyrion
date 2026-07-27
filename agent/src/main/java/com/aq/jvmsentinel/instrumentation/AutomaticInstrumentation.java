@@ -62,16 +62,27 @@ final class AutomaticInstrumentation {
             }
         };
 
-        AgentBuilder builder = new AgentBuilder.Default()
-                .with(listener)
-                .disableClassFormatChanges()
+        AgentBuilder builder = new AgentBuilder.Default().with(listener);
+        // BranchCoverageInstrumentation injects probe calls; that requires class-format changes.
+        // Advice-only mode keeps disableClassFormatChanges for the default (coverage off) path.
+        if (!config.coverageEnabled) {
+            builder = builder.disableClassFormatChanges();
+        }
+        builder = builder
                 .type(applicationTypes)
                 .transform((builder0, type, loader, module, domain) -> {
                     boolean prefixed = config.includes(type.getName());
+                    DynamicType.Builder<?> transformed;
                     if (!prefixed && isHttpObservabilityType(type)) {
-                        return instrumentHttpSurface(builder0, type);
+                        transformed = instrumentHttpSurface(builder0, type);
+                    } else {
+                        transformed = instrumentApplicationCalls(builder0, type);
                     }
-                    return instrumentApplicationCalls(builder0, type);
+                    if (config.coverageEnabled && prefixed) {
+                        transformed = transformed.visit(
+                                new BranchCoverageInstrumentation(type.getName()));
+                    }
+                    return transformed;
                 });
 
         builder.installOn(instrumentation);
@@ -250,9 +261,10 @@ final class AutomaticInstrumentation {
         }
 
         @Advice.OnMethodEnter(suppress = Throwable.class)
-        public static void enter(@Advice.Origin("#t") String className,
-                                 @Advice.Origin("#m") String methodName,
-                                 @Advice.AllArguments Object[] args) {
+        public static boolean enter(@Advice.Origin("#t") String className,
+                                    @Advice.Origin("#m") String methodName,
+                                    @Advice.AllArguments Object[] args) {
+            boolean coverageScope = AgentRuntime.beginCoverageRequest();
             String httpMethod = "";
             String route = "";
             if (args != null) {
@@ -273,6 +285,12 @@ final class AutomaticInstrumentation {
                     Map.of("captureMode", "SERVLET_METHOD",
                             "httpMethod", truncate(httpMethod, 16),
                             "route", truncate(route, 512)));
+            return coverageScope;
+        }
+
+        @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
+        public static void exit(@Advice.Enter boolean coverageScope) {
+            AgentRuntime.endCoverageRequest(coverageScope);
         }
 
         private static String truncate(String value, int max) {
@@ -286,9 +304,10 @@ final class AutomaticInstrumentation {
         }
 
         @Advice.OnMethodEnter(suppress = Throwable.class)
-        public static void enter(@Advice.Origin("#t") String className,
-                                 @Advice.Origin("#m") String methodName,
-                                 @Advice.AllArguments Object[] args) {
+        public static boolean enter(@Advice.Origin("#t") String className,
+                                    @Advice.Origin("#m") String methodName,
+                                    @Advice.AllArguments Object[] args) {
+            boolean coverageScope = AgentRuntime.beginCoverageRequest();
             String httpMethod = "";
             String route = "";
             if (args != null) {
@@ -309,6 +328,12 @@ final class AutomaticInstrumentation {
                     Map.of("captureMode", "SERVLET_FILTER",
                             "httpMethod", truncate(httpMethod, 16),
                             "route", truncate(route, 512)));
+            return coverageScope;
+        }
+
+        @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
+        public static void exit(@Advice.Enter boolean coverageScope) {
+            AgentRuntime.endCoverageRequest(coverageScope);
         }
 
         private static String truncate(String value, int max) {
@@ -322,9 +347,10 @@ final class AutomaticInstrumentation {
         }
 
         @Advice.OnMethodEnter(suppress = Throwable.class)
-        public static void enter(@Advice.Origin("#t") String className,
-                                 @Advice.Origin("#m") String methodName,
-                                 @Advice.AllArguments Object[] args) {
+        public static boolean enter(@Advice.Origin("#t") String className,
+                                    @Advice.Origin("#m") String methodName,
+                                    @Advice.AllArguments Object[] args) {
+            boolean coverageScope = AgentRuntime.beginCoverageRequest();
             String httpMethod = "";
             String route = "";
             if (args != null) {
@@ -345,6 +371,12 @@ final class AutomaticInstrumentation {
                     Map.of("captureMode", "SPRING_INTERCEPTOR",
                             "httpMethod", truncate(httpMethod, 16),
                             "route", truncate(route, 512)));
+            return coverageScope;
+        }
+
+        @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
+        public static void exit(@Advice.Enter boolean coverageScope) {
+            AgentRuntime.endCoverageRequest(coverageScope);
         }
 
         private static String truncate(String value, int max) {
@@ -358,9 +390,10 @@ final class AutomaticInstrumentation {
         }
 
         @Advice.OnMethodEnter(suppress = Throwable.class)
-        public static void enter(@Advice.Origin("#t") String className,
-                                 @Advice.Origin("#m") String methodName,
-                                 @Advice.AllArguments Object[] args) {
+        public static boolean enter(@Advice.Origin("#t") String className,
+                                    @Advice.Origin("#m") String methodName,
+                                    @Advice.AllArguments Object[] args) {
+            boolean coverageScope = AgentRuntime.beginCoverageRequest();
             String httpMethod = "";
             String route = "";
             if (args != null) {
@@ -390,6 +423,12 @@ final class AutomaticInstrumentation {
             if (!httpMethod.isBlank()) detail.put("httpMethod", truncate(httpMethod, 16));
             if (!route.isBlank()) detail.put("route", truncate(route, 512));
             AgentRuntime.recordTransformedDetail("HTTP", className, methodName, detail);
+            return coverageScope;
+        }
+
+        @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
+        public static void exit(@Advice.Enter boolean coverageScope) {
+            AgentRuntime.endCoverageRequest(coverageScope);
         }
 
         /** Best-effort URI from Spring RequestContextHolder when controllers omit the request arg. */

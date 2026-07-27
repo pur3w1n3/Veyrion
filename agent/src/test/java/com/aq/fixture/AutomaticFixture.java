@@ -23,6 +23,8 @@ import java.util.concurrent.Executor;
 
 /** Harmless fixture: no explicit AgentRuntime calls and no network access. */
 public final class AutomaticFixture implements Servlet {
+    private static volatile int branchResult;
+
     private AutomaticFixture() {
     }
 
@@ -58,10 +60,23 @@ public final class AutomaticFixture implements Servlet {
 
     @GetMapping
     public void handler() {
+        // Exercise branches inside a Spring-mapped HTTP surface so coverage scopes flush.
+        branchResult = branchWork(7);
     }
 
     @Override
     public void service() {
+        branchResult = branchWork(7);
+    }
+
+    private static int branchWork(int value) {
+        int result = value > 0 ? 1 : -1;
+        switch (value) {
+            case 6 -> result += 6;
+            case 7 -> result += 7;
+            default -> result = 0;
+        }
+        return result;
     }
 
     private static Object primitiveDefault(Class<?> type) {

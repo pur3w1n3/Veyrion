@@ -45,7 +45,7 @@ public final class DynamicConfirmedGate {
                 run.experimentPlanId(), run.method(), run.contentType(), run.requestSummary(),
                 run.outcomeClass(), run.httpStatus(), run.entryHit(), run.parameterBound(),
                 run.sqlEvents(), run.stopReason(), status.name(), run.evidenceRefs(),
-                run.identityProvenance(), run.identityPrecondition());
+                run.identityProvenance(), run.identityPrecondition(), run.branchHitMap());
     }
 
     private static boolean isStatementEvidence(SqlEvent event) {

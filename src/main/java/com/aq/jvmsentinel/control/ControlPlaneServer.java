@@ -1,8 +1,10 @@
 package com.aq.jvmsentinel.control;
 
+import com.aq.jvmsentinel.analysis.CandidateRanker;
 import com.aq.jvmsentinel.analysis.PreAnalysisResult;
 import com.aq.jvmsentinel.analysis.PreAnalysisInput;
 import com.aq.jvmsentinel.analysis.ArtifactMetadataReader;
+import com.aq.jvmsentinel.analysis.contrast.ContrastLedger;
 import com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService;
 import com.aq.jvmsentinel.analysis.entry.NonHttpEntryProtocol;
 import com.aq.jvmsentinel.analysis.pack.AnalysisPack;
@@ -2672,6 +2674,26 @@ public final class ControlPlaneServer implements AutoCloseable {
         body.put("experimentShapes", shapeMaps);
         body.put("analysisPacks", packMaps);
         body.put("probeBudget", budgetMap);
+        ContrastLedger.Ledger ledger = ContrastLedger.build(
+                dto.entries(), dto.sinks(), scan.evidence(), pathRuns);
+        List<CandidateRanker.RankedSinkView> ranked = CandidateRanker.rank(
+                dto.sinks(), ContrastLedger.taintPathsFromSinks(dto.sinks()),
+                dto.entries(), ledger.rows());
+        List<Object> rankedMaps = new ArrayList<>();
+        for (CandidateRanker.RankedSinkView view : ranked) {
+            if (rankedMaps.size() >= 20) break;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("sinkId", view.sinkId());
+            row.put("rank", view.rank());
+            row.put("score", view.score());
+            row.put("category", view.category());
+            row.put("symbol", view.symbol());
+            row.put("rankReasons", view.rankReasons());
+            rankedMaps.add(row);
+        }
+        body.put("rankedSinks", rankedMaps);
+        body.put("contrastSnapshotId", ledger.snapshotId());
+        body.put("contrastRoundIndex", ledger.roundIndex());
         sendJson(exchange, 200, body);
     }
 
@@ -3305,6 +3327,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         result.put("evidenceRefs", dto.evidenceRefs());
         result.put("identityProvenance", dto.identityProvenance());
         result.put("identityPrecondition", dto.identityPrecondition());
+        result.put("branchHitMap", dto.branchHitMap());
         return result;
     }
 

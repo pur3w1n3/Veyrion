@@ -11,6 +11,8 @@ public enum ContrastStatus {
     PARTIAL,
     /** Static reachability/gap with no usable pass-gate PathRun (e.g. all 401). */
     STATIC_ONLY,
+    /** A method on the static taint path emitted at least one dynamic branch hit. */
+    DYNAMIC_REACHED,
     /** PathRun without a matching static sink row. */
     DYNAMIC_ONLY,
     /** Insufficient data to classify. */

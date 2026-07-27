@@ -155,6 +155,7 @@ public final class ManagementConfigurationAcceptanceTest {
             statement.executeUpdate("DROP TABLE IF EXISTS worker_tasks");
             statement.executeUpdate("DROP TABLE IF EXISTS path_runs");
             statement.executeUpdate("DROP TABLE IF EXISTS experiment_plans");
+            statement.executeUpdate("DROP TABLE IF EXISTS contrast_ledger_snapshots");
             statement.executeUpdate("""
                     CREATE TABLE project_ai_role_bindings_legacy (
                         project_id TEXT NOT NULL,
@@ -176,8 +177,8 @@ public final class ManagementConfigurationAcceptanceTest {
             statement.executeUpdate("ALTER TABLE project_ai_role_bindings_legacy "
                     + "RENAME TO project_ai_role_bindings");
             int removed = statement.executeUpdate("DELETE FROM schema_migrations WHERE version>=5");
-            check(removed == 11,
-                    "V005-V015 are removed to emulate an existing V004 installation");
+            check(removed == 12,
+                    "V005-V016 are removed to emulate an existing V004 installation");
             check(statement.executeUpdate("UPDATE ai_jobs SET status='FAILED', stop_reason='HTTP_500'") == 1,
                     "legacy fixture represents a failed job without detailed event rows");
         }

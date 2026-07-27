@@ -26,7 +26,7 @@ public final class VeyrionAgent {
         EventWriter writer = new EventWriter(config);
         boolean installed = false;
         try {
-            AgentRuntime.install(writer);
+            AgentRuntime.install(writer, config.coverageEnabled);
             installed = true;
             if (!writer.writeObserved("AGENT_STARTED", VeyrionAgent.class.getName(), entryPoint,
                     Map.of("captureMode", "BYTE_BUDDY_STARTUP_INSTRUMENTATION",
@@ -43,6 +43,8 @@ public final class VeyrionAgent {
                             "jdkHttpClient", "APPLICATION_CALL_SITE",
                             "fileWrite", "APPLICATION_CALL_SITE",
                             "process", "APPLICATION_CALL_SITE",
+                            "branchCoverage", config.coverageEnabled
+                                    ? "REQUEST_SCOPED_BRANCH_SITE_HITS" : "DISABLED",
                             "bootstrapClasses", "UNSUPPORTED_FAIL_EXPLICIT"));
             DependencyMockBootstrap.install(instrumentation, config.dependencyMock);
             instrumentation.addTransformer(new ObservationTransformer(config), false);
