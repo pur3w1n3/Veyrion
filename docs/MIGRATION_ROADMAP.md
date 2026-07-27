@@ -234,7 +234,7 @@ ContrastStatus 枚举新增：DYNAMIC_REACHED（介于 STATIC_ONLY 和 MATCHED �
 最多注入前 20 条（预算控制）
 ```
 
-**数据库迁移**：`V015__branch_coverage_and_ranking.sql`
+**数据库迁移**：`V016__branch_hit_map_and_contrast_ledger_snapshots.sql`（**非**原稿草稿名 `V015__branch_coverage_and_ranking.sql`）
 ```sql
 -- PathRun 增加 branch_hit_map_json 列
 ALTER TABLE path_runs ADD COLUMN branch_hit_map_json TEXT;
@@ -254,7 +254,7 @@ CREATE TABLE contrast_ledger_snapshots (
 - [x] 有覆盖观测后 `ContrastLedger.roundIndex>=1`，snapshotId 稳定派生
 - [x] `AcceptanceTest`：`BranchCoverageAcceptanceTest`（合成 fixture；live `VEYRION_TEST_ARTIFACT_JAR` 可选）
 
-**版本注记**：用户编号覆盖 roadmap 原稿——本 MVP 使用 **V016**（`branch_hit_map_json` + `contrast_ledger_snapshots`）；V015 已用于 schemaVersion 护栏。
+**版本注记**：本 MVP 使用 **V016**（`branch_hit_map_json` + `contrast_ledger_snapshots`）；**V015** 已专用于 schemaVersion 护栏（Step 1）。
 
 ---
 
@@ -361,7 +361,7 @@ public static List<FrameworkAdapter> matching(Path artifactPath, List<String> ro
 改动：`ControlPlaneServer.containsHighValueSignal()` → 改为查询 `FrameworkAdapterRegistry`  
 改动：`ControlPlaneServer.materialsPreferBladeAuth()` → 删除，移入 `SpringBladeAdapter`
 
-**数据库迁移**：`V016__parameter_spec.sql`
+**数据库迁移**：无独立 SQL（原稿草稿名 `V016__parameter_spec.sql` **未采用**；V016 已用于 MVP-1 分支覆盖）
 ```sql
 -- 已有 scan 的 entries 中 parameters 字段做兼容读（旧格式 List<String> 仍可解析）
 -- 无需 schema 变更，通过 ParameterSpec.origin=LEGACY 标记旧数据
@@ -370,10 +370,10 @@ public static List<FrameworkAdapter> matching(Path artifactPath, List<String> ro
 #### MVP-2 验收标准
 - [x] BranchConstraintHarvester 产出 maxLen / equals 约束（合成 flow hints；Blade live 可选）
 - [x] PATH_EXPLORATION 注入 `COVERAGE_GAP_FACTS`（STATIC_ONLY → CoverageGap）
-- [ ] 第二轮执行使用 CoverageGap 生成的 suggestedInput，对应分支 branchHitMap 命中（live 可选）
+- [ ] 第二轮执行使用 CoverageGap 生成的 suggestedInput，对应分支 branchHitMap 命中（**live 可选，未宣称完成**）
 - [x] 新增 `FrameworkAdapterAcceptanceTest`：TestOnlyAdapter 可注入
 
-**版本注记**：参数规格兼容读，无需独立 SQL；下一库版本为 MVP-3 的 V017。
+**版本注记**：参数规格兼容读，无需独立 SQL；下一库版本为 MVP-3 的 **V017**。
 
 ---
 
@@ -617,9 +617,9 @@ ALTER TABLE experiment_plans ADD COLUMN fuzz_strategy_json TEXT;
 
 #### MVP-4 验收标准
 - [x] `fuzz_strategy_get(sinkId=sql-001)` 返回包含至少 3 种 ProbeTemplate 的策略（`FuzzStrategyAcceptanceTest` + tool registry）
-- [ ] DYNAMIC_VERIFICATION 使用 fuzz 策略生成的 candidateInputs 触发 SQL 结构差分（live 可选）
-- [ ] BRANCH_CONSTRAINT_FACTS 中的 magic literal 命中对应分支（branchHitMap 更新；live 可选）
-- [ ] SqlDiffProbe 对 union/error 探针产出不同的 SqlEvent（live 可选）
+- [ ] DYNAMIC_VERIFICATION 使用 fuzz 策略生成的 candidateInputs 触发 SQL 结构差分（**live 可选，未宣称完成**）
+- [ ] BRANCH_CONSTRAINT_FACTS 中的 magic literal 命中对应分支（branchHitMap 更新；**live 可选，未宣称完成**）
+- [ ] SqlDiffProbe 对 union/error 探针产出不同的 SqlEvent（**live 可选，未宣称完成**）
 
 **版本注记**：本 MVP 使用 **V018**（`fuzz_strategy_json`）。
 
@@ -942,12 +942,10 @@ control/
 
 | 步骤 | 时机 | 内容 | 验收 |
 |------|------|------|------|
-| Step 1 | MVP-1 前 | 提取 `ProbePlanService`（影响面最小）✅ | 现有 AcceptanceTest 全绿 |
-| Step 2 | MVP-2 中 | 提取 `FrameworkAdapterRegistry`（MVP-2 A 已要求）✅ | FrameworkAdapterTest |
-| Step 3 | MVP-3 后 | `RouteTable` + `ControlPlaneRouteActions` ✅ | ControlPlaneAcceptanceTest |
+| Step 1 | MVP-1 前 | 提取 `ProbePlanService`（影响面最小）✅ + V015 schemaVersion | 现有 AcceptanceTest 全绿 |
+| Step 2 | MVP-2 中 | 提取 `FrameworkAdapterRegistry`（MVP-2 A 已要求）✅ | FrameworkAdapterAcceptanceTest |
+| Step 3 | MVP-3 后 | `RouteTable` + `ControlPlaneRouteActions` ✅（Server 仍大；细粒度 Handler 拆分后续） | ControlPlaneAcceptanceTest |
 | Step 4 | MVP-4 后 | `DashboardService` ✅ | dashboard ledgerDiff / rankedSinks |
-| Step 3 | MVP-3 后 | 提取 Handler + RouteTable（改动面最大） | 每个 Handler 独立迁移，逐步合并 |
-| Step 4 | MVP-4 前 | 提取 `DashboardService` | Dashboard AcceptanceTest |
 
 **ProbePlanService 优先原因**：  
 `buildProbePlan()` 5 个重载 + `buildFocusedAiPocPlan()` + `expandProbesByIdentityTracksDetailed()` 约 400 行，且 MVP-4 fuzz 策略注入需要在此处扩展——先分离再扩展，避免在 4388 行文件中继续堆代码。
@@ -1029,12 +1027,12 @@ if (plan.schemaVersion() == null || plan.schemaVersion() < 1) {
 
 | 本文条目 | 对应现有文档 |
 |---------|------------|
-| MVP-1 Coverage | TECHNICAL_ARCHITECTURE.md §3.6 JVM Instrumentation（branch hit 字段缺失） |
-| MVP-2 FrameworkAdapter | EXTENSIBLE_ANALYSIS.md — FrameworkAdapter 轴 |
-| MVP-3 TaintGraph | TECHNICAL_ARCHITECTURE.md §15 字节码事实索引 |
+| MVP-1 Coverage | TECHNICAL_ARCHITECTURE.md §3.6（branchHitMap / rankedSinks 已注记） |
+| MVP-2 FrameworkAdapter | EXTENSIBLE_ANALYSIS.md — FrameworkAdapter 轴（SPI 已落地） |
+| MVP-3 TaintGraph | TECHNICAL_ARCHITECTURE.md §15（TaintGraph / LedgerDiff 已注记） |
 | MVP-4 Fuzz 策略 | PATH_EXPERIMENT_MODEL.md §6 实验计划（ProbeTemplate 扩展） |
 | MVP-5 Root Cause | AUDIT_FLOW.md §8 报告生成（新增 attackSteps 约束） |
-| MVP-6 VERIFIED | TECHNICAL_ARCHITECTURE.md §13 OpenSandbox Worker 决策 |
+| MVP-6 VERIFIED | TECHNICAL_ARCHITECTURE.md §13（门禁脚手架已注记；仍 fail-closed） |
 | 多语言策略 | EXTENSIBLE_ANALYSIS.md — Packager 轴（Python/Node 实现路径） |
 | Server 拆分 | ARCHITECTURE_REVIEW_REPORT.md §4 推荐重构 #2/#3 |
 

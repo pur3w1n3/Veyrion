@@ -1,8 +1,8 @@
 # 溯脉 · Veyrion MVP 开发任务拆解
 
 > 更新日期：2026-07-27  
-> 权威决策与证据：[`PROJECT_MEMORY.md`](../PROJECT_MEMORY.md)（尤其 §51–§67）  
-> 流程契约：[`AUDIT_FLOW.md`](AUDIT_FLOW.md) · 路径实验：[`PATH_EXPERIMENT_MODEL.md`](PATH_EXPERIMENT_MODEL.md)
+> 权威决策与证据：[`PROJECT_MEMORY.md`](../PROJECT_MEMORY.md)（尤其 §51–§71；架构迁移 §68–§71）  
+> 流程契约：[`AUDIT_FLOW.md`](AUDIT_FLOW.md) · 路径实验：[`PATH_EXPERIMENT_MODEL.md`](PATH_EXPERIMENT_MODEL.md) · 迁移路线：[MIGRATION_ROADMAP.md](MIGRATION_ROADMAP.md)
 
 产品正式名：**溯脉 · Veyrion**（英文：Veyrion）。`com.aq.jvmsentinel` 包名、Maven artifactId、内部 service name 与 `/api/v1` 路由保持兼容；商标/域名尚待法务检索。
 
@@ -85,6 +85,19 @@ Spring Boot 可执行 JAR（个人本地）
 - [x] `DynamicConfirmedGate` 忽略 `port=`/`sqlClass=` meta；H3 仍要求恶意语句文本（**acceptance**；live H3 命中样本尚少）
 - [x] 静态·动态对照账本（混合方案，**不新增**第七 AI 角色）：`StaticContrastProjector` / `StaticDynamicContraster` / `ContrastLedger`；`facts_search STATIC_CONTRAST`；REPORT 强制 `STATIC_ONLY` 入账（**acceptance**；见 §4.2 P1-06）
 
+### 2.4a 架构迁移脚手架（MVP-1…MVP-6 / V015–V020）
+
+详见 [`MIGRATION_ROADMAP.md`](MIGRATION_ROADMAP.md) 与 `PROJECT_MEMORY` §68–§71。合成 acceptance 已通；live 可选项与 VERIFIED 生产门禁**未宣称完成**。
+
+- [x] Step 1：`ProbePlanService` 提取 + **V015** `schemaVersion` 护栏（**acceptance**）
+- [x] MVP-1 / **V016**：`branchHitMap`、`CandidateRanker` / `rankedSinks`、对照快照（**acceptance**；live 覆盖可选）
+- [x] MVP-2：`BranchConstraintHarvester`、`CoverageGap`、`FrameworkAdapter` SPI（**acceptance**；第二轮 suggestedInput live 命中可选）
+- [x] MVP-3 / **V017**：`TaintGraph`、`LedgerDiff`、`DynamicFeedbackApplier`（**acceptance**）
+- [x] Step 3/4：`RouteTable` + `ControlPlaneRouteActions`；`DashboardService`（**acceptance**；Server 仍大）
+- [x] MVP-4 / **V018**：`FuzzStrategyRegistry` + `fuzz_strategy_get`（**acceptance**；live SqlDiff 可选）
+- [x] MVP-5 / **V019**：`RootCauseAnalysis` + Mermaid + CWE 映射（**acceptance**；六角色 live 可选）
+- [x] MVP-6 / **V020**：`verified_findings` + 门禁脚手架；`VerifiedStatusGate` 仍 fail-closed（**acceptance scaffolding**）
+
 ### 2.5 AUTH → DYNAMIC PoC 交接
 
 - [x] AI 撰写结构化 `bypassPoCs` → 服务端 schema 闸门 → 注入 `AUTH_BYPASS_FEASIBILITY` → `sandbox_probe`（**acceptance** + live 管道 **partial**）
@@ -120,8 +133,8 @@ Spring Boot 可执行 JAR（个人本地）
 | WAR / 非 Boot JAR / CLASS 动态 | **partial** | CLASS 仅静态；WAR 动态非当前主验收对象 |
 | 真实反编译隔离 Worker | **partial** | 契约存在，未捆绑/未作为默认路径 |
 | OpenSandbox / gVisor / Kata | **not verified** | 不得宣称已验收；Windows 本地仅 `TRUSTED_DOCKER` |
-| 多语言 / 非 JVM | **not started** | — |
-| VERIFIED 重放门禁 | **not started** | 强化隔离 + 双次重放齐套前禁止开放 |
+| 多语言 / 非 JVM | **not started** | FrameworkAdapter SPI 已抽；第二语言 Packager **未开工** |
+| VERIFIED 重放门禁 | **scaffolding only** | V020 + EscapeSuiteAttestation / ReplayEvidenceGate 已接入；门禁仍 `VERIFIED_GATE_NOT_OPEN`；逃逸套件 live 未做 |
 
 ### M-A / M-B / M-C / M-D 状态映射
 
@@ -269,8 +282,9 @@ Spring Boot 可执行 JAR（个人本地）
 
 - [x] gVisor/Kata + release + replay 齐套前禁止 `VERIFIED`；`TRUSTED_DOCKER` 永不 VERIFIED（**acceptance**；`VerifiedStatusGate`）
 - [x] health 暴露 `verifiedAllowed=false` / `DYNAMIC_DISABLED`（**acceptance**）
-- **验收：** 普通 Docker 永不标 VERIFIED（`VerifiedStatusGateAcceptanceTest` + health）
-- **状态：** 诚实脚手架；逃逸套件 live 未验收，`VERIFIED_GATE_NOT_OPEN`
+- [x] MVP-6 / V020：`verified_findings` 表 + `EscapeSuiteAttestation` / `ReplayEvidenceGate` 脚手架；dashboard `verifiedFindings`（恒空直至门禁开启）（**acceptance scaffolding**）
+- **验收：** 普通 Docker 永不标 VERIFIED（`VerifiedStatusGateAcceptanceTest` + health + `VerifiedGateScaffoldingAcceptanceTest`）
+- **状态：** 诚实脚手架；逃逸套件 live 未验收，`VERIFIED_GATE_NOT_OPEN`；**不得**标生产可用
 
 **P2-03 多语言 / 非 JVM 制品**
 
@@ -321,7 +335,7 @@ Definition of Done（仍适用）：自动化或可复现样例、结构化数�
 | 底层形态 | 入口+参数→真实 HTTP/SQL/调用 | Agent 事件 + 过滤后 SQL + MOCK 标注 | 统一「一次实验」视图未完成；实库/强化隔离未开 |
 | 验证等级 | 证据升级至 VERIFIED | 最高常用 `DYNAMIC_SUSPECTED`；H3 稀有 | `VERIFIED` 与生产隔离门禁未开放 |
 
-**当前最优推进顺序：** 做透 §4.0 单入口 debug 闭环 → P0 SQL/JWT 对照 → P1 实验卡与 Blade 语义包 → 再谈多语言与 VERIFIED。
+**当前最优推进顺序：** 架构迁移脚手架（V015–V020）已合成验收收口 → 做透 §4.0 单入口 debug 闭环与 live 可选对照 → P0 SQL/JWT 对照 → CoverageGap/fuzz live 命中 → 再谈多语言与逃逸套件后的 VERIFIED。
 
 ---
 

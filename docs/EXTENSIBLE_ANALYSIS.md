@@ -48,9 +48,9 @@
 
 解决「怎么发现入口与鉴权屏障」；可多适配器并行，结果合并去重：
 
-1. Spring MVC + Security / Blade secure（**JAR 切片已部分落地**）
-2. Servlet / `web.xml` / Filter（WAR 与大量自研的公约数）
-3. 结构推断：方法签名吃 `HttpServletRequest`、靠近 `getParameter`→sink 的调用形状
+1. Spring MVC + Security / Blade secure（**JAR 切片已部分落地**；MVP-2 已抽出 `FrameworkAdapter` SPI：`SpringMvcAdapter` / `SpringBladeAdapter` / `FrameworkAdapterRegistry`，探针高价值信号改查注册表，`FrameworkAdapterAcceptanceTest` 可注入 TestOnlyAdapter）
+2. Servlet / `web.xml` / Filter（WAR 与大量自研的公约数）— **未做**
+3. 结构推断：方法签名吃 `HttpServletRequest`、靠近 `getParameter`→sink 的调用形状 — **未做**
 
 合并规则：同路由多命中则合并证据；冲突标 `contradicted`；无适配器命中时允许大量 `unknown`（合法，不是失败）。
 

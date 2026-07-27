@@ -106,6 +106,8 @@
 
 敏感值在采集端脱敏，原始值只在沙箱短期内保留。对高频方法采用采样和动态过滤，避免轨迹爆炸。
 
+**落地注记（MVP-1 / V016）**：`BranchCoverageInstrumentation` 可产出 `BRANCH_COVERAGE` Agent 事件；`TraceProjectionService` 合并进 `PathRunDto.branchHitMap`；有覆盖观测时可把对应 `TaintPath.dynamicStatus` 升为 `DYNAMIC_REACHED`，并派生 `ContrastLedger.roundIndex` / `snapshotId`（`contrast_ledger_snapshots`）。`CandidateRanker` 向 dashboard 暴露 `rankedSinks`，PRE_ANALYSIS 注入有界 `RANKED_SINK_CATALOG`（最多 20）。合成 fixture 已验收；live JAR 分支覆盖仍可选，不得据此宣称全路径覆盖或 `VERIFIED`。
+
 ## 4. 外部依赖虚拟化
 
 ### 4.1 数据库
@@ -296,11 +298,13 @@ Agent Gateway 对模型、工具和提示模板做版本登记；模型输出必
 
 Windows 可作为 Control Plane 和开发宿主；本地调试可显式启动进程内 `TRUSTED_DOCKER` Worker，生产动态任务应运行在独立 Linux gVisor/Kata Worker。普通 Docker/runc 不能作为恶意闭源制品的安全边界；只有强化运行时完成网络/DNS、宿主路径、非 root、只读根、资源耗尽和逃逸测试后，才允许不受信制品生产执行。任何动态后端失败时都退回静态分析，不得降级为宿主 Java。
 
+**落地注记（MVP-6 / V020）**：`verified_findings` 表、`EscapeSuiteAttestation` 与 `ReplayEvidenceGate` 已接入 `VerifiedStatusGate`，但门禁仍 fail-closed（`VERIFIED_GATE_NOT_OPEN`）。dashboard 暴露 `verifiedFindings`（当前恒为空）。无 gVisor/Kata 逃逸套件端到端 attestation 前，不得将任何 finding 标为 `VERIFIED` 或生产可用；`TRUSTED_DOCKER` 永不开放 `VERIFIED`。
+
 Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约、checkpoint 和 trace chunk 都绑定 `projectId`、`artifactDigest`、`scanId`、`taskId`，运行时轨迹以 SHA-256 前序摘要链追加提交。GUI token、Worker token、OpenSandbox API key 和沙箱内凭据相互隔离；任何来自制品、模型或前端的字段都不能修改运行时能力等级、网络策略或挂载范围。
 
 ## 14. 本地首版持久化与管理控制
 
-- Desktop Core 使用 SQLite/plain JDBC 保存项目、制品元数据、扫描结果、Provider、AI 角色绑定、有界 AI job、本地操作员 PAT hash 和脱敏审计。迁移按版本顺序执行并校验历史文件摘要，未知版本、断档或 checksum 漂移均拒绝启动。已写入 `schema_migrations` 的迁移文件视为不可变；后续 schema 变更只能追加新版本，不得改写已应用 SQL 以“修复”本地库。
+- Desktop Core 使用 SQLite/plain JDBC 保存项目、制品元数据、扫描结果、Provider、AI 角色绑定、有界 AI job、本地操作员 PAT hash 和脱敏审计。迁移按版本顺序执行并校验历史文件摘要，未知版本、断档或 checksum 漂移均拒绝启动。已写入 `schema_migrations` 的迁移文件视为不可变；后续 schema 变更只能追加新版本，不得改写已应用 SQL 以“修复”本地库。当前已注册至 **V020**（含 V015 `schemaVersion` 护栏、V016 分支覆盖/对照快照、V017 TaintGraph/LedgerDiff、V018 fuzz 策略、V019 root cause、V020 `verified_findings`）；读取端对 experiment plan / path run JSON 要求 `schemaVersion >= 1`。
 - Provider secret 使用数据库外根密钥和 AES-256-GCM；AAD 绑定 workspace、Provider、credential 和版本。HTTP DTO 不包含明文、密文、nonce 或可逆片段。根密钥文件权限在支持的平台尽力收紧，非 loopback/生产形态无法确认权限时必须拒绝启用。
 - 本地 bootstrap token 映射到 `local-admin`，每次进程启动轮换，旧 token 失效；操作员 PAT 与 Worker token 使用不同格式、header、存储和校验器。当前只完成 loopback 单 workspace RBAC，生产 SSO/session 和全部 GET 的身份边界仍待实现。
 - AI Gateway 已支持 OpenAI Chat/Anthropic Messages 非流式请求和单工具调用循环；只有显式授权、固定角色绑定、启用 Provider、后端凭据和完整配置快照一致时才出站。模型输出无权修改工具、网络、沙箱、预算或验证等级，结论固定为 `INFERENCE`。
@@ -318,6 +322,7 @@ Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约�
 - 在既有有界 classfile reader 上提取类层次、字段、方法、字段读写、调用指令与稳定指令证据，不加载或初始化被测类。
 - `invokestatic`/`invokespecial` 在制品内解析为 `DIRECT`；虚调用和接口调用在制品内按类层次解析为有界 `CHA`，制品外或动态目标标为 `UNRESOLVED`。解析会保留声明 owner、实际候选 owner、调用位置和限制说明。
 - 入口参数通过受限字节码栈/局部变量摘要作为 source，沿制品内调用边传播到敏感 API，形成带 source、transform、call、sink 步骤的 `STATIC_INFERRED` `TaintPath`。调用图边数、污点状态、路径数和方法流完整性均有预算/停止原因；分支合流、对象字段别名、反射、JNI、动态代理、完整 classpath 和运行时注册不被伪装成已解析。
+- **落地注记（MVP-3 / V017）**：`TaintGraphProjector` 可把有界 `TaintPath` 投影为入口子图；`code_query kind=TAINT_GRAPH` 返回 nodes/edges（合成验收至少 3 节点）。`LedgerDiff` 对比两轮 `ContrastLedger`；`DynamicFeedbackApplier` 可在证据可查时升级单条路径动态状态。dashboard 暴露 `ledgerDiff`。真正 sink→source 反向 BFS 仍未做；不得伪装完整别名分析。
 - 反编译只作为未来隔离分析 Worker 的派生阅读视图，不能作为事实源，也不能在 Control Plane 进程内运行。
 
 ## 16. 交付与部署形态

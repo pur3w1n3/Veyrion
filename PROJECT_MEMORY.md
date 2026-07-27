@@ -766,3 +766,4 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 - **MVP-6 / V020**：`verified_findings` 表；`EscapeSuiteAttestation`；`VerifiedStatusGate` 仍 fail-closed（`VERIFIED_GATE_NOT_OPEN`）。
 - 验收：`TaintGraphAcceptanceTest` / `FuzzStrategyAcceptanceTest` / `VerifiedGateScaffoldingAcceptanceTest` 等 PASS。
 - **诚实限制**：无 gVisor/Kata 逃逸套件端到端 attestation；不得标 `VERIFIED` 生产可用；live SqlDiff / 六角色全链路仍可选。
+- **文档同步（closeout）**：`TECHNICAL_ARCHITECTURE` §3.6/§13/§14/§15、`MVP_BACKLOG` §2.4a、`EXTENSIBLE_ANALYSIS` FrameworkAdapter、`MIGRATION_ROADMAP` 版本号与草稿名漂移已对齐 V015–V020；live/逃逸未勾选项保持诚实未勾。
