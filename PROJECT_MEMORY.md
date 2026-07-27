@@ -755,3 +755,14 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 - `FrameworkAdapter` SPI（`SpringBladeAdapter` / `SpringMvcAdapter` / `FrameworkAdapterRegistry`）；ProbePlan 高价值信号改查注册表。
 - 验收：`FrameworkAdapterAcceptanceTest` PASS；TestOnlyAdapter 可注入。
 - **不得**标生产可用或 `VERIFIED`。
+
+## 71. 架构迁移 MVP-3 → MVP-6 + Step 3/4（2026-07-27）
+
+- **MVP-3 / V017**：`TaintGraph` + `TaintGraphProjector`；`code_query kind=TAINT_GRAPH`；`LedgerDiff`；`DynamicFeedbackApplier`；dashboard `ledgerDiff`。
+- **Step 3**：`control/routing/RouteTable` + `ControlPlaneRouteActions`（Server 实现并委托分发）。
+- **MVP-4 / V018**：`FuzzStrategyRegistry` + `fuzz_strategy_get`；`ExperimentPlan.fuzzStrategyJson`。
+- **Step 4**：`DashboardService`（empty / rankedSinks / ledgerDiff 聚合）。
+- **MVP-5 / V019**：`RootCauseAnalysis` + Mermaid；`CweMapper`；TRIAGE/REPORT prompt 段；`root_cause_json`。
+- **MVP-6 / V020**：`verified_findings` 表；`EscapeSuiteAttestation`；`VerifiedStatusGate` 仍 fail-closed（`VERIFIED_GATE_NOT_OPEN`）。
+- 验收：`TaintGraphAcceptanceTest` / `FuzzStrategyAcceptanceTest` / `VerifiedGateScaffoldingAcceptanceTest` 等 PASS。
+- **诚实限制**：无 gVisor/Kata 逃逸套件端到端 attestation；不得标 `VERIFIED` 生产可用；live SqlDiff / 六角色全链路仍可选。

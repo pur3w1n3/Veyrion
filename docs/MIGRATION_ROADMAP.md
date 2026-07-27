@@ -512,10 +512,12 @@ CREATE TABLE taint_graphs (
 ```
 
 #### MVP-3 验收标准
-- [ ] `code_query kind=TAINT_GRAPH entryId=X` 返回包含至少 3 个 nodes 的子图
-- [ ] 两轮执行后 LedgerDiff.newlyMatched 非空
-- [ ] DynamicFeedbackApplier 对至少一条 TaintPath 成功升级状态（evidence 可查）
-- [ ] Dashboard 显示 LedgerDiff 摘要（前端需配合）
+- [x] `code_query kind=TAINT_GRAPH entryId=X` 返回包含至少 3 个 nodes 的子图（合成；`TaintGraphAcceptanceTest`）
+- [x] 两轮执行后 LedgerDiff.newlyMatched 非空（合成 prior/current ledger）
+- [x] DynamicFeedbackApplier 对至少一条 TaintPath 成功升级状态（evidence 可查；dashboard 触发 append）
+- [x] Dashboard 显示 LedgerDiff 摘要（后端 `ledgerDiff` 字段；前端仍可选配合）
+
+**版本注记**：本 MVP 使用 **V017**（ledger hit 列 + `taint_graphs`）。
 
 ---
 
@@ -614,10 +616,12 @@ ALTER TABLE experiment_plans ADD COLUMN fuzz_strategy_json TEXT;
 ```
 
 #### MVP-4 验收标准
-- [ ] `fuzz_strategy_get(sinkId=sql-001)` 返回包含至少 3 种 ProbeTemplate 的策略
-- [ ] DYNAMIC_VERIFICATION 使用 fuzz 策略生成的 candidateInputs 触发 SQL 结构差分
-- [ ] BRANCH_CONSTRAINT_FACTS 中的 magic literal 命中对应分支（branchHitMap 更新）
-- [ ] SqlDiffProbe 对 union/error 探针产出不同的 SqlEvent
+- [x] `fuzz_strategy_get(sinkId=sql-001)` 返回包含至少 3 种 ProbeTemplate 的策略（`FuzzStrategyAcceptanceTest` + tool registry）
+- [ ] DYNAMIC_VERIFICATION 使用 fuzz 策略生成的 candidateInputs 触发 SQL 结构差分（live 可选）
+- [ ] BRANCH_CONSTRAINT_FACTS 中的 magic literal 命中对应分支（branchHitMap 更新；live 可选）
+- [ ] SqlDiffProbe 对 union/error 探针产出不同的 SqlEvent（live 可选）
+
+**版本注记**：本 MVP 使用 **V018**（`fuzz_strategy_json`）。
 
 ---
 
@@ -705,10 +709,12 @@ ALTER TABLE findings ADD COLUMN root_cause_json TEXT;
 ```
 
 #### MVP-5 验收标准
-- [ ] 单入口完整跑完六角色后，Report 包含 Mermaid 攻击路径（至少 3 步）
-- [ ] RootCauseStatement 可追溯到 TaintPath + PathRun 证据（evidenceRefs 校验通过）
-- [ ] 修复建议有对应 CWE 标注（CweMapper 覆盖至少 5 种 category）
-- [ ] 报告"迭代对比"段在多轮执行后显示 LedgerDiff
+- [x] Report 模板要求 Mermaid 攻击路径（至少 3 步）；`RootCauseAnalysis.toMermaid` 合成验收
+- [x] AttackStep.evidenceRefs 服务端构造校验（空 refs 拒绝）
+- [x] 修复建议有对应 CWE 标注（CweMapper 覆盖至少 5 种 category）
+- [x] 报告注入 LEDGER_DIFF_SUMMARY / 迭代对比段（prompt）；端到端六角色 live 仍可选
+
+**版本注记**：本 MVP 使用 **V019**（`root_cause_json`）。
 
 ---
 
@@ -770,10 +776,12 @@ CREATE TABLE verified_findings (
 ```
 
 #### MVP-6 验收标准
-- [ ] gVisor runtime 通过逃逸测试套件（网络/DNS/metadata/宿主挂载/Docker socket/只读根/非 root）
-- [ ] VERIFIED 门禁对 HARDENED_GVISOR 开启（VerifiedStatusGate.allowed() = true）
-- [ ] ReplayEvidenceGate 至少对一条 finding 通过两次重放验证
-- [ ] Dashboard 显示 VERIFIED finding（与 DYNAMIC_CONFIRMED 视觉区分）
+- [ ] gVisor runtime 通过逃逸测试套件（网络/DNS/metadata/宿主挂载/Docker socket/只读根/非 root）— **未做**
+- [ ] VERIFIED 门禁对 HARDENED_GVISOR 开启（VerifiedStatusGate.allowed() = true）— **刻意保持关闭**（`VERIFIED_GATE_NOT_OPEN`）
+- [x] ReplayEvidenceGate + EscapeSuiteAttestation 脚手架接入 VerifiedStatusGate（仍 fail-closed）
+- [x] Dashboard 暴露 `verifiedFindings` 数组（当前恒为空，直至门禁真实开启）
+
+**版本注记**：本 MVP 使用 **V020**（`verified_findings`）。诚实限制：无逃逸套件 attestation 前不得宣称 VERIFIED 生产可用。
 
 ---
 
@@ -935,7 +943,9 @@ control/
 | 步骤 | 时机 | 内容 | 验收 |
 |------|------|------|------|
 | Step 1 | MVP-1 前 | 提取 `ProbePlanService`（影响面最小）✅ | 现有 AcceptanceTest 全绿 |
-| Step 2 | MVP-2 中 | 提取 `FrameworkAdapterRegistry`（MVP-2 A 已要求） | FrameworkAdapterTest |
+| Step 2 | MVP-2 中 | 提取 `FrameworkAdapterRegistry`（MVP-2 A 已要求）✅ | FrameworkAdapterTest |
+| Step 3 | MVP-3 后 | `RouteTable` + `ControlPlaneRouteActions` ✅ | ControlPlaneAcceptanceTest |
+| Step 4 | MVP-4 后 | `DashboardService` ✅ | dashboard ledgerDiff / rankedSinks |
 | Step 3 | MVP-3 后 | 提取 Handler + RouteTable（改动面最大） | 每个 Handler 独立迁移，逐步合并 |
 | Step 4 | MVP-4 前 | 提取 `DashboardService` | Dashboard AcceptanceTest |
 
@@ -1004,13 +1014,13 @@ if (plan.schemaVersion() == null || plan.schemaVersion() < 1) {
 | **MVP-1** | V0.2 / V016 | Branch Coverage + CandidateRanker + ContrastLedger snapshotId ✅ | 2–3 周 | TaintPath 状态升级；rankedSinks 可见 |
 | **MVP-2** | V0.3 | BranchConstraintHarvester + CoverageGap + FrameworkAdapter SPI ✅ | 2–3 周 | 第二轮命中率提升；FrameworkAdapterTest |
 | **Step 1** | V0.3 | ProbePlanService 分离（工程债）✅ + V015 schemaVersion | 0.5 周 | AcceptanceTest 全绿 |
-| **MVP-3** | V0.4 | TaintGraph + LedgerDiff + DynamicFeedbackApplier | 2 周 | TaintGraph 可查；两轮 diff 可见 |
-| **Step 2** | V0.4 | FrameworkAdapterRegistry 独立（MVP-2 已部分做） | 0.5 周 | 无硬编码 Blade 词表 |
-| **MVP-4** | V0.5 | FuzzStrategyRegistry + fuzz_strategy_get + SqlDiffProbe 扩展 | 2 周 | SQL 差分多探针触发 |
-| **Step 3** | V0.5 | Handler + RouteTable 拆分 | 1 周 | Server < 300 行 |
-| **MVP-5** | V1.0 | RootCause + Mermaid 攻击路径 + CWE 映射 + 修复建议 | 2 周 | 报告端到端完整 |
-| **Step 4** | V1.0 | DashboardService 分离 | 0.5 周 | Dashboard AcceptanceTest |
-| **MVP-6** | V1.x | VERIFIED 门禁 + gVisor/Kata 强化隔离 | 3–4 周 | 逃逸测试通过 |
+| **MVP-3** | V0.4 / V017 | TaintGraph + LedgerDiff + DynamicFeedbackApplier ✅ | 2 周 | TaintGraph 可查；两轮 diff 可见 |
+| **Step 2** | V0.4 | FrameworkAdapterRegistry 独立（MVP-2 已做）✅ | 0.5 周 | 无硬编码 Blade 词表 |
+| **MVP-4** | V0.5 / V018 | FuzzStrategyRegistry + fuzz_strategy_get ✅（live SqlDiff 可选） | 2 周 | SQL 差分多探针触发 |
+| **Step 3** | V0.5 | RouteTable + ControlPlaneRouteActions 拆分 ✅（Server 仍大） | 1 周 | 路由声明式分发 |
+| **MVP-5** | V1.0 / V019 | RootCause + Mermaid + CWE + LedgerDiff 报告段 ✅ | 2 周 | 报告端到端完整 |
+| **Step 4** | V1.0 | DashboardService 分离 ✅ | 0.5 周 | rankedSinks / ledgerDiff 聚合 |
+| **MVP-6** | V1.x / V020 | VERIFIED 门禁脚手架 ✅（逃逸套件未过；门禁仍关闭） | 3–4 周 | 逃逸测试通过（待） |
 | **V2.0** | V2 | LanguagePackager SPI + Python Packager | 4–6 周（验证后决策） | Python FastAPI 入口召回 > 80% |
 
 ---

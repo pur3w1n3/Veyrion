@@ -20,7 +20,8 @@ public record ExperimentPlan(
         int maxAttempts,
         List<String> candidateInputs,
         String stopCondition,
-        String packId
+        String packId,
+        String fuzzStrategyJson
 ) {
     public ExperimentPlan(
             String planId,
@@ -34,7 +35,25 @@ public record ExperimentPlan(
             String successJsonPath,
             int maxAttempts) {
         this(planId, entrypointRef, track, method, contentType, requiredParameters, authRequired,
-                successHttpHint, successJsonPath, maxAttempts, List.of(), "COMPLETED", "");
+                successHttpHint, successJsonPath, maxAttempts, List.of(), "COMPLETED", "", "");
+    }
+
+    public ExperimentPlan(
+            String planId,
+            String entrypointRef,
+            IdentityTrack track,
+            String method,
+            String contentType,
+            List<String> requiredParameters,
+            boolean authRequired,
+            String successHttpHint,
+            String successJsonPath,
+            int maxAttempts,
+            List<String> candidateInputs,
+            String stopCondition,
+            String packId) {
+        this(planId, entrypointRef, track, method, contentType, requiredParameters, authRequired,
+                successHttpHint, successJsonPath, maxAttempts, candidateInputs, stopCondition, packId, "");
     }
 
     public ExperimentPlan {
@@ -47,11 +66,15 @@ public record ExperimentPlan(
         candidateInputs = List.copyOf(candidateInputs == null ? List.of() : candidateInputs);
         stopCondition = stopCondition == null || stopCondition.isBlank() ? "COMPLETED" : stopCondition;
         packId = packId == null ? "" : packId;
+        fuzzStrategyJson = fuzzStrategyJson == null ? "" : fuzzStrategyJson;
         if (maxAttempts < 1 || maxAttempts > 8) {
             throw new IllegalArgumentException("maxAttempts must be 1..8");
         }
         if (candidateInputs.size() > 16) {
             throw new IllegalArgumentException("candidateInputs exceeds bound");
+        }
+        if (fuzzStrategyJson.length() > 16_384) {
+            throw new IllegalArgumentException("fuzzStrategyJson exceeds bound");
         }
     }
 }

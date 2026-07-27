@@ -672,6 +672,36 @@ public class ControlPlaneStore {
         return result;
     }
 
+    /**
+     * Appends evidence onto an existing in-memory scan snapshot (e.g. DYNAMIC_TAINT_UPDATE).
+     * Does not rewrite the durable scan payload; callers may persist separately later.
+     */
+    public synchronized ScanRecord appendScanEvidence(String scanId, List<ApiDtos.EvidenceDto> extras) {
+        ScanRecord prior = requireScan(scanId);
+        if (extras == null || extras.isEmpty()) return prior;
+        Map<String, ApiDtos.EvidenceDto> merged = new LinkedHashMap<>(prior.evidence());
+        List<String> refs = new ArrayList<>(prior.dto().evidenceRefs());
+        for (ApiDtos.EvidenceDto item : extras) {
+            if (item == null) continue;
+            if (evidence.size() >= MAX_EVIDENCE && !evidence.containsKey(item.evidenceId())
+                    && !merged.containsKey(item.evidenceId())) {
+                throw new StoreLimitException("evidence limit reached");
+            }
+            merged.put(item.evidenceId(), item);
+            evidence.put(item.evidenceId(), item);
+            if (!refs.contains(item.evidenceId())) refs.add(item.evidenceId());
+        }
+        ApiDtos.ScanDto dto = prior.dto();
+        ApiDtos.ScanDto updated = new ApiDtos.ScanDto(
+                dto.schemaVersion(), dto.projectId(), dto.artifactDigest(), dto.scanId(),
+                dto.status(), dto.verificationStatus(), dto.dependencyMode(),
+                dto.createdAt(), dto.completedAt(), List.copyOf(refs),
+                dto.entries(), dto.dependencies(), dto.sinks(), dto.findings(), dto.paths());
+        ScanRecord next = new ScanRecord(updated, merged, prior.findings(), prior.chains());
+        scans.put(scanId, next);
+        return next;
+    }
+
     public ApiDtos.FindingDto finding(String findingId) {
         ApiDtos.FindingDto result = findingId == null ? null : findings.get(findingId);
         return result == null || project(result.projectId()) == null ? null : result;

@@ -6,6 +6,7 @@ import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolOutput;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolResult;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolStatus;
 import com.aq.jvmsentinel.ai.AuthBypassFeasibility;
+import com.aq.jvmsentinel.analysis.fuzz.FuzzStrategyRegistry;
 import com.aq.jvmsentinel.model.AuthBypassCandidate;
 import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.aq.jvmsentinel.model.IdentityTrack;
@@ -49,6 +50,7 @@ public final class AiToolRegistry {
         add(fixed, codeQuery());
         add(fixed, planPropose());
         add(fixed, sandboxProbe());
+        add(fixed, fuzzStrategyGet());
         this.tools = Map.copyOf(fixed);
     }
 
@@ -353,6 +355,52 @@ public final class AiToolRegistry {
             plan.put("executionRequested", false);
             return List.of(new ToolOutput(OutputKind.INFERENCE,
                     "plan:" + context.jobId() + ":" + call.callId(), plan));
+        });
+    }
+
+    private RegisteredTool fuzzStrategyGet() {
+        ToolSchema schema = new ToolSchema(Map.of(
+                "sinkId", Field.string(256),
+                "sinkCategory", Field.string(64)), Set.of("sinkId"));
+        ToolDefinition definition = new ToolDefinition("fuzz_strategy_get",
+                "Return a server-owned, sink-category typed fuzz strategy (ProbeTemplates). "
+                        + "Does not execute probes, open network, or upgrade verificationStatus. "
+                        + "Use selected probe inputHints as sandbox_probe candidateInputs under server gates.",
+                schema.jsonSchema(), OverflowPolicy.TRUNCATE);
+        return new RegisteredTool(definition, schema, (call, context) -> {
+            String sinkId = call.arguments().get("sinkId").asText();
+            String category = call.arguments().has("sinkCategory")
+                    ? call.arguments().get("sinkCategory").asText("") : "";
+            if (category == null || category.isBlank()) {
+                try {
+                    List<ToolDataSource.FactRecord> sinks = source.searchFacts(
+                            context.scope(), "SINK", sinkId, 8);
+                    for (ToolDataSource.FactRecord record : sinks) {
+                        requireScope(context, record);
+                        if (record.value() != null && record.value().has("category")) {
+                            category = record.value().get("category").asText("");
+                            break;
+                        }
+                    }
+                } catch (Exception ignored) {
+                    category = "";
+                }
+            }
+            FuzzStrategyRegistry.FuzzStrategy strategy = FuzzStrategyRegistry.forSink(category);
+            ObjectNode node = JSON.createObjectNode();
+            node.put("sinkId", sinkId);
+            node.put("sinkCategory", strategy.sinkCategory());
+            node.put("verificationStatus", "STATIC_INFERRED");
+            node.put("classification", "FACT");
+            ArrayNode templates = node.putArray("probeTemplates");
+            for (FuzzStrategyRegistry.ProbeTemplate template : strategy.probeTemplates()) {
+                ObjectNode row = templates.addObject();
+                row.put("name", template.name());
+                row.put("inputHint", template.inputHint());
+                row.put("expectedSignal", template.expectedSignal());
+            }
+            return List.of(new ToolOutput(OutputKind.FACT,
+                    "fuzz-strategy:" + sinkId, node));
         });
     }
 

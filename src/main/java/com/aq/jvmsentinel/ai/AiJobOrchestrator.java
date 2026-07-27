@@ -9,6 +9,7 @@ import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource.PathRunSource;
 import com.aq.jvmsentinel.analysis.CandidateRanker;
 import com.aq.jvmsentinel.analysis.CoverageGapProjector;
 import com.aq.jvmsentinel.analysis.contrast.ContrastLedger;
+import com.aq.jvmsentinel.analysis.contrast.LedgerDiff;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.ai.tool.ToolExecutionContext;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
@@ -586,14 +587,17 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         DYNAMIC_CONFIRMED 仅服务端 SQL 门禁可写。列出前置条件、证据、反证/缺口、影响和下一步验证。
                         结论必须包含 nextExperiments[]（可被 sandbox_probe 消费的入口×轨步骤）；组合链仅在共享
                         资源/身份/文件 PathRun 证据上候选；禁止 AUTH_GAP 综述替代下一步实验。
+                        结论 JSON 必须含 rootCause：{attackPath:[{layer,label,evidenceRefs[]}],rootCauseStatement,
+                        affectedComponent,cweId,fixSuggestion}；每个 attackPath step 的 evidenceRefs 不可空；
+                        cweId 优先采用 CWE_MAPPING_HINTS。
                         """;
                 case REPORT_GENERATION -> """
                         先查询 SCAN、ENTRY、SINK、EVIDENCE、PathRun、STATIC_CONTRAST 与 DYNAMIC_EVIDENCE。
                         输出完整中文 Markdown 报告，至少包含：# 审计报告；## 执行摘要与结论边界；
                         ## 入口—身份轨—PathRun 矩阵；## 静态·动态对照账本（须覆盖 CONTRAST_LEDGER 中全部
-                        STATIC_ONLY / 未匹配行摘要，不得省略）；## 多条推测链路（逐条写入口→轨→数据/状态转换
-                        →触发点→影响，并列证据、前置条件、置信度与未验证环节）；## 组合漏洞可能性；
-                        ## 动态证据与覆盖；## 发现与风险分级；## 未覆盖区域、限制与下一步验证。
+                        STATIC_ONLY / 未匹配行摘要，不得省略）；## 攻击路径（Attack Path，Mermaid flowchart，至少 3 步）；
+                        ## 迭代对比（Iteration Summary，消费 LEDGER_DIFF_SUMMARY）；## 多条推测链路；
+                        ## 组合漏洞可能性；## 动态证据与覆盖；## 发现与风险分级；## 未覆盖区域、限制与下一步验证。
                         STATIC_ONLY 只能写「静态候选/未动态确认」，不得写成已绕过或已确认。证据不足时明确写
                         “证据不足”，不得编造 sink、链路或漏洞。严格保留 STATIC_INFERRED、DYNAMIC_SUSPECTED、
                         DYNAMIC_CONFIRMED、VERIFIED、UNREACHED；不得把 DYNAMIC_CONFIRMED 宣传为生产实库已证实。
@@ -635,8 +639,9 @@ public final class AiJobOrchestrator implements AutoCloseable {
             case DYNAMIC_VERIFICATION -> """
                     Consume AUTH_BYPASS_FEASIBILITY / bypassPoCs. When that list is non-empty you MUST call
                     sandbox_probe for top-N PoCs (at least min(N,3), at most min(N,8)) with entry:* + techniqueId
-                    and authorizationHeader when present BEFORE any narrative conclusion. Do not skip to
-                    facts_search-only or narrative-only. Compare PathRun/HTTP/SQL/Agent observations.
+                    and authorizationHeader when present BEFORE any narrative conclusion. Call fuzz_strategy_get
+                    for SQL/COMMAND/JNDI sinks and use probeTemplates.inputHint as candidateInputs.
+                    Do not skip to facts_search-only or narrative-only. Compare PathRun/HTTP/SQL/Agent observations.
                     Zero sandbox_probe triggers DYNAMIC_POC_ATTEMPT_REQUIRED re-ask or server auto-enqueue.
                     Never change commands, network, mounts, UID, or budget. Never alone upgrade to
                     DYNAMIC_CONFIRMED or VERIFIED.
@@ -650,12 +655,15 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     STATIC_ONLY contrast rows must not be elevated to bypassed/confirmed.
                     DYNAMIC_CONFIRMED is server-gated for SQL only. Emit nextExperiments[] consumable by sandbox_probe;
                     combination chains only when PathRuns share identity/resource/file evidence — not AUTH_GAP essays.
+                    Conclusion JSON must include rootCause with attackPath steps that each carry non-empty evidenceRefs;
+                    prefer CWE_MAPPING_HINTS for cweId.
                     """;
             case REPORT_GENERATION -> """
                     Query SCAN, ENTRY, SINK, EVIDENCE, PathRun, STATIC_CONTRAST, and DYNAMIC_EVIDENCE first.
                     Produce a complete English Markdown report with: Executive Summary and Evidence Boundary;
                     Entrypoint-Track-PathRun Matrix; Static-Dynamic Contrast Ledger (must cover every STATIC_ONLY /
-                    unmatched CONTRAST_LEDGER row); Multiple Hypothesized Paths; Combined Vulnerability Possibilities;
+                    unmatched CONTRAST_LEDGER row); Attack Path (Mermaid flowchart, >=3 steps); Iteration Summary
+                    (consume LEDGER_DIFF_SUMMARY); Multiple Hypothesized Paths; Combined Vulnerability Possibilities;
                     Dynamic Evidence and Coverage; Findings and Severity; Gaps, Limitations, and Next Validation Steps.
                     STATIC_ONLY may only be described as static-candidate / not dynamically confirmed — never bypassed.
                     Preserve STATIC_INFERRED / DYNAMIC_SUSPECTED / DYNAMIC_CONFIRMED / VERIFIED / UNREACHED.
@@ -747,11 +755,71 @@ public final class AiJobOrchestrator implements AutoCloseable {
         if (!authConfirm.isBlank()) prompt.append('\n').append(authConfirm);
         String contrast = contrastLedgerContext(job, language);
         if (!contrast.isBlank()) prompt.append('\n').append(contrast);
+        String ledgerDiff = ledgerDiffContext(job, language);
+        if (!ledgerDiff.isBlank()) prompt.append('\n').append(ledgerDiff);
+        String cweHints = cweMappingHintsContext(job, language);
+        if (!cweHints.isBlank()) prompt.append('\n').append(cweHints);
         String gaps = coverageGapContext(job, language);
         if (!gaps.isBlank()) prompt.append('\n').append(gaps);
         String prior = priorInferenceContext(job, language);
         if (!prior.isBlank()) prompt.append('\n').append(prior);
         return prompt.toString();
+    }
+
+    private String cweMappingHintsContext(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job.scanId() == null || job.role() != AgentRole.VULNERABILITY_TRIAGE) return "";
+        try {
+            ControlPlaneStore.ScanRecord scan = store.requireScan(job.scanId());
+            StringBuilder block = new StringBuilder();
+            block.append(language == AiOutputLanguage.ZH_CN
+                    ? "CWE_MAPPING_HINTS（服务端静态映射；非 VERIFIED）：\n"
+                    : "CWE_MAPPING_HINTS (server static mapping; not VERIFIED):\n");
+            int emitted = 0;
+            for (ApiDtos.SinkDto sink : scan.dto().sinks()) {
+                String cwe = com.aq.jvmsentinel.analysis.CweMapper.cweMappingFor(sink.category());
+                if (cwe == null) continue;
+                block.append("- sinkId=").append(sink.id())
+                        .append(" category=").append(sink.category())
+                        .append(" cweId=").append(cwe).append('\n');
+                if (++emitted >= 16) break;
+            }
+            if (emitted == 0) {
+                block.append(language == AiOutputLanguage.ZH_CN ? "- （空）\n" : "- (empty)\n");
+            }
+            return block.toString();
+        } catch (RuntimeException ignored) {
+            return "";
+        }
+    }
+
+    private String ledgerDiffContext(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job.scanId() == null || job.role() != AgentRole.REPORT_GENERATION) return "";
+        try {
+            ControlPlaneStore.ScanRecord scan = store.requireScan(job.scanId());
+            List<ApiDtos.PathRunDto> runs = loadPathRuns(job);
+            ContrastLedger.Ledger current = ContrastLedger.build(
+                    scan.dto().entries(), scan.dto().sinks(), scan.evidence(), runs);
+            if (current.roundIndex() <= 0) return "";
+            // Synthetic prior ledger: drop branch coverage to simulate previous round.
+            List<ApiDtos.PathRunDto> priorRuns = runs.stream()
+                    .map(run -> new ApiDtos.PathRunDto(
+                            run.schemaVersion(), run.pathRunId(), run.scanId(), run.entrypointRef(),
+                            run.track(), run.attemptId(), run.experimentPlanId(), run.method(),
+                            run.contentType(), run.requestSummary(), run.outcomeClass(),
+                            run.httpStatus(), run.entryHit(), run.parameterBound(),
+                            run.sqlEvents(), run.stopReason(), run.verificationStatus(),
+                            run.evidenceRefs(), run.identityProvenance(), run.identityPrecondition(),
+                            Map.of()))
+                    .toList();
+            ContrastLedger.Ledger previous = ContrastLedger.build(
+                    scan.dto().entries(), scan.dto().sinks(), scan.evidence(), priorRuns);
+            LedgerDiff.LedgerDiffResult diff = LedgerDiff.diff(previous, current);
+            return LedgerDiff.formatSummary(diff, language == AiOutputLanguage.EN);
+        } catch (RuntimeException ignored) {
+            return "";
+        }
     }
 
     private String coverageGapContext(

@@ -50,6 +50,15 @@ public record BytecodeFactIndex(
         return taintPaths;
     }
 
+    /**
+     * Bounded graph projection over {@link #interproceduralTaintPaths()}.
+     * Implementation lives in {@code com.aq.jvmsentinel.analysis.TaintGraphProjector}
+     * to avoid a model→analysis package cycle; this method is a stable call site.
+     */
+    public com.aq.jvmsentinel.analysis.TaintGraph taintGraph() {
+        return com.aq.jvmsentinel.analysis.TaintGraphProjector.project(taintPaths);
+    }
+
     private static <T> List<T> copy(List<T> values) {
         return List.copyOf(values == null ? List.of() : values);
     }

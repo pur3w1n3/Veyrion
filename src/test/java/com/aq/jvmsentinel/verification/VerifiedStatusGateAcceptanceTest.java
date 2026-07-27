@@ -37,9 +37,22 @@ public final class VerifiedStatusGateAcceptanceTest {
         VerifiedStatusGate.Decision hardened = VerifiedStatusGate.evaluate(
                 WorkerCapability.HARDENED_GVISOR, release, replay);
         check(!hardened.allowed(), "VERIFIED gate remains scaffolding-closed");
-        check("VERIFIED_GATE_NOT_OPEN".equals(hardened.reasonCode()), "not-open reason");
+        check("ATTESTATION_PATH_UNSET".equals(hardened.reasonCode())
+                        || "VERIFIED_GATE_NOT_OPEN".equals(hardened.reasonCode())
+                        || "ESCAPE_ATTESTATION_REQUIRED".equals(hardened.reasonCode()),
+                "not-open / attestation-required reason, got " + hardened.reasonCode());
         check(VerificationStatus.DYNAMIC_SUSPECTED.name().equals(hardened.verificationStatus()),
                 "hardened pending stays DYNAMIC_SUSPECTED");
+
+        // Even with a synthetic "present" attestation view, VERIFIED stays closed.
+        EscapeSuiteAttestation.AttestationView present = new EscapeSuiteAttestation.AttestationView(
+                true, true, WorkerCapability.HARDENED_GVISOR, "file:escape.txt",
+                "ATTESTATION_PRESENT_BUT_GATE_CLOSED");
+        VerifiedStatusGate.Decision withAttestation = VerifiedStatusGate.evaluate(
+                WorkerCapability.HARDENED_GVISOR, release, replay, present);
+        check(!withAttestation.allowed(), "attestation present still fail-closed");
+        check("VERIFIED_GATE_NOT_OPEN".equals(withAttestation.reasonCode()),
+                "scaffold reason VERIFIED_GATE_NOT_OPEN");
 
         VerifiedStatusGate.Decision noRelease = VerifiedStatusGate.evaluate(
                 WorkerCapability.HARDENED_GVISOR, null, replay);

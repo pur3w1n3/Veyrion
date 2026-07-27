@@ -20,7 +20,10 @@ public record StaticContrastRow(
         String stopReason,
         boolean truncated,
         String snapshotId,
-        int roundIndex
+        int roundIndex,
+        int firstSeenRound,
+        int lastHitRound,
+        int hitCount
 ) {
     public StaticContrastRow(
             String rowId, String sinkId, String category, String sinkSymbol,
@@ -28,7 +31,19 @@ public record StaticContrastRow(
             ContrastStatus contrastStatus, List<String> pathRunRefs,
             String stopReason, boolean truncated) {
         this(rowId, sinkId, category, sinkSymbol, entryRefs, taintPathId, track,
-                contrastStatus, pathRunRefs, stopReason, truncated, "", 0);
+                contrastStatus, pathRunRefs, stopReason, truncated, "", 0, 0, 0, 0);
+    }
+
+    public StaticContrastRow(
+            String rowId, String sinkId, String category, String sinkSymbol,
+            List<String> entryRefs, String taintPathId, String track,
+            ContrastStatus contrastStatus, List<String> pathRunRefs,
+            String stopReason, boolean truncated, String snapshotId, int roundIndex) {
+        this(rowId, sinkId, category, sinkSymbol, entryRefs, taintPathId, track,
+                contrastStatus, pathRunRefs, stopReason, truncated, snapshotId, roundIndex,
+                roundIndex,
+                isHit(contrastStatus) ? roundIndex : 0,
+                isHit(contrastStatus) ? 1 : 0);
     }
 
     public StaticContrastRow {
@@ -44,6 +59,9 @@ public record StaticContrastRow(
         stopReason = stopReason == null ? "" : stopReason;
         snapshotId = snapshotId == null ? "" : snapshotId;
         if (roundIndex < 0) throw new IllegalArgumentException("roundIndex must not be negative");
+        if (firstSeenRound < 0) throw new IllegalArgumentException("firstSeenRound must not be negative");
+        if (lastHitRound < 0) throw new IllegalArgumentException("lastHitRound must not be negative");
+        if (hitCount < 0) throw new IllegalArgumentException("hitCount must not be negative");
     }
 
     public boolean hasTaintPath() {
@@ -52,5 +70,11 @@ public record StaticContrastRow(
 
     public boolean isStaticOnly() {
         return contrastStatus == ContrastStatus.STATIC_ONLY;
+    }
+
+    private static boolean isHit(ContrastStatus status) {
+        return status == ContrastStatus.MATCHED
+                || status == ContrastStatus.PARTIAL
+                || status == ContrastStatus.DYNAMIC_REACHED;
     }
 }

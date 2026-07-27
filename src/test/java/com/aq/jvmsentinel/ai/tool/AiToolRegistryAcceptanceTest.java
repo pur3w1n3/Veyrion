@@ -70,10 +70,11 @@ public final class AiToolRegistryAcceptanceTest {
                         .equals(Set.of("facts_search", "evidence_get", "plan_propose", "code_query")),
                 "auth-analysis allowlist");
         check(names(registry, AgentRole.PATH_EXPLORATION)
-                        .equals(Set.of("facts_search", "evidence_get", "plan_propose")),
+                        .equals(Set.of("facts_search", "evidence_get", "plan_propose", "code_query")),
                 "path-exploration allowlist");
         check(names(registry, AgentRole.DYNAMIC_VERIFICATION)
-                        .equals(Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe")),
+                        .equals(Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe",
+                                "fuzz_strategy_get")),
                 "dynamic-verification allowlist");
         check(names(registry, AgentRole.VULNERABILITY_TRIAGE)
                         .equals(Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe", "code_query")),

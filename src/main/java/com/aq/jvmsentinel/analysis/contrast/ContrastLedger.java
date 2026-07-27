@@ -267,6 +267,9 @@ public final class ContrastLedger {
         node.put("truncated", row.truncated());
         node.put("snapshotId", row.snapshotId());
         node.put("roundIndex", row.roundIndex());
+        node.put("firstSeenRound", row.firstSeenRound());
+        node.put("lastHitRound", row.lastHitRound());
+        node.put("hitCount", row.hitCount());
         node.put("verificationStatus", "STATIC_INFERRED");
         node.put("classification", "INFERENCE");
         ArrayNode entries = node.putArray("entryRefs");

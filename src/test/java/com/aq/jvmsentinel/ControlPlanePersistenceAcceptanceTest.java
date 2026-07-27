@@ -242,8 +242,15 @@ public final class ControlPlanePersistenceAcceptanceTest {
                     "provider_credentials", "providers", "operator_tokens", "operators",
                     "dynamic_probe_plans", "audit_pipeline_runs", "control_plane_idempotency",
                     "worker_trace_chunks", "worker_tasks", "artifact_upload_sessions", "sse_events",
-                    "path_runs", "experiment_plans", "contrast_ledger_snapshots")) {
+                    "path_runs", "experiment_plans", "contrast_ledger_snapshots", "taint_graphs",
+                    "verified_findings")) {
                 statement.executeUpdate("DROP TABLE IF EXISTS " + table);
+            }
+            // Strip additive columns so V018/V019 re-apply cleanly on the V001 base tables.
+            try {
+                statement.executeUpdate("ALTER TABLE findings DROP COLUMN root_cause_json");
+            } catch (Exception ignored) {
+                // Column absent on older shapes.
             }
             statement.executeUpdate("DELETE FROM schema_migrations WHERE version>=2");
         }
@@ -251,7 +258,7 @@ public final class ControlPlanePersistenceAcceptanceTest {
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + upgradeDatabase);
              var statement = connection.createStatement();
              var rows = statement.executeQuery("SELECT count(*) FROM schema_migrations")) {
-            check(rows.next() && rows.getInt(1) == 16, "V001 database upgrades through ordered V016");
+            check(rows.next() && rows.getInt(1) == 20, "V001 database upgrades through ordered V020");
         }
         expect(IllegalArgumentException.class,
                 () -> ControlPlaneStore.sqlite(root.getParent().resolve("outside.db"), root),

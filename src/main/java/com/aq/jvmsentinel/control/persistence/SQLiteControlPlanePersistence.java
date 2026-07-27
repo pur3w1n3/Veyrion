@@ -47,6 +47,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -78,7 +79,11 @@ public final class SQLiteControlPlanePersistence {
             "db/migration/V013__persistent_path_runs.sql",
             "db/migration/V014__persistent_experiment_plans.sql",
             "db/migration/V015__add_schema_version.sql",
-            "db/migration/V016__branch_hit_map_and_contrast_ledger_snapshots.sql");
+            "db/migration/V016__branch_hit_map_and_contrast_ledger_snapshots.sql",
+            "db/migration/V017__taint_graph_and_ledger_diff.sql",
+            "db/migration/V018__fuzz_strategy.sql",
+            "db/migration/V019__root_cause.sql",
+            "db/migration/V020__verified_findings.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 
@@ -1189,6 +1194,12 @@ public final class SQLiteControlPlanePersistence {
                         }
                         try (Statement statement = connection.createStatement()) {
                             statement.execute(statementSql);
+                        } catch (SQLException alreadyApplied) {
+                            // Idempotent ADD COLUMN / CREATE INDEX for upgrade fixtures
+                            // that keep tables while replaying later migrations.
+                            if (!isIdempotentSchemaReplayError(statementSql, alreadyApplied)) {
+                                throw alreadyApplied;
+                            }
                         }
                     }
                     update(connection, "INSERT INTO schema_migrations(version,name,checksum,applied_at) VALUES(?,?,?,?)",
@@ -1259,6 +1270,19 @@ public final class SQLiteControlPlanePersistence {
     private static boolean isForeignKeysPragma(String statementSql) {
         String normalized = statementSql.replaceAll("\\s+", " ").trim();
         return normalized.regionMatches(true, 0, "PRAGMA foreign_keys", 0, "PRAGMA foreign_keys".length());
+    }
+
+    private static boolean isIdempotentSchemaReplayError(String statementSql, SQLException failure) {
+        if (statementSql == null || failure == null) return false;
+        String normalized = statementSql.replaceAll("\\s+", " ").trim().toUpperCase(Locale.ROOT);
+        String message = failure.getMessage();
+        if (message == null) return false;
+        String lower = message.toLowerCase(Locale.ROOT);
+        if (normalized.startsWith("ALTER TABLE") && normalized.contains("ADD COLUMN")
+                && lower.contains("duplicate column name")) {
+            return true;
+        }
+        return normalized.startsWith("CREATE INDEX") && lower.contains("already exists");
     }
 
     private void executeUpdate(String sql, Object... values) {

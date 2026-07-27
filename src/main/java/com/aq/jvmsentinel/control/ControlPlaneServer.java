@@ -1,5 +1,8 @@
 package com.aq.jvmsentinel.control;
 
+import com.aq.jvmsentinel.control.routing.ControlPlaneRouteActions;
+import com.aq.jvmsentinel.control.routing.RouteTable;
+
 import com.aq.jvmsentinel.analysis.CandidateRanker;
 import com.aq.jvmsentinel.analysis.PreAnalysisResult;
 import com.aq.jvmsentinel.analysis.PreAnalysisInput;
@@ -122,7 +125,7 @@ import java.util.jar.JarFile;
  * authorized sandbox loopback. The default bind address is loopback and all
  * mutating routes require the configured local authorization token.</p>
  */
-public final class ControlPlaneServer implements AutoCloseable {
+public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRouteActions {
     private static final ObjectMapper JSON = new ObjectMapper();
     public static final String API_PREFIX = "/api/v1";
     public static final String DEFAULT_TOKEN = "local-demo";
@@ -528,226 +531,14 @@ public final class ControlPlaneServer implements AutoCloseable {
     }
 
     private void route(HttpExchange exchange, List<String> path, String requestId) throws IOException {
-        String method = exchange.getRequestMethod().toUpperCase(Locale.ROOT);
-        if (path.size() == 1 && "health".equals(path.get(0)) && "GET".equals(method)) {
-            sendJson(exchange, 200, health());
-            return;
+        try {
+            RouteTable.dispatch(this, exchange, path);
+        } catch (ControlPlaneRouteActions.RouteException routeError) {
+            throw new ApiException(routeError.status, routeError.code, routeError.getMessage());
         }
-        if (path.size() == 1 && "projects".equals(path.get(0))) {
-            if ("POST".equals(method)) { requirePermission(exchange, Permission.MANAGE_PROJECTS); createProject(exchange); return; }
-            if ("GET".equals(method)) { listProjects(exchange); return; }
-        }
-        if (path.size() == 2 && "projects".equals(path.get(0))) {
-            if ("GET".equals(method)) { sendProject(exchange, path.get(1)); return; }
-            if ("PATCH".equals(method)) {
-                requirePermission(exchange, Permission.MANAGE_PROJECTS);
-                updateProject(exchange, path.get(1));
-                return;
-            }
-            if ("DELETE".equals(method)) {
-                requirePermission(exchange, Permission.MANAGE_PROJECTS);
-                deleteProject(exchange, path.get(1));
-                return;
-            }
-        }
-        if (path.size() == 3 && "projects".equals(path.get(0)) && "artifacts".equals(path.get(2))) {
-            if ("POST".equals(method)) { requirePermission(exchange, Permission.MANAGE_PROJECTS); registerArtifact(exchange, path.get(1)); return; }
-            if ("GET".equals(method)) { listArtifacts(exchange, path.get(1)); return; }
-        }
-        if (path.size() == 3 && "projects".equals(path.get(0)) && "artifact-uploads".equals(path.get(2))
-                && "POST".equals(method)) {
-            requirePermission(exchange, Permission.MANAGE_PROJECTS);
-            initializeArtifactUpload(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 4 && "projects".equals(path.get(0)) && "artifact-uploads".equals(path.get(2))) {
-            requirePermission(exchange, Permission.MANAGE_PROJECTS);
-            if ("PUT".equals(method)) {
-                appendArtifactUpload(exchange, path.get(1), path.get(3));
-                return;
-            }
-            if ("DELETE".equals(method)) {
-                cancelArtifactUpload(exchange, path.get(1), path.get(3));
-                return;
-            }
-        }
-        if (path.size() == 5 && "projects".equals(path.get(0)) && "artifact-uploads".equals(path.get(2))
-                && "complete".equals(path.get(4)) && "POST".equals(method)) {
-            requirePermission(exchange, Permission.MANAGE_PROJECTS);
-            completeArtifactUpload(exchange, path.get(1), path.get(3));
-            return;
-        }
-        if (path.size() == 3 && "projects".equals(path.get(0)) && "entries".equals(path.get(2))
-                && "GET".equals(method)) {
-            listEntries(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 3 && "projects".equals(path.get(0)) && "audit-runs".equals(path.get(2))
-                && "POST".equals(method)) {
-            requirePermission(exchange, Permission.RUN_SCANS);
-            requirePermission(exchange, Permission.RUN_AI_JOBS);
-            startAudit(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 3 && "projects".equals(path.get(0)) && "audit-stage-retries".equals(path.get(2))
-                && "POST".equals(method)) {
-            requirePermission(exchange, Permission.RUN_SCANS);
-            requirePermission(exchange, Permission.RUN_AI_JOBS);
-            retryAuditStage(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 3 && "projects".equals(path.get(0)) && "scans".equals(path.get(2))) {
-            if ("POST".equals(method)) { requirePermission(exchange, Permission.RUN_SCANS); createScan(exchange, path.get(1)); return; }
-            if ("GET".equals(method)) { listScans(exchange, path.get(1)); return; }
-        }
-        if (path.size() == 3 && "projects".equals(path.get(0)) && "dashboard".equals(path.get(2))
-                && "GET".equals(method)) {
-            dashboard(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 3 && "projects".equals(path.get(0)) && "evidence".equals(path.get(2))
-                && "GET".equals(method)) {
-            listEvidence(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 2 && "scans".equals(path.get(0))) {
-            if ("GET".equals(method)) { sendScan(exchange, path.get(1)); return; }
-        }
-        if (path.size() == 3 && "scans".equals(path.get(0)) && "events".equals(path.get(2))
-                && "GET".equals(method)) {
-            streamEvents(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 3 && "scans".equals(path.get(0)) && "dynamic-tasks".equals(path.get(2))) {
-            requirePermission(exchange, "GET".equals(method) ? Permission.READ_AUDIT : Permission.RUN_SCANS);
-            if ("GET".equals(method)) { listDynamicTasks(exchange, path.get(1)); return; }
-            if ("POST".equals(method)) { createDynamicTask(exchange, path.get(1)); return; }
-        }
-        if (path.size() == 3 && "scans".equals(path.get(0)) && "paths".equals(path.get(2))
-                && "GET".equals(method)) {
-            listPaths(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 3 && "scans".equals(path.get(0)) && "evidence".equals(path.get(2))
-                && "GET".equals(method)) {
-            listScanEvidence(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 3 && "scans".equals(path.get(0)) && "findings".equals(path.get(2))
-                && "GET".equals(method)) {
-            listScanFindings(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 4 && "scans".equals(path.get(0)) && "paths".equals(path.get(2))
-                && "GET".equals(method)) {
-            sendPath(exchange, path.get(1), path.get(3));
-            return;
-        }
-        if (path.size() == 2 && "findings".equals(path.get(0)) && "GET".equals(method)) {
-            sendFinding(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 3 && "findings".equals(path.get(0)) && "replay".equals(path.get(2))) {
-            if ("POST".equals(method)) { requirePermission(exchange, Permission.RUN_SCANS); replayFinding(exchange, path.get(1)); return; }
-        }
-        if (path.size() == 5 && "scans".equals(path.get(0)) && "entries".equals(path.get(2))
-                && "focus-probe".equals(path.get(4)) && "POST".equals(method)) {
-            requirePermission(exchange, Permission.RUN_SCANS);
-            focusEntryProbe(exchange, path.get(1), path.get(3));
-            return;
-        }
-        if (path.size() == 5 && "scans".equals(path.get(0)) && "experiment-cards".equals(path.get(2))
-                && "replay".equals(path.get(4)) && "POST".equals(method)) {
-            requirePermission(exchange, Permission.RUN_SCANS);
-            replaySqlExperimentCard(exchange, path.get(1), path.get(3));
-            return;
-        }
-        if (path.size() == 1 && "operators".equals(path.get(0))) {
-            requirePermission(exchange, Permission.MANAGE_OPERATOR_ACCESS);
-            if ("GET".equals(method)) { listOperators(exchange); return; }
-            if ("POST".equals(method)) { createOperator(exchange); return; }
-        }
-        if (path.size() == 2 && "operators".equals(path.get(0)) && "PATCH".equals(method)) {
-            requirePermission(exchange, Permission.MANAGE_OPERATOR_ACCESS);
-            updateOperator(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 1 && "providers".equals(path.get(0))) {
-            requirePermission(exchange, "GET".equals(method)
-                    ? Permission.READ_SECURITY_CONFIGURATION : Permission.MANAGE_PROVIDERS);
-            if ("GET".equals(method)) { listProviders(exchange); return; }
-            if ("POST".equals(method)) { createProvider(exchange); return; }
-        }
-        if (path.size() == 2 && "providers".equals(path.get(0))) {
-            requirePermission(exchange, Permission.MANAGE_PROVIDERS);
-            if ("PATCH".equals(method)) { updateProvider(exchange, path.get(1)); return; }
-            if ("DELETE".equals(method)) { deleteProvider(exchange, path.get(1)); return; }
-        }
-        if (path.size() == 4 && "providers".equals(path.get(0))
-                && "models".equals(path.get(2)) && "refresh".equals(path.get(3))
-                && "POST".equals(method)) {
-            requirePermission(exchange, Permission.MANAGE_PROVIDERS);
-            refreshProviderModels(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 3 && "projects".equals(path.get(0))
-                && "role-assignments".equals(path.get(2)) && "GET".equals(method)) {
-            requirePermission(exchange, Permission.READ_SECURITY_CONFIGURATION);
-            listRoleAssignments(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 4 && "projects".equals(path.get(0))
-                && "role-assignments".equals(path.get(2))) {
-            if ("GET".equals(method)) {
-                requirePermission(exchange, Permission.READ_SECURITY_CONFIGURATION);
-                sendRoleAssignment(exchange, path.get(1), role(path.get(3)));
-                return;
-            }
-            requirePermission(exchange, Permission.ASSIGN_AGENT_ROLES);
-            if ("PATCH".equals(method)) { saveRoleAssignment(exchange, path.get(1), role(path.get(3))); return; }
-            if ("DELETE".equals(method)) { deleteRoleAssignment(exchange, path.get(1), role(path.get(3))); return; }
-        }
-        if (path.size() == 3 && "projects".equals(path.get(0))
-                && "ai-jobs".equals(path.get(2))) {
-            requirePermission(exchange, "GET".equals(method) ? Permission.READ_SECURITY_CONFIGURATION : Permission.RUN_AI_JOBS);
-            if ("GET".equals(method)) { listAiJobs(exchange, path.get(1)); return; }
-            if ("POST".equals(method)) { createAiJob(exchange, path.get(1)); return; }
-        }
-        if (path.size() == 3 && "ai-jobs".equals(path.get(0))
-                && "events".equals(path.get(2)) && "GET".equals(method)) {
-            requirePermission(exchange, Permission.READ_SECURITY_CONFIGURATION);
-            listAiJobEvents(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 2 && "ai-jobs".equals(path.get(0))) {
-            requirePermission(exchange, "GET".equals(method) ? Permission.READ_SECURITY_CONFIGURATION : Permission.RUN_AI_JOBS);
-            if ("GET".equals(method)) { sendAiJob(exchange, path.get(1)); return; }
-            if ("PATCH".equals(method)) { updateAiJob(exchange, path.get(1)); return; }
-            if ("DELETE".equals(method)) { deleteAiJob(exchange, path.get(1)); return; }
-        }
-        if (path.size() == 1 && "audit-events".equals(path.get(0)) && "GET".equals(method)) {
-            requirePermission(exchange, Permission.READ_AUDIT);
-            listAudit(exchange, query(exchange.getRequestURI(), "projectId"));
-            return;
-        }
-        if (path.size() == 3 && "projects".equals(path.get(0))
-                && "audit-events".equals(path.get(2)) && "GET".equals(method)) {
-            requirePermission(exchange, Permission.READ_AUDIT);
-            listAudit(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 2 && "evidence".equals(path.get(0)) && "GET".equals(method)) {
-            sendEvidence(exchange, path.get(1));
-            return;
-        }
-        if (path.size() == 1 && "attack-chains".equals(path.get(0)) && "GET".equals(method)) {
-            listChains(exchange);
-            return;
-        }
-        throw new ApiException(405, "METHOD_NOT_ALLOWED", "route or method is not allowed");
     }
 
-    private synchronized void createProject(HttpExchange exchange) throws IOException {
+    @Override public synchronized void createProject(HttpExchange exchange) throws IOException {
         String idempotencyHeader = requestIdempotencyKey(exchange);
         Map<String, Object> body = readObject(exchange);
         String payload = JsonCodec.stringify(body);
@@ -775,11 +566,11 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 201, projectMap(project));
     }
 
-    private void sendProject(HttpExchange exchange, String projectId) throws IOException {
+    @Override public void sendProject(HttpExchange exchange, String projectId) throws IOException {
         sendJson(exchange, 200, projectMap(store.requireProject(projectId)));
     }
 
-    private void listProjects(HttpExchange exchange) throws IOException {
+    @Override public void listProjects(HttpExchange exchange) throws IOException {
         List<Object> projects = new ArrayList<>();
         for (ControlPlaneStore.ProjectRecord project : store.projects()) projects.add(projectMap(project));
         Map<String, Object> result = new LinkedHashMap<>();
@@ -789,7 +580,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, result);
     }
 
-    private synchronized void updateProject(HttpExchange exchange, String projectId) throws IOException {
+    @Override public synchronized void updateProject(HttpExchange exchange, String projectId) throws IOException {
         Map<String, Object> body = readObject(exchange);
         for (String field : body.keySet()) {
             if (!Set.of("name", "status").contains(field)) {
@@ -803,18 +594,18 @@ public final class ControlPlaneServer implements AutoCloseable {
                 Instant.now(clock).toString(), actor(exchange).operatorId())));
     }
 
-    private synchronized void deleteProject(HttpExchange exchange, String projectId) throws IOException {
+    @Override public synchronized void deleteProject(HttpExchange exchange, String projectId) throws IOException {
         store.softDeleteProject(projectId, Instant.now(clock).toString(), actor(exchange).operatorId());
         sendEmpty(exchange, 204);
     }
 
-    private void listOperators(HttpExchange exchange) throws IOException {
+    @Override public void listOperators(HttpExchange exchange) throws IOException {
         List<Object> items = new ArrayList<>();
         for (var operator : store.operators()) items.add(operatorMap(operator, null));
         sendJson(exchange, 200, stringEnvelope("operators", items));
     }
 
-    private void createOperator(HttpExchange exchange) throws IOException {
+    @Override public void createOperator(HttpExchange exchange) throws IOException {
         Map<String, Object> body = readObject(exchange);
         String username = optionalText(body, "username", null);
         OperatorRole role = operatorRole(optionalText(body, "role", null));
@@ -824,7 +615,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 201, operatorMap(created.operator(), created.personalAccessToken()));
     }
 
-    private void updateOperator(HttpExchange exchange, String operatorId) throws IOException {
+    @Override public void updateOperator(HttpExchange exchange, String operatorId) throws IOException {
         Map<String, Object> body = readObject(exchange);
         OperatorRole role = operatorRole(optionalText(body, "role", null));
         boolean revoke = optionalBoolean(body, "revokeTokens", false);
@@ -840,13 +631,13 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, operatorMap(updated, null));
     }
 
-    private void listProviders(HttpExchange exchange) throws IOException {
+    @Override public void listProviders(HttpExchange exchange) throws IOException {
         List<Object> items = new ArrayList<>();
         for (var provider : store.providers()) items.add(providerMap(provider));
         sendJson(exchange, 200, stringEnvelope("providers", items));
     }
 
-    private void createProvider(HttpExchange exchange) throws IOException {
+    @Override public void createProvider(HttpExchange exchange) throws IOException {
         Map<String, Object> body = readObject(exchange);
         String id = optionalText(body, "providerId",
                 "provider-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
@@ -854,7 +645,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 201, providerMap(saved));
     }
 
-    private void updateProvider(HttpExchange exchange, String providerId) throws IOException {
+    @Override public void updateProvider(HttpExchange exchange, String providerId) throws IOException {
         var existing = store.requireProvider(providerId);
         Map<String, Object> body = readObject(exchange);
         sendJson(exchange, 200, providerMap(saveProviderBody(exchange, providerId, body, existing)));
@@ -881,12 +672,12 @@ public final class ControlPlaneServer implements AutoCloseable {
                 actor(exchange).operatorId(), Instant.now(clock).toString());
     }
 
-    private void deleteProvider(HttpExchange exchange, String providerId) throws IOException {
+    @Override public void deleteProvider(HttpExchange exchange, String providerId) throws IOException {
         store.deleteProvider(providerId, actor(exchange).operatorId(), Instant.now(clock).toString());
         sendEmpty(exchange, 204);
     }
 
-    private void refreshProviderModels(HttpExchange exchange, String providerId) throws IOException {
+    @Override public void refreshProviderModels(HttpExchange exchange, String providerId) throws IOException {
         var provider = store.requireProvider(providerId);
         if (!provider.enabled()) {
             throw new ApiException(409, "PROVIDER_DISABLED",
@@ -934,20 +725,20 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, inventoryMap(inventory));
     }
 
-    private void listRoleAssignments(HttpExchange exchange, String projectId) throws IOException {
+    @Override public void listRoleAssignments(HttpExchange exchange, String projectId) throws IOException {
         List<Object> items = new ArrayList<>();
         for (var binding : store.roleBindings(projectId)) items.add(roleBindingMap(binding));
         sendJson(exchange, 200, stringEnvelope("roleAssignments", items));
     }
 
-    private void sendRoleAssignment(HttpExchange exchange, String projectId, AgentRole role) throws IOException {
+    @Override public void sendRoleAssignment(HttpExchange exchange, String projectId, AgentRole role) throws IOException {
         var binding = store.roleBindings(projectId).stream().filter(value -> value.role() == role)
                 .findFirst().orElseThrow(() -> new ControlPlaneStore.MissingRecordException(
                         "role assignment not found"));
         sendJson(exchange, 200, roleBindingMap(binding));
     }
 
-    private void saveRoleAssignment(HttpExchange exchange, String projectId, AgentRole role) throws IOException {
+    @Override public void saveRoleAssignment(HttpExchange exchange, String projectId, AgentRole role) throws IOException {
         Map<String, Object> body = readObject(exchange);
         String providerId = optionalText(body, "providerId", null);
         if (providerId == null) throw new ApiException(400, "PROVIDER_REQUIRED", "providerId is required");
@@ -960,18 +751,18 @@ public final class ControlPlaneServer implements AutoCloseable {
                 promptZh, promptEn, actor(exchange).operatorId(), Instant.now(clock).toString())));
     }
 
-    private void deleteRoleAssignment(HttpExchange exchange, String projectId, AgentRole role) throws IOException {
+    @Override public void deleteRoleAssignment(HttpExchange exchange, String projectId, AgentRole role) throws IOException {
         store.deleteRoleBinding(projectId, role, actor(exchange).operatorId(), Instant.now(clock).toString());
         sendEmpty(exchange, 204);
     }
 
-    private void listAiJobs(HttpExchange exchange, String projectId) throws IOException {
+    @Override public void listAiJobs(HttpExchange exchange, String projectId) throws IOException {
         List<Object> items = new ArrayList<>();
         for (var job : store.aiJobs(projectId)) items.add(aiJobMap(job));
         sendJson(exchange, 200, stringEnvelope("aiJobs", items));
     }
 
-    private void createAiJob(HttpExchange exchange, String projectId) throws IOException {
+    @Override public void createAiJob(HttpExchange exchange, String projectId) throws IOException {
         Map<String, Object> body = readObject(exchange);
         for (String field : body.keySet()) {
             if (!Set.of("role", "scanId", "authorized", "outputLanguage").contains(field)) {
@@ -994,11 +785,11 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 202, aiJobMap(job));
     }
 
-    private void sendAiJob(HttpExchange exchange, String jobId) throws IOException {
+    @Override public void sendAiJob(HttpExchange exchange, String jobId) throws IOException {
         sendJson(exchange, 200, aiJobMap(store.requireAiJob(jobId)));
     }
 
-    private void listAiJobEvents(HttpExchange exchange, String jobId) throws IOException {
+    @Override public void listAiJobEvents(HttpExchange exchange, String jobId) throws IOException {
         var job = store.requireAiJob(jobId);
         var events = store.aiJobEvents(jobId);
         if (events.size() > MAX_AI_JOB_EVENTS) {
@@ -1026,7 +817,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, response);
     }
 
-    private void updateAiJob(HttpExchange exchange, String jobId) throws IOException {
+    @Override public void updateAiJob(HttpExchange exchange, String jobId) throws IOException {
         String action = optionalText(readObject(exchange), "action", null);
         if ("retry".equals(action)) {
             throw new ApiException(409, "RETRY_REQUIRES_NEW_AUTHORIZATION",
@@ -1038,7 +829,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, aiJobMap(cancelled));
     }
 
-    private void deleteAiJob(HttpExchange exchange, String jobId) throws IOException {
+    @Override public void deleteAiJob(HttpExchange exchange, String jobId) throws IOException {
         var existing = store.requireAiJob(jobId);
         if ("QUEUED".equals(existing.status()) || "RUNNING".equals(existing.status())) {
             throw new ApiException(409, "AI_JOB_ACTIVE",
@@ -1048,13 +839,13 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendEmpty(exchange, 204);
     }
 
-    private void listAudit(HttpExchange exchange, String projectId) throws IOException {
+    @Override public void listAudit(HttpExchange exchange, String projectId) throws IOException {
         List<Object> items = new ArrayList<>();
         for (var event : store.auditEvents(projectId)) items.add(auditMap(event));
         sendJson(exchange, 200, stringEnvelope("auditEvents", items));
     }
 
-    private synchronized void registerArtifact(HttpExchange exchange, String projectId) throws IOException {
+    @Override public synchronized void registerArtifact(HttpExchange exchange, String projectId) throws IOException {
         ControlPlaneStore.ProjectRecord project = store.requireProject(projectId);
         String idempotencyHeader = requestIdempotencyKey(exchange);
         ensureIdempotencyCapacity(idempotentArtifacts,
@@ -1092,7 +883,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 201, artifactMap(artifactDto(projectId, descriptor)));
     }
 
-    private void initializeArtifactUpload(HttpExchange exchange, String projectId) throws IOException {
+    @Override public void initializeArtifactUpload(HttpExchange exchange, String projectId) throws IOException {
         store.requireProject(projectId);
         Map<String, Object> body = readObject(exchange);
         String fileName = optionalText(body, "fileName", null);
@@ -1107,7 +898,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 201, uploadSessionMap(session));
     }
 
-    private void appendArtifactUpload(HttpExchange exchange, String projectId,
+    @Override public void appendArtifactUpload(HttpExchange exchange, String projectId,
                                       String uploadId) throws IOException {
         store.requireProject(projectId);
         String rawOffset = query(exchange.getRequestURI(), "offset");
@@ -1129,7 +920,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, uploadSessionMap(session));
     }
 
-    private void completeArtifactUpload(HttpExchange exchange, String projectId,
+    @Override public void completeArtifactUpload(HttpExchange exchange, String projectId,
                                         String uploadId) throws IOException {
         ControlPlaneStore.ProjectRecord project = store.requireProject(projectId);
         Map<String, Object> body = readObject(exchange);
@@ -1143,14 +934,14 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 201, artifactMap(artifactDto(projectId, descriptor)));
     }
 
-    private void cancelArtifactUpload(HttpExchange exchange, String projectId,
+    @Override public void cancelArtifactUpload(HttpExchange exchange, String projectId,
                                       String uploadId) throws IOException {
         store.requireProject(projectId);
         artifactUploadService.cancel(projectId, uploadId);
         sendEmpty(exchange, 204);
     }
 
-    private void listArtifacts(HttpExchange exchange, String projectId) throws IOException {
+    @Override public void listArtifacts(HttpExchange exchange, String projectId) throws IOException {
         ControlPlaneStore.ProjectRecord project = store.requireProject(projectId);
         List<Object> artifacts = new ArrayList<>();
         for (ArtifactDescriptor descriptor : store.artifacts(project)) artifacts.add(artifactMap(artifactDto(projectId, descriptor)));
@@ -1161,7 +952,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, result);
     }
 
-    private void listEntries(HttpExchange exchange, String projectId) throws IOException {
+    @Override public void listEntries(HttpExchange exchange, String projectId) throws IOException {
         ControlPlaneStore.ProjectRecord project = store.requireProject(projectId);
         String scanId = query(exchange.getRequestURI(), "scanId");
         ControlPlaneStore.ScanRecord scan = scanId == null ? latestScan(project) : store.scan(scanId);
@@ -1179,7 +970,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, envelope(scan, "entries", entries));
     }
 
-    private void listScans(HttpExchange exchange, String projectId) throws IOException {
+    @Override public void listScans(HttpExchange exchange, String projectId) throws IOException {
         ControlPlaneStore.ProjectRecord project = store.requireProject(projectId);
         List<ControlPlaneStore.ScanRecord> records = store.scansForProject(projectId);
         List<Object> scans = new ArrayList<>(records.size());
@@ -1196,7 +987,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, result);
     }
 
-    private synchronized void startAudit(HttpExchange exchange, String projectId) throws IOException {
+    @Override public synchronized void startAudit(HttpExchange exchange, String projectId) throws IOException {
         String key = requireIdempotencyKey(exchange);
         String replayKey = projectId + ":" + key;
         ensureIdempotencyCapacity(idempotentAuditRuns, replayKey);
@@ -1268,7 +1059,7 @@ public final class ControlPlaneServer implements AutoCloseable {
      * Re-arms the scan pipeline and re-enqueues one failed stage. Creates a new authorized
      * AI job / dynamic task; never mutates the failed record into success.
      */
-    private synchronized void retryAuditStage(HttpExchange exchange, String projectId) throws IOException {
+    @Override public synchronized void retryAuditStage(HttpExchange exchange, String projectId) throws IOException {
         Map<String, Object> body = readObject(exchange);
         for (String field : body.keySet()) {
             if (!Set.of("scanId", "stage", "authorized", "aiAuthorized", "outputLanguage").contains(field)) {
@@ -1378,7 +1169,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         return result;
     }
 
-    private synchronized void createScan(HttpExchange exchange, String projectId) throws IOException {
+    @Override public synchronized void createScan(HttpExchange exchange, String projectId) throws IOException {
         Map<String, Object> body = readObject(exchange);
         ScanStart started = createOrReplayScan(projectId, body, requestIdempotencyKey(exchange),
                 actor(exchange).operatorId());
@@ -1467,11 +1258,11 @@ public final class ControlPlaneServer implements AutoCloseable {
         return new ScanStart(scanRecord, false);
     }
 
-    private void sendScan(HttpExchange exchange, String scanId) throws IOException {
+    @Override public void sendScan(HttpExchange exchange, String scanId) throws IOException {
         sendJson(exchange, 200, scanMap(store.requireScan(scanId).dto()));
     }
 
-    private synchronized void createDynamicTask(HttpExchange exchange, String scanId) throws IOException {
+    @Override public synchronized void createDynamicTask(HttpExchange exchange, String scanId) throws IOException {
         String key = requireIdempotencyKey(exchange);
         String replayKey = scanId + ":" + key;
         if (!idempotentDynamicTasks.containsKey(replayKey)
@@ -1871,7 +1662,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         return snapshot;
     }
 
-    private void listDynamicTasks(HttpExchange exchange, String scanId) throws IOException {
+    @Override public void listDynamicTasks(HttpExchange exchange, String scanId) throws IOException {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         List<Object> tasks = workerApi.snapshots(scan.dto().projectId(), scanId).stream()
                 .map(this::dynamicTaskWithDiagnostic).map(value -> (Object) value).toList();
@@ -2055,12 +1846,12 @@ public final class ControlPlaneServer implements AutoCloseable {
         }
     }
 
-    private void streamEvents(HttpExchange exchange, String scanId) throws IOException {
+    @Override public void streamEvents(HttpExchange exchange, String scanId) throws IOException {
         store.requireScan(scanId);
         sseHub.open(exchange, scanId, exchange.getRequestHeaders().getFirst("Last-Event-ID"));
     }
 
-    private void listPaths(HttpExchange exchange, String scanId) throws IOException {
+    @Override public void listPaths(HttpExchange exchange, String scanId) throws IOException {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         List<Object> paths = new ArrayList<>();
         for (ApiDtos.PathDto path : scan.dto().paths()) paths.add(pathMap(path));
@@ -2068,7 +1859,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, envelope(scan, "paths", paths));
     }
 
-    private void sendPath(HttpExchange exchange, String scanId, String pathId) throws IOException {
+    @Override public void sendPath(HttpExchange exchange, String scanId, String pathId) throws IOException {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         for (ApiDtos.PathDto path : scan.dto().paths()) {
             if (path.pathId().equals(pathId)) { sendJson(exchange, 200, pathMap(path)); return; }
@@ -2079,7 +1870,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         throw new ApiException(404, "PATH_NOT_FOUND", "path not found");
     }
 
-    private void listScanEvidence(HttpExchange exchange, String scanId) throws IOException {
+    @Override public void listScanEvidence(HttpExchange exchange, String scanId) throws IOException {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         List<Object> items = new ArrayList<>();
         for (ApiDtos.EvidenceDto item : scan.evidence().values()) items.add(evidenceMap(item));
@@ -2087,20 +1878,20 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, envelope(scan, "evidence", items));
     }
 
-    private void listScanFindings(HttpExchange exchange, String scanId) throws IOException {
+    @Override public void listScanFindings(HttpExchange exchange, String scanId) throws IOException {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         List<Object> items = new ArrayList<>();
         for (ApiDtos.FindingDto item : scan.findings()) items.add(findingMap(item));
         sendJson(exchange, 200, envelope(scan, "findings", items));
     }
 
-    private void sendFinding(HttpExchange exchange, String findingId) throws IOException {
+    @Override public void sendFinding(HttpExchange exchange, String findingId) throws IOException {
         ApiDtos.FindingDto finding = store.finding(findingId);
         if (finding == null) throw new ApiException(404, "FINDING_NOT_FOUND", "finding not found");
         sendJson(exchange, 200, findingMap(finding));
     }
 
-    private synchronized void replayFinding(HttpExchange exchange, String findingId) throws IOException {
+    @Override public synchronized void replayFinding(HttpExchange exchange, String findingId) throws IOException {
         ApiDtos.FindingDto finding = store.finding(findingId);
         if (finding == null) throw new ApiException(404, "FINDING_NOT_FOUND", "finding not found");
         Map<String, Object> body = readObject(exchange);
@@ -2186,7 +1977,7 @@ public final class ControlPlaneServer implements AutoCloseable {
      * and DYNAMIC_TASK_BUSY when another dynamic task is active. Sandbox policy remains
      * server-owned; never upgrades to VERIFIED.
      */
-    private synchronized void focusEntryProbe(HttpExchange exchange, String scanId, String entryId)
+    @Override public synchronized void focusEntryProbe(HttpExchange exchange, String scanId, String entryId)
             throws IOException {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         Map<String, Object> body = readObject(exchange);
@@ -2374,7 +2165,7 @@ public final class ControlPlaneServer implements AutoCloseable {
      * D3 SQL experiment-card replay: reuses focus-probe gates with card benign/meta inputs.
      * Never upgrades to VERIFIED; dependencyMode remains MOCK-labeled via focus response.
      */
-    private synchronized void replaySqlExperimentCard(HttpExchange exchange, String scanId, String cardId)
+    @Override public synchronized void replaySqlExperimentCard(HttpExchange exchange, String scanId, String cardId)
             throws IOException {
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         Map<String, Object> body = readObject(exchange);
@@ -2486,14 +2277,14 @@ public final class ControlPlaneServer implements AutoCloseable {
         return result;
     }
 
-    private void sendEvidence(HttpExchange exchange, String evidenceId) throws IOException {
+    @Override public void sendEvidence(HttpExchange exchange, String evidenceId) throws IOException {
         ApiDtos.EvidenceDto item = store.evidence(evidenceId);
         if (item == null) item = traceProjectionService.evidence(evidenceId);
         if (item == null) throw new ApiException(404, "EVIDENCE_NOT_FOUND", "evidence not found");
         sendJson(exchange, 200, evidenceMap(item));
     }
 
-    private void listEvidence(HttpExchange exchange, String projectId) throws IOException {
+    @Override public void listEvidence(HttpExchange exchange, String projectId) throws IOException {
         ControlPlaneStore.ProjectRecord project = store.requireProject(projectId);
         String scanId = query(exchange.getRequestURI(), "scanId");
         ControlPlaneStore.ScanRecord scan = scanId == null ? latestScan(project) : store.scan(scanId);
@@ -2512,7 +2303,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, envelope(scan, "evidence", items));
     }
 
-    private void listChains(HttpExchange exchange) throws IOException {
+    @Override public void listChains(HttpExchange exchange) throws IOException {
         String projectId = query(exchange.getRequestURI(), "projectId");
         List<Object> items = new ArrayList<>();
         for (ApiDtos.AttackChainDto chain : store.attackChains(projectId)) items.add(chainMap(chain));
@@ -2533,7 +2324,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         sendJson(exchange, 200, body);
     }
 
-    private void dashboard(HttpExchange exchange, String projectId) throws IOException {
+    @Override public void dashboard(HttpExchange exchange, String projectId) throws IOException {
         ControlPlaneStore.ProjectRecord project = store.requireProject(projectId);
         String requestedScanId = query(exchange.getRequestURI(), "scanId");
         ControlPlaneStore.ScanRecord scan = requestedScanId == null || requestedScanId.isBlank()
@@ -2546,27 +2337,8 @@ public final class ControlPlaneServer implements AutoCloseable {
             throw new ApiException(404, "SCAN_NOT_FOUND", "scan not found for project");
         }
         if (scan == null) {
-            Map<String, Object> empty = new LinkedHashMap<>();
-            empty.put("schemaVersion", ApiDtos.SCHEMA_VERSION);
-            empty.put("projectId", projectId);
-            empty.put("artifactDigest", "unscanned");
-            empty.put("scanId", "unscanned");
-            empty.put("verificationStatus", "UNREACHED");
-            empty.put("dependencyMode", ApiDtos.MOCK);
-            empty.put("evidenceRefs", List.of());
-            empty.put("entries", List.of());
-            empty.put("findings", List.of());
-            empty.put("paths", List.of());
-            empty.put("pathRuns", List.of());
-            empty.put("path", List.of());
-            empty.put("sqlExperimentCards", List.of());
-            empty.put("experimentPlans", List.of());
-            empty.put("experimentShapes", List.of());
-            empty.put("analysisPacks", List.of());
-            empty.put("probeBudget", Map.of(
-                    "maxProbes", 0, "plannedProbes", 0, "unreachedEntries", 0,
-                    "strategy", "", "entryTrackPlans", List.of()));
-            sendJson(exchange, 200, empty);
+            sendJson(exchange, 200,
+                    com.aq.jvmsentinel.control.service.DashboardService.emptyProjectDashboard(projectId));
             return;
         }
         ApiDtos.ScanDto dto = scan.dto();
@@ -2676,24 +2448,36 @@ public final class ControlPlaneServer implements AutoCloseable {
         body.put("probeBudget", budgetMap);
         ContrastLedger.Ledger ledger = ContrastLedger.build(
                 dto.entries(), dto.sinks(), scan.evidence(), pathRuns);
-        List<CandidateRanker.RankedSinkView> ranked = CandidateRanker.rank(
-                dto.sinks(), ContrastLedger.taintPathsFromSinks(dto.sinks()),
-                dto.entries(), ledger.rows());
-        List<Object> rankedMaps = new ArrayList<>();
-        for (CandidateRanker.RankedSinkView view : ranked) {
-            if (rankedMaps.size() >= 20) break;
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("sinkId", view.sinkId());
-            row.put("rank", view.rank());
-            row.put("score", view.score());
-            row.put("category", view.category());
-            row.put("symbol", view.symbol());
-            row.put("rankReasons", view.rankReasons());
-            rankedMaps.add(row);
-        }
-        body.put("rankedSinks", rankedMaps);
+        body.put("rankedSinks", com.aq.jvmsentinel.control.service.DashboardService.rankedSinkMaps(
+                dto.sinks(), dto.entries(), ledger.rows()));
         body.put("contrastSnapshotId", ledger.snapshotId());
         body.put("contrastRoundIndex", ledger.roundIndex());
+        List<ApiDtos.PathRunDto> priorRuns = pathRuns.stream()
+                .map(run -> new ApiDtos.PathRunDto(
+                        run.schemaVersion(), run.pathRunId(), run.scanId(), run.entrypointRef(),
+                        run.track(), run.attemptId(), run.experimentPlanId(), run.method(),
+                        run.contentType(), run.requestSummary(), run.outcomeClass(),
+                        run.httpStatus(), run.entryHit(), run.parameterBound(),
+                        run.sqlEvents(), run.stopReason(), run.verificationStatus(),
+                        run.evidenceRefs(), run.identityProvenance(), run.identityPrecondition(),
+                        Map.of()))
+                .toList();
+        ContrastLedger.Ledger previous = ContrastLedger.build(
+                dto.entries(), dto.sinks(), scan.evidence(), priorRuns);
+        body.put("ledgerDiff",
+                com.aq.jvmsentinel.control.service.DashboardService.ledgerDiffMap(previous, ledger));
+        body.put("verifiedFindings", List.of());
+        // Apply dynamic feedback evidence when PathRuns qualify (in-memory; not VERIFIED).
+        try {
+            var feedback = com.aq.jvmsentinel.analysis.DynamicFeedbackApplier.apply(
+                    dto.projectId(), dto.artifactDigest(), dto.scanId(), pathRuns,
+                    Instant.now(clock).toString());
+            if (feedback.upgradedCount() > 0) {
+                store.appendScanEvidence(dto.scanId(), feedback.evidence());
+            }
+        } catch (RuntimeException ignored) {
+            // Feedback is best-effort; dashboard still returns.
+        }
         sendJson(exchange, 200, body);
     }
 
@@ -2792,7 +2576,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         return id == null ? null : store.scan(id);
     }
 
-    private Map<String, Object> health() {
+    public Map<String, Object> health() {
         VerifiedStatusGate.Decision verified = VerifiedStatusGate.forTrustedDockerHealth();
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("schemaVersion", ApiDtos.SCHEMA_VERSION);
@@ -2812,7 +2596,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         return body;
     }
 
-    private void requirePermission(HttpExchange exchange, Permission permission) {
+    @Override public void requirePermission(HttpExchange exchange, Permission permission) {
         AuthContext context = actor(exchange);
         Authorizer.Decision decision = authorizer.authorize(
                 context, com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence.LOCAL_WORKSPACE,
@@ -2850,7 +2634,7 @@ public final class ControlPlaneServer implements AutoCloseable {
                 Set.of(OperatorRole.ADMINISTRATOR));
     }
 
-    private static AgentRole role(String value) {
+    @Override public AgentRole role(String value) {
         if (value == null) throw new ApiException(400, "INVALID_ROLE", "AI role is required");
         try { return AgentRole.valueOf(value); }
         catch (IllegalArgumentException invalid) {
@@ -3644,7 +3428,7 @@ public final class ControlPlaneServer implements AutoCloseable {
         return List.copyOf(result);
     }
 
-    private static String query(URI uri, String key) {
+    @Override public String query(URI uri, String key) {
         String raw = uri.getRawQuery(); if (raw == null || raw.isBlank()) return null;
         for (String part : raw.split("&")) {
             int equals = part.indexOf('='); String name = equals < 0 ? part : part.substring(0, equals);
@@ -3830,6 +3614,10 @@ public final class ControlPlaneServer implements AutoCloseable {
         } catch (IllegalArgumentException invalid) {
             return false;
         }
+    }
+
+    @Override public void sendHealth(HttpExchange exchange) throws IOException {
+        sendJson(exchange, 200, health());
     }
 
     private static void sendJson(HttpExchange exchange, int status, Object value) throws IOException {
