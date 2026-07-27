@@ -29,6 +29,10 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
   const experimentPlans = snapshot?.experimentPlans ?? []
   const analysisPacks = snapshot?.analysisPacks ?? []
   const probeBudget = snapshot?.probeBudget
+  const rankedSinks = snapshot?.rankedSinks ?? []
+  const ledgerDiff = snapshot?.ledgerDiff
+  const verifiedFindings = snapshot?.verifiedFindings ?? []
+  const topRankedSinks = rankedSinks.slice(0, 12)
   const [cardReplayLoading, setCardReplayLoading] = useState<string>()
   const [cardReplayError, setCardReplayError] = useState<string>()
   const [cardReplayNotice, setCardReplayNotice] = useState<string>()
@@ -169,6 +173,100 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       english={english}
       onFocusEntry={focusEntry}
     />
+    <div className="result-grid section-gap">
+      <article className="panel">
+        <div className="panel-head">
+          <div>
+            <p className="eyebrow">{english ? 'RANKED SINKS' : 'Sink 排序'}</p>
+            <h2>{english ? 'Candidate sink ranking' : '候选 Sink 排序'}</h2>
+          </div>
+          <span>{rankedSinks.length}</span>
+        </div>
+        <p className="form-help">
+          {english
+            ? 'Deterministic CandidateRanker scores for PRE_ANALYSIS / triage focus. Score is a heuristic, not exploitability proof.'
+            : 'CandidateRanker 确定性排序，供前置建模与研判聚焦；分数为启发式，不等于可利用证明。'}
+        </p>
+        <div className="card-list">
+          {topRankedSinks.map((sink) => (
+            <div className="list-card" key={sink.sinkId}>
+              <div className="severity severity-medium">#{sink.rank}</div>
+              <div>
+                <strong>{sink.symbol || sink.sinkId}</strong>
+                <small>{sink.category || '—'} · {english ? 'score' : '分数'} {sink.score.toFixed(2)}</small>
+                <small>{sink.rankReasons.length > 0 ? sink.rankReasons.join(' · ') : (english ? 'No rank reasons' : '无排序理由')}</small>
+              </div>
+            </div>
+          ))}
+          {rankedSinks.length === 0 && <p className="empty-state">{english ? 'No ranked sinks yet for this scan.' : '当前扫描尚无 Sink 排序结果。'}</p>}
+        </div>
+      </article>
+      <article className="panel">
+        <div className="panel-head">
+          <div>
+            <p className="eyebrow">{english ? 'LEDGER DIFF' : '对照账本差分'}</p>
+            <h2>{english ? 'Contrast ledger delta' : '静态·动态对照差分'}</h2>
+          </div>
+          <span>{snapshot?.contrastRoundIndex != null ? `R${snapshot.contrastRoundIndex}` : '—'}</span>
+        </div>
+        <p className="form-help">
+          {ledgerDiff?.summary
+            || (english
+              ? 'Compares prior PathRun coverage join against the current ContrastLedger (includes DYNAMIC_REACHED hits).'
+              : '对比上一轮与当前 ContrastLedger（含 DYNAMIC_REACHED 命中）。')}
+        </p>
+        <dl className="ledger-diff-stats">
+          <div><dt>{english ? 'Newly matched' : '本轮新命中'}</dt><dd>{ledgerDiff?.newlyMatched.length ?? 0}</dd></div>
+          <div><dt>{english ? 'Regressions' : '回退'}</dt><dd>{ledgerDiff?.regressions.length ?? 0}</dd></div>
+          <div><dt>{english ? 'Unchanged' : '未变'}</dt><dd>{ledgerDiff?.unchangedCount ?? 0}</dd></div>
+          <div><dt>{english ? 'Coverage Δ' : '覆盖率变化'}</dt><dd>{formatCoverageDelta(ledgerDiff?.coverageDelta ?? 0)}</dd></div>
+        </dl>
+        {(ledgerDiff?.newlyMatched.length ?? 0) > 0 && (
+          <p className="form-help">{english ? 'New hits' : '新命中'}：{ledgerDiff!.newlyMatched.slice(0, 8).join(', ')}{ledgerDiff!.newlyMatched.length > 8 ? '…' : ''}</p>
+        )}
+        {(ledgerDiff?.regressions.length ?? 0) > 0 && (
+          <p className="form-help">{english ? 'Regressions' : '回退'}：{ledgerDiff!.regressions.slice(0, 8).join(', ')}{ledgerDiff!.regressions.length > 8 ? '…' : ''}</p>
+        )}
+        {snapshot?.contrastSnapshotId && (
+          <p className="form-help">snapshot · {snapshot.contrastSnapshotId}</p>
+        )}
+      </article>
+    </div>
+    <article className="panel section-gap">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">{english ? 'VERIFIED FINDINGS' : '已验证发现'}</p>
+          <h2>{english ? 'Verified findings (gated)' : '已验证发现（门禁）'}</h2>
+        </div>
+        <span>{verifiedFindings.length}</span>
+      </div>
+      <p className="form-help">
+        {english
+          ? 'MVP-6 scaffolding: VerifiedStatusGate is fail-closed. Empty means no VERIFIED promotion yet — not a claim of zero risk. DYNAMIC_CONFIRMED remains in secondary findings.'
+          : 'MVP-6 脚手架：VerifiedStatusGate 仍 fail-closed。空列表表示尚未升格 VERIFIED，不等于无风险。DYNAMIC_CONFIRMED 仍在次级发现中。'}
+      </p>
+      <div className="card-list">
+        {verifiedFindings.map((item) => (
+          <div className={`list-card verified-finding-card status-tone-${item.verificationStatus.toLowerCase()}`} key={item.findingId}>
+            <div className={`severity severity-${item.severity ?? 'info'}`}>{item.severity ?? 'info'}</div>
+            <div>
+              <strong>{item.title || item.findingId}</strong>
+              <small>{[item.entry, item.sink].filter(Boolean).join(' → ') || item.findingId}</small>
+              {item.rootCause?.rootCauseStatement && <small>{item.rootCause.rootCauseStatement}</small>}
+              {item.attestationRef && <small>attestation · {item.attestationRef}</small>}
+            </div>
+            <StatusPill status={item.verificationStatus} />
+          </div>
+        ))}
+        {verifiedFindings.length === 0 && (
+          <p className="empty-state">
+            {english
+              ? 'No verified_findings rows. Gate remains closed until escape attestation and replay evidence qualify.'
+              : '尚无 verified_findings 行。在逃逸认证与可重放证据齐备前，门禁保持关闭。'}
+          </p>
+        )}
+      </div>
+    </article>
     <article className="panel section-gap">
       <div className="panel-head"><div><p className="eyebrow">{english ? 'SQL D3 CARDS' : 'SQL D3 实验卡'}</p><h2>{english ? 'Replayable SQL experiment cards' : '可重放 SQL 实验卡'}</h2></div><span>{sqlCards.length}</span></div>
       <p className="form-help">{english ? 'Built from benign vs meta PathRun pairs. Replay stays MOCK / DYNAMIC_SUSPECTED and never VERIFIED.' : '由良性 vs 元字符 PathRun 对生成；重放保持 MOCK / DYNAMIC_SUSPECTED，永不 VERIFIED。'}</p>
@@ -176,6 +274,19 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       {cardReplayNotice && <Notice kind="info">{cardReplayNotice}</Notice>}
       <div className="card-list">{sqlCards.map((card) => <div className="list-card" key={card.cardId}><div><strong>{card.entrypointRef} · {card.track}</strong><small>{english ? 'Before' : '前'}：{card.sqlBefore}</small><small>{english ? 'After' : '后'}：{card.sqlAfter}</small><small>{card.dependencyMode} · {card.verificationStatus}{card.structureInfluenced ? (english ? ' · structure influenced' : ' · 结构受影响') : ''}</small></div><div className="button-row"><StatusPill status={card.verificationStatus} /><button type="button" className="secondary-button" disabled={!card.replayable || !!cardReplayLoading || card.verificationStatus === 'VERIFIED'} onClick={() => void replaySqlCard(card.cardId)}>{cardReplayLoading === card.cardId ? (english ? 'Replaying…' : '重放中…') : (english ? 'Replay card' : '重放实验卡')}</button></div></div>)}{sqlCards.length === 0 && <p className="empty-state">{english ? 'No D3 cards yet; need a benign + meta SQL PathRun pair.' : '尚无 D3 实验卡；需要良性与元字符 SQL PathRun 对。'}</p>}</div>
       {(probeBudget || experimentPlans.length > 0 || analysisPacks.length > 0) && <div className="section-gap"><small>{probeBudget ? (english ? `Probe budget: planned ${probeBudget.plannedProbes}/${probeBudget.maxProbes}, unreached ${probeBudget.unreachedEntries}. ${probeBudget.strategy}` : `探针预算：已规划 ${probeBudget.plannedProbes}/${probeBudget.maxProbes}，未达 ${probeBudget.unreachedEntries}。${probeBudget.strategy}`) : null}</small>{experimentPlans.length > 0 && <small>{english ? `Accepted experiment plans: ${experimentPlans.length}` : `已接受实验计划：${experimentPlans.length}`}</small>}{analysisPacks.length > 0 && <small>{english ? `Matched packs: ${analysisPacks.map((pack) => pack.packId).join(', ')} (non-destructive)` : `匹配语义包：${analysisPacks.map((pack) => pack.packId).join('、')}（无破坏）`}</small>}</div>}
+      {experimentPlans.some((plan) => plan.fuzzStrategyJson || plan.fuzzStrategy) && (
+        <div className="card-list section-gap">
+          {experimentPlans.filter((plan) => plan.fuzzStrategyJson || plan.fuzzStrategy).map((plan) => (
+            <div className="list-card" key={plan.planId}>
+              <div>
+                <strong>{plan.planId} · {plan.track}</strong>
+                <small>{plan.method} {plan.entrypointRef}</small>
+                <small className="fuzz-strategy-line">{english ? 'Fuzz strategy' : 'Fuzz 策略'}：{(plan.fuzzStrategyJson || plan.fuzzStrategy || '').slice(0, 240)}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </article>
     <article className="panel section-gap">
       <div className="panel-head"><div><p className="eyebrow">{english ? 'FINAL REPORT' : '最终报告'}</p><h2>{english ? 'Final report' : '最终报告'}</h2></div><div className="button-row"><span className="inference-badge">{english ? 'MODEL INFERENCE' : '模型推断'}</span>{reportSummary && <><button type="button" className="secondary-button" onClick={downloadReport}>{english ? 'Download .md' : '下载 .md'}</button><button type="button" className="secondary-button" onClick={downloadHtml}>{english ? 'Export .html' : '导出 .html'}</button></>}{snapshot && <button type="button" className="secondary-button" onClick={downloadJson}>{english ? 'Export .json' : '导出 .json'}</button>}</div></div>
@@ -194,7 +305,7 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       <article className="panel">
         <div className="panel-head"><div><p className="eyebrow">{english ? 'SECONDARY FINDINGS' : '次级发现'}</p><h2>{english ? 'Findings (secondary)' : '发现（次级）'}</h2></div><span>{filteredFindings.length}</span></div>
         <div className="finding-toolbar"><label className="field"><span>{english ? 'Filter findings' : '筛选发现'}</span><input value={findingQuery} onChange={(event) => setFindingQuery(event.target.value)} placeholder={english ? 'Title, entry, sink...' : '标题、入口或 sink…'} /></label><label className="field"><span>{english ? 'Evidence status' : '证据状态'}</span><select value={findingStatus} onChange={(event) => setFindingStatus(event.target.value as typeof findingStatus)}><option value="ALL">{english ? 'All statuses' : '全部状态'}</option><option value="STATIC_INFERRED">STATIC_INFERRED</option><option value="DYNAMIC_SUSPECTED">DYNAMIC_SUSPECTED</option><option value="DYNAMIC_CONFIRMED">DYNAMIC_CONFIRMED</option><option value="VERIFIED">VERIFIED</option><option value="UNREACHED">UNREACHED</option></select></label><label className="field checkbox-field"><span>{english ? 'Show AUTH_GAP' : '显示 AUTH_GAP'}</span><input type="checkbox" checked={showAuthGap} onChange={(event) => setShowAuthGap(event.target.checked)} /></label></div>
-        <div className="card-list">{filteredFindings.map((finding) => <button type="button" className={`finding-card finding-card-button ${finding.id === selectedFinding?.id ? 'selected' : ''}`} key={finding.id} onClick={() => { setSelectedFindingId(finding.id); setSelectedStepIndex(0) }}><div className={`severity severity-${finding.severity}`}>{finding.severity}</div><div><strong>{finding.title}</strong><small>{finding.entry} → {finding.sink}</small><small>{finding.evidence} {english ? 'evidence items' : '条证据'} · {finding.dependency === 'none' && !english ? '无外部依赖记录' : finding.dependency}</small></div><StatusPill status={finding.status} /></button>)}{filteredFindings.length === 0 && <p className="empty-state">{english ? 'No findings match the current filter.' : '没有符合当前筛选条件的发现。'}</p>}</div>
+        <div className="card-list">{filteredFindings.map((finding) => <button type="button" className={`finding-card finding-card-button status-tone-${finding.status.toLowerCase()} ${finding.id === selectedFinding?.id ? 'selected' : ''}`} key={finding.id} onClick={() => { setSelectedFindingId(finding.id); setSelectedStepIndex(0) }}><div className={`severity severity-${finding.severity}`}>{finding.severity}</div><div><strong>{finding.title}</strong><small>{finding.entry} → {finding.sink}</small><small>{finding.evidence} {english ? 'evidence items' : '条证据'} · {finding.dependency === 'none' && !english ? '无外部依赖记录' : finding.dependency}</small></div><StatusPill status={finding.status} /></button>)}{filteredFindings.length === 0 && <p className="empty-state">{english ? 'No findings match the current filter.' : '没有符合当前筛选条件的发现。'}</p>}</div>
       </article>
       <article className="panel">
         <div className="panel-head"><div><p className="eyebrow">{english ? 'ENTRY COVERAGE' : '入口覆盖'}</p><h2>{english ? 'Entries and coverage' : '入口与覆盖'}</h2></div><span>{dependencyModeLabel(snapshot?.dependencyMode)}</span></div>
@@ -208,7 +319,7 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       </article>
       <article className="panel detail-panel">
         <div className="panel-head"><div><p className="eyebrow">{english ? 'SELECTED EVIDENCE' : '选中证据'}</p><h2>{selectedFinding ? selectedFinding.title : (english ? 'No finding selected' : '尚未选择发现')}</h2></div>{selectedFinding && <StatusPill status={selectedFinding.status} />}</div>
-        {selectedFinding ? <div className="evidence-detail"><div className="button-row"><button type="button" className="secondary-button" onClick={() => void replaySelectedFinding()} disabled={replayLoading || selectedFinding.status === 'VERIFIED'}>{replayLoading ? (english ? 'Requesting…' : '正在请求…') : (english ? 'Request sandbox replay' : '请求沙箱重放')}</button><span className="form-help">{english ? 'The server owns the sandbox policy; this does not mark VERIFIED.' : '由服务端固定沙箱策略；重放不会直接标记为 VERIFIED。'}</span></div>{replayError && <Notice kind="error">{replayError}</Notice>}{replayResult && <Notice kind="info">{english ? `Replay task ${replayResult.taskId} is ${replayResult.lifecycle}.` : `重放任务 ${replayResult.taskId} 当前为 ${replayResult.lifecycle}。`}</Notice>}<dl><div><dt>{english ? 'Entry' : '入口'}</dt><dd>{selectedFinding.entry}</dd></div><div><dt>{english ? 'Sink' : 'Sink'}</dt><dd>{selectedFinding.sink}</dd></div><div><dt>{english ? 'Dependency' : '依赖'}</dt><dd>{selectedFinding.dependency}</dd></div><div><dt>{english ? 'Evidence refs' : '证据引用'}</dt><dd>{selectedFinding.evidenceRefs?.length ?? selectedFinding.evidence}</dd></div></dl>{selectedStep && <section><h3>{selectedStep.label}</h3><p>{selectedStep.detail}</p><small>{selectedStep.provenanceKind ?? 'INFERENCE'} · {selectedStep.eventType ?? 'STATIC_ANALYSIS'} · {selectedStep.verificationStatus ?? selectedPath?.verificationStatus}</small></section>}</div> : <p className="empty-state">{english ? 'Findings are evidence-bound and remain static until runtime proof exists.' : '发现必须绑定证据；没有运行时证明时仍保持静态推断。'}</p>}
+        {selectedFinding ? <div className="evidence-detail"><div className="button-row"><button type="button" className="secondary-button" onClick={() => void replaySelectedFinding()} disabled={replayLoading || selectedFinding.status === 'VERIFIED'}>{replayLoading ? (english ? 'Requesting…' : '正在请求…') : (english ? 'Request sandbox replay' : '请求沙箱重放')}</button><span className="form-help">{english ? 'The server owns the sandbox policy; this does not mark VERIFIED.' : '由服务端固定沙箱策略；重放不会直接标记为 VERIFIED。'}</span></div>{replayError && <Notice kind="error">{replayError}</Notice>}{replayResult && <Notice kind="info">{english ? `Replay task ${replayResult.taskId} is ${replayResult.lifecycle}.` : `重放任务 ${replayResult.taskId} 当前为 ${replayResult.lifecycle}。`}</Notice>}<dl><div><dt>{english ? 'Entry' : '入口'}</dt><dd>{selectedFinding.entry}</dd></div><div><dt>{english ? 'Sink' : 'Sink'}</dt><dd>{selectedFinding.sink}</dd></div><div><dt>{english ? 'Dependency' : '依赖'}</dt><dd>{selectedFinding.dependency}</dd></div><div><dt>{english ? 'Evidence refs' : '证据引用'}</dt><dd>{selectedFinding.evidenceRefs?.length ?? selectedFinding.evidence}</dd></div><div><dt>{english ? 'Evidence status' : '证据状态'}</dt><dd><StatusPill status={selectedFinding.status} />{selectedFinding.status === 'DYNAMIC_CONFIRMED' ? (english ? ' · MOCK SQL confirm, not VERIFIED' : ' · MOCK SQL 确认，非 VERIFIED') : null}{selectedFinding.status === 'VERIFIED' ? (english ? ' · gated replay attestation' : ' · 需门禁可重放认证') : null}</dd></div></dl>{selectedFinding.rootCause && <section className="root-cause-block"><h3>{english ? 'Root cause' : '根因'}</h3>{selectedFinding.rootCause.rootCauseStatement && <p>{selectedFinding.rootCause.rootCauseStatement}</p>}{(selectedFinding.rootCause.cweId || selectedFinding.rootCause.affectedComponent) && <small>{[selectedFinding.rootCause.cweId, selectedFinding.rootCause.affectedComponent].filter(Boolean).join(' · ')}</small>}{selectedFinding.rootCause.attackPath.length > 0 && <ol className="attack-step-list">{selectedFinding.rootCause.attackPath.map((step, index) => <li key={`${step.label}-${index}`}><strong>{step.layer}</strong> {step.label}<small>{step.evidenceRefs.join(', ')}</small></li>)}</ol>}{selectedFinding.rootCause.fixSuggestion && <p className="form-help">{english ? 'Fix' : '修复建议'}：{selectedFinding.rootCause.fixSuggestion}</p>}</section>}{selectedStep && <section><h3>{selectedStep.label}</h3><p>{selectedStep.detail}</p><small>{selectedStep.provenanceKind ?? 'INFERENCE'} · {selectedStep.eventType ?? 'STATIC_ANALYSIS'} · {selectedStep.verificationStatus ?? selectedPath?.verificationStatus}</small></section>}</div> : <p className="empty-state">{english ? 'Findings are evidence-bound and remain static until runtime proof exists.' : '发现必须绑定证据；没有运行时证明时仍保持静态推断。'}</p>}
       </article>
     </div>
     <article className="panel section-gap">
@@ -226,4 +337,10 @@ function isAuthGapFinding(finding: { title?: string; sink?: string; sinkId?: str
     || sink.startsWith('sink-auth-gap')
     || title.includes('鉴权缺口')
     || title.toLocaleLowerCase().includes('auth gap')
+}
+
+function formatCoverageDelta(delta: number): string {
+  const percent = delta * 100
+  const sign = percent > 0 ? '+' : ''
+  return `${sign}${percent.toFixed(0)}%`
 }

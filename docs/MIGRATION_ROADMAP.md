@@ -515,7 +515,7 @@ CREATE TABLE taint_graphs (
 - [x] `code_query kind=TAINT_GRAPH entryId=X` 返回包含至少 3 个 nodes 的子图（合成；`TaintGraphAcceptanceTest`）
 - [x] 两轮执行后 LedgerDiff.newlyMatched 非空（合成 prior/current ledger）
 - [x] DynamicFeedbackApplier 对至少一条 TaintPath 成功升级状态（evidence 可查；dashboard 触发 append）
-- [x] Dashboard 显示 LedgerDiff 摘要（后端 `ledgerDiff` 字段；前端仍可选配合）
+- [x] Dashboard 显示 LedgerDiff 摘要（后端 `ledgerDiff` 字段；前端 ResultsPage 已接入）
 
 **版本注记**：本 MVP 使用 **V017**（ledger hit 列 + `taint_graphs`）。
 

@@ -767,3 +767,11 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 - 验收：`TaintGraphAcceptanceTest` / `FuzzStrategyAcceptanceTest` / `VerifiedGateScaffoldingAcceptanceTest` 等 PASS。
 - **诚实限制**：无 gVisor/Kata 逃逸套件端到端 attestation；不得标 `VERIFIED` 生产可用；live SqlDiff / 六角色全链路仍可选。
 - **文档同步（closeout）**：`TECHNICAL_ARCHITECTURE` §3.6/§13/§14/§15、`MVP_BACKLOG` §2.4a、`EXTENSIBLE_ANALYSIS` FrameworkAdapter、`MIGRATION_ROADMAP` 版本号与草稿名漂移已对齐 V015–V020；live/逃逸未勾选项保持诚实未勾。
+
+## 72. 前端接入迁移 MVP dashboard 字段（2026-07-27）
+
+- `frontend/src/api.ts`：`rankedSinks` / `ledgerDiff` / `verifiedFindings` / `PathRun.branchHitMap` / 可选 `rootCause` / 可选 `fuzzStrategyJson` 类型与 `parseDashboard` 保留解析；Demo 模式空列表降级。
+- `ResultsPage`：Sink 排序、LedgerDiff 摘要、Verified 门禁脚手架区；发现详情展示 rootCause（若 API 携带）。
+- `PathRunPanel`：紧凑展示 `branchHitMap`（method → 分支索引）。
+- **诚实缺口**：`verifiedFindings` HTTP 仍固定 `[]`；`findingMap` 未序列化 `rootCause`；`experimentPlanMap` 未输出 `fuzzStrategyJson`（前端可消费但后端 dashboard 计划 JSON 尚未挂载）。
+- 验证：`frontend/` `npm run build` 通过。不得标 `VERIFIED` 生产可用。

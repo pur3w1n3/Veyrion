@@ -68,6 +68,22 @@ export type Entry = {
 
 export type EntryDto = Entry
 
+/** Attack-path step inside RootCauseAnalysis (MVP-5). */
+export type AttackStepDto = {
+  layer: string
+  label: string
+  evidenceRefs: string[]
+}
+
+/** Structured root-cause payload when a finding or verified row carries it. */
+export type RootCauseDto = {
+  attackPath: AttackStepDto[]
+  rootCauseStatement: string
+  affectedComponent?: string
+  cweId?: string
+  fixSuggestion?: string
+}
+
 export type Finding = {
   id: string
   title: string
@@ -89,7 +105,57 @@ export type Finding = {
   scanId?: string
   evidenceRefs?: EvidenceRef[]
   confidence?: number
+  /** Present only if the API attaches RootCauseAnalysis (MVP-5); not on FindingDto today. */
+  rootCause?: RootCauseDto
 }
+
+/** CandidateRanker row from dashboard.rankedSinks (MVP-1). */
+export type RankedSinkDto = {
+  sinkId: string
+  rank: number
+  score: number
+  category: string
+  symbol?: string
+  rankReasons: string[]
+}
+
+/** LedgerDiff aggregate from dashboard.ledgerDiff (MVP-3). */
+export type LedgerDiffDto = {
+  newlyMatched: string[]
+  regressions: string[]
+  unchangedCount: number
+  coverageDelta: number
+  summary?: string
+}
+
+/**
+ * MVP-6 verified_findings scaffolding. Dashboard currently returns [].
+ * Parser accepts either finding-shaped rows or persistence-shaped fields.
+ */
+export type VerifiedFindingDto = {
+  findingId: string
+  scanId?: string
+  title?: string
+  entry?: string
+  sink?: string
+  severity?: Finding['severity']
+  verificationStatus: VerificationStatus
+  rootCause?: RootCauseDto
+  replayEvidenceRefs?: EvidenceRef[]
+  verifiedAt?: string
+  attestationRef?: string
+  evidenceRefs?: EvidenceRef[]
+}
+
+/** Contrast ledger status strings (not VerificationStatus). */
+export type ContrastStatus =
+  | 'MATCHED'
+  | 'PARTIAL'
+  | 'STATIC_ONLY'
+  | 'DYNAMIC_ONLY'
+  | 'DYNAMIC_REACHED'
+  | 'UNKNOWN'
+  | string
 
 export type FindingReplayDto = {
   schemaVersion: number
@@ -147,6 +213,10 @@ export type ExperimentPlanDto = {
   packId?: string
   boundForExecution?: boolean
   serverGated?: boolean
+  /** ExperimentPlan.fuzzStrategyJson when exposed on the wire (MVP-4). */
+  fuzzStrategyJson?: string
+  /** Alias accepted if the API uses fuzzStrategy / fuzz_strategy. */
+  fuzzStrategy?: string
 }
 
 export type ProbeBudgetDto = {
@@ -227,6 +297,14 @@ export type DashboardSnapshot = {
   experimentShapes?: ExperimentShapeDto[]
   analysisPacks?: AnalysisPackDto[]
   probeBudget?: ProbeBudgetDto
+  /** CandidateRanker top sinks (MVP-1); empty when unscanned. */
+  rankedSinks?: RankedSinkDto[]
+  /** Multi-round contrast ledger delta (MVP-3). */
+  ledgerDiff?: LedgerDiffDto
+  /** MVP-6 gate scaffolding; currently always [] until VerifiedStatusGate opens. */
+  verifiedFindings?: VerifiedFindingDto[]
+  contrastSnapshotId?: string
+  contrastRoundIndex?: number
 }
 
 export type ExperimentShapeDto = {
@@ -464,6 +542,8 @@ export type PathRunDto = {
   evidenceRefs?: EvidenceRef[]
   identityProvenance?: string
   identityPrecondition?: string
+  /** method → hit branch indices from BRANCH_COVERAGE (MVP-1). */
+  branchHitMap?: Record<string, number[]>
 }
 export type RoleAssignmentDto = {
   schemaVersion: number
@@ -796,6 +876,107 @@ const severityOf = (value: unknown): Finding['severity'] => {
   return normalized
 }
 
+const parseRootCause = (value: unknown, field: string): RootCauseDto | undefined => {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return undefined
+    try {
+      return parseRootCause(JSON.parse(trimmed) as unknown, field)
+    } catch {
+      return { attackPath: [], rootCauseStatement: trimmed }
+    }
+  }
+  if (!isRecord(value)) throw new Error(`invalid ${field}`)
+  const attackRaw = value.attackPath
+  const attackPath = attackRaw === undefined
+    ? []
+    : Array.isArray(attackRaw)
+      ? attackRaw.map((step, index) => {
+        if (!isRecord(step)) throw new Error(`invalid ${field}.attackPath[${index}]`)
+        return {
+          layer: optionalText(step.layer) ?? 'unknown',
+          label: asText(step.label, `${field}.attackPath[${index}].label`),
+          evidenceRefs: listOfText(step.evidenceRefs ?? [], `${field}.attackPath[${index}].evidenceRefs`)
+        }
+      })
+      : (() => { throw new Error(`invalid ${field}.attackPath`) })()
+  return {
+    attackPath,
+    rootCauseStatement: optionalText(value.rootCauseStatement) ?? '',
+    affectedComponent: strictOptionalText(value.affectedComponent, `${field}.affectedComponent`),
+    cweId: strictOptionalText(value.cweId, `${field}.cweId`),
+    fixSuggestion: strictOptionalText(value.fixSuggestion, `${field}.fixSuggestion`)
+  }
+}
+
+const parseRankedSink = (value: unknown): RankedSinkDto => {
+  if (!isRecord(value)) throw new Error('invalid rankedSink')
+  return {
+    sinkId: asText(value.sinkId, 'rankedSink.sinkId'),
+    rank: asSafeInteger(value.rank, 'rankedSink.rank', 1),
+    score: asFiniteNumber(value.score, 'rankedSink.score', 0),
+    category: optionalText(value.category) ?? '',
+    symbol: strictOptionalText(value.symbol, 'rankedSink.symbol'),
+    rankReasons: listOfText(value.rankReasons ?? [], 'rankedSink.rankReasons')
+  }
+}
+
+const parseLedgerDiff = (value: unknown): LedgerDiffDto => {
+  if (!isRecord(value)) throw new Error('invalid ledgerDiff')
+  return {
+    newlyMatched: listOfText(value.newlyMatched ?? [], 'ledgerDiff.newlyMatched'),
+    regressions: listOfText(value.regressions ?? [], 'ledgerDiff.regressions'),
+    unchangedCount: typeof value.unchangedCount === 'number' && Number.isFinite(value.unchangedCount)
+      ? Math.max(0, Math.floor(value.unchangedCount))
+      : 0,
+    coverageDelta: typeof value.coverageDelta === 'number' && Number.isFinite(value.coverageDelta)
+      ? value.coverageDelta
+      : 0,
+    summary: strictOptionalText(value.summary, 'ledgerDiff.summary')
+  }
+}
+
+const parseBranchHitMap = (value: unknown): Record<string, number[]> | undefined => {
+  if (value === undefined || value === null) return undefined
+  if (!isRecord(value)) throw new Error('invalid pathRun.branchHitMap')
+  const result: Record<string, number[]> = {}
+  for (const [key, hits] of Object.entries(value)) {
+    if (!key.trim()) continue
+    if (!Array.isArray(hits)) throw new Error('invalid pathRun.branchHitMap')
+    result[key] = hits.map((hit, index) => {
+      if (typeof hit !== 'number' || !Number.isFinite(hit)) {
+        throw new Error(`invalid pathRun.branchHitMap[${key}][${index}]`)
+      }
+      return Math.trunc(hit)
+    })
+  }
+  return result
+}
+
+const parseVerifiedFinding = (value: unknown): VerifiedFindingDto => {
+  if (!isRecord(value)) throw new Error('invalid verifiedFinding')
+  const findingId = asText(value.findingId ?? value.id, 'verifiedFinding.findingId')
+  const statusRaw = value.verificationStatus ?? value.status ?? 'VERIFIED'
+  const verificationStatus = statusOf(statusRaw, 'verifiedFinding.verificationStatus')
+  const rootCause = parseRootCause(value.rootCause ?? value.rootCauseJson ?? value.root_cause_json, 'verifiedFinding.rootCause')
+  const replayRefs = value.replayEvidenceRefs ?? value.replay_evidence_refs
+  return {
+    findingId,
+    scanId: optionalText(value.scanId),
+    title: optionalText(value.title ?? value.summary),
+    entry: optionalText(value.entry ?? value.entryRoute),
+    sink: optionalText(value.sink),
+    severity: value.severity === undefined ? undefined : severityOf(value.severity),
+    verificationStatus,
+    rootCause,
+    replayEvidenceRefs: replayRefs === undefined ? undefined : evidenceRefsOf(replayRefs, 'verifiedFinding.replayEvidenceRefs'),
+    verifiedAt: optionalText(value.verifiedAt ?? value.verified_at),
+    attestationRef: optionalText(value.attestationRef ?? value.attestation_ref),
+    evidenceRefs: evidenceRefsOf(value.evidenceRefs, 'verifiedFinding.evidenceRefs')
+  }
+}
+
 export const parseFinding = (item: unknown, context?: { schemaVersion?: number; projectId?: string; artifactDigest?: string; scanId?: string }): Finding => {
   if (!isRecord(item)) throw new Error('invalid finding')
   const refs = evidenceRefsOf(item.evidenceRefs, 'finding.evidenceRefs')
@@ -803,6 +984,7 @@ export const parseFinding = (item: unknown, context?: { schemaVersion?: number; 
   const evidenceValue = item.evidence === undefined
     ? item.evidenceCount === undefined ? refs.length : asSafeInteger(item.evidenceCount, 'finding.evidenceCount', 0)
     : asSafeInteger(item.evidence, 'finding.evidence', 0)
+  const rootCause = parseRootCause(item.rootCause ?? item.rootCauseJson, 'finding.rootCause')
   return {
     id: asText(item.id ?? item.findingId, 'finding.id'),
     title: asText(item.title ?? item.summary, 'finding.title'),
@@ -823,7 +1005,8 @@ export const parseFinding = (item: unknown, context?: { schemaVersion?: number; 
     artifactDigest: optionalText(item.artifactDigest) ?? context?.artifactDigest,
     scanId: optionalText(item.scanId) ?? context?.scanId,
     evidenceRefs: refs,
-    confidence: item.confidence === undefined ? undefined : asFiniteNumber(item.confidence, 'finding.confidence', 0, 1)
+    confidence: item.confidence === undefined ? undefined : asFiniteNumber(item.confidence, 'finding.confidence', 0, 1),
+    rootCause
   }
 }
 
@@ -952,7 +1135,24 @@ export const parseDashboard = (value: unknown): DashboardSnapshot => {
     analysisPacks: Array.isArray(value.analysisPacks)
       ? value.analysisPacks.map(parseAnalysisPack)
       : undefined,
-    probeBudget: value.probeBudget === undefined ? undefined : parseProbeBudget(value.probeBudget)
+    probeBudget: value.probeBudget === undefined ? undefined : parseProbeBudget(value.probeBudget),
+    rankedSinks: value.rankedSinks === undefined
+      ? []
+      : Array.isArray(value.rankedSinks)
+        ? value.rankedSinks.map(parseRankedSink)
+        : (() => { throw new Error('invalid dashboard.rankedSinks') })(),
+    ledgerDiff: value.ledgerDiff === undefined
+      ? { newlyMatched: [], regressions: [], unchangedCount: 0, coverageDelta: 0, summary: '' }
+      : parseLedgerDiff(value.ledgerDiff),
+    verifiedFindings: value.verifiedFindings === undefined
+      ? []
+      : Array.isArray(value.verifiedFindings)
+        ? value.verifiedFindings.map(parseVerifiedFinding)
+        : (() => { throw new Error('invalid dashboard.verifiedFindings') })(),
+    contrastSnapshotId: strictOptionalText(value.contrastSnapshotId, 'dashboard.contrastSnapshotId'),
+    contrastRoundIndex: typeof value.contrastRoundIndex === 'number' && Number.isFinite(value.contrastRoundIndex)
+      ? Math.max(0, Math.floor(value.contrastRoundIndex))
+      : undefined
   }
 }
 
@@ -1003,6 +1203,8 @@ const parseSqlExperimentCard = (value: unknown): SqlExperimentCardDto => {
 
 const parseExperimentPlan = (value: unknown): ExperimentPlanDto => {
   if (!isRecord(value)) throw new Error('invalid experimentPlan')
+  const fuzzRaw = value.fuzzStrategyJson ?? value.fuzzStrategy ?? value.fuzz_strategy
+  const fuzzStrategyJson = typeof fuzzRaw === 'string' && fuzzRaw.trim() !== '' ? fuzzRaw : undefined
   return {
     planId: asText(value.planId, 'experimentPlan.planId'),
     entrypointRef: asText(value.entrypointRef, 'experimentPlan.entrypointRef'),
@@ -1014,7 +1216,9 @@ const parseExperimentPlan = (value: unknown): ExperimentPlanDto => {
     stopCondition: optionalText(value.stopCondition) ?? 'COMPLETED',
     packId: strictOptionalText(value.packId, 'experimentPlan.packId'),
     boundForExecution: value.boundForExecution === true,
-    serverGated: value.serverGated === true
+    serverGated: value.serverGated === true,
+    fuzzStrategyJson,
+    fuzzStrategy: fuzzStrategyJson
   }
 }
 
@@ -1080,7 +1284,8 @@ const parsePathRun = (value: unknown): PathRunDto => {
     verificationStatus: statusOf(value.verificationStatus, 'pathRun.verificationStatus'),
     evidenceRefs: evidenceRefsOf(value.evidenceRefs, 'pathRun.evidenceRefs'),
     identityProvenance: strictOptionalText(value.identityProvenance, 'pathRun.identityProvenance'),
-    identityPrecondition: strictOptionalText(value.identityPrecondition, 'pathRun.identityPrecondition')
+    identityPrecondition: strictOptionalText(value.identityPrecondition, 'pathRun.identityPrecondition'),
+    branchHitMap: parseBranchHitMap(value.branchHitMap)
   }
 }
 
@@ -1510,6 +1715,9 @@ const demoSnapshot: DashboardSnapshot = {
   experimentShapes: [],
   analysisPacks: [],
   probeBudget: { maxProbes: 0, plannedProbes: 0, unreachedEntries: 0, strategy: '', entryTrackPlans: [] },
+  rankedSinks: [],
+  ledgerDiff: { newlyMatched: [], regressions: [], unchangedCount: 0, coverageDelta: 0, summary: '' },
+  verifiedFindings: [],
   path: [
     { label: 'POST /api/upload', detail: 'filename = ${safe-probe}', kind: 'entry', state: 'done' },
     { label: 'UploadService.save', detail: 'URLDecode → path concat', kind: 'transform', state: 'done' },

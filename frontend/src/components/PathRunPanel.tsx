@@ -197,6 +197,21 @@ export function PathRunPanel({
             <div><dt>SQL</dt><dd>{selected.sqlEvents.length === 0 ? (english ? 'none (not a success claim)' : '无（不等于注入成功）') : selected.sqlEvents.map((sql) => sql.sqlText).join(' | ')}</dd></div>
             <div><dt>{english ? 'Stop reason' : '停止原因'}</dt><dd>{selected.stopReason || '—'}</dd></div>
             <div><dt>{english ? 'Dependency' : '依赖模式'}</dt><dd><span className="inference-badge">MOCK</span></dd></div>
+            <div>
+              <dt>branchHitMap</dt>
+              <dd>
+                {selected.branchHitMap && Object.keys(selected.branchHitMap).length > 0
+                  ? <div className="branch-hit-map">
+                    {Object.entries(selected.branchHitMap).map(([method, hits]) => (
+                      <div className="branch-hit-row" key={method}>
+                        <code>{method}</code>
+                        <span>{hits.length === 0 ? '—' : hits.join(', ')}</span>
+                      </div>
+                    ))}
+                  </div>
+                  : (english ? 'none (no BRANCH_COVERAGE yet)' : '无（尚无 BRANCH_COVERAGE）')}
+              </dd>
+            </div>
           </dl>
           <StatusPill status={selected.verificationStatus} />
           <div className="button-row section-gap">
