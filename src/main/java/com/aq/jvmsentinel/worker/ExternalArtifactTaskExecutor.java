@@ -12,6 +12,7 @@ import com.aq.jvmsentinel.verification.SandboxReleaseGate;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -49,6 +50,23 @@ public final class ExternalArtifactTaskExecutor {
     /** Trusted Docker runs as container-default root so JARs may bind privileged ports (e.g. 80). */
     static final int SANDBOX_UID = 0;
     static final int SANDBOX_GID = 0;
+
+    /**
+     * Product flood ceiling for one dynamic task. Must stay aligned with
+     * {@code ProbePlanService.MAX_DYNAMIC_PROBES} and agent {@code LoopbackHttpProbe} batch lines.
+     */
+    public static final int MAX_PROBE_PLAN_ENTRIES = 512;
+    /**
+     * Worst-case UTF-8 TSV line budget per {@link ProbeTarget}
+     * (method + 1024 route + 256 query + track + dual 2048 auth headers + tabs/newline).
+     */
+    public static final int MAX_PROBE_PLAN_LINE_BYTES = 6 * 1024;
+    /**
+     * Bounded host→sandbox probe-plan upload budget ({@link #MAX_PROBE_PLAN_ENTRIES} ×
+     * {@link #MAX_PROBE_PLAN_LINE_BYTES} = 3 MiB). Not a general large-file channel.
+     */
+    public static final int MAX_PROBE_PLAN_UPLOAD_BYTES =
+            MAX_PROBE_PLAN_ENTRIES * MAX_PROBE_PLAN_LINE_BYTES;
 
     private static final long MAX_WALL_SECONDS = 3_600;
     private static final long MAX_CPU_MILLIS = 3_600_000;
@@ -546,21 +564,63 @@ public final class ExternalArtifactTaskExecutor {
     private static Path writeHostProbePlan(List<ProbeTarget> targets) {
         try {
             Path file = Files.createTempFile("veyrion-probe-plan-", ".txt");
-            StringBuilder plan = new StringBuilder();
-            for (ProbeTarget target : targets == null ? List.<ProbeTarget>of() : targets) {
-                plan.append(target.method()).append('\t').append(target.route()).append('\t')
-                        .append(target.query() == null ? "" : target.query()).append('\t')
-                        .append(target.track() == null ? "UNAUTH" : target.track()).append('\t')
-                        .append(target.authHeader() == null ? "" : target.authHeader()).append('\t')
-                        .append(target.bladeAuthHeader() == null ? "" : target.bladeAuthHeader())
-                        .append('\n');
-            }
-            Files.writeString(file, plan.toString());
+            Files.write(file, encodeProbePlan(targets));
             return file;
+        } catch (IllegalArgumentException invalid) {
+            throw new ExternalArtifactExecutionException(
+                    "PROBE_PLAN_TOO_LARGE", invalid.getMessage(), invalid);
         } catch (IOException failure) {
             throw new ExternalArtifactExecutionException(
                     "PROBE_PLAN_WRITE_FAILED", "probe plan could not be written on the host", failure);
         }
+    }
+
+    /**
+     * Serializes a flood/probe plan to the agent TSV format and enforces the trusted-sandbox
+     * upload budget before any worker upload begins.
+     */
+    public static byte[] encodeProbePlan(List<ProbeTarget> targets) {
+        List<ProbeTarget> plan = targets == null ? List.of() : targets;
+        if (plan.size() > MAX_PROBE_PLAN_ENTRIES) {
+            throw new IllegalArgumentException("probe plan exceeds entry limit ("
+                    + plan.size() + " > " + MAX_PROBE_PLAN_ENTRIES + ")");
+        }
+        StringBuilder text = new StringBuilder(Math.min(64 * 1024, plan.size() * 64 + 16));
+        for (ProbeTarget target : plan) {
+            text.append(target.method()).append('\t').append(target.route()).append('\t')
+                    .append(target.query() == null ? "" : target.query()).append('\t')
+                    .append(target.track() == null ? "UNAUTH" : target.track()).append('\t')
+                    .append(target.authHeader() == null ? "" : target.authHeader()).append('\t')
+                    .append(target.bladeAuthHeader() == null ? "" : target.bladeAuthHeader())
+                    .append('\n');
+        }
+        byte[] bytes = text.toString().getBytes(StandardCharsets.UTF_8);
+        if (bytes.length == 0 || bytes.length > MAX_PROBE_PLAN_UPLOAD_BYTES) {
+            throw new IllegalArgumentException(
+                    "probe plan host file size exceeds trusted sandbox upload budget ("
+                            + bytes.length + " > " + MAX_PROBE_PLAN_UPLOAD_BYTES + ")");
+        }
+        return bytes;
+    }
+
+    /** UTF-8 size of the serialized probe plan, or 0 when empty. */
+    public static int probePlanUtf8Bytes(List<ProbeTarget> targets) {
+        List<ProbeTarget> plan = targets == null ? List.of() : targets;
+        if (plan.isEmpty()) return 0;
+        int total = 0;
+        for (ProbeTarget target : plan) {
+            total += target.method().getBytes(StandardCharsets.UTF_8).length + 1;
+            total += target.route().getBytes(StandardCharsets.UTF_8).length + 1;
+            String query = target.query() == null ? "" : target.query();
+            total += query.getBytes(StandardCharsets.UTF_8).length + 1;
+            String track = target.track() == null || target.track().isBlank() ? "UNAUTH" : target.track();
+            total += track.getBytes(StandardCharsets.UTF_8).length + 1;
+            String auth = target.authHeader() == null ? "" : target.authHeader();
+            total += auth.getBytes(StandardCharsets.UTF_8).length + 1;
+            String blade = target.bladeAuthHeader() == null ? "" : target.bladeAuthHeader();
+            total += blade.getBytes(StandardCharsets.UTF_8).length + 1;
+        }
+        return total;
     }
 
     private static String writeProgress(String message) {
@@ -781,7 +841,7 @@ public final class ExternalArtifactTaskExecutor {
             if (probePlan == null || probePlan.isEmpty()) {
                 probePlan = List.of(new ProbeTarget(probeMethod, probeRoute));
             } else {
-                if (probePlan.size() > 512) {
+                if (probePlan.size() > MAX_PROBE_PLAN_ENTRIES) {
                     throw new IllegalArgumentException("probe plan exceeds limit");
                 }
                 probePlan = List.copyOf(probePlan);

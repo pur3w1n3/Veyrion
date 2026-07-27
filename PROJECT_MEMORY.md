@@ -790,3 +790,10 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 - 报告空或扫描 `UNREACHED` 时诚实空态 + CTA 卡片跳转子视图；Demo 返回演示 REPORT 任务与摘要。
 - **诚实缺口**：Dashboard DTO **无**独立 `reportMarkdown`/`finalReport` 字段；仍从 AI job events 拉取。
 - 验证：`frontend/` `npm run build`。不得标 `VERIFIED` 生产可用。
+
+## 75. 批量探针计划上传预算对齐（2026-07-27）
+
+- **根因**：`LocalDockerTrustedSandboxClient.uploadFile` 宿主文件上限原为 256 KiB，而产品洪水设计允许 `MAX_DYNAMIC_PROBES=512` 且身份轨可附带双通道 auth（各 ≤2048）。典型 512 条 dual-auth 计划约 0.8 MiB，最坏约 2.6 MiB，会在 Worker「上传批量探针计划」阶段以 `EXTERNAL_ARTIFACT_REJECTED` / `upload host file size is outside trusted sandbox limits` 失败。
+- **修复**：将信任沙箱探针计划上传预算提升为有文档边界的 **3 MiB**（`512 × 6 KiB` 最坏 TSV 行），常量在 `ExternalArtifactTaskExecutor.MAX_PROBE_PLAN_UPLOAD_BYTES` / `ProbePlanService` / `LocalDockerTrustedSandboxClient.MAX_UPLOAD_HOST_FILE_BYTES` 对齐；控制面入队前与 `encodeProbePlan` 均预检 `PROBE_PLAN_TOO_LARGE`。
+- **未削弱**：未取消大小检查；OpenSandbox 仍保留更紧的 shell/base64 上传上限（非本故障路径）。
+- 验收：`ProbePlanUploadBudgetAcceptanceTest` / `TrustedDockerBuildingBlocksAcceptanceTest` / `ExternalArtifactTaskExecutorAcceptanceTest` PASS。

@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.sandbox;
 
+import com.aq.jvmsentinel.worker.ExternalArtifactTaskExecutor;
 import com.aq.jvmsentinel.worker.WorkerCapability;
 
 import java.io.ByteArrayOutputStream;
@@ -44,6 +45,13 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
     private static final String TRACE_TMP = "/tmp/veyrion-trace";
     private static final int MAX_PROCESS_OUTPUT = 4 * 1024 * 1024;
     private static final int MAX_PIDS = 1_024;
+    /**
+     * Host→trace-tmpfs upload ceiling via {@code docker exec} stdin.
+     * Aligned with {@link ExternalArtifactTaskExecutor#MAX_PROBE_PLAN_UPLOAD_BYTES}
+     * (512 flood entries × worst-case TSV line = 3 MiB). Not a general artifact upload path.
+     */
+    public static final int MAX_UPLOAD_HOST_FILE_BYTES =
+            ExternalArtifactTaskExecutor.MAX_PROBE_PLAN_UPLOAD_BYTES;
     private static final Set<String> FEATURES = Set.of(
             "lifecycle-v1", "execd-command-v1", "network-deny-v1",
             "resource-budget-v1", "container-root-v1", "writable-rootfs-v1",
@@ -148,8 +156,10 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
         }
         try {
             long size = Files.size(hostFile);
-            if (size <= 0 || size > 256 * 1024) {
-                throw new IllegalArgumentException("upload host file size is outside trusted sandbox limits");
+            if (size <= 0 || size > MAX_UPLOAD_HOST_FILE_BYTES) {
+                throw new IllegalArgumentException(
+                        "upload host file size is outside trusted sandbox limits ("
+                                + size + "; allowed 1.." + MAX_UPLOAD_HOST_FILE_BYTES + ")");
             }
         } catch (IOException failure) {
             throw new IllegalStateException("upload host file could not be inspected", failure);

@@ -1134,7 +1134,7 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
 
     private static ResourceBudget dynamicBudgetForArtifact(ArtifactDescriptor artifact, int probeCount) {
         long size = Math.max(0L, artifact.sizeBytes());
-        int probes = Math.max(1, Math.min(512, probeCount));
+        int probes = Math.max(1, Math.min(ProbePlanService.MAX_DYNAMIC_PROBES, probeCount));
         // Cold start + parallel loopback probe waves (fast 800ms) plus capped slow
         // retries (up to 128 × 2000ms). Keep margin for MOCK-dependency hangs.
         long baseWall = size >= 80L * 1024 * 1024 ? 420 : size >= 20L * 1024 * 1024 ? 300 : 180;
@@ -1560,12 +1560,14 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     }
 
     private synchronized TaskSnapshot enqueueDynamicForPipeline(String scanId, String actorId) {
-        return enqueueDynamicForPipeline(scanId, actorId, null, List.of(), 512, null, null, null);
+        return enqueueDynamicForPipeline(scanId, actorId, null, List.of(),
+                ProbePlanService.MAX_DYNAMIC_PROBES, null, null, null);
     }
 
     private synchronized TaskSnapshot enqueueDynamicForPipeline(String scanId, String actorId,
                                                                  String preferredEntryId) {
-        return enqueueDynamicForPipeline(scanId, actorId, preferredEntryId, List.of(), 512, null, null, null);
+        return enqueueDynamicForPipeline(scanId, actorId, preferredEntryId, List.of(),
+                ProbePlanService.MAX_DYNAMIC_PROBES, null, null, null);
     }
 
     private synchronized TaskSnapshot enqueueDynamicForPipeline(String scanId, String actorId,
@@ -1617,6 +1619,13 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         if (plan.primary() == null) {
             throw new ApiException(409, "TARGET_ENTRY_NOT_IN_SCAN",
                     "the scan has no entrypoint to observe");
+        }
+        int planBytes = ExternalArtifactTaskExecutor.probePlanUtf8Bytes(plan.probes());
+        if (planBytes <= 0 || planBytes > ProbePlanService.MAX_PROBE_PLAN_UPLOAD_BYTES) {
+            throw new ApiException(409, "PROBE_PLAN_TOO_LARGE",
+                    "probe plan serialized size exceeds sandbox upload budget ("
+                            + planBytes + " > " + ProbePlanService.MAX_PROBE_PLAN_UPLOAD_BYTES
+                            + " bytes); lower maxRequests or shrink auth header material");
         }
         unreachedDynamicPaths.put(scanId, plan.unreachedPaths());
         scanExpandedProbes.put(scanId, List.copyOf(plan.probes()));

@@ -30,7 +30,11 @@ import java.util.function.BiFunction;
  * and identity-track expansion. Extracted from ControlPlaneServer for independent testing.
  */
 public final class ProbePlanService {
-    public static final int MAX_DYNAMIC_PROBES = 512;
+    /** Flood probe ceiling; shared with worker/agent/sandbox upload budget. */
+    public static final int MAX_DYNAMIC_PROBES = ExternalArtifactTaskExecutor.MAX_PROBE_PLAN_ENTRIES;
+    /** Serialized TSV upload budget; must match trusted-sandbox {@code uploadFile}. */
+    public static final int MAX_PROBE_PLAN_UPLOAD_BYTES =
+            ExternalArtifactTaskExecutor.MAX_PROBE_PLAN_UPLOAD_BYTES;
 
     private final ControlPlaneStore store;
     private final BiFunction<String, String, List<TaskSnapshot>> workerSnapshots;
@@ -48,12 +52,13 @@ public final class ProbePlanService {
     }
 
     public ProbePlan buildProbePlan(ControlPlaneStore.ScanRecord scan, String taskIdHint) {
-        return buildProbePlan(scan, taskIdHint, null, List.of(), 512, null, null, null, null);
+        return buildProbePlan(scan, taskIdHint, null, List.of(), MAX_DYNAMIC_PROBES, null, null, null, null);
     }
 
     public ProbePlan buildProbePlan(ControlPlaneStore.ScanRecord scan, String taskIdHint,
                                      String preferredEntryId) {
-        return buildProbePlan(scan, taskIdHint, preferredEntryId, List.of(), 512, null, null, null, null);
+        return buildProbePlan(scan, taskIdHint, preferredEntryId, List.of(), MAX_DYNAMIC_PROBES,
+                null, null, null, null);
     }
 
     public ProbePlan buildProbePlan(ControlPlaneStore.ScanRecord scan, String taskIdHint,
