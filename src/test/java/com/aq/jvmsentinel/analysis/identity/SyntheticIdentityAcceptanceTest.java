@@ -51,7 +51,7 @@ public final class SyntheticIdentityAcceptanceTest {
         try {
             try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(jar))) {
                 jos.putNextEntry(new JarEntry("BOOT-INF/classes/application.properties"));
-                jos.write("blade.token.sign-key=custom-fixture-secret-value-32b\n"
+                jos.write("jwt.secret=custom-fixture-secret-value-32b\n"
                         .getBytes(StandardCharsets.UTF_8));
                 jos.closeEntry();
             }

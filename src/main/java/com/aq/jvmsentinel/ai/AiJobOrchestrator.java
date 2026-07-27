@@ -567,7 +567,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         无密钥材料时优先 MISSING_AUTH / EMPTY_BEARER / ALG_NONE 等不依赖密钥的技术。
                         必须通过 plan_propose 或最终回答中的 bypassPoCs/bypassCandidates JSON 给出条目：
                         entryRef、techniqueId、track、rationale、evidenceRefs、confidence，以及你研判需要的
-                        authorizationHeader / bladeAuthHeader / query / bodyHint（可含 JWT、alg-none、自定义 claims）。
+                        authorizationHeader / secondaryAuthorizationHeader（兼容别名 bladeAuthHeader）/
+                        query / bodyHint（可含 JWT、alg-none、自定义 claims）。
                         服务端只做 schema/边界校验后交给动态验证执行；不得改网络/挂载/命令。
                         只能用 facts_search/evidence_get/plan_propose/code_query。
                         有 PathRun 时用 kind=PATH_RUN 核对。
@@ -648,7 +649,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     MISSING_AUTH / EMPTY_BEARER / ALG_NONE. Use PARAMETER_CONSTRAINT_HINTS to refine
                     authorizationHeader/claims/query/bodyHint. Use plan_propose and/or a final
                     bypassPoCs/bypassCandidates JSON with entryRef, techniqueId, track, rationale, evidenceRefs,
-                    confidence, and AI-authored authorizationHeader/bladeAuthHeader/query/bodyHint (JWT, alg-none,
+                    confidence, and AI-authored authorizationHeader/secondaryAuthorizationHeader
+                    (deprecated wire alias: bladeAuthHeader)/query/bodyHint (JWT, alg-none,
                     custom claims allowed). The server schema-gates then DYNAMIC executes. Use only
                     facts_search/evidence_get/plan_propose/code_query. Never change network/mounts/commands. Emit
                     bypassConfirmation:{status:HYPOTHESIS|DYNAMIC_CONTRAST,pathRunRefs:[...]}. Never claim bypass
@@ -988,8 +990,13 @@ public final class AiJobOrchestrator implements AutoCloseable {
                 block.append("- adapterId=").append(adapter.id());
                 adapter.suggestJwtSecret(artifactPath).ifPresent(hint ->
                         block.append(" harvestedSecretSignal=").append(hint));
-                if (adapter.preferBladeAuthHeader(null)) {
-                    block.append(" preferBladeAuthHeaderHint=true");
+                if (adapter.preferSecondaryAuthHeader(null)) {
+                    block.append(" preferSecondaryAuthHeaderHint=true");
+                    if (adapter.secondaryAuthHeaderName() != null
+                            && !adapter.secondaryAuthHeaderName().isBlank()) {
+                        block.append(" secondaryAuthHeaderName=")
+                                .append(adapter.secondaryAuthHeaderName());
+                    }
                 }
                 if (!adapter.defaultBypassTechniques().isEmpty()) {
                     block.append(" techniqueLibrary=").append(adapter.defaultBypassTechniques());

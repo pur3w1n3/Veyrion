@@ -1994,7 +1994,8 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         String requestPayload = JsonCodec.stringify(body);
         String durableScope = "entry:focus-probe:" + scanId + ":" + entryId;
         Set<String> allowed = Set.of("authorized", "techniqueId", "authorizationHeader",
-                "bladeAuthHeader", "candidateInputs", "maxRequests", "experimentPlanId");
+                "secondaryAuthorizationHeader", "bladeAuthHeader",
+                "candidateInputs", "maxRequests", "experimentPlanId");
         for (String field : body.keySet()) {
             if (!allowed.contains(field)) {
                 throw new ApiException(400, "FOCUS_PROBE_FIELD_REJECTED",
@@ -2018,8 +2019,12 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                 ? optionalText(body, "techniqueId", null) : null;
         String authorizationHeader = body.containsKey("authorizationHeader")
                 ? optionalText(body, "authorizationHeader", null) : null;
-        String bladeAuthHeader = body.containsKey("bladeAuthHeader")
-                ? optionalText(body, "bladeAuthHeader", null) : null;
+        String bladeAuthHeader = null;
+        if (body.containsKey("secondaryAuthorizationHeader")) {
+            bladeAuthHeader = optionalText(body, "secondaryAuthorizationHeader", null);
+        } else if (body.containsKey("bladeAuthHeader")) {
+            bladeAuthHeader = optionalText(body, "bladeAuthHeader", null);
+        }
         List<String> candidateInputs = stringList(body.get("candidateInputs"), "candidateInputs");
         long maxRequestsLong = positiveLong(body, "maxRequests", 1);
         String experimentPlanId = body.containsKey("experimentPlanId")

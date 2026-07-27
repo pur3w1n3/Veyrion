@@ -183,8 +183,8 @@ public final class ProbePlanService {
     /** Converts only bounded name=value hints into URL query data for the selected entry. */
     /**
      * Focused DYNAMIC probe for one AI-authored auth PoC. Uses AI authorizationHeader /
-     * bladeAuthHeader independently when present; otherwise falls back to a known
-     * {@link AuthBypassTechnique} synthesizer.
+     * secondaryAuthorizationHeader (wire alias: bladeAuthHeader) independently when present;
+     * otherwise falls back to a known {@link AuthBypassTechnique} synthesizer.
      */
     private ProbePlan buildFocusedAiPocPlan(
             ControlPlaneStore.ScanRecord scan,
@@ -249,11 +249,20 @@ public final class ProbePlanService {
         return new ProbePlan(primary, probes, List.copyOf(unreached));
     }
 
-    /** Package-visible for acceptance tests of MISSING_AUTH / AI PoC materialization. */
+    /**
+     * Package-visible for acceptance tests of MISSING_AUTH / AI PoC materialization.
+     * {@code bladeAuthToken} is the secondary auth-channel token (deprecated wire name;
+     * semantically {@code secondaryAuthToken}).
+     */
     public record AuthMaterialized(IdentityTrack track, String authToken, String bladeAuthToken,
                             String provenance, boolean identityAvailable) {
         AuthMaterialized(IdentityTrack track, String authToken, String provenance) {
             this(track, authToken, "", provenance, true);
+        }
+
+        /** Generic alias for the secondary auth-channel token. */
+        public String secondaryAuthToken() {
+            return bladeAuthToken == null ? "" : bladeAuthToken;
         }
     }
 
@@ -267,34 +276,45 @@ public final class ProbePlanService {
     public static AuthMaterialized materializeAiPocAuth(
             String techniqueId, String authorizationHeader, String bladeAuthHeader, Path artifactPath) {
         Optional<AuthBypassTechnique> technique = AuthBypassTechnique.tryParse(techniqueId);
-        String bladeToken = normalizeProbeToken(bladeAuthHeader);
-        if (!bladeToken.isEmpty()) {
+        String secondaryToken = normalizeProbeToken(bladeAuthHeader);
+        if (!secondaryToken.isEmpty()) {
             AuthBypassCandidate.validateAuthMaterialOnly(bladeAuthHeader);
         }
-        // MISSING_AUTH is an intentional unauthenticated probe: never invent Bearer / Blade-Auth.
+        // MISSING_AUTH is an intentional unauthenticated probe: never invent Bearer / secondary auth.
         if (technique.isPresent() && technique.get() == AuthBypassTechnique.MISSING_AUTH) {
-            if ((authorizationHeader != null && !authorizationHeader.isBlank()) || !bladeToken.isEmpty()) {
+            if ((authorizationHeader != null && !authorizationHeader.isBlank()) || !secondaryToken.isEmpty()) {
                 throw new IllegalArgumentException("MISSING_AUTH_MUST_OMIT_AUTHORIZATION");
             }
             return new AuthMaterialized(IdentityTrack.UNAUTH, "", "", "MISSING_AUTH", true);
         }
         boolean hasAuth = authorizationHeader != null && !authorizationHeader.isBlank();
-        if (hasAuth || !bladeToken.isEmpty()) {
+        if (hasAuth || !secondaryToken.isEmpty()) {
             String authToken = "";
             if (hasAuth) {
                 AuthBypassCandidate.validateAuthMaterialOnly(authorizationHeader);
                 authToken = normalizeProbeToken(authorizationHeader);
             }
-            if (bladeToken.isEmpty()
+            // AI-authored DEFAULT_SECRET_HS256 may dual-write secondary channel when harvest says so.
+            if (secondaryToken.isEmpty()
+                    && technique.isPresent()
+                    && technique.get() == AuthBypassTechnique.DEFAULT_SECRET_HS256
+                    && !authToken.isBlank()
+                    && artifactPath != null) {
+                SyntheticIdentityService.MaterialBundle harvested =
+                        new SyntheticIdentityService().harvest(artifactPath);
+                if (harvested.preferSecondaryAuthHeader() || harvested.multiHeaderAuthSurface()) {
+                    secondaryToken = SyntheticIdentityService.secondaryAuthHeaderValue(authToken);
+                }
+            } else if (secondaryToken.isEmpty()
                     && technique.isPresent()
                     && technique.get() == AuthBypassTechnique.DEFAULT_SECRET_HS256
                     && !authToken.isBlank()) {
-                bladeToken = SyntheticIdentityService.bladeAuthHeaderValue(authToken);
+                // No artifact context: keep Authorization-only (generic default).
             }
             IdentityTrack track = technique
                     .map(AuthBypassTechnique::defaultTrack)
                     .orElse(IdentityTrack.BYPASS_CANDIDATE);
-            return new AuthMaterialized(track, authToken, bladeToken, "AI_POC", true);
+            return new AuthMaterialized(track, authToken, secondaryToken, "AI_POC", true);
         }
         if (technique.isEmpty() || technique.get() == AuthBypassTechnique.CUSTOM_POC) {
             return new AuthMaterialized(IdentityTrack.BYPASS_CANDIDATE, "", "", "AI_POC_NO_MATERIAL", true);
@@ -308,18 +328,17 @@ public final class ProbePlanService {
                     synth.precondition(), false);
         }
         String token = normalizeProbeToken(synth.authorizationHeader());
-        String blade = "";
+        String secondary = "";
         if (!token.isBlank() && (technique.get() == AuthBypassTechnique.DEFAULT_SECRET_HS256
-                || materials.preferBladeAuthHeader()
-                || materials.bladeSurface())) {
-            blade = SyntheticIdentityService.bladeAuthHeaderValue(token);
+                && (materials.preferSecondaryAuthHeader() || materials.multiHeaderAuthSurface()))) {
+            secondary = SyntheticIdentityService.secondaryAuthHeaderValue(token);
         }
-        // ALG_NONE / EMPTY_BEARER: keep channels independent unless AI supplied Blade-Auth.
+        // ALG_NONE / EMPTY_BEARER: keep channels independent unless AI supplied secondary auth.
         if (technique.get() == AuthBypassTechnique.ALG_NONE
                 || technique.get() == AuthBypassTechnique.EMPTY_BEARER) {
-            blade = "";
+            secondary = "";
         }
-        return new AuthMaterialized(synth.track(), token, blade, synth.provenance(), true);
+        return new AuthMaterialized(synth.track(), token, secondary, synth.provenance(), true);
     }
 
     private static List<ExternalArtifactTaskExecutor.ProbeTarget> candidateProbeTargets(
@@ -537,33 +556,52 @@ public final class ProbePlanService {
             return;
         }
         String token = normalizeProbeToken(synth.authorizationHeader());
-        // SpringBlade Secure filter primarily consumes Blade-Auth; dual-write when harvest
-        // marks Blade surface so Authorization-only floods stop false-negative 401s.
-        String blade = "";
-        if (!token.isBlank() && materialsPreferBladeAuth(expansion, synth)) {
-            blade = com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService
-                    .bladeAuthHeaderValue(token);
+        // Dual-write secondary auth header when framework-adapter / harvest marks multi-header surface.
+        String secondary = "";
+        if (!token.isBlank() && materialsPreferSecondaryAuth(expansion, synth)) {
+            secondary = SyntheticIdentityService.secondaryAuthHeaderValue(token);
         }
         expanded.add(new ExternalArtifactTaskExecutor.ProbeTarget(
                 probe.method(), probe.route(), probe.query(),
-                synth.track().name(), token, blade));
+                synth.track().name(), token, secondary));
     }
 
-    static boolean materialsPreferBladeAuth(
+    /**
+     * Dual-write secondary auth when harvest precondition or a matched FrameworkAdapter
+     * prefers a secondary auth header. Not product-specialized to any single framework.
+     */
+    static boolean materialsPreferSecondaryAuth(
             TrackExpansion expansion,
             SyntheticIdentityService.SyntheticIdentity synth) {
         if (synth == null || synth.authorizationHeader() == null || synth.authorizationHeader().isBlank()) {
             return false;
         }
         String pre = synth.precondition() == null ? "" : synth.precondition().toLowerCase(Locale.ROOT);
-        if (pre.contains("blade") || pre.contains("bladex")) {
+        if (pre.contains("multi-header") || pre.contains("secondary auth")) {
             return true;
         }
         String route = expansion.probe() == null ? "" : expansion.probe().route();
-        return route != null && route.toLowerCase(Locale.ROOT).contains("/blade-");
+        List<String> routes = route == null || route.isBlank() ? List.of() : List.of(route);
+        for (com.aq.jvmsentinel.analysis.framework.FrameworkAdapter adapter
+                : com.aq.jvmsentinel.analysis.framework.FrameworkAdapterRegistry.matching(null, routes)) {
+            if (adapter.preferSecondaryAuthHeader(null)
+                    && adapter.secondaryAuthHeaderName() != null
+                    && !adapter.secondaryAuthHeaderName().isBlank()) {
+                return true;
+            }
+        }
+        return false;
     }
 
-    /** Strip a leading Bearer scheme for probe Authorization / Blade-Auth tokens. */
+    /** @deprecated Use {@link #materialsPreferSecondaryAuth}. */
+    @Deprecated
+    static boolean materialsPreferBladeAuth(
+            TrackExpansion expansion,
+            SyntheticIdentityService.SyntheticIdentity synth) {
+        return materialsPreferSecondaryAuth(expansion, synth);
+    }
+
+    /** Strip a leading Bearer scheme for probe Authorization / secondary-auth tokens. */
     static String normalizeProbeToken(String authorizationHeader) {
         if (authorizationHeader == null) return "";
         String token = authorizationHeader.trim();

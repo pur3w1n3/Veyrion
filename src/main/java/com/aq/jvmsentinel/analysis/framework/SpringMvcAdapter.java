@@ -8,7 +8,10 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
-/** Default Spring MVC adapter for non-Blade surfaces. */
+/**
+ * Default Spring MVC adapter — always matches as the JVM-generic baseline.
+ * Does not prefer a secondary auth header; HS256 minting requires artifact harvest.
+ */
 public final class SpringMvcAdapter implements FrameworkAdapter {
     private static final Set<String> ROUTE_SIGNALS = Set.of(
             "admin", "upload", "deploy", "token", "exec", "oauth", "sql", "jndi", "ssrf", "deserial");
@@ -37,7 +40,7 @@ public final class SpringMvcAdapter implements FrameworkAdapter {
     }
 
     @Override
-    public boolean preferBladeAuthHeader(SyntheticIdentityService.MaterialBundle materials) {
+    public boolean preferSecondaryAuthHeader(SyntheticIdentityService.MaterialBundle materials) {
         return false;
     }
 

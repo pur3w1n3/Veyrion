@@ -18,7 +18,7 @@
 | 证据分层 | ✅ FACT/RUNTIME_OBSERVED/MOCK/INFERENCE 四层 | 模型不能单独升 VERIFIED |
 | 沙箱闸门 | ✅ `--network none` + `TRUSTED_DOCKER` + 工具 allowlist | 服务端不可被模型改写 |
 | 污点分析 | ✅ 有界跨方法 TaintPath（有 budget/stopReason） | 诚实边界标注，不虚报 |
-| 身份合成 | ✅ Blade HS256/alg:none + 自动密钥猜测 | JWT 密钥从 JAR 自动提取 |
+| 身份合成 | ✅ 通用 HS256/alg:none + 制品收获密钥 | JWT 密钥从 JAR 自动提取（无静默商业默认） |
 | SQLite 持久化 | ✅ V001–V014，幂等键+恢复机制 | 重启可继续，不丢失进度 |
 
 ### 1.2 关键缺口（代码实测确认）
@@ -79,7 +79,7 @@ Report Agent           → REPORT_GENERATION（增加 AttackPath + LedgerDiff）
 
 当前：生成 bypassPoCs，洪水后续跑确认  
 调整后新增注入段：
-- `FRAMEWORK_ADAPTER_CONTEXT`：FrameworkAdapter 匹配结果（如"检测到 SpringBlade，默认 key 已提取"）
+- `FRAMEWORK_ADAPTER_CONTEXT`：FrameworkAdapter 匹配 HINT（适配器信号 / secondaryAuthHeaderName / wellKnownKeyHint；非 FACT 密钥）
 - `PARAMETER_CONSTRAINT_HINTS`：参数类型/约束（辅助生成更精确的auth header）
 
 变化：`bypassPoCs.authorizationHeader` 字段允许携带从 ParameterConstraint 推导的 token claim

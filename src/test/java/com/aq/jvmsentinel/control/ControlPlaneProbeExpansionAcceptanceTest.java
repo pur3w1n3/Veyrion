@@ -96,13 +96,13 @@ public final class ControlPlaneProbeExpansionAcceptanceTest {
         }
     }
 
-    /** MISSING_AUTH must probe without Authorization / Blade-Auth and without inventing a bearer. */
+    /** MISSING_AUTH must probe without Authorization / secondary auth and without inventing a bearer. */
     private static void missingAuthMaterializesUnauthenticated() {
         ProbePlanService.AuthMaterialized omitted =
                 ControlPlaneServer.materializeAiPocAuth("MISSING_AUTH", null, null);
         check(IdentityTrack.UNAUTH.name().equals(omitted.track().name()), "MISSING_AUTH track is UNAUTH");
         check(omitted.authToken().isEmpty(), "MISSING_AUTH omits auth token");
-        check(omitted.bladeAuthToken().isEmpty(), "MISSING_AUTH omits blade auth token");
+        check(omitted.secondaryAuthToken().isEmpty(), "MISSING_AUTH omits secondary auth token");
         check(omitted.identityAvailable(), "MISSING_AUTH remains probeable as UNAUTH");
         check("MISSING_AUTH".equals(omitted.provenance()), "MISSING_AUTH provenance");
 
@@ -120,40 +120,42 @@ public final class ControlPlaneProbeExpansionAcceptanceTest {
         }
 
         try {
-            ControlPlaneServer.materializeAiPocAuth("MISSING_AUTH", null, "blade-token", null);
-            throw new AssertionError("MISSING_AUTH must reject non-empty bladeAuthHeader");
+            ControlPlaneServer.materializeAiPocAuth("MISSING_AUTH", null, "secondary-token", null);
+            throw new AssertionError("MISSING_AUTH must reject non-empty secondary auth header");
         } catch (IllegalArgumentException expected) {
             check("MISSING_AUTH_MUST_OMIT_AUTHORIZATION".equals(expected.getMessage()),
-                    "MISSING_AUTH rejects bladeAuthHeader with same code");
+                    "MISSING_AUTH rejects secondary auth header with same code");
         }
 
         ProbePlanService.AuthMaterialized algNone =
                 ControlPlaneServer.materializeAiPocAuth("ALG_NONE",
                         "Bearer eyJhbGciOiJub25lIn0.eyJyb2xlIjoiYWRtaW4ifQ.", null);
         check(!algNone.authToken().isBlank(), "ALG_NONE still accepts AI JWT material");
-        check(algNone.bladeAuthToken().isEmpty(), "auth-only material does not invent Blade-Auth");
+        check(algNone.secondaryAuthToken().isEmpty(),
+                "auth-only material does not invent secondary auth");
     }
 
     private static void authAndBladeChannelsMaterializeIndependently() {
         ProbePlanService.AuthMaterialized authOnly =
                 ControlPlaneServer.materializeAiPocAuth("CUSTOM_POC", "tok-auth", null, null);
-        check("tok-auth".equals(authOnly.authToken()) && authOnly.bladeAuthToken().isEmpty(),
-                "auth-only PoC leaves bladeAuthToken empty");
+        check("tok-auth".equals(authOnly.authToken()) && authOnly.secondaryAuthToken().isEmpty(),
+                "auth-only PoC leaves secondaryAuthToken empty");
 
-        ProbePlanService.AuthMaterialized bladeOnly =
-                ControlPlaneServer.materializeAiPocAuth("CUSTOM_POC", null, "tok-blade", null);
-        check(bladeOnly.authToken().isEmpty() && "tok-blade".equals(bladeOnly.bladeAuthToken()),
-                "blade-only PoC leaves authToken empty");
+        ProbePlanService.AuthMaterialized secondaryOnly =
+                ControlPlaneServer.materializeAiPocAuth("CUSTOM_POC", null, "tok-secondary", null);
+        check(secondaryOnly.authToken().isEmpty()
+                        && "tok-secondary".equals(secondaryOnly.secondaryAuthToken()),
+                "secondary-only PoC leaves authToken empty");
 
         ProbePlanService.AuthMaterialized both =
                 ControlPlaneServer.materializeAiPocAuth("CUSTOM_POC", "tok-a", "tok-b", null);
-        check("tok-a".equals(both.authToken()) && "tok-b".equals(both.bladeAuthToken()),
+        check("tok-a".equals(both.authToken()) && "tok-b".equals(both.secondaryAuthToken()),
                 "both channels stay distinct");
     }
 
     /**
      * DEFAULT_SECRET_HS256 mints only after artifact harvest; without a key → IDENTITY_UNAVAILABLE.
-     * With harvested Blade key → dual-write Authorization + Blade-Auth.
+     * With harvested key + multi-header surface → dual-write Authorization + secondary auth.
      */
     private static void defaultSecretHs256DualWritesBladeAuth() throws Exception {
         ProbePlanService.AuthMaterialized unavailable =
@@ -170,16 +172,16 @@ public final class ControlPlaneProbeExpansionAcceptanceTest {
                     ControlPlaneServer.materializeAiPocAuth("DEFAULT_SECRET_HS256", null, null, jar);
             check(mat.identityAvailable(), "DEFAULT_SECRET_HS256 available after harvest");
             check(!mat.authToken().isBlank(), "DEFAULT_SECRET_HS256 sets Authorization token");
-            check(mat.bladeAuthToken() != null
-                            && mat.bladeAuthToken().toLowerCase().startsWith("bearer "),
-                    "DEFAULT_SECRET_HS256 dual-writes Blade-Auth with bearer scheme");
+            check(mat.secondaryAuthToken() != null
+                            && mat.secondaryAuthToken().toLowerCase().startsWith("bearer "),
+                    "DEFAULT_SECRET_HS256 dual-writes secondary auth with bearer scheme");
         } finally {
             Files.deleteIfExists(jar);
         }
     }
 
     private static Path writeHarvestJar() throws Exception {
-        Path jar = Files.createTempFile("probe-blade-key-", ".jar");
+        Path jar = Files.createTempFile("probe-multi-header-key-", ".jar");
         try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(jar))) {
             jos.putNextEntry(new JarEntry(
                     "BOOT-INF/classes/org/springblade/core/jwt/props/JwtProperties.class"));

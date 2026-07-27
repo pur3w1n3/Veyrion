@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.ai;
 
+import com.aq.jvmsentinel.analysis.framework.SpringBladeAdapter;
 import com.aq.jvmsentinel.analysis.identity.AuthCodeQueryService;
 import com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService;
 import com.aq.jvmsentinel.ai.tool.AiToolRegistry;
@@ -34,45 +35,50 @@ public final class AuthCodeQueryAcceptanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     public static void main(String[] args) throws Exception {
-        codeQueryFindsBladeDefaultKey();
-        codeQueryBladeSurfaceWithoutKeyDoesNotMint();
-        seedPrefersDefaultSecretHs256WithBladeAuthWhenHarvested();
+        codeQueryHarvestsAdapterDictionaryKeyFromArtifact();
+        codeQueryMultiHeaderSurfaceWithoutKeyDoesNotMint();
+        codeQueryHarvestsGenericJwtSecretProperty();
+        seedPrefersDefaultSecretHs256WithSecondaryAuthWhenHarvested();
         seedWithoutHarvestedKeySkipsDefaultSecret();
-        harvestMarksBladeSurface();
+        harvestMarksMultiHeaderSurface();
         harvestWithoutKeyLeavesSecretEmpty();
         authRoleAllowlistsCodeQuery();
         System.out.println("AuthCodeQueryAcceptanceTest: PASS");
     }
 
-    private static void codeQueryFindsBladeDefaultKey() throws Exception {
-        Path jar = Files.createTempFile("blade-auth-code-", ".jar");
+    private static void codeQueryHarvestsAdapterDictionaryKeyFromArtifact() throws Exception {
+        Path jar = Files.createTempFile("multi-header-auth-code-", ".jar");
         try {
-            writeBladeJarWithKnownKey(jar);
+            writeMultiHeaderJarWithKnownKey(jar);
             AuthCodeQueryService.AuthCodeQueryResult result =
                     new AuthCodeQueryService().query(jar, "jwt", 20);
-            check(result.bladeSurface(), "blade surface detected");
+            check(result.multiHeaderAuthSurface(), "multi-header auth surface detected");
+            check(result.bladeSurface(), "deprecated bladeSurface alias still true");
             check(result.jwtSecretMaterialFound(), "sign-key material harvested");
-            check("Blade-Auth".equals(result.preferredHeaderChannel()), "prefer Blade-Auth");
+            check("Blade-Auth".equals(result.preferredHeaderChannel())
+                            || "Blade-Auth".equals(result.secondaryAuthHeaderName()),
+                    "adapter secondary header preferred when multi-header surface");
             check(result.recommendedTechniques().contains("DEFAULT_SECRET_HS256"),
                     "recommend DEFAULT_SECRET_HS256 when mintable");
             check(!result.secretCandidates().isEmpty(), "secretCandidates present");
             check(result.secretCandidates().get(0).mintable(), "candidate mintable");
             String toolJson = JSON.writeValueAsString(AuthCodeQueryService.toToolMap(result));
-            check(!toolJson.contains(AuthCodeQueryService.WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY),
+            check(!toolJson.contains(SpringBladeAdapter.WELL_KNOWN_COMMERCIAL_SIGN_KEY),
                     "tool map must not leak raw sign-key");
             check(toolJson.contains("secretCandidates"), "tool map exposes secretCandidates");
+            check(toolJson.contains("multiHeaderAuthSurface"), "tool map uses generic surface field");
         } finally {
             Files.deleteIfExists(jar);
         }
     }
 
-    private static void codeQueryBladeSurfaceWithoutKeyDoesNotMint() throws Exception {
-        Path jar = Files.createTempFile("blade-auth-nokey-", ".jar");
+    private static void codeQueryMultiHeaderSurfaceWithoutKeyDoesNotMint() throws Exception {
+        Path jar = Files.createTempFile("multi-header-auth-nokey-", ".jar");
         try {
-            writeBladeJarWithoutKey(jar);
+            writeMultiHeaderJarWithoutKey(jar);
             AuthCodeQueryService.AuthCodeQueryResult result =
                     new AuthCodeQueryService().query(jar, "", 20);
-            check(result.bladeSurface(), "blade surface without key still detected");
+            check(result.multiHeaderAuthSurface(), "multi-header surface without key still detected");
             check(!result.jwtSecretMaterialFound(), "no mintable secret without key bytes");
             check(result.mintSecret().isEmpty(), "mintSecret empty");
             check(!result.recommendedTechniques().contains("DEFAULT_SECRET_HS256"),
@@ -84,11 +90,33 @@ public final class AuthCodeQueryAcceptanceTest {
         }
     }
 
-    private static void seedPrefersDefaultSecretHs256WithBladeAuthWhenHarvested() throws Exception {
-        Path jar = Files.createTempFile("blade-auth-seed-", ".jar");
+    private static void codeQueryHarvestsGenericJwtSecretProperty() throws Exception {
+        Path jar = Files.createTempFile("generic-jwt-secret-", ".jar");
         try {
-            writeBladeJarWithKnownKey(jar);
-            ApiDtos.ScanDto scan = bladeScan();
+            try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(jar))) {
+                jos.putNextEntry(new JarEntry("BOOT-INF/classes/application.properties"));
+                jos.write("jwt.secret=generic-fixture-secret-value-32bytes\n"
+                        .getBytes(StandardCharsets.UTF_8));
+                jos.closeEntry();
+            }
+            AuthCodeQueryService.AuthCodeQueryResult result =
+                    new AuthCodeQueryService().query(jar, "jwt", 10);
+            check(result.jwtSecretMaterialFound(), "generic jwt.secret harvested");
+            check(result.mintSecret().isPresent()
+                            && "generic-fixture-secret-value-32bytes".equals(result.mintSecret().get()),
+                    "mint secret is custom config value");
+            check("Authorization".equals(result.preferredHeaderChannel()),
+                    "generic JAR prefers Authorization without multi-header surface");
+        } finally {
+            Files.deleteIfExists(jar);
+        }
+    }
+
+    private static void seedPrefersDefaultSecretHs256WithSecondaryAuthWhenHarvested() throws Exception {
+        Path jar = Files.createTempFile("multi-header-auth-seed-", ".jar");
+        try {
+            writeMultiHeaderJarWithKnownKey(jar);
+            ApiDtos.ScanDto scan = multiHeaderScan();
             List<AuthBypassCandidate> drafts =
                     AuthBypassFeasibility.seedRuleGeneratedDrafts(scan, jar);
             check(!drafts.isEmpty(), "seeded drafts non-empty");
@@ -100,22 +128,23 @@ public final class AuthCodeQueryAcceptanceTest {
                     .filter(c -> AuthBypassTechnique.DEFAULT_SECRET_HS256.name().equals(c.techniqueId()))
                     .findFirst().orElseThrow();
             check(hs.hasAuthMaterial(), "HS256 draft has Authorization");
-            check(hs.bladeAuthHeader() != null && hs.bladeAuthHeader().toLowerCase().startsWith("bearer "),
-                    "HS256 draft dual-writes Blade-Auth with bearer scheme");
+            check(hs.secondaryAuthorizationHeader() != null
+                            && hs.secondaryAuthorizationHeader().toLowerCase().startsWith("bearer "),
+                    "HS256 draft dual-writes secondary auth with bearer scheme");
             check(hs.entryRef().equals("entry:entry-ann-18")
                             || hs.entryRef().equals("entry:entry-ann-255"),
-                    "seed prefers Blade high-value entries");
+                    "seed prefers high-value auth entries");
         } finally {
             Files.deleteIfExists(jar);
         }
     }
 
     private static void seedWithoutHarvestedKeySkipsDefaultSecret() throws Exception {
-        Path jar = Files.createTempFile("blade-auth-seed-nokey-", ".jar");
+        Path jar = Files.createTempFile("multi-header-auth-seed-nokey-", ".jar");
         try {
-            writeBladeJarWithoutKey(jar);
+            writeMultiHeaderJarWithoutKey(jar);
             List<AuthBypassCandidate> drafts =
-                    AuthBypassFeasibility.seedRuleGeneratedDrafts(bladeScan(), jar);
+                    AuthBypassFeasibility.seedRuleGeneratedDrafts(multiHeaderScan(), jar);
             check(!drafts.isEmpty(), "seed still produces secret-less techniques");
             boolean hasDefault = drafts.stream()
                     .anyMatch(c -> AuthBypassTechnique.DEFAULT_SECRET_HS256.name()
@@ -129,38 +158,38 @@ public final class AuthCodeQueryAcceptanceTest {
         }
     }
 
-    private static void harvestMarksBladeSurface() throws Exception {
-        Path jar = Files.createTempFile("blade-auth-mat-", ".jar");
+    private static void harvestMarksMultiHeaderSurface() throws Exception {
+        Path jar = Files.createTempFile("multi-header-auth-mat-", ".jar");
         try {
-            writeBladeJarWithKnownKey(jar);
+            writeMultiHeaderJarWithKnownKey(jar);
             SyntheticIdentityService.MaterialBundle materials =
                     new SyntheticIdentityService().harvest(jar);
-            check(materials.preferBladeAuthHeader() || materials.bladeSurface(),
-                    "harvest marks Blade surface");
+            check(materials.preferSecondaryAuthHeader() || materials.multiHeaderAuthSurface(),
+                    "harvest marks multi-header auth surface");
             check(materials.jwtSecret().isPresent()
-                            && AuthCodeQueryService.WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY
+                            && SpringBladeAdapter.WELL_KNOWN_COMMERCIAL_SIGN_KEY
                             .equals(materials.jwtSecret().get()),
-                    "harvest uses key found in artifact");
+                    "harvest uses key found in artifact (adapter dictionary match)");
             check(!"MOCK".equals(materials.secretProvenance()),
                     "harvest provenance is not silent MOCK default");
             String token = new SyntheticIdentityService()
                     .synthesizeTechnique(AuthBypassTechnique.DEFAULT_SECRET_HS256, materials)
                     .authorizationHeader();
             check(token != null && token.contains("."), "DEFAULT_SECRET_HS256 mints JWT after harvest");
-            check(SyntheticIdentityService.bladeAuthHeaderValue(token).startsWith("bearer "),
-                    "bladeAuthHeaderValue prefixes bearer");
+            check(SyntheticIdentityService.secondaryAuthHeaderValue(token).startsWith("bearer "),
+                    "secondaryAuthHeaderValue prefixes bearer");
         } finally {
             Files.deleteIfExists(jar);
         }
     }
 
     private static void harvestWithoutKeyLeavesSecretEmpty() throws Exception {
-        Path jar = Files.createTempFile("blade-auth-empty-", ".jar");
+        Path jar = Files.createTempFile("multi-header-auth-empty-", ".jar");
         try {
-            writeBladeJarWithoutKey(jar);
+            writeMultiHeaderJarWithoutKey(jar);
             SyntheticIdentityService.MaterialBundle materials =
                     new SyntheticIdentityService().harvest(jar);
-            check(materials.bladeSurface(), "blade surface without key");
+            check(materials.multiHeaderAuthSurface(), "multi-header surface without key");
             check(materials.jwtSecret().isEmpty(), "no silent commercial-key fallback");
             SyntheticIdentityService.SyntheticIdentity hs =
                     new SyntheticIdentityService().synthesizeTechnique(
@@ -188,7 +217,8 @@ public final class AuthCodeQueryAcceptanceTest {
             @Override
             public List<FactRecord> queryCode(ToolExecutionContext.Scope scope, String query, int limit) {
                 ObjectNode node = JSON.createObjectNode();
-                node.put("bladeSurface", true);
+                node.put("multiHeaderAuthSurface", true);
+                node.put("bladeSurface", true); // deprecated alias
                 node.put("jwtSecretMaterialFound", false);
                 node.put("classification", "FACT");
                 return List.of(new FactRecord(scope, "code_query:auth-summary", node));
@@ -215,7 +245,7 @@ public final class AuthCodeQueryAcceptanceTest {
         check(!result.outputs().isEmpty(), "code_query returns FACT outputs");
     }
 
-    private static ApiDtos.ScanDto bladeScan() {
+    private static ApiDtos.ScanDto multiHeaderScan() {
         String now = "2026-07-26T00:00:00Z";
         String digest = "a".repeat(64);
         ApiDtos.EntryDto deploy = new ApiDtos.EntryDto(
@@ -234,7 +264,7 @@ public final class AuthCodeQueryAcceptanceTest {
                 "STATIC_INFERRED", 0.95, 0, List.of("evidence-ann-255"));
         ApiDtos.SinkDto jwt = new ApiDtos.SinkDto(
                 1, "p", digest, "scan-x",
-                "sink-jwt-1", "JWT", "JwtUtil", "org.springblade.core.jwt.JwtUtil",
+                "sink-jwt-1", "JWT", "JwtUtil", "org.example.security.JwtUtil",
                 "STATIC_INFERRED", 0.8, List.of());
         return new ApiDtos.ScanDto(
                 1, "p", digest, "scan-x",
@@ -243,10 +273,10 @@ public final class AuthCodeQueryAcceptanceTest {
                 List.of(), List.of());
     }
 
-    private static void writeBladeJarWithKnownKey(Path jar) throws Exception {
+    private static void writeMultiHeaderJarWithKnownKey(Path jar) throws Exception {
         ByteArrayOutputStream classBytes = new ByteArrayOutputStream();
         classBytes.write(new byte[] {(byte) 0xCA, (byte) 0xFE, (byte) 0xBA, (byte) 0xBE});
-        classBytes.write(AuthCodeQueryService.WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY
+        classBytes.write(SpringBladeAdapter.WELL_KNOWN_COMMERCIAL_SIGN_KEY
                 .getBytes(StandardCharsets.UTF_8));
         try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(jar))) {
             jos.putNextEntry(new JarEntry(
@@ -254,21 +284,21 @@ public final class AuthCodeQueryAcceptanceTest {
             jos.write(classBytes.toByteArray());
             jos.closeEntry();
             jos.putNextEntry(new JarEntry("BOOT-INF/classes/application.yml"));
-            jos.write(("blade:\n  secure:\n    skip-url:\n      - /blade-auth/oauth/token\n")
+            jos.write(("secure:\n  skip-url:\n    - /api/auth/oauth/token\n")
                     .getBytes(StandardCharsets.UTF_8));
             jos.closeEntry();
         }
     }
 
-    private static void writeBladeJarWithoutKey(Path jar) throws Exception {
+    private static void writeMultiHeaderJarWithoutKey(Path jar) throws Exception {
         try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(jar))) {
             jos.putNextEntry(new JarEntry(
                     "BOOT-INF/classes/org/springblade/core/secure/utils/SecureUtil.class"));
             jos.write(new byte[] {(byte) 0xCA, (byte) 0xFE, (byte) 0xBA, (byte) 0xBE, 0x00, 0x01});
             jos.closeEntry();
             jos.putNextEntry(new JarEntry("BOOT-INF/classes/application.yml"));
-            jos.write(("blade:\n  secure:\n    skip-url:\n      - /blade-auth/oauth/token\n"
-                    + "spring:\n  application:\n    name: blade-demo\n")
+            jos.write(("secure:\n  skip-url:\n    - /api/auth/oauth/token\n"
+                    + "spring:\n  application:\n    name: demo\n")
                     .getBytes(StandardCharsets.UTF_8));
             jos.closeEntry();
         }

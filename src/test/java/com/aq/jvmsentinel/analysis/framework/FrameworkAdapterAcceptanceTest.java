@@ -19,26 +19,46 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** MVP-2 acceptance: FrameworkAdapter injection, constraint harvest, coverage gaps. */
 public final class FrameworkAdapterAcceptanceTest {
     public static void main(String[] args) {
+        springMvcIsDefaultBaseline();
         testOnlyAdapterInjectable();
-        bladeSuggestJwtSecretAligned();
+        optionalBladeAdapterContributesHintsOnly();
         constraintHarvest();
         coverageGapFromStaticOnly();
         System.out.println("FrameworkAdapterAcceptanceTest: PASS");
     }
 
-    private static void bladeSuggestJwtSecretAligned() {
+    private static void springMvcIsDefaultBaseline() {
+        List<FrameworkAdapter> matched =
+                FrameworkAdapterRegistry.matching(null, List.of("/api/orders"));
+        check(matched.stream().anyMatch(a -> "spring-mvc".equals(a.id())),
+                "SpringMvcAdapter always matches as default baseline");
+        check(matched.stream().noneMatch(a -> "spring-blade".equals(a.id())),
+                "SpringBladeAdapter does not match non-blade routes");
+        check(FrameworkAdapterRegistry.all().get(0).id().equals("spring-mvc"),
+                "registry lists SpringMvcAdapter first");
+    }
+
+    private static void optionalBladeAdapterContributesHintsOnly() {
         SpringBladeAdapter adapter = new SpringBladeAdapter();
         check(adapter.suggestJwtSecret(null).isEmpty(),
                 "SpringBladeAdapter does not silently return commercial default without harvest");
         check(!adapter.jwtSecretHintNotes().isEmpty(),
                 "SpringBladeAdapter exposes well-known key HINTs for AI context");
-        check(adapter.jwtSecretHintNotes().stream().allMatch(n -> n.contains("HINT")),
-                "well-known key notes are labeled HINT");
-        check(AuthCodeQueryService.WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY
+        check(adapter.jwtSecretHintNotes().stream().allMatch(n ->
+                        n.contains("HINT") || n.contains("secondaryAuthHeaderName")),
+                "well-known key notes are labeled HINT / secondary header");
+        check(SpringBladeAdapter.WELL_KNOWN_COMMERCIAL_SIGN_KEY
                         .equals(BladeJwtCredentialPack.DEFAULT_SECRET),
-                "detection dictionary alias stays aligned for harvest matching");
-        check(adapter.preferBladeAuthHeader(null),
-                "SpringBladeAdapter prefers Blade-Auth as framework HINT");
+                "optional pack detection dictionary alias stays aligned");
+        check(AuthCodeQueryService.WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY
+                        .equals(SpringBladeAdapter.WELL_KNOWN_COMMERCIAL_SIGN_KEY),
+                "deprecated AuthCodeQueryService alias points at adapter dictionary");
+        check(adapter.preferSecondaryAuthHeader(null),
+                "SpringBladeAdapter prefers secondary auth header as framework HINT");
+        check("Blade-Auth".equals(adapter.secondaryAuthHeaderName()),
+                "secondary header name is adapter-local");
+        check(!adapter.wellKnownSecretHints().isEmpty(),
+                "adapter owns well-known secret dictionary");
     }
 
     private static void testOnlyAdapterInjectable() {
@@ -51,7 +71,7 @@ public final class FrameworkAdapterAcceptanceTest {
             }
             @Override public Set<String> highValueRouteSignals() { return Set.of("test-only"); }
             @Override public Set<String> highValueClassSignals() { return Set.of("testonly"); }
-            @Override public boolean preferBladeAuthHeader(
+            @Override public boolean preferSecondaryAuthHeader(
                     com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService.MaterialBundle materials) {
                 return false;
             }
@@ -76,7 +96,7 @@ public final class FrameworkAdapterAcceptanceTest {
         }
         check(FrameworkAdapterRegistry.matching(null, List.of("/blade-auth/login"))
                         .stream().anyMatch(a -> "spring-blade".equals(a.id())),
-                "SpringBladeAdapter still matches blade routes");
+                "optional SpringBladeAdapter still matches blade routes via same SPI");
     }
 
     private static void constraintHarvest() {

@@ -1,6 +1,6 @@
 # 可扩展分析架构（JAR 先行）
 
-状态：已确认产品方向（2026-07-26）。本文件描述中立事实模型与插件边界；**当前实现仍以可执行 Spring Boot JAR + Spring/Blade 适配为主**，WAR/自研框架按同一骨架增强，而不是另起一套流水线。产品面向个人本地使用，不包含完整多租户/RBAC 或真实供应商生产互操作；任何动态适配都必须通过用户授权的沙箱，不能退回宿主机执行。
+状态：已确认产品方向（2026-07-26；2026-07-27 泛化修订）。本文件描述中立事实模型与插件边界；**平台面向任意已授权 JVM 制品**，默认以 `SpringMvcAdapter` 为基线，`SpringBladeAdapter` 等仅为可选 FrameworkAdapter HINT 贡献者，不是产品主路径。WAR/自研框架按同一骨架增强，而不是另起一套流水线。产品面向个人本地使用，不包含完整多租户/RBAC 或真实供应商生产互操作；任何动态适配都必须通过用户授权的沙箱，不能退回宿主机执行。
 
 ## 1. 目标
 
@@ -48,7 +48,7 @@
 
 解决「怎么发现入口与鉴权屏障」；可多适配器并行，结果合并去重：
 
-1. Spring MVC + Security / Blade secure（**JAR 切片已部分落地**；MVP-2 已抽出 `FrameworkAdapter` SPI：`SpringMvcAdapter` / `SpringBladeAdapter` / `FrameworkAdapterRegistry`，探针高价值信号改查注册表，`FrameworkAdapterAcceptanceTest` 可注入 TestOnlyAdapter）
+1. Spring MVC + Security（默认）+ 可选框架适配器 HINT（**JAR 切片已部分落地**；MVP-2 已抽出 `FrameworkAdapter` SPI：`SpringMvcAdapter` 为默认基线，`SpringBladeAdapter` 等同 SPI 可选匹配；探针高价值信号与 secondary auth header 名改查注册表，`FrameworkAdapterAcceptanceTest` 可注入 TestOnlyAdapter）
 2. Servlet / `web.xml` / Filter（WAR 与大量自研的公约数）— **未做**
 3. 结构推断：方法签名吃 `HttpServletRequest`、靠近 `getParameter`→sink 的调用形状 — **未做**
 

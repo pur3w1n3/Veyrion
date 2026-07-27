@@ -23,7 +23,8 @@ import java.util.regex.Pattern;
 
 /**
  * Parses and validates AUTH/triage AI-authored bypass PoCs.
- * Accepts Authorization / Blade-Auth / JWT / query / body hints under hard bounds;
+ * Accepts Authorization / secondaryAuthorizationHeader (wire: bladeAuthHeader) / JWT /
+ * query / body hints under hard bounds;
  * rejects entry escape, oversize, control chars, and destructive unchecked payloads.
  * When a scan has an auth surface (JWT / AUTH_GAP / auth-annotated entries) but AUTH
  * emits no structured PoCs, the server requires a repair re-ask or seeds RULE_GENERATED
@@ -538,8 +539,8 @@ public final class AuthBypassFeasibility {
     /**
      * Server draft candidates from static JWT/AUTH_GAP/auth-entry signals.
      * DEFAULT_SECRET_HS256 is seeded only when harvest found mintable sign-key material
-     * in the artifact (low-confidence RULE_GENERATED). Blade surface alone never forges
-     * a commercial default JWT. Secret-less techniques (MISSING_AUTH / EMPTY_BEARER /
+     * in the artifact (low-confidence RULE_GENERATED). Multi-header auth surface alone never
+     * forges a commercial default JWT. Secret-less techniques (MISSING_AUTH / EMPTY_BEARER /
      * ALG_NONE) remain available without harvested keys.
      */
     public static List<AuthBypassCandidate> seedRuleGeneratedDrafts(
@@ -551,8 +552,9 @@ public final class AuthBypassFeasibility {
         if (targets.isEmpty()) return List.of();
         SyntheticIdentityService identity = new SyntheticIdentityService();
         SyntheticIdentityService.MaterialBundle materials = identity.harvest(artifactPath);
-        boolean bladeSurface = materials.bladeSurface() || materials.preferBladeAuthHeader()
-                || looksBladeScan(scan);
+        boolean multiHeaderSurface = materials.multiHeaderAuthSurface()
+                || materials.preferSecondaryAuthHeader()
+                || looksMultiHeaderAuthScan(scan);
         boolean harvestedSecret = materials.jwtSecret().isPresent();
         SyntheticIdentityService.SyntheticIdentity defaultHs256 =
                 identity.synthesizeTechnique(AuthBypassTechnique.DEFAULT_SECRET_HS256, materials);
@@ -562,7 +564,7 @@ public final class AuthBypassFeasibility {
                 identity.synthesizeTechnique(AuthBypassTechnique.EMPTY_BEARER, materials);
         List<AuthBypassCandidate> drafts = new ArrayList<>();
         boolean jwtSignal = surface.jwtSinkCount() > 0 || surface.jwtOrAuthGapFindingCount() > 0
-                || surface.authGapSinkCount() > 0 || bladeSurface;
+                || surface.authGapSinkCount() > 0 || multiHeaderSurface;
         for (ApiDtos.EntryDto entry : targets) {
             if (drafts.size() >= MAX_SEEDED_POCS) break;
             String entryRef = "entry:" + entry.id();
@@ -577,8 +579,8 @@ public final class AuthBypassFeasibility {
             if (drafts.size() >= MAX_SEEDED_POCS) break;
             if (jwtSignal && harvestedSecret && defaultHs256.available()) {
                 String token = defaultHs256.authorizationHeader();
-                String blade = bladeSurface
-                        ? SyntheticIdentityService.bladeAuthHeaderValue(token) : "";
+                String secondary = multiHeaderSurface
+                        ? SyntheticIdentityService.secondaryAuthHeaderValue(token) : "";
                 drafts.add(AuthBypassCandidate.of(
                         entryRef,
                         AuthBypassTechnique.DEFAULT_SECRET_HS256.name(),
@@ -587,7 +589,7 @@ public final class AuthBypassFeasibility {
                                 + materials.secretProvenance() + "); not a global hardcoded FACT",
                         refs, 0.45,
                         "Bearer " + token,
-                        blade,
+                        secondary,
                         "", ""));
             } else if (jwtSignal && emptyBearer.available()) {
                 drafts.add(AuthBypassCandidate.of(
@@ -595,12 +597,12 @@ public final class AuthBypassFeasibility {
                         AuthBypassTechnique.EMPTY_BEARER.name(),
                         IdentityTrack.BYPASS_CANDIDATE,
                         "RULE_GENERATED draft: empty Bearer hypothesis for JWT/auth surface"
-                                + (bladeSurface && !harvestedSecret
-                                ? "; Blade surface without harvested sign-key" : ""),
+                                + (multiHeaderSurface && !harvestedSecret
+                                ? "; multi-header auth surface without harvested sign-key" : ""),
                         refs, 0.28, emptyBearer.authorizationHeader(), "", "", ""));
             }
             if (drafts.size() >= MAX_SEEDED_POCS) break;
-            if (jwtSignal && algNone.available() && !(bladeSurface && harvestedSecret)) {
+            if (jwtSignal && algNone.available() && !(multiHeaderSurface && harvestedSecret)) {
                 drafts.add(AuthBypassCandidate.of(
                         entryRef,
                         AuthBypassTechnique.ALG_NONE.name(),
@@ -609,25 +611,33 @@ public final class AuthBypassFeasibility {
                                 + "refine with AI headers when available",
                         refs, 0.30,
                         "Bearer " + algNone.authorizationHeader(), "", "", ""));
-            } else if (jwtSignal && bladeSurface && harvestedSecret && emptyBearer.available()) {
+            } else if (jwtSignal && multiHeaderSurface && harvestedSecret && emptyBearer.available()) {
                 drafts.add(AuthBypassCandidate.of(
                         entryRef,
                         AuthBypassTechnique.EMPTY_BEARER.name(),
                         IdentityTrack.BYPASS_CANDIDATE,
-                        "RULE_GENERATED draft: empty Bearer hypothesis for Blade JWT surface",
+                        "RULE_GENERATED draft: empty Bearer hypothesis for multi-header JWT surface",
                         refs, 0.28, emptyBearer.authorizationHeader(), "", "", ""));
             }
         }
         return List.copyOf(drafts).stream().limit(AuthBypassCandidate.MAX_CANDIDATES).toList();
     }
 
-    private static boolean looksBladeScan(ApiDtos.ScanDto scan) {
+    /** True when scan entries suggest an adapter that prefers a secondary auth header. */
+    private static boolean looksMultiHeaderAuthScan(ApiDtos.ScanDto scan) {
         if (scan == null || scan.entries() == null) return false;
+        List<String> routes = new ArrayList<>();
         for (ApiDtos.EntryDto entry : scan.entries()) {
             if (entry == null) continue;
-            String route = entry.route() == null ? "" : entry.route().toLowerCase(Locale.ROOT);
-            String cls = entry.declaringClass() == null ? "" : entry.declaringClass().toLowerCase(Locale.ROOT);
-            if (route.contains("/blade-") || cls.contains("springblade") || cls.contains("blade.")) {
+            if (entry.route() != null && !entry.route().isBlank()) {
+                routes.add(entry.route());
+            }
+        }
+        for (com.aq.jvmsentinel.analysis.framework.FrameworkAdapter adapter
+                : com.aq.jvmsentinel.analysis.framework.FrameworkAdapterRegistry.matching(null, routes)) {
+            if (adapter.preferSecondaryAuthHeader(null)
+                    && adapter.secondaryAuthHeaderName() != null
+                    && !adapter.secondaryAuthHeaderName().isBlank()) {
                 return true;
             }
         }
@@ -756,10 +766,14 @@ public final class AuthBypassFeasibility {
                 text(item, "authorization"),
                 text(item, "jwt"),
                 text(item, "token"));
-        String blade = firstNonBlank(text(item, "bladeAuthHeader"), text(item, "bladeAuth"));
+        String secondary = firstNonBlank(
+                text(item, "secondaryAuthorizationHeader"),
+                text(item, "secondaryAuthHeader"),
+                text(item, "bladeAuthHeader"),
+                text(item, "bladeAuth"));
         AuthBypassCandidate candidate = AuthBypassCandidate.of(
                 entryRef, techniqueId, track, text(item, "rationale"), refs, confidence,
-                authorization, blade, text(item, "query"),
+                authorization, secondary, text(item, "query"),
                 firstNonBlank(text(item, "bodyHint"), text(item, "body")));
         requireAllowedEntry(candidate.entryRef(), allowedEntryRefs);
         return candidate;

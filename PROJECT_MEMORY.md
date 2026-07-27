@@ -820,3 +820,20 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 残余限制：若 SpringBlade 样例 JAR 内无 sign-key 常量/配置，服务端不会伪造 ADMIN JWT，洪水/焦点轨可能大量 401 / `IDENTITY_UNAVAILABLE`——属诚实行为，需 AI/工具继续挖密钥或走无密钥技术；不得标 VERIFIED。
 
 验收：`AuthCodeQueryAcceptanceTest` / `SyntheticIdentityAcceptanceTest` / `FrameworkAdapterAcceptanceTest` / `RolePromptInjectionAcceptanceTest` / `AuthBypassFeasibilityAcceptanceTest` / `ControlPlaneProbeExpansionAcceptanceTest`。
+
+## 78. 泛化：Blade 降为可选适配器 HINT，非产品主路径（2026-07-27）
+
+产品决策：平台目标是**任意已授权 JVM 应用**，不得建设 Blade 专用控制面 / 身份模型 / AUTH 叙事。
+
+锁定：
+
+1. **`FrameworkAdapterRegistry`**：`SpringMvcAdapter` 为默认始终匹配基线；`SpringBladeAdapter` 同 SPI 可选匹配，只贡献 route/class 信号、`secondaryAuthHeaderName`、well-known 检测字典 HINT。
+2. **商业 Blade sign-key 字典**迁入 `SpringBladeAdapter`；`AuthCodeQueryService` 核心扫描用通用 JWT/secret property + 注解/Filter 模式，经注册表合并适配器字典做 JAR 内匹配；`WELL_KNOWN_BLADE_*` 仅 deprecated 兼容别名。
+3. **身份 / 探针**：`bladeSurface` / `preferBladeAuthHeader` → `multiHeaderAuthSurface` / `preferSecondaryAuthHeader`；双通道写 secondary auth header（由适配器命名），非 Blade 产品概念。合成 JWT claims 改为通用 `sub`/`role`/`exp`（去掉 bladex iss/license 硬编码）。
+4. **Wire 兼容**：API/工具仍接受 `bladeAuthHeader`，语义为 `secondaryAuthorizationHeader`（新别名优先）；工具 JSON 仍可带 `bladeSurface` deprecated alias。
+5. **AUTH 提示**：讲 framework adapter hints + extracted secrets；`preferSecondaryAuthHeaderHint` / `secondaryAuthHeaderName`。
+6. **AnalysisPack**：`BladeJwtCredentialPack` 保留为可选薄模板，非默认主路径。
+
+残余 Blade 命名字段（诚实）：`bladeAuthHeader`、`AuthMaterialized.bladeAuthToken`、probe TSV 第二通道、部分审计摘要键、pack id `blade-jwt-default`、适配器 id `spring-blade` 与 header 名 `Blade-Auth`（适配器本地）。
+
+验收：同 §77 列表 + `AnalysisPackAcceptanceTest`。不得标 VERIFIED / 生产可用。

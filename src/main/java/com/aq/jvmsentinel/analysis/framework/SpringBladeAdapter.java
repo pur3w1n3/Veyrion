@@ -12,17 +12,35 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * SpringBlade / BladeX surface heuristics.
+ * Optional thin SpringBlade / BladeX adapter — contributes route/class signals and a
+ * secondary-header HINT ({@code Blade-Auth}) like any other FrameworkAdapter.
+ * Not a first-class product path; control plane / identity / AUTH stay JVM-generic.
  *
- * <p>{@link #suggestJwtSecret} does <em>not</em> return commercial defaults for silent minting.
- * Well-known aliases are HINT-only via {@link #jwtSecretHintNotes()}; AI must call
- * {@code code_query} to harvest material from the authorized artifact.
+ * <p>{@link #suggestJwtSecret} never returns commercial defaults for silent minting.
+ * Well-known aliases are HINT-only via {@link #jwtSecretHintNotes()} / {@link #wellKnownSecretHints()};
+ * AI must call {@code code_query} to harvest material from the authorized artifact.
  */
 public final class SpringBladeAdapter implements FrameworkAdapter {
+    /**
+     * Historical Blade/JwtProperties commercial default — adapter detection dictionary only.
+     * Do not treat as FACT or mint unless harvested from the artifact.
+     */
+    public static final String WELL_KNOWN_COMMERCIAL_SIGN_KEY =
+            "bladexisapowerfulmicroservicearchitectureupgradedandoptimizedfromacommercialproject";
+    /** Legacy all-zero placeholder — adapter detection dictionary only. */
+    public static final String WELL_KNOWN_LEGACY_ZERO_KEY =
+            "00000000000000000000000000000000";
+
     private static final Set<String> ROUTE_SIGNALS = Set.of(
             "blade-", "bladex", "/blade-", "oauth", "token");
     private static final Set<String> CLASS_SIGNALS = Set.of(
             "blade", "bladex", "org.springblade");
+    private static final Set<String> AUTH_CLASS_PATHS = Set.of(
+            "org/springblade/core/secure",
+            "org/springblade/core/jwt",
+            "org/springblade/modules/auth",
+            "BladeTokenEndPoint",
+            "BladeSecure");
 
     @Override
     public String id() {
@@ -55,16 +73,33 @@ public final class SpringBladeAdapter implements FrameworkAdapter {
     }
 
     @Override
-    public boolean preferBladeAuthHeader(SyntheticIdentityService.MaterialBundle materials) {
-        // Framework-level HINT: Blade typically dual-channels Blade-Auth.
+    public boolean preferSecondaryAuthHeader(SyntheticIdentityService.MaterialBundle materials) {
+        // Framework HINT: this adapter's surface typically dual-channels a secondary auth header.
         if (materials == null) return true;
-        return materials.preferBladeAuthHeader() || materials.bladeSurface();
+        return materials.preferSecondaryAuthHeader() || materials.multiHeaderAuthSurface();
+    }
+
+    @Override
+    public String secondaryAuthHeaderName() {
+        return "Blade-Auth";
+    }
+
+    @Override
+    public List<AuthCodeQueryService.WellKnownKey> wellKnownSecretHints() {
+        return List.of(
+                new AuthCodeQueryService.WellKnownKey(
+                        "WELL_KNOWN_ADAPTER_SPRINGBLADE_COMMERCIAL", WELL_KNOWN_COMMERCIAL_SIGN_KEY),
+                new AuthCodeQueryService.WellKnownKey(
+                        "WELL_KNOWN_ADAPTER_SPRINGBLADE_LEGACY_ZERO", WELL_KNOWN_LEGACY_ZERO_KEY));
+    }
+
+    @Override
+    public Set<String> authClassPathSignals() {
+        return AUTH_CLASS_PATHS;
     }
 
     @Override
     public Optional<String> suggestJwtSecret(Path artifactPath) {
-        // Demoted: never return commercial defaults as silent mint/dashboard FACT.
-        // Only surface a redacted presence signal when code_query harvests material.
         if (artifactPath == null) {
             return Optional.empty();
         }
@@ -81,10 +116,12 @@ public final class SpringBladeAdapter implements FrameworkAdapter {
     @Override
     public List<String> jwtSecretHintNotes() {
         List<String> notes = new ArrayList<>();
-        for (AuthCodeQueryService.WellKnownKey key : AuthCodeQueryService.wellKnownBladeKeyHints()) {
+        for (AuthCodeQueryService.WellKnownKey key : wellKnownSecretHints()) {
             notes.add(key.alias() + "(keyLen=" + key.keyLen()
                     + ") HINT only — call code_query to extract; not FACT unless harvested");
         }
+        notes.add("secondaryAuthHeaderName=" + secondaryAuthHeaderName()
+                + " (wire field bladeAuthHeader is a deprecated alias)");
         return List.copyOf(notes);
     }
 

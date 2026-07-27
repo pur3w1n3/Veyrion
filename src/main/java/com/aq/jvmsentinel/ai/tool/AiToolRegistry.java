@@ -208,12 +208,13 @@ public final class AiToolRegistry {
                 "Bounded read-only auth/config/code query over the registered artifact. "
                         + "Use for AUTH_ANALYSIS to harvest JWT sign-key candidates (secretCandidates with "
                         + "provenance FACT/RULE_GENERATED), skip-url patterns, @PreAuth/TokenFilter signals, "
-                        + "and auth-related classes (SecureUtil/JwtUtil/BladeTokenEndPoint). "
+                        + "and auth-related classes (JwtUtil/TokenFilter/SecureUtil and adapter path hints). "
                         + "Returns FACT observations only; raw secrets stay redacted; "
                         + "never executes bytecode, opens network, or upgrades verificationStatus. "
                         + "Propose DEFAULT_SECRET_HS256 only when jwtSecretMaterialFound/mintable=true; "
                         + "otherwise prefer MISSING_AUTH / EMPTY_BEARER / ALG_NONE. "
-                        + "FrameworkAdapter well-known keys are HINTS, not harvested FACT.",
+                        + "FrameworkAdapter well-known keys and secondaryAuthHeaderName are HINTS, "
+                        + "not harvested FACT.",
                 schema.jsonSchema(), OverflowPolicy.TRUNCATE);
         return new RegisteredTool(definition, schema, (call, context) -> {
             String query = call.arguments().has("query") ? call.arguments().get("query").asText() : "";
@@ -246,7 +247,8 @@ public final class AiToolRegistry {
         planFields.put("confidence", Field.number(0, 1));
         planFields.put("evidenceRefs", Field.stringArray(8, 256));
         planFields.put("authorizationHeader", Field.string(2048));
-        planFields.put("bladeAuthHeader", Field.string(2048));
+        planFields.put("secondaryAuthorizationHeader", Field.string(2048));
+        planFields.put("bladeAuthHeader", Field.string(2048)); // deprecated wire alias
         planFields.put("query", Field.string(256));
         planFields.put("bodyHint", Field.string(1024));
         ToolSchema schema = new ToolSchema(planFields, Set.of("entrypointRef", "objective"));
@@ -255,7 +257,8 @@ public final class AiToolRegistry {
                         + "it grants no capabilities. entrypointRef must resolve to a scan entry: prefer "
                         + "entry:<scanEntryId> (for example entry:entry-ann-1); bare scanEntryId and unambiguous "
                         + "entry:METHOD:route aliases are accepted. For AUTH_ANALYSIS, author structured PoCs with "
-                        + "techniqueId plus optional authorizationHeader/bladeAuthHeader/query/bodyHint "
+                        + "techniqueId plus optional authorizationHeader/secondaryAuthorizationHeader "
+                        + "(deprecated alias bladeAuthHeader)/query/bodyHint "
                         + "(AI-authored JWT/header material is accepted under length/charset gates). "
                         + "Optional experiment-plan fields remain server-gated. Cannot change network/mount/command.",
                 schema.jsonSchema(), OverflowPolicy.DENY);
@@ -319,12 +322,13 @@ public final class AiToolRegistry {
                 plan.put("serverGated", true);
                 plan.put("boundForExecution", true);
             }
+            String secondaryAuth = firstNonBlankArg(call.arguments(),
+                    "secondaryAuthorizationHeader", "bladeAuthHeader");
             boolean authPoc = (call.arguments().has("techniqueId")
                     && !call.arguments().get("techniqueId").asText("").isBlank())
                     || (call.arguments().has("authorizationHeader")
                     && !call.arguments().get("authorizationHeader").asText("").isBlank())
-                    || (call.arguments().has("bladeAuthHeader")
-                    && !call.arguments().get("bladeAuthHeader").asText("").isBlank());
+                    || !secondaryAuth.isBlank();
             if (authPoc) {
                 Double confidence = call.arguments().has("confidence")
                         && call.arguments().get("confidence").isNumber()
@@ -341,8 +345,7 @@ public final class AiToolRegistry {
                         confidence,
                         call.arguments().has("authorizationHeader")
                                 ? call.arguments().get("authorizationHeader").asText("") : "",
-                        call.arguments().has("bladeAuthHeader")
-                                ? call.arguments().get("bladeAuthHeader").asText("") : "",
+                        secondaryAuth,
                         call.arguments().has("query") ? call.arguments().get("query").asText("") : "",
                         call.arguments().has("bodyHint") ? call.arguments().get("bodyHint").asText("") : "",
                         null);
@@ -414,13 +417,15 @@ public final class AiToolRegistry {
                 "maxRequests", Field.integer(1, 8),
                 "techniqueId", Field.string(64),
                 "authorizationHeader", Field.string(2048),
+                "secondaryAuthorizationHeader", Field.string(2048),
                 "bladeAuthHeader", Field.string(2048)), Set.of("entrypointRef"));
         ToolDefinition definition = new ToolDefinition("sandbox_probe",
                 "Request a bounded server-owned loopback probe for an existing entrypoint. "
                         + "entrypointRef must resolve to a scan entry: prefer entry:<scanEntryId> "
                         + "(for example entry:entry-ann-1); bare scanEntryId and unambiguous "
                         + "entry:METHOD:route aliases from PathRun facts are accepted; raw paths are rejected. "
-                        + "Optional authorizationHeader and bladeAuthHeader are independent auth channels "
+                        + "Optional authorizationHeader and secondaryAuthorizationHeader "
+                        + "(deprecated wire alias: bladeAuthHeader) are independent auth channels "
                         + "(length/charset gated); omit them or pass \"\" for MISSING_AUTH / unauthenticated "
                         + "probes — never invent a fake Bearer, and never assume one channel copies to the other. "
                         + "Optional techniqueId labels the PoC or selects a server fallback synthesizer when no header "
@@ -449,8 +454,8 @@ public final class AiToolRegistry {
                 // Validate bounds via candidate constructor without requiring a technique enum.
                 AuthBypassCandidate.validateAuthMaterialOnly(authorizationHeader);
             }
-            String bladeAuthHeader = call.arguments().has("bladeAuthHeader")
-                    ? call.arguments().get("bladeAuthHeader").asText("") : "";
+            String bladeAuthHeader = firstNonBlankArg(call.arguments(),
+                    "secondaryAuthorizationHeader", "bladeAuthHeader");
             if (!bladeAuthHeader.isEmpty()) {
                 AuthBypassCandidate.validateAuthMaterialOnly(bladeAuthHeader);
             }
@@ -528,6 +533,17 @@ public final class AiToolRegistry {
                     .replaceAll("[^A-Z0-9_]", "_");
         }
         return "TOOL_EXECUTION_FAILED";
+    }
+
+    /** Prefer first non-blank among named JSON args (generic name before deprecated alias). */
+    private static String firstNonBlankArg(JsonNode arguments, String... names) {
+        if (arguments == null || names == null) return "";
+        for (String name : names) {
+            if (name == null || !arguments.has(name)) continue;
+            String value = arguments.get(name).asText("");
+            if (value != null && !value.isBlank()) return value;
+        }
+        return "";
     }
 
     private static void requireScope(ToolExecutionContext context, ToolDataSource.FactRecord record) {

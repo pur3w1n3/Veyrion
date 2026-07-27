@@ -1,5 +1,9 @@
 package com.aq.jvmsentinel.analysis.identity;
 
+import com.aq.jvmsentinel.analysis.framework.FrameworkAdapter;
+import com.aq.jvmsentinel.analysis.framework.FrameworkAdapterRegistry;
+import com.aq.jvmsentinel.analysis.framework.SpringBladeAdapter;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -25,59 +29,58 @@ import java.util.zip.ZipInputStream;
  * Returns FACT-shaped observations for AI tools; never executes classes,
  * never opens network, and never elevates verification status.
  *
- * <p>Well-known Blade sign-key strings exist only as a <em>detection dictionary</em>
- * and AI HINT material. They are not silent high-confidence mint sources for a
- * general platform — mint only when the same material is harvested from the
- * authorized artifact (config / class constant).
+ * <p>Core harvest uses generic JWT/secret property patterns and auth filter/annotation
+ * signals. Optional {@link com.aq.jvmsentinel.analysis.framework.FrameworkAdapter}
+ * dictionaries contribute known-weak-key HINTs for in-artifact matching only — never
+ * silent mint sources for a general platform.
  */
 public final class AuthCodeQueryService {
     /**
-     * Historical Blade/JwtProperties commercial default (detection + HINT only).
-     * Do not treat as FACT or mint unless harvested from the artifact.
+     * @deprecated Detection dictionary moved to {@link SpringBladeAdapter#WELL_KNOWN_COMMERCIAL_SIGN_KEY};
+     * kept as a fixture/compat alias — not a core mint source.
      */
+    @Deprecated
     public static final String WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY =
-            "bladexisapowerfulmicroservicearchitectureupgradedandoptimizedfromacommercialproject";
-    /** Legacy all-zero Blade placeholder (detection + HINT only). */
+            SpringBladeAdapter.WELL_KNOWN_COMMERCIAL_SIGN_KEY;
+    /**
+     * @deprecated Detection dictionary moved to {@link SpringBladeAdapter#WELL_KNOWN_LEGACY_ZERO_KEY}.
+     */
+    @Deprecated
     public static final String WELL_KNOWN_BLADE_LEGACY_ZERO_KEY =
-            "00000000000000000000000000000000";
+            SpringBladeAdapter.WELL_KNOWN_LEGACY_ZERO_KEY;
 
-    /** @deprecated Use {@link #WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY}; kept for test/fixture aliases. */
+    /** @deprecated Use {@link #WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY}. */
     @Deprecated
     public static final String BLADE_DEFAULT_SIGN_KEY = WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY;
     /** @deprecated Use {@link #WELL_KNOWN_BLADE_LEGACY_ZERO_KEY}. */
     @Deprecated
     public static final String BLADE_LEGACY_ZERO_KEY = WELL_KNOWN_BLADE_LEGACY_ZERO_KEY;
 
-    private static final List<WellKnownKey> WELL_KNOWN_KEYS = List.of(
-            new WellKnownKey("WELL_KNOWN_BLADE_COMMERCIAL", WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY),
-            new WellKnownKey("WELL_KNOWN_BLADE_LEGACY_ZERO", WELL_KNOWN_BLADE_LEGACY_ZERO_KEY));
-
     private static final Pattern SKIP_URL = Pattern.compile(
-            "(?i)(?:blade\\.)?secure\\.(?:skip[-_]?url|exclude[-_]?url|ignore[-_]?url)s?\\s*[=:]\\s*(.+)");
+            "(?i)(?:[a-z0-9._-]+\\.)?secure\\.(?:skip[-_]?url|exclude[-_]?url|ignore[-_]?url)s?\\s*[=:]\\s*(.+)");
     private static final Pattern JWT_KEY_LINE = Pattern.compile(
             "(?i)(?:jwt[_\\-.]?(?:secret|sign(?:ing)?[_\\-.]?key|key)"
-                    + "|blade[_\\-.]?token[_\\-.]?sign[_\\-.]?key"
                     + "|token[_\\-.]?sign[_\\-.]?key"
+                    + "|[a-z0-9._-]*token[_\\-.]?sign[_\\-.]?key"
                     + "|spring\\.security\\.oauth2\\.resourceserver\\.jwt\\.secret[-_]?key)"
                     + "\\s*[=:]\\s*[\"']?([^\\s\"'#]+)");
     private static final Pattern PRE_AUTH = Pattern.compile(
             "(?i)@PreAuth|hasRole\\s*\\(|hasAnyRole\\s*\\(|PreAuthorize|RolesAllowed|Secured\\s*\\(");
     private static final Pattern TOKEN_FILTER = Pattern.compile(
-            "(?i)TokenFilter|JwtAuth|JwtAuthentication|BearerToken|BladeSecure|"
+            "(?i)TokenFilter|JwtAuth|JwtAuthentication|BearerToken|"
                     + "SecureInterceptor|AuthFilter|OncePerRequestFilter");
-    private static final List<String> AUTH_CLASS_HINTS = List.of(
-            "org/springblade/core/secure",
-            "org/springblade/core/jwt",
-            "org/springblade/modules/auth",
+    /** Generic JVM auth class-name fragments (framework-agnostic). */
+    private static final List<String> GENERIC_AUTH_CLASS_HINTS = List.of(
             "SecureUtil",
             "JwtUtil",
             "JwtProperties",
             "TokenUtil",
-            "BladeTokenEndPoint",
             "SecureRegistry",
             "TokenFilter",
             "JwtAuth",
-            "BearerToken");
+            "BearerToken",
+            "JwtAuthenticationFilter",
+            "UsernamePasswordAuthenticationFilter");
 
     public record WellKnownKey(String alias, String value) {
         public WellKnownKey {
@@ -128,10 +131,11 @@ public final class AuthCodeQueryService {
     }
 
     public record AuthCodeQueryResult(
-            boolean bladeSurface,
+            boolean multiHeaderAuthSurface,
             boolean jwtSecretMaterialFound,
             String preferredSignKeyProvenance,
             String preferredHeaderChannel,
+            String secondaryAuthHeaderName,
             List<String> recommendedTechniques,
             List<AuthCodeFact> facts,
             List<SecretCandidateHint> secretCandidates,
@@ -140,10 +144,35 @@ public final class AuthCodeQueryService {
         public AuthCodeQueryResult {
             preferredSignKeyProvenance = preferredSignKeyProvenance == null ? "" : preferredSignKeyProvenance;
             preferredHeaderChannel = preferredHeaderChannel == null ? "Authorization" : preferredHeaderChannel;
+            secondaryAuthHeaderName = secondaryAuthHeaderName == null ? "" : secondaryAuthHeaderName;
             recommendedTechniques = List.copyOf(recommendedTechniques == null ? List.of() : recommendedTechniques);
             facts = List.copyOf(facts == null ? List.of() : facts);
             secretCandidates = List.copyOf(secretCandidates == null ? List.of() : secretCandidates);
             mintSecret = mintSecret == null ? Optional.empty() : mintSecret;
+        }
+
+        /**
+         * Compact constructor for callers that omit secondary header name.
+         */
+        public AuthCodeQueryResult(
+                boolean multiHeaderAuthSurface,
+                boolean jwtSecretMaterialFound,
+                String preferredSignKeyProvenance,
+                String preferredHeaderChannel,
+                List<String> recommendedTechniques,
+                List<AuthCodeFact> facts,
+                List<SecretCandidateHint> secretCandidates,
+                Optional<String> mintSecret) {
+            this(multiHeaderAuthSurface, jwtSecretMaterialFound, preferredSignKeyProvenance,
+                    preferredHeaderChannel,
+                    "Authorization".equals(preferredHeaderChannel) ? "" : preferredHeaderChannel,
+                    recommendedTechniques, facts, secretCandidates, mintSecret);
+        }
+
+        /** @deprecated Prefer {@link #multiHeaderAuthSurface()}; adapter-local naming. */
+        @Deprecated
+        public boolean bladeSurface() {
+            return multiHeaderAuthSurface;
         }
 
         /** @deprecated Prefer {@link #jwtSecretMaterialFound()}. */
@@ -153,16 +182,20 @@ public final class AuthCodeQueryService {
         }
     }
 
-    /** Well-known Blade key aliases for FRAMEWORK_ADAPTER_CONTEXT HINT injection (not FACT). */
+    /**
+     * Adapter-owned well-known key HINTs for FRAMEWORK_ADAPTER_CONTEXT (not FACT).
+     * @deprecated Prefer {@link FrameworkAdapterRegistry#wellKnownSecretDictionaries()}.
+     */
+    @Deprecated
     public static List<WellKnownKey> wellKnownBladeKeyHints() {
-        return WELL_KNOWN_KEYS;
+        return FrameworkAdapterRegistry.wellKnownSecretDictionaries();
     }
 
     public AuthCodeQueryResult query(Path artifactPath, String query, int limit) {
         int capped = Math.max(1, Math.min(50, limit));
         String needle = query == null ? "" : query.toLowerCase(Locale.ROOT);
         List<AuthCodeFact> facts = new ArrayList<>();
-        boolean bladeSurface = false;
+        boolean multiHeaderSurface = false;
         boolean secretFound = false;
         String keyProvenance = "NONE";
         String keyAlias = "";
@@ -172,11 +205,12 @@ public final class AuthCodeQueryService {
         Set<String> authClasses = new LinkedHashSet<>();
         boolean preAuthSeen = false;
         boolean tokenFilterSeen = false;
+        String secondaryHeader = "";
 
         if (artifactPath != null && Files.isRegularFile(artifactPath)) {
             try {
                 ScanAccumulator acc = scanArtifact(artifactPath);
-                bladeSurface = acc.bladeSurface;
+                multiHeaderSurface = acc.multiHeaderAuthSurface;
                 secretFound = acc.mintSecret.isPresent();
                 keyProvenance = acc.keyProvenance;
                 keyAlias = acc.keyAlias;
@@ -185,6 +219,7 @@ public final class AuthCodeQueryService {
                 authClasses.addAll(acc.authClasses);
                 preAuthSeen = acc.preAuthSeen;
                 tokenFilterSeen = acc.tokenFilterSeen;
+                secondaryHeader = acc.secondaryAuthHeaderName;
                 if (secretFound) {
                     String classification = keyProvenance.startsWith("CONFIG_KEY:")
                             || keyProvenance.startsWith("CONFIG_OR_RESOURCE:")
@@ -226,16 +261,25 @@ public final class AuthCodeQueryService {
                     Map.of()));
         }
 
-        if (bladeSurface) {
+        if (secondaryHeader.isBlank() && multiHeaderSurface) {
+            secondaryHeader = FrameworkAdapterRegistry.secondaryAuthHeaderName(
+                    artifactPath, List.of());
+        }
+        if (multiHeaderSurface) {
+            Map<String, String> attrs = new LinkedHashMap<>();
+            attrs.put("multiHeaderAuth", "true");
+            if (!secondaryHeader.isBlank()) {
+                attrs.put("preferredAuthHeader", secondaryHeader);
+                attrs.put("secondaryAuthHeaderName", secondaryHeader);
+            }
+            attrs.put("jwtAlg", "HS256");
+            attrs.put("note", "framework-adapter HINT only until code_query harvests sign-key");
             facts.add(new AuthCodeFact(
-                    "auth-code:blade-surface",
+                    "auth-code:multi-header-auth-surface",
                     "FRAMEWORK",
-                    "SpringBlade secure/jwt/auth classes or routes observed in artifact",
+                    "Multi-header / framework auth surface signals observed (adapter HINT)",
                     "",
-                    Map.of("framework", "SpringBlade",
-                            "preferredAuthHeader", "Blade-Auth",
-                            "jwtAlg", "HS256",
-                            "note", "adapter/framework HINT only until code_query harvests sign-key")));
+                    attrs));
         }
         if (secretFound) {
             facts.add(new AuthCodeFact(
@@ -249,13 +293,13 @@ public final class AuthCodeQueryService {
                             "secretRedacted", "true",
                             "classification", candidates.isEmpty()
                                     ? "RULE_GENERATED" : candidates.get(0).classification())));
-        } else if (bladeSurface) {
+        } else if (multiHeaderSurface) {
             facts.add(new AuthCodeFact(
                     "auth-code:jwt-secret-absent",
                     "JWT_MATERIAL",
-                    "Blade surface seen but no mintable sign-key harvested from artifact; "
-                            + "prefer MISSING_AUTH / EMPTY_BEARER / ALG_NONE; use well-known aliases "
-                            + "only as HINT via FRAMEWORK_ADAPTER_CONTEXT after code_query",
+                    "Auth surface seen but no mintable sign-key harvested from artifact; "
+                            + "prefer MISSING_AUTH / EMPTY_BEARER / ALG_NONE; use adapter well-known "
+                            + "aliases only as HINT via FRAMEWORK_ADAPTER_CONTEXT after code_query",
                     "",
                     Map.of("mintable", "false")));
         }
@@ -309,7 +353,7 @@ public final class AuthCodeQueryService {
             techniques.add("DEFAULT_SECRET_HS256");
             techniques.add("MISSING_AUTH");
             techniques.add("EMPTY_BEARER");
-        } else if (bladeSurface) {
+        } else if (multiHeaderSurface || preAuthSeen || tokenFilterSeen) {
             techniques.add("MISSING_AUTH");
             techniques.add("EMPTY_BEARER");
             techniques.add("ALG_NONE");
@@ -318,11 +362,14 @@ public final class AuthCodeQueryService {
             techniques.add("ALG_NONE");
             techniques.add("EMPTY_BEARER");
         }
+        String preferredChannel = !secondaryHeader.isBlank() && multiHeaderSurface
+                ? secondaryHeader : "Authorization";
         return new AuthCodeQueryResult(
-                bladeSurface,
+                multiHeaderSurface,
                 secretFound,
                 keyProvenance,
-                bladeSurface ? "Blade-Auth" : "Authorization",
+                preferredChannel,
+                secondaryHeader,
                 techniques,
                 filtered,
                 candidates,
@@ -341,7 +388,8 @@ public final class AuthCodeQueryService {
     }
 
     private static final class ScanAccumulator {
-        boolean bladeSurface;
+        boolean multiHeaderAuthSurface;
+        String secondaryAuthHeaderName = "";
         String keyProvenance = "NONE";
         String keyAlias = "";
         Optional<String> mintSecret = Optional.empty();
@@ -354,6 +402,9 @@ public final class AuthCodeQueryService {
 
     private static ScanAccumulator scanArtifact(Path jar) throws IOException {
         ScanAccumulator acc = new ScanAccumulator();
+        List<WellKnownKey> dictionary = FrameworkAdapterRegistry.wellKnownSecretDictionaries();
+        Set<String> adapterAuthPaths = FrameworkAdapterRegistry.authClassPathSignals();
+        String secondaryHint = FrameworkAdapterRegistry.secondaryAuthHeaderName(jar, List.of());
         try (ZipInputStream zip = new ZipInputStream(Files.newInputStream(jar))) {
             ZipEntry entry;
             int scanned = 0;
@@ -361,8 +412,11 @@ public final class AuthCodeQueryService {
                 if (entry.isDirectory()) continue;
                 String name = entry.getName();
                 String lower = name.toLowerCase(Locale.ROOT);
-                if (looksAuthClass(lower)) {
-                    acc.bladeSurface = true;
+                if (looksAuthClass(lower, adapterAuthPaths)) {
+                    if (matchesAdapterAuthPath(lower, adapterAuthPaths) || looksMultiHeaderHint(lower)) {
+                        acc.multiHeaderAuthSurface = true;
+                        markSecondaryHeader(acc, lower, secondaryHint);
+                    }
                     if (acc.authClasses.size() < 40) {
                         acc.authClasses.add(truncate(name, 240));
                     }
@@ -384,12 +438,18 @@ public final class AuthCodeQueryService {
                         acc.tokenFilterSeen = true;
                     }
                     if (acc.mintSecret.isEmpty()) {
-                        for (WellKnownKey known : WELL_KNOWN_KEYS) {
+                        for (WellKnownKey known : dictionary) {
                             if (latin.contains(known.value())) {
                                 acc.mintSecret = Optional.of(known.value());
-                                acc.bladeSurface = true;
                                 acc.keyAlias = known.alias();
                                 acc.keyProvenance = "CLASS_CONSTANT:" + truncate(name, 160);
+                                // Dictionary hit alone is not multi-header surface; adapters decide.
+                                if (matchesAdapterAuthPath(lower, adapterAuthPaths)
+                                        || looksMultiHeaderHint(lower)
+                                        || looksMultiHeaderHint(latin.toLowerCase(Locale.ROOT))) {
+                                    acc.multiHeaderAuthSurface = true;
+                                    markSecondaryHeader(acc, lower, secondaryHint);
+                                }
                                 break;
                             }
                         }
@@ -397,8 +457,10 @@ public final class AuthCodeQueryService {
                     continue;
                 }
                 String text = new String(bytes, StandardCharsets.UTF_8);
-                if (text.contains("blade") || text.contains("bladex") || text.contains("springblade")) {
-                    acc.bladeSurface = true;
+                String textLower = text.toLowerCase(Locale.ROOT);
+                if (looksMultiHeaderHint(textLower) || matchesAdapterAuthPath(textLower, adapterAuthPaths)) {
+                    acc.multiHeaderAuthSurface = true;
+                    markSecondaryHeader(acc, textLower, secondaryHint);
                 }
                 if (PRE_AUTH.matcher(text).find()) {
                     acc.preAuthSeen = true;
@@ -407,12 +469,15 @@ public final class AuthCodeQueryService {
                     acc.tokenFilterSeen = true;
                 }
                 if (acc.mintSecret.isEmpty()) {
-                    for (WellKnownKey known : WELL_KNOWN_KEYS) {
+                    for (WellKnownKey known : dictionary) {
                         if (text.contains(known.value())) {
                             acc.mintSecret = Optional.of(known.value());
-                            acc.bladeSurface = true;
                             acc.keyAlias = known.alias();
                             acc.keyProvenance = "CONFIG_OR_RESOURCE:" + truncate(name, 160);
+                            if (looksMultiHeaderHint(textLower)) {
+                                acc.multiHeaderAuthSurface = true;
+                                markSecondaryHeader(acc, textLower, secondaryHint);
+                            }
                             break;
                         }
                     }
@@ -424,12 +489,15 @@ public final class AuthCodeQueryService {
                 Matcher keyLine = JWT_KEY_LINE.matcher(text);
                 if (keyLine.find() && acc.mintSecret.isEmpty()) {
                     String value = keyLine.group(1).trim();
-                    Optional<WellKnownKey> known = matchWellKnown(value);
+                    Optional<WellKnownKey> known = matchWellKnown(value, dictionary);
                     if (known.isPresent()) {
                         acc.mintSecret = Optional.of(known.get().value());
                         acc.keyAlias = known.get().alias();
                         acc.keyProvenance = "CONFIG_KEY:" + truncate(name, 160);
-                        acc.bladeSurface = true;
+                        if (looksMultiHeaderHint(textLower)) {
+                            acc.multiHeaderAuthSurface = true;
+                            markSecondaryHeader(acc, textLower, secondaryHint);
+                        }
                     } else if (value.length() >= 8 && value.length() <= 256
                             && looksPlausibleSecret(value)) {
                         acc.mintSecret = Optional.of(value);
@@ -445,8 +513,31 @@ public final class AuthCodeQueryService {
         return acc;
     }
 
-    private static Optional<WellKnownKey> matchWellKnown(String value) {
-        for (WellKnownKey known : WELL_KNOWN_KEYS) {
+    private static void markSecondaryHeader(
+            ScanAccumulator acc, String evidenceLower, String filenameHint) {
+        if (acc.secondaryAuthHeaderName != null && !acc.secondaryAuthHeaderName.isBlank()) {
+            return;
+        }
+        for (FrameworkAdapter adapter : FrameworkAdapterRegistry.all()) {
+            String name = adapter.secondaryAuthHeaderName();
+            if (name == null || name.isBlank()) continue;
+            if (matchesAdapterAuthPath(evidenceLower, adapter.authClassPathSignals())
+                    || adapter.preferSecondaryAuthHeader(null)) {
+                // Prefer adapters whose path signals appear in this evidence blob.
+                if (matchesAdapterAuthPath(evidenceLower, adapter.authClassPathSignals())
+                        || looksMultiHeaderHint(evidenceLower)) {
+                    acc.secondaryAuthHeaderName = name.trim();
+                    return;
+                }
+            }
+        }
+        if (filenameHint != null && !filenameHint.isBlank()) {
+            acc.secondaryAuthHeaderName = filenameHint.trim();
+        }
+    }
+
+    private static Optional<WellKnownKey> matchWellKnown(String value, List<WellKnownKey> dictionary) {
+        for (WellKnownKey known : dictionary) {
             if (known.value().equals(value)) {
                 return Optional.of(known);
             }
@@ -456,7 +547,6 @@ public final class AuthCodeQueryService {
 
     private static boolean looksPlausibleSecret(String value) {
         if (value == null || value.length() < 8) return false;
-        // Reject obvious placeholders / env refs that are not usable mint material.
         String lower = value.toLowerCase(Locale.ROOT);
         if (lower.startsWith("${") || lower.contains("changeme") || lower.equals("null")) {
             return false;
@@ -464,13 +554,33 @@ public final class AuthCodeQueryService {
         return value.chars().allMatch(ch -> ch >= 0x20 && ch < 0x7f);
     }
 
-    private static boolean looksAuthClass(String lowerPath) {
-        for (String hint : AUTH_CLASS_HINTS) {
+    private static boolean looksAuthClass(String lowerPath, Set<String> adapterPaths) {
+        for (String hint : GENERIC_AUTH_CLASS_HINTS) {
+            if (lowerPath.contains(hint.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return matchesAdapterAuthPath(lowerPath, adapterPaths);
+    }
+
+    private static boolean matchesAdapterAuthPath(String lowerPath, Set<String> adapterPaths) {
+        if (adapterPaths == null) return false;
+        for (String hint : adapterPaths) {
             if (lowerPath.contains(hint.toLowerCase(Locale.ROOT))) {
                 return true;
             }
         }
         return false;
+    }
+
+    /** Heuristic for dual-channel auth surfaces (header names / package markers in resources). */
+    private static boolean looksMultiHeaderHint(String lower) {
+        if (lower == null || lower.isBlank()) return false;
+        return lower.contains("blade-auth")
+                || lower.contains("x-access-token")
+                || lower.contains("secondary-auth")
+                || lower.contains("org/springblade")
+                || lower.contains("org.springblade");
     }
 
     private static byte[] readLimited(InputStream in, int max) throws IOException {
@@ -488,16 +598,19 @@ public final class AuthCodeQueryService {
     /** Convenience map for tool JSON (no raw secrets). */
     public static Map<String, Object> toToolMap(AuthCodeQueryResult result) {
         Map<String, Object> root = new LinkedHashMap<>();
-        root.put("bladeSurface", result.bladeSurface());
+        root.put("multiHeaderAuthSurface", result.multiHeaderAuthSurface());
+        root.put("bladeSurface", result.multiHeaderAuthSurface()); // deprecated wire alias
         root.put("jwtSecretMaterialFound", result.jwtSecretMaterialFound());
         root.put("jwtDefaultKeyMatched", result.jwtSecretMaterialFound()); // compat alias
         root.put("preferredSignKeyProvenance", result.preferredSignKeyProvenance());
         root.put("preferredHeaderChannel", result.preferredHeaderChannel());
+        root.put("secondaryAuthHeaderName", result.secondaryAuthHeaderName());
         root.put("recommendedTechniques", result.recommendedTechniques());
         root.put("classification", "FACT");
         root.put("verificationStatus", "STATIC_INFERRED");
-        root.put("note", "Well-known Blade keys are HINT/detection only; mint only when "
-                + "jwtSecretMaterialFound=true with evidenceRefs from this query.");
+        root.put("note", "Adapter well-known keys are HINT/detection only; mint only when "
+                + "jwtSecretMaterialFound=true with evidenceRefs from this query. "
+                + "bladeSurface is a deprecated alias of multiHeaderAuthSurface.");
         List<Map<String, Object>> candidateMaps = new ArrayList<>();
         for (SecretCandidateHint candidate : result.secretCandidates()) {
             Map<String, Object> item = new LinkedHashMap<>();

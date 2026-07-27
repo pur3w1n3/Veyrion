@@ -21,8 +21,8 @@ import java.util.Optional;
  * Provenance is MOCK / RULE_GENERATED / FACT (config in JAR); never claimed as operator credentials.
  *
  * <p>HS256 minting requires a secret actually extracted from the artifact (or a well-known
- * string that was matched <em>inside</em> the artifact). There is no silent fallback to a
- * commercial Blade default for arbitrary JARs.
+ * adapter-dictionary string that was matched <em>inside</em> the artifact). There is no silent
+ * fallback to any commercial framework default for arbitrary JARs.
  */
 public final class SyntheticIdentityService {
 
@@ -42,11 +42,41 @@ public final class SyntheticIdentityService {
             Optional<String> jwtSecret,
             String secretProvenance,
             List<String> notes,
-            boolean bladeSurface,
-            boolean preferBladeAuthHeader
+            boolean multiHeaderAuthSurface,
+            boolean preferSecondaryAuthHeader,
+            String secondaryAuthHeaderName
     ) {
+        public MaterialBundle {
+            jwtSecret = jwtSecret == null ? Optional.empty() : jwtSecret;
+            secretProvenance = secretProvenance == null ? "NONE" : secretProvenance;
+            notes = List.copyOf(notes == null ? List.of() : notes);
+            secondaryAuthHeaderName = secondaryAuthHeaderName == null ? "" : secondaryAuthHeaderName;
+        }
+
         public MaterialBundle(Optional<String> jwtSecret, String secretProvenance, List<String> notes) {
-            this(jwtSecret, secretProvenance, notes, false, false);
+            this(jwtSecret, secretProvenance, notes, false, false, "");
+        }
+
+        public MaterialBundle(
+                Optional<String> jwtSecret,
+                String secretProvenance,
+                List<String> notes,
+                boolean multiHeaderAuthSurface,
+                boolean preferSecondaryAuthHeader) {
+            this(jwtSecret, secretProvenance, notes, multiHeaderAuthSurface,
+                    preferSecondaryAuthHeader, preferSecondaryAuthHeader ? "Blade-Auth" : "");
+        }
+
+        /** @deprecated Prefer {@link #multiHeaderAuthSurface()}. */
+        @Deprecated
+        public boolean bladeSurface() {
+            return multiHeaderAuthSurface;
+        }
+
+        /** @deprecated Prefer {@link #preferSecondaryAuthHeader()}. */
+        @Deprecated
+        public boolean preferBladeAuthHeader() {
+            return preferSecondaryAuthHeader;
         }
     }
 
@@ -54,11 +84,13 @@ public final class SyntheticIdentityService {
         List<String> notes = new ArrayList<>();
         Optional<String> secret = Optional.empty();
         String provenance = "NONE";
-        boolean bladeSurface = false;
+        boolean multiHeader = false;
+        String secondaryHeader = "";
         if (artifactPath != null && Files.isRegularFile(artifactPath)) {
             AuthCodeQueryService.AuthCodeQueryResult code =
                     new AuthCodeQueryService().query(artifactPath, "", 20);
-            bladeSurface = code.bladeSurface();
+            multiHeader = code.multiHeaderAuthSurface();
+            secondaryHeader = code.secondaryAuthHeaderName();
             if (code.mintSecret().isPresent()) {
                 secret = code.mintSecret();
                 String candidateClass = code.secretCandidates().isEmpty()
@@ -70,13 +102,14 @@ public final class SyntheticIdentityService {
                         + candidateClass + ")");
             } else {
                 notes.add("no mintable JWT secret harvested from artifact"
-                        + (bladeSurface ? " (Blade surface present)" : ""));
+                        + (multiHeader ? " (multi-header auth surface present)" : ""));
             }
         } else {
             notes.add("no artifact path; HS256 mint unavailable");
         }
-        boolean preferBlade = bladeSurface;
-        return new MaterialBundle(secret, provenance, List.copyOf(notes), bladeSurface, preferBlade);
+        boolean preferSecondary = multiHeader && !secondaryHeader.isBlank();
+        return new MaterialBundle(secret, provenance, List.copyOf(notes),
+                multiHeader, preferSecondary, secondaryHeader);
     }
 
     public SyntheticIdentity synthesize(IdentityTrack track, MaterialBundle materials) {
@@ -155,9 +188,9 @@ public final class SyntheticIdentityService {
     }
 
     /**
-     * Minimal HS256 JWT. Claims follow SpringBlade SecureUtil/TokenUtil shape
-     * (tenant_id / user_id / role_name / client_id) so filters that read those
-     * claims are more likely to accept harvested MOCK/RULE_GENERATED/FACT material.
+     * Minimal HS256 JWT with generic enterprise-ish claims (sub/role/exp).
+     * Framework-specific claim shapes belong in AI-authored PoCs or adapter hints —
+     * not hardcoded as the platform mint narrative.
      */
     static String mintHs256Token(String secret, String role, IdentityTrack track) {
         String header = b64Url("{\"alg\":\"HS256\",\"typ\":\"JWT\"}");
@@ -167,20 +200,14 @@ public final class SyntheticIdentityService {
         String roleName = "administrator".equals(role) || "admin".equals(role)
                 ? "administrator" : role;
         String payload = b64Url("{"
-                + "\"token_type\":\"access_token\","
-                + "\"tenant_id\":\"000000\","
-                + "\"user_id\":\"1123598821738675201\","
-                + "\"dept_id\":\"1123598813738675202\","
-                + "\"post_id\":\"1123598817738675201\","
-                + "\"role_id\":\"1123598816738675201\","
+                + "\"sub\":\"" + account + "\","
                 + "\"account\":\"" + account + "\","
                 + "\"user_name\":\"" + account + "\","
-                + "\"nick_name\":\"" + account + "\","
+                + "\"role\":\"" + roleName + "\","
                 + "\"role_name\":\"" + roleName + "\","
-                + "\"client_id\":\"saber\","
-                + "\"license\":\"powered by bladex\","
-                + "\"iss\":\"bladex.cn\","
-                + "\"aud\":\"blade\","
+                + "\"authorities\":[\"" + roleName + "\"],"
+                + "\"token_type\":\"access_token\","
+                + "\"iat\":" + now + ","
                 + "\"nbf\":" + now + ","
                 + "\"exp\":" + (now + 3600) + ","
                 + "\"mock\":true"
@@ -196,22 +223,30 @@ public final class SyntheticIdentityService {
         String header = b64Url("{\"alg\":\"none\",\"typ\":\"JWT\"}");
         String account = "administrator".equals(role) || "admin".equals(role)
                 ? "admin" : "veyrion-" + track.name().toLowerCase(Locale.ROOT);
-        String payload = b64Url("{\"token_type\":\"access_token\",\"tenant_id\":\"000000\","
+        String payload = b64Url("{\"sub\":\"" + account + "\",\"role\":\"administrator\","
                 + "\"role_name\":\"administrator\",\"account\":\"" + account
                 + "\",\"user_name\":\"" + account
-                + "\",\"client_id\":\"saber\",\"license\":\"powered by bladex\","
-                + "\"iss\":\"bladex.cn\",\"mock\":true,\"algNone\":true}");
+                + "\",\"token_type\":\"access_token\",\"mock\":true,\"algNone\":true}");
         return header + "." + payload + ".";
     }
 
-    /** Blade-Auth channel value: scheme + token (probe layer does not auto-prefix Blade-Auth). */
-    public static String bladeAuthHeaderValue(String rawToken) {
+    /**
+     * Secondary auth-channel value: scheme + token (probe layer does not auto-prefix
+     * the secondary header name). Wire/API still may call this via {@link #bladeAuthHeaderValue}.
+     */
+    public static String secondaryAuthHeaderValue(String rawToken) {
         if (rawToken == null || rawToken.isBlank()) return "";
         String token = rawToken.trim();
         if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
             return "bearer " + token.substring(7).trim();
         }
         return "bearer " + token;
+    }
+
+    /** @deprecated Use {@link #secondaryAuthHeaderValue}. */
+    @Deprecated
+    public static String bladeAuthHeaderValue(String rawToken) {
+        return secondaryAuthHeaderValue(rawToken);
     }
 
     private static String b64Url(String value) {

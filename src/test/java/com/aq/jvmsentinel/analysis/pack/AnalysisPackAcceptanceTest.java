@@ -7,30 +7,32 @@ import com.aq.jvmsentinel.model.IdentityTrack;
 import java.util.List;
 
 /**
- * P1-02: Blade JWT + Flowable deploy AnalysisPack shapes (non-destructive templates only).
+ * P1-02: optional multi-header JWT + Flowable deploy AnalysisPack shapes
+ * (non-destructive templates only; not a first-class Blade product path).
  */
 public final class AnalysisPackAcceptanceTest {
     public static void main(String[] args) {
-        bladePackMatchesAndSuggestsSecret();
+        optionalJwtPackMatchesAndSuggestsSecret();
         flowablePackIsMultipartNonDestructive();
         registryMatchingIsRouteDriven();
         System.out.println("AnalysisPackAcceptanceTest: PASS");
     }
 
-    private static void bladePackMatchesAndSuggestsSecret() {
+    private static void optionalJwtPackMatchesAndSuggestsSecret() {
         BladeJwtCredentialPack pack = new BladeJwtCredentialPack();
-        check(pack.matches(null, List.of("/blade-auth/oauth/token")), "blade pack matches /blade-auth");
-        check(!pack.matches(null, List.of("/api/orders")), "blade pack ignores unrelated routes");
+        check(pack.matches(null, List.of("/blade-auth/oauth/token")),
+                "optional pack matches multi-header auth routes");
+        check(!pack.matches(null, List.of("/api/orders")), "pack ignores unrelated routes");
         check(pack.suggestJwtSecret(null).isEmpty(),
-                "blade pack does not invent JWT secrets without artifact harvest");
+                "pack does not invent JWT secrets without artifact harvest");
         check(BladeJwtCredentialPack.DEFAULT_SECRET.equals(
                         AuthCodeQueryService.WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY),
                 "detection dictionary alias documented for harvest matching only");
         List<ExperimentPlan> templates = pack.experimentTemplates("entry:e1", IdentityTrack.ADMIN);
-        check(!templates.isEmpty(), "blade templates non-empty");
-        check(templates.get(0).authRequired(), "ADMIN blade template authRequired");
+        check(!templates.isEmpty(), "JWT templates non-empty");
+        check(templates.get(0).authRequired(), "ADMIN JWT template authRequired");
         check(!"multipart/form-data".equalsIgnoreCase(templates.get(0).contentType()),
-                "blade JWT templates are not multipart deploy");
+                "JWT templates are not multipart deploy");
     }
 
     private static void flowablePackIsMultipartNonDestructive() {

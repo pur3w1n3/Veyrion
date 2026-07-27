@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.analysis.pack;
 
+import com.aq.jvmsentinel.analysis.framework.SpringBladeAdapter;
 import com.aq.jvmsentinel.analysis.identity.AuthCodeQueryService;
 import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.aq.jvmsentinel.model.IdentityTrack;
@@ -10,19 +11,19 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * Blade / SpringBlade JWT credential experiment shapes (non-destructive).
+ * Optional thin AnalysisPack for SpringBlade-like JWT credential experiment shapes
+ * (non-destructive templates). Not a first-class product path — same SPI as any pack.
  *
- * <p>Does not mint or expose commercial defaults as FACT. Well-known aliases remain
- * documentation/HINT via {@link AuthCodeQueryService#wellKnownBladeKeyHints()};
- * minting requires artifact harvest through {@code code_query}.
+ * <p>Does not mint or expose commercial defaults as FACT. Well-known aliases live on
+ * {@link SpringBladeAdapter}; minting requires artifact harvest through {@code code_query}.
  */
 public final class BladeJwtCredentialPack implements AnalysisPack {
     /**
-     * Detection-dictionary alias of the historical Blade JwtProperties sign-key.
-     * Not a silent mint source — use only after harvest from the authorized artifact.
+     * @deprecated Detection dictionary owned by {@link SpringBladeAdapter}; pack keeps
+     * the alias for fixture alignment only.
      */
-    public static final String DEFAULT_SECRET =
-            AuthCodeQueryService.WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY;
+    @Deprecated
+    public static final String DEFAULT_SECRET = SpringBladeAdapter.WELL_KNOWN_COMMERCIAL_SIGN_KEY;
 
     @Override
     public String id() {
@@ -44,7 +45,6 @@ public final class BladeJwtCredentialPack implements AnalysisPack {
 
     @Override
     public Optional<String> suggestJwtSecret(Path artifactPath) {
-        // Demoted: pack no longer pretends the commercial default is present.
         if (artifactPath == null) {
             return Optional.empty();
         }
@@ -60,7 +60,7 @@ public final class BladeJwtCredentialPack implements AnalysisPack {
     @Override
     public List<ExperimentPlan> experimentTemplates(String entrypointRef, IdentityTrack track) {
         return List.of(new ExperimentPlan(
-                "plan-blade-jwt-" + track.name().toLowerCase(Locale.ROOT),
+                "plan-multi-header-jwt-" + track.name().toLowerCase(Locale.ROOT),
                 entrypointRef,
                 track,
                 "GET",

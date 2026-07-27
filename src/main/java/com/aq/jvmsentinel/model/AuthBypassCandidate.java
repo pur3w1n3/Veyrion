@@ -19,7 +19,11 @@ public record AuthBypassCandidate(
         double confidence,
         /** Token / header material for loopback probe (AI-authored; may be JWT). */
         String authorizationHeader,
-        /** Optional Blade-Auth material; empty means reuse authorizationHeader. */
+        /**
+         * Optional secondary auth-channel material (wire name {@code bladeAuthHeader} kept for
+         * compatibility; semantically {@code secondaryAuthorizationHeader}). Empty means
+         * Authorization-only unless the probe layer dual-writes from harvest hints.
+         */
         String bladeAuthHeader,
         String query,
         String bodyHint
@@ -87,7 +91,17 @@ public record AuthBypassCandidate(
         return value;
     }
 
+    /** Generic alias for {@link #bladeAuthHeader()}. */
+    public String secondaryAuthorizationHeader() {
+        return bladeAuthHeader == null ? "" : bladeAuthHeader;
+    }
+
     public String probeBladeAuth() {
+        return probeSecondaryAuth();
+    }
+
+    /** Probe-layer secondary-channel token body. */
+    public String probeSecondaryAuth() {
         if (bladeAuthHeader != null && !bladeAuthHeader.isBlank()) {
             String value = bladeAuthHeader.trim();
             if (value.regionMatches(true, 0, "Bearer ", 0, 7)) {
