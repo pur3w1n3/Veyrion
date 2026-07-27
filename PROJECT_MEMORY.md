@@ -843,3 +843,8 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 - **根因**：浏览器上传在会话里携带 `fileName`，但完成安装到内容寻址路径（`sha256.ext`）后，`ArtifactDescriptor` / `ArtifactDto` 未持久化原始 basename；UI 只能用短 digest `artifactId` 做标题（如 `JAR · e2aeb86bddca6f4b`）。
 - **修复**：描述符与 SQLite（V021 `original_file_name`）保存 `originalFileName`；wire 同时暴露 `fileName` / `displayName`；列表与审计选择器用原名作主标题，digest/大小为次要元数据。
 - 已导入且 DB 中无原名的制品需重新上传/登记才能恢复显示名。不得标生产可用。
+
+## 80. 执行流程图中文详版（六 AI + 确定性引擎）（2026-07-27）
+
+- Canvas（IDE）：`veyrion-execution-flow.canvas.tsx` 中文详化：①PRE→②AUTH₁→洪水 PathRun→ContrastLedger→②′AUTH₂→③DYNAMIC→④PATH→⑤TRIAGE→⑥REPORT→Results→VERIFIED 门禁。
+- `docs/AUDIT_FLOW.md` mermaid 同步标注六角色序号与 PathRun/ContrastLedger 非 AI 节点。不得标生产可用。

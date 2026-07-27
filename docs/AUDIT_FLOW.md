@@ -4,23 +4,28 @@
 
 ```mermaid
 flowchart TD
-    A[静态接口与事实] --> B[前置建模\nPRE_ANALYSIS]
-    B --> B1[入口补充候选\nMODEL_SUPPLEMENT]
-    B1 --> C[鉴权分析\nAUTH_ANALYSIS]
-    C --> C1[合成身份策略\n高价值/轨集合\n实验计划草稿]
+    A[静态接口与事实] --> B[① 前置建模 PRE_ANALYSIS]
+    B --> B1[入口补充候选 MODEL_SUPPLEMENT]
+    B1 --> C[② 鉴权分析 AUTH_ANALYSIS]
+    C --> C1[合成身份 / 高价值轨 / bypassPoCs]
     C1 --> D{用户授权沙箱可用?}
-    D -- 否 --> X[DYNAMIC_DISABLED\n保留静态结果]
-    D -- 是 --> E[沙箱动态观察\n按身份轨执行]
-    E --> F[鉴权绕过确认\nAUTH_ANALYSIS]
-    F --> G[动态验证\nDYNAMIC_VERIFICATION]
-    G --> H[路径探索\nPATH_EXPLORATION]
-    H --> I[漏洞研判\nVULNERABILITY_TRIAGE]
-    I --> J{SQL恶意片段无过滤入库?}
+    D -- 否 --> X[DYNAMIC_DISABLED 保留静态结果]
+    D -- 是 --> E[确定性：沙箱洪水 PathRun]
+    E --> CL[确定性：ContrastLedger 对照]
+    CL --> F[②′ 鉴权绕过确认 AUTH_ANALYSIS 续跑]
+    F --> G[③ 动态验证 DYNAMIC_VERIFICATION]
+    G --> H[④ 路径探索 PATH_EXPLORATION]
+    H --> I[⑤ 漏洞研判 VULNERABILITY_TRIAGE]
+    I --> J{SQL 恶意片段无过滤入库? H3}
     J -- 是 --> K[DYNAMIC_CONFIRMED]
-    J -- 否 --> L[STATIC_INFERRED\nDYNAMIC_SUSPECTED\n或证据不足]
-    K --> M[报告生成\nREPORT_GENERATION]
+    J -- 否 --> L[STATIC_INFERRED / DYNAMIC_SUSPECTED / 证据不足]
+    K --> M[⑥ 报告生成 REPORT_GENERATION]
     L --> M
+    M --> N[Results 默认报告视图]
+    N --> O[VERIFIED 门禁 fail-closed]
 ```
+
+六个固定 AI 角色：① PRE_ANALYSIS · ② AUTH_ANALYSIS（含洪水后续跑）· ③ DYNAMIC_VERIFICATION · ④ PATH_EXPLORATION · ⑤ VULNERABILITY_TRIAGE · ⑥ REPORT_GENERATION。PathRun 洪水与 ContrastLedger 为确定性引擎，不占 AI 席位。
 
 ## 阶段契约
 
