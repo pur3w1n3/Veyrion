@@ -797,3 +797,9 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 - **修复**：将信任沙箱探针计划上传预算提升为有文档边界的 **3 MiB**（`512 × 6 KiB` 最坏 TSV 行），常量在 `ExternalArtifactTaskExecutor.MAX_PROBE_PLAN_UPLOAD_BYTES` / `ProbePlanService` / `LocalDockerTrustedSandboxClient.MAX_UPLOAD_HOST_FILE_BYTES` 对齐；控制面入队前与 `encodeProbePlan` 均预检 `PROBE_PLAN_TOO_LARGE`。
 - **未削弱**：未取消大小检查；OpenSandbox 仍保留更紧的 shell/base64 上传上限（非本故障路径）。
 - 验收：`ProbePlanUploadBudgetAcceptanceTest` / `TrustedDockerBuildingBlocksAcceptanceTest` / `ExternalArtifactTaskExecutorAcceptanceTest` PASS。
+
+## 76. 动态阶段重试 DYNAMIC_TASK_BUSY（2026-07-27）
+
+- **根因**：阶段重试在仍存在任意 QUEUED/LEASED/RUNNING/PAUSED 任务时返回 `DYNAMIC_TASK_BUSY`。失败任务（如 `EXTERNAL_ARTIFACT_REJECTED`）本身应为终态；但同扫描上可能残留另一条未终态任务（双提交、回收后 zombie QUEUED、或失败重试前 `arm()` 留下武装态）。UI 按 taskId 字典序取「最新」时也可能显示 FAILED 却被兄弟活跃任务挡住。
+- **修复**：`audit-stage-retries` 对 `DYNAMIC_OBSERVATION` **先 supersede（control-plane cancel）活跃任务再入队**；终态 FAILED/COMPLETED/CANCELLED 不挡；focus-probe/finding-replay 仍 fail-closed busy。Worker 增加 `fail-queued`，执行器在 lease 前/fail 失败时尽量标 FAILED。任务列表按 `updatedAt` 排序；前端对 `DYNAMIC_TASK_BUSY` 给出可操作提示，不回退演示数据。
+- 验收：`DynamicStageRetryAcceptanceTest` / `EntryFocusProbeAcceptanceTest` PASS。不得标生产可用。

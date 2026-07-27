@@ -80,7 +80,11 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
     const refreshTask = () => {
       void api.listDynamicTasks(activeScanId).then((tasks) => {
         if (!active) return
-        const latest = tasks.at(-1)
+        // Prefer chronologically latest task; taskId lexicographic order is not time order.
+        const latest = [...tasks].sort((left, right) => {
+          const byTime = left.updatedAt.localeCompare(right.updatedAt)
+          return byTime !== 0 ? byTime : left.taskId.localeCompare(right.taskId)
+        }).at(-1)
         setDynamicTask(latest)
         if (latest && (latest.status === 'QUEUED' || latest.status === 'RUNNING' || latest.status === 'LEASED')) {
           timer = window.setTimeout(refreshTask, 1500)

@@ -50,7 +50,10 @@ export function AiAuditPage({
     const refreshTask = () => {
       void api.listDynamicTasks(scanId).then((tasks) => {
         if (!active) return
-        const latest = tasks.at(-1)
+        const latest = [...tasks].sort((left, right) => {
+          const byTime = left.updatedAt.localeCompare(right.updatedAt)
+          return byTime !== 0 ? byTime : left.taskId.localeCompare(right.taskId)
+        }).at(-1)
         setDynamicTask(latest)
         if (latest && (latest.status === 'QUEUED' || latest.status === 'RUNNING' || latest.status === 'LEASED')) {
           timer = window.setTimeout(refreshTask, 1500)

@@ -235,7 +235,10 @@ public final class ExternalArtifactTaskExecutor {
                             failureDiagnostic(failure));
                 } catch (RuntimeException failFailure) {
                     failure.addSuppressed(failFailure);
+                    tryMarkTerminalFailure(request.scope(), failure);
                 }
+            } else {
+                tryMarkTerminalFailure(request.scope(), failure);
             }
             throw failure;
         } finally {
@@ -676,6 +679,28 @@ public final class ExternalArtifactTaskExecutor {
     private static Duration commandTimeout(ResourceBudget budget) {
         // Grace for Docker process teardown after the in-container wall clock ends.
         return Duration.ofSeconds(Math.min(3_600, budget.maxWallClockSeconds() + 45));
+    }
+
+    /**
+     * Best-effort terminalization when lease-bound fail is unavailable (pre-lease reject or
+     * lease reclaim race). Leaves FAILED so stage retry is not blocked by a zombie QUEUED task.
+     */
+    private void tryMarkTerminalFailure(TaskScope scope, RuntimeException failure) {
+        try {
+            WorkerControlPlaneClient.TaskDescriptor current = control.get(scope);
+            if (current.lifecycle() == TaskLifecycle.QUEUED) {
+                control.failQueued(scope, StopReason.WORKER_FAILURE, failureCode(failure),
+                        failureDiagnostic(failure));
+            } else if (current.lease() != null
+                    && (current.lifecycle() == TaskLifecycle.LEASED
+                    || current.lifecycle() == TaskLifecycle.RUNNING
+                    || current.lifecycle() == TaskLifecycle.PAUSED)) {
+                control.fail(scope, current.lease().leaseId(), workerId,
+                        StopReason.WORKER_FAILURE, failureCode(failure), failureDiagnostic(failure));
+            }
+        } catch (RuntimeException ignored) {
+            // Stage retry can supersede leftover active tasks; do not mask the primary failure.
+        }
     }
 
     private static String failureCode(RuntimeException failure) {

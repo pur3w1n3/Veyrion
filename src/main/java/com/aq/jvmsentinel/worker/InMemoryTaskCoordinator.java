@@ -145,6 +145,56 @@ public final class InMemoryTaskCoordinator {
         return result;
     }
 
+    /**
+     * Control-plane authority cancel: clears QUEUED/LEASED/RUNNING/PAUSED without a worker lease.
+     * Used to supersede stuck or abandoned dynamic tasks before an operator stage retry.
+     * Terminal tasks are returned unchanged (idempotent).
+     */
+    public synchronized TaskSnapshot controlPlaneCancel(TaskScope scope, StopReason reason,
+                                                        String idempotencyKey) {
+        Objects.requireNonNull(reason, "reason");
+        if (reason == StopReason.COMPLETED) throw new IllegalArgumentException("invalid cancellation reason");
+        TaskSnapshot current = require(scope);
+        ControlPlaneCancel payload = new ControlPlaneCancel(reason);
+        Object replay = replay("control-plane-cancel", scope, idempotencyKey, payload);
+        if (replay != null) return (TaskSnapshot) replay;
+        requireReplayCapacity();
+        if (Set.of(TaskLifecycle.CANCELLED, TaskLifecycle.COMPLETED, TaskLifecycle.FAILED)
+                .contains(current.lifecycle())) {
+            remember("control-plane-cancel", scope, idempotencyKey, payload, current);
+            return current;
+        }
+        if (!Set.of(TaskLifecycle.QUEUED, TaskLifecycle.LEASED, TaskLifecycle.RUNNING, TaskLifecycle.PAUSED)
+                .contains(current.lifecycle())) {
+            transitionRejected(current, "control-plane-cancel");
+        }
+        TaskSnapshot result = copy(current, TaskLifecycle.CANCELLED, null, current.checkpoint(), reason, null);
+        put(result);
+        remember("control-plane-cancel", scope, idempotencyKey, payload, result);
+        return result;
+    }
+
+    /**
+     * Marks a still-QUEUED task as FAILED (pre-lease rejection or post-reclaim abandonment).
+     * Keeps EXTERNAL_ARTIFACT_REJECTED and similar failures out of the active set.
+     */
+    public synchronized TaskSnapshot failQueued(TaskScope scope, StopReason reason, String failureCode,
+                                                String idempotencyKey) {
+        Objects.requireNonNull(reason, "reason");
+        if (reason == StopReason.COMPLETED) throw new IllegalArgumentException("invalid failure reason");
+        failureCode = WorkerContracts.id(failureCode, "failureCode");
+        Failure payload = new Failure(reason, failureCode);
+        Object replay = replay("fail-queued", scope, idempotencyKey, payload);
+        if (replay != null) return (TaskSnapshot) replay;
+        requireReplayCapacity();
+        TaskSnapshot current = require(scope);
+        if (current.lifecycle() != TaskLifecycle.QUEUED) transitionRejected(current, "fail-queued");
+        TaskSnapshot result = copy(current, TaskLifecycle.FAILED, null, current.checkpoint(), reason, failureCode);
+        put(result);
+        remember("fail-queued", scope, idempotencyKey, payload, result);
+        return result;
+    }
+
     public synchronized TaskSnapshot complete(TaskScope scope, String leaseId, String workerId,
                                               String idempotencyKey) {
         return transitionWithLease("complete", scope, leaseId, workerId, null, StopReason.COMPLETED,
@@ -288,4 +338,5 @@ public final class InMemoryTaskCoordinator {
     private record LeaseAction(String leaseId, String workerId, long durationMillis, Object detail,
                                TaskCheckpoint checkpoint) { }
     private record Failure(StopReason reason, String failureCode) { }
+    private record ControlPlaneCancel(StopReason reason) { }
 }

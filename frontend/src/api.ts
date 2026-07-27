@@ -1866,6 +1866,14 @@ export class HttpSentinelApi implements SentinelApi {
           detail.requestId
         )
       }
+      if (detail.code === 'DYNAMIC_TASK_BUSY') {
+        throw new ApiRequestError(
+          `该扫描仍有进行中的动态任务${codeSuffix}${requestSuffix}。请稍候任务结束，或在「审计执行」对「断网容器按轨动态观察」点重试（服务端会取消卡住的任务后再排队）。请求不会回退到演示数据。`,
+          response.status,
+          detail.code,
+          detail.requestId
+        )
+      }
       throw new ApiRequestError(detail.message ? `${detail.message}${codeSuffix}${requestSuffix}` : `${operation} failed: ${response.status}`, response.status, detail.code, detail.requestId)
     }
     if (response.status === 204) return {}

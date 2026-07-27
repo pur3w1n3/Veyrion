@@ -323,11 +323,8 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
 
             @Override
             public boolean hasRunningDynamicTask(String scanId) {
-                return workerApi.snapshots(store.requireScan(scanId).dto().projectId(), scanId).stream()
-                        .anyMatch(snapshot -> snapshot.lifecycle() == TaskLifecycle.QUEUED
-                                || snapshot.lifecycle() == TaskLifecycle.LEASED
-                                || snapshot.lifecycle() == TaskLifecycle.RUNNING
-                                || snapshot.lifecycle() == TaskLifecycle.PAUSED);
+                ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
+                return workerApi.hasActiveDynamicTask(scan.dto().projectId(), scanId);
             }
 
             @Override
@@ -1084,13 +1081,11 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         String operatorId = actor(exchange).operatorId();
         AiOutputLanguage language = outputLanguage(optionalText(
                 body, "outputLanguage", AiOutputLanguage.ZH_CN.name()));
-        auditPipeline.arm(new AuditPipelineCoordinator.Arm(scanId, projectId, operatorId, language));
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("schemaVersion", 1);
         result.put("projectId", projectId);
         result.put("scanId", scanId);
         result.put("stage", stage);
-        result.put("pipelineArmed", true);
         switch (stage) {
             case "PRE_ANALYSIS", "AUTH_ANALYSIS", "AUTH_BYPASS_CONFIRM", "PATH_EXPLORATION",
                     "DYNAMIC_VERIFICATION", "VULNERABILITY_TRIAGE", "REPORT_GENERATION" -> {
@@ -1101,6 +1096,10 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                     throw new ApiException(403, "AI_AUTHORIZATION_REQUIRED",
                             "explicit AI authorization is required to retry a model stage");
                 }
+                // Arm only after authorization/stage validation so a rejected retry cannot
+                // leave the pipeline armed and auto-enqueue a zombie dynamic task on recovery.
+                auditPipeline.arm(new AuditPipelineCoordinator.Arm(scanId, projectId, operatorId, language));
+                result.put("pipelineArmed", true);
                 AgentRole role = AgentRole.valueOf(stage);
                 var job = store.createAiJob(projectId, role, scanId, language, true, operatorId,
                         Instant.now(clock).toString());
@@ -1111,20 +1110,25 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                 result.put("aiJob", aiJobMap(job));
             }
             case "DYNAMIC_OBSERVATION", "TRUSTED_DOCKER", "DYNAMIC" -> {
-                if (workerApi.snapshots(projectId, scanId).stream().anyMatch(snapshot ->
-                        snapshot.lifecycle() == TaskLifecycle.QUEUED
-                                || snapshot.lifecycle() == TaskLifecycle.LEASED
-                                || snapshot.lifecycle() == TaskLifecycle.RUNNING
-                                || snapshot.lifecycle() == TaskLifecycle.PAUSED)) {
+                // Terminal FAILED/COMPLETED/CANCELLED never block. Any leftover QUEUED/LEASED/
+                // RUNNING/PAUSED task is superseded so operator retry works after
+                // EXTERNAL_ARTIFACT_REJECTED and similar terminal worker failures that left a
+                // sibling in-flight task, or after a stuck lease reclaim loop.
+                List<TaskSnapshot> superseded = workerApi.cancelActiveDynamicTasks(projectId, scanId);
+                if (workerApi.hasActiveDynamicTask(projectId, scanId)) {
                     throw new ApiException(409, "DYNAMIC_TASK_BUSY",
-                            "a dynamic task is already active for this scan");
+                            "a dynamic task is already active for this scan; stop it before retrying");
                 }
+                auditPipeline.arm(new AuditPipelineCoordinator.Arm(scanId, projectId, operatorId, language));
+                result.put("pipelineArmed", true);
                 TaskSnapshot snapshot = enqueueDynamicForPipeline(scanId, operatorId);
                 store.auditChange(projectId, operatorId, "audit-stage.retry", "worker-task",
                         snapshot.scope().taskId(),
-                        "{\"stage\":\"DYNAMIC_OBSERVATION\",\"scanId\":\"" + scanId + "\"}",
+                        "{\"stage\":\"DYNAMIC_OBSERVATION\",\"scanId\":\"" + scanId
+                                + "\",\"supersededCount\":" + superseded.size() + "}",
                         Instant.now(clock).toString());
                 result.put("dynamicTask", dynamicTaskMap(snapshot));
+                result.put("supersededCount", superseded.size());
             }
             default -> throw new ApiException(400, "RETRY_STAGE_UNKNOWN",
                     "unsupported retry stage");
@@ -1943,12 +1947,9 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
             throw new ApiException(409, "ENTRY_NOT_FOUND", "finding entrypoint is not present in the scan");
         }
         String operatorId = actor(exchange).operatorId();
-        if (workerApi.snapshots(finding.projectId(), finding.scanId()).stream().anyMatch(snapshot ->
-                snapshot.lifecycle() == TaskLifecycle.QUEUED
-                        || snapshot.lifecycle() == TaskLifecycle.LEASED
-                        || snapshot.lifecycle() == TaskLifecycle.RUNNING
-                        || snapshot.lifecycle() == TaskLifecycle.PAUSED)) {
-            throw new ApiException(409, "DYNAMIC_TASK_BUSY", "a dynamic task is already active for this scan");
+        if (workerApi.hasActiveDynamicTask(finding.projectId(), finding.scanId())) {
+            throw new ApiException(409, "DYNAMIC_TASK_BUSY",
+                    "a dynamic task is already active for this scan; wait for it to finish or retry the dynamic stage first");
         }
         TaskSnapshot snapshot = enqueueDynamicForPipeline(finding.scanId(), operatorId, finding.entrypointId());
         idempotentFindingReplays.put(replayKey, new FindingReplay(finding.scanId(), snapshot));
@@ -2087,13 +2088,9 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
             return;
         }
         String operatorId = actor(exchange).operatorId();
-        if (workerApi.snapshots(scan.dto().projectId(), scanId).stream().anyMatch(snapshot ->
-                snapshot.lifecycle() == TaskLifecycle.QUEUED
-                        || snapshot.lifecycle() == TaskLifecycle.LEASED
-                        || snapshot.lifecycle() == TaskLifecycle.RUNNING
-                        || snapshot.lifecycle() == TaskLifecycle.PAUSED)) {
+        if (workerApi.hasActiveDynamicTask(scan.dto().projectId(), scanId)) {
             throw new ApiException(409, "DYNAMIC_TASK_BUSY",
-                    "a dynamic task is already active for this scan");
+                    "a dynamic task is already active for this scan; wait for it to finish or retry the dynamic stage first");
         }
         TaskSnapshot snapshot = enqueueDynamicForPipeline(scanId, operatorId, entryId, candidateInputs,
                 maxRequests,
@@ -2254,13 +2251,9 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
             return;
         }
         String operatorId = actor(exchange).operatorId();
-        if (workerApi.snapshots(scan.dto().projectId(), scanId).stream().anyMatch(snapshot ->
-                snapshot.lifecycle() == TaskLifecycle.QUEUED
-                        || snapshot.lifecycle() == TaskLifecycle.LEASED
-                        || snapshot.lifecycle() == TaskLifecycle.RUNNING
-                        || snapshot.lifecycle() == TaskLifecycle.PAUSED)) {
+        if (workerApi.hasActiveDynamicTask(scan.dto().projectId(), scanId)) {
             throw new ApiException(409, "DYNAMIC_TASK_BUSY",
-                    "a dynamic task is already active for this scan");
+                    "a dynamic task is already active for this scan; wait for it to finish or retry the dynamic stage first");
         }
         TaskSnapshot snapshot = enqueueDynamicForPipeline(scanId, operatorId, entry.id(), inputs, 2,
                 AuthBypassTechnique.CUSTOM_POC.name(), null, null);

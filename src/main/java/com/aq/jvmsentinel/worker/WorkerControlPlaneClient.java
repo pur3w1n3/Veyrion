@@ -204,6 +204,26 @@ public final class WorkerControlPlaneClient {
         return parseTask(sendLeaseMutation(scope, "fail", leaseId, workerId, fields));
     }
 
+    /** Marks a still-QUEUED task FAILED without a lease (pre-lease rejection / reclaim abandon). */
+    public TaskDescriptor failQueued(TaskScope scope, StopReason reason, String failureCode,
+                                     String failureDiagnostic) {
+        Objects.requireNonNull(reason, "reason");
+        WorkerContracts.id(failureCode, "failureCode");
+        Map<String, Object> body = scopeBody(scope);
+        body.put("reason", reason.name());
+        body.put("failureCode", failureCode);
+        if (failureDiagnostic != null && !failureDiagnostic.isBlank()) {
+            String value = failureDiagnostic.strip();
+            if (value.length() > 2048 || value.chars().anyMatch(character ->
+                    Character.isISOControl(character) && character != '\n' && character != '\t')) {
+                throw new IllegalArgumentException("failureDiagnostic is invalid");
+            }
+            body.put("failureDiagnostic", value);
+        }
+        return parseTask(sendMutation(scope, "fail-queued", body,
+                idempotency(scope, "fail-queued", failureCode)));
+    }
+
     private Map<String, Object> sendLeaseMutation(TaskScope scope, String action, String leaseId,
                                                    String workerId, Map<String, Object> extra) {
         WorkerContracts.id(leaseId, "leaseId");

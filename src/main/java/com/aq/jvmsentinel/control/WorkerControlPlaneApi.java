@@ -192,8 +192,49 @@ final class WorkerControlPlaneApi implements HttpHandler {
             if (scanId != null && !scanId.equals(scope.scanId())) continue;
             snapshots.add(coordinator.get(scope));
         }
-        snapshots.sort(Comparator.comparing(x -> x.scope().taskId()));
+        // Newest-first stable order so operator UIs that take the last element see the
+        // chronologically latest task (not lexicographic taskId order).
+        snapshots.sort(Comparator
+                .comparing(TaskSnapshot::updatedAt)
+                .thenComparing(value -> value.scope().taskId()));
         return List.copyOf(snapshots);
+    }
+
+    /**
+     * Operator stage-retry supersede: cancel every in-flight dynamic task for the scan.
+     * Terminal FAILED/COMPLETED/CANCELLED tasks are left as history. Fail-closed callers
+     * must re-check {@link #hasActiveDynamicTask} before enqueueing a replacement.
+     */
+    synchronized List<TaskSnapshot> cancelActiveDynamicTasks(String projectId, String scanId) {
+        List<TaskSnapshot> cancelled = new ArrayList<>();
+        for (TaskSnapshot snapshot : snapshots(projectId, scanId)) {
+            if (!isActiveLifecycle(snapshot.lifecycle())) continue;
+            String key = "control-plane-cancel:" + snapshot.scope().taskId();
+            TaskSnapshot result = coordinator.controlPlaneCancel(
+                    snapshot.scope(), StopReason.USER_CANCELLED, key);
+            if (isTerminal(result.lifecycle())) {
+                publishTerminal(result, key);
+                try {
+                    terminalListener.accept(result);
+                } catch (RuntimeException ignored) {
+                    // Pipeline faults must not rewrite worker terminal state.
+                }
+            }
+            cancelled.add(result);
+        }
+        return List.copyOf(cancelled);
+    }
+
+    synchronized boolean hasActiveDynamicTask(String projectId, String scanId) {
+        return snapshots(projectId, scanId).stream()
+                .anyMatch(snapshot -> isActiveLifecycle(snapshot.lifecycle()));
+    }
+
+    private static boolean isActiveLifecycle(TaskLifecycle lifecycle) {
+        return lifecycle == TaskLifecycle.QUEUED
+                || lifecycle == TaskLifecycle.LEASED
+                || lifecycle == TaskLifecycle.RUNNING
+                || lifecycle == TaskLifecycle.PAUSED;
     }
 
     String failureDiagnostic(TaskScope scope) {
@@ -262,6 +303,13 @@ final class WorkerControlPlaneApi implements HttpHandler {
             case "fail" -> {
                 snapshot = coordinator.fail(scope, requiredText(body, "leaseId"),
                         requiredText(body, "workerId"), stopReason(body, "reason", StopReason.WORKER_FAILURE),
+                        requiredText(body, "failureCode"), key);
+                String diagnostic = optionalText(body, "failureDiagnostic", null);
+                if (diagnostic != null) failureDiagnostics.putIfAbsent(scope, diagnostic);
+            }
+            case "fail-queued" -> {
+                snapshot = coordinator.failQueued(scope,
+                        stopReason(body, "reason", StopReason.WORKER_FAILURE),
                         requiredText(body, "failureCode"), key);
                 String diagnostic = optionalText(body, "failureDiagnostic", null);
                 if (diagnostic != null) failureDiagnostics.putIfAbsent(scope, diagnostic);
