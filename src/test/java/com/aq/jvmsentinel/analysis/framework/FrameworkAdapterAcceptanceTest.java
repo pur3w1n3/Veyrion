@@ -2,6 +2,8 @@ package com.aq.jvmsentinel.analysis.framework;
 
 import com.aq.jvmsentinel.analysis.BranchConstraintHarvester;
 import com.aq.jvmsentinel.analysis.CoverageGapProjector;
+import com.aq.jvmsentinel.analysis.identity.AuthCodeQueryService;
+import com.aq.jvmsentinel.analysis.pack.BladeJwtCredentialPack;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.model.ContrastStatus;
 import com.aq.jvmsentinel.model.ParameterConstraint;
@@ -18,9 +20,22 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class FrameworkAdapterAcceptanceTest {
     public static void main(String[] args) {
         testOnlyAdapterInjectable();
+        bladeSuggestJwtSecretAligned();
         constraintHarvest();
         coverageGapFromStaticOnly();
         System.out.println("FrameworkAdapterAcceptanceTest: PASS");
+    }
+
+    private static void bladeSuggestJwtSecretAligned() {
+        SpringBladeAdapter adapter = new SpringBladeAdapter();
+        String suggested = adapter.suggestJwtSecret(null).orElse("");
+        check(AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY.equals(suggested),
+                "SpringBladeAdapter suggestJwtSecret matches AuthCodeQueryService default");
+        check(BladeJwtCredentialPack.DEFAULT_SECRET.equals(suggested),
+                "SpringBladeAdapter suggestJwtSecret matches BladeJwtCredentialPack");
+        check(!suggested.contains("upgradedversion")
+                        || suggested.equals(AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY),
+                "SpringBladeAdapter must not use truncated historical Blade key typo");
     }
 
     private static void testOnlyAdapterInjectable() {

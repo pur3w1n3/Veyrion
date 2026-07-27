@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.analysis.framework;
 
+import com.aq.jvmsentinel.analysis.identity.AuthCodeQueryService;
 import com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService;
 import com.aq.jvmsentinel.model.AuthBypassTechnique;
 
@@ -54,7 +55,9 @@ public final class SpringBladeAdapter implements FrameworkAdapter {
 
     @Override
     public Optional<String> suggestJwtSecret(Path artifactPath) {
-        return Optional.of("bladexisapowerfulmicroservicearchitectureupgradedversion");
+        // Must match SyntheticIdentityService / BladeJwtCredentialPack minting material.
+        // A shorter historical typo string caused dashboard/AI keyLen drift vs minted JWTs.
+        return Optional.of(AuthCodeQueryService.BLADE_DEFAULT_SIGN_KEY);
     }
 
     @Override
