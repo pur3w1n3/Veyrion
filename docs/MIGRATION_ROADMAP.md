@@ -150,6 +150,21 @@ AI 对每条 gap 生成 `nextExperiment`（已有结构），服务端 `Experime
 - `## 迭代对比` → LedgerDiff 摘要（新命中/回退/覆盖率变化）
 - `## 修复建议` → fixSuggestion + CWE 映射
 
+#### §2.3 提示词对齐状态（2026-07-27）
+
+六角色默认 `roleInstruction`（ZH+EN）与 `buildUserPrompt` 服务端注入段已按上表对齐：
+
+| 角色 | 注入段 | 工具白名单 |
+|------|--------|-----------|
+| PRE_ANALYSIS | `RANKED_SINK_CATALOG` + `TAINT_GRAPH_SUMMARY` + `BRANCH_CONSTRAINT_FACTS` | `code_query`（含 `kind=TAINT_GRAPH`） |
+| AUTH_ANALYSIS | `FRAMEWORK_ADAPTER_CONTEXT` + `PARAMETER_CONSTRAINT_HINTS` | 既有 `code_query` / `plan_propose` |
+| DYNAMIC_VERIFICATION | `FUZZ_STRATEGY_CONTEXT` + `BRANCH_CONSTRAINT_FACTS`；输出 `selectedProbes` | `fuzz_strategy_get` + `sandbox_probe` |
+| PATH_EXPLORATION | `COVERAGE_GAP_FACTS`（角色文案点名 TAINT_GRAPH） | `code_query`（含 `kind=TAINT_GRAPH`） |
+| VULNERABILITY_TRIAGE | `CWE_MAPPING_HINTS` + `ROOT_CAUSE_TEMPLATE`；`rootCause` schema | 既有 |
+| REPORT_GENERATION | `CONTRAST_LEDGER` + `LEDGER_DIFF_SUMMARY` + `FIX_SUGGESTION_CONTEXT`；要求 `## 修复建议` | 既有 |
+
+说明：`role_bindings.promptZh/promptEn` 自定义文案仅替换默认 `roleInstruction`；上述服务端注入段仍始终追加。验收：`RolePromptInjectionAcceptanceTest`。Live LLM 端到端仍可选，未宣称生产可用。
+
 ---
 
 ## 三、MVP 开发周期

@@ -776,3 +776,10 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 - **控制面 HTTP 补齐（同日）**：`FindingDto.rootCause` + `findingMap` 输出 `rootCause`；V019 `root_cause_json` 写入/加载回填 DTO；`experimentPlanMap` 输出 `fuzzStrategyJson`，V018 `fuzz_strategy_json` 持久化/恢复。
 - **诚实缺口**：`verifiedFindings` HTTP 仍固定 `[]`（MVP-6 脚手架；有 V020 行也不升 VERIFIED）。
 - 验证：`frontend/` `npm run build` 通过；`ControlPlanePersistenceAcceptanceTest` / `ExperimentPlanPersistenceAcceptanceTest` 覆盖 rootCause 与 fuzzStrategyJson 线框。不得标 `VERIFIED` 生产可用。
+
+## 73. 六角色提示词对齐 §2.3（2026-07-27）
+
+- `AiJobOrchestrator`：补齐 PRE `TAINT_GRAPH_SUMMARY` / `BRANCH_CONSTRAINT_FACTS`；AUTH `FRAMEWORK_ADAPTER_CONTEXT` / `PARAMETER_CONSTRAINT_HINTS`；DYNAMIC `FUZZ_STRATEGY_CONTEXT`（+ BRANCH 复用）与 ZH `fuzz_strategy_get` / `selectedProbes`；PATH 文案点名 `COVERAGE_GAP_FACTS` + TAINT_GRAPH；TRIAGE `ROOT_CAUSE_TEMPLATE`；REPORT `## 修复建议` + `FIX_SUGGESTION_CONTEXT`（TRIAGE rootCause / findings）。
+- 工具白名单未放宽：PRE/PATH 既有 `code_query`；DYNAMIC 既有 `fuzz_strategy_get`。
+- 自定义 `role_bindings` 文案可覆盖默认 `roleInstruction`，服务端注入段仍始终追加。
+- 验收：`RolePromptInjectionAcceptanceTest` + `AiJobOrchestrationAcceptanceTest` PASS。不得标 live 六角色或 `VERIFIED` 生产可用。

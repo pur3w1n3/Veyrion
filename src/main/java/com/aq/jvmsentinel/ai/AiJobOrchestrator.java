@@ -6,15 +6,22 @@ import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolStatus;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource.DynamicProbeExecutor;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource.PathRunSource;
+import com.aq.jvmsentinel.analysis.BranchConstraintHarvester;
 import com.aq.jvmsentinel.analysis.CandidateRanker;
 import com.aq.jvmsentinel.analysis.CoverageGapProjector;
+import com.aq.jvmsentinel.analysis.TaintGraph;
+import com.aq.jvmsentinel.analysis.TaintGraphProjector;
 import com.aq.jvmsentinel.analysis.contrast.ContrastLedger;
 import com.aq.jvmsentinel.analysis.contrast.LedgerDiff;
+import com.aq.jvmsentinel.analysis.framework.FrameworkAdapter;
+import com.aq.jvmsentinel.analysis.framework.FrameworkAdapterRegistry;
+import com.aq.jvmsentinel.analysis.fuzz.FuzzStrategyRegistry;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.ai.tool.ToolExecutionContext;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
 import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
 import com.aq.jvmsentinel.model.AuthBypassCandidate;
+import com.aq.jvmsentinel.model.ParameterSpec;
 import com.aq.jvmsentinel.provider.AgentRole;
 import com.aq.jvmsentinel.provider.AiOutputLanguage;
 import com.aq.jvmsentinel.provider.ProviderContracts;
@@ -84,6 +91,10 @@ public final class AiJobOrchestrator implements AutoCloseable {
     private static final int MAX_PRE_ENTRY_PROMPT_ROWS = 40;
     private static final int MAX_PATH_RUN_PROMPT_ROWS = 24;
     private static final int MAX_BYPASS_POC_PROMPT_ROWS = 16;
+    private static final int MAX_CONSTRAINT_PROMPT_ROWS = 24;
+    private static final int MAX_TAINT_PATH_SUMMARY_ROWS = 8;
+    private static final int MAX_FUZZ_CATEGORY_PROMPT_ROWS = 6;
+    private static final int MAX_COVERAGE_GAP_PROMPT_ROWS = 20;
 
     private final ControlPlaneToolDataSource.DynamicEvidenceSource dynamicEvidenceSource;
     private final DynamicProbeExecutor dynamicProbeExecutor;
@@ -540,11 +551,15 @@ public final class AiJobOrchestrator implements AutoCloseable {
                 case PRE_ANALYSIS -> """
                         先查询 SCAN 元数据、ENTRY、DEPENDENCY、SINK 与 EVIDENCE。建立入口、业务模块、
                         参数/权限前置条件、依赖和敏感触发点模型，并补充静态索引可能遗漏的入口候选。
+                        优先消费服务端注入的 RANKED_SINK_CATALOG、TAINT_GRAPH_SUMMARY 与 BRANCH_CONSTRAINT_FACTS；
+                        需要子图细节时用 code_query kind=TAINT_GRAPH（可带 sinkId/entryId）。
                         补充项必须标记为 MODEL_SUPPLEMENT、给出理由和证据引用；不得改写或伪造静态事实，
                         不得把补充入口直接标成运行时可达。
                         """;
                 case AUTH_ANALYSIS -> """
                         基于静态事实与 PRE_ANALYSIS 假设，建立鉴权模型并输出结构化绕过可行性 PoC（假设，非已验证）。
+                        消费 FRAMEWORK_ADAPTER_CONTEXT 与 PARAMETER_CONSTRAINT_HINTS：用框架匹配结果与参数约束
+                        （等值/maxLen/类型）精化 authorizationHeader / claims / query / bodyHint。
                         必须通过 plan_propose 或最终回答中的 bypassPoCs/bypassCandidates JSON 给出条目：
                         entryRef、techniqueId、track、rationale、evidenceRefs、confidence，以及你研判需要的
                         authorizationHeader / bladeAuthHeader / query / bodyHint（可含 JWT、alg-none、自定义 claims）。
@@ -562,6 +577,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
                 case PATH_EXPLORATION -> """
                         只能消费前置建模、鉴权分析、动态验证、沙箱 PathRun（HTTP/Agent/SQL）与
                         CONTRAST_LEDGER / STATIC_CONTRAST 结果，重新建立多条互相区分的路径模型。
+                        优先消费 COVERAGE_GAP_FACTS：对每条 gap 生成可探针 nextExperiment；
+                        需要污点子图时用 code_query kind=TAINT_GRAPH。
                         每条链路必须写明入口、身份轨、实际请求与响应、数据/状态转换、可能触发点、证据引用、
                         反证、置信度和停止条件；不得把未执行的候选写成事实。
                         可对 MATCHED/PARTIAL 建可探针 nextExperiments；STATIC_ONLY 只标「静态候选/未动态触及」，
@@ -574,6 +591,9 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         top-N（至少 min(N,3)、至多 min(N,8)）条已校验 PoC 调用 sandbox_probe
                         （entrypointRef + techniqueId，有 authorizationHeader 时必须带上）；禁止只做 facts_search
                         或纯叙事跳过探针。对照 PathRun/HTTP/SQL/Agent 观测做支持/反证。
+                        消费 FUZZ_STRATEGY_CONTEXT 与 BRANCH_CONSTRAINT_FACTS；对 SQL/COMMAND/JNDI 等 sink
+                        调用 fuzz_strategy_get，将 probeTemplates.inputHint 与约束字面量写入 candidateInputs。
+                        结论 JSON 须含 selectedProbes:[{name,input,expectedSignal}]（对应 ProbeTemplate）。
                         只能引用已存在的 entry:*；不得改命令、网络、挂载、UID 或预算。
                         sandbox_probe 回传含 pathRuns；并用 facts_search kind=PATH_RUN 核对。
                         零 sandbox_probe 时服务端会触发 DYNAMIC_POC_ATTEMPT_REQUIRED 补写或自动入队焦点探针。
@@ -588,15 +608,16 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         结论必须包含 nextExperiments[]（可被 sandbox_probe 消费的入口×轨步骤）；组合链仅在共享
                         资源/身份/文件 PathRun 证据上候选；禁止 AUTH_GAP 综述替代下一步实验。
                         结论 JSON 必须含 rootCause：{attackPath:[{layer,label,evidenceRefs[]}],rootCauseStatement,
-                        affectedComponent,cweId,fixSuggestion}；每个 attackPath step 的 evidenceRefs 不可空；
-                        cweId 优先采用 CWE_MAPPING_HINTS。
+                        affectedComponent,cweId,fixSuggestion}；按 ROOT_CAUSE_TEMPLATE 填形；每个 attackPath step
+                        的 evidenceRefs 不可空；cweId 优先采用 CWE_MAPPING_HINTS。
                         """;
                 case REPORT_GENERATION -> """
                         先查询 SCAN、ENTRY、SINK、EVIDENCE、PathRun、STATIC_CONTRAST 与 DYNAMIC_EVIDENCE。
                         输出完整中文 Markdown 报告，至少包含：# 审计报告；## 执行摘要与结论边界；
                         ## 入口—身份轨—PathRun 矩阵；## 静态·动态对照账本（须覆盖 CONTRAST_LEDGER 中全部
                         STATIC_ONLY / 未匹配行摘要，不得省略）；## 攻击路径（Attack Path，Mermaid flowchart，至少 3 步）；
-                        ## 迭代对比（Iteration Summary，消费 LEDGER_DIFF_SUMMARY）；## 多条推测链路；
+                        ## 迭代对比（Iteration Summary，消费 LEDGER_DIFF_SUMMARY）；## 修复建议（消费
+                        FIX_SUGGESTION_CONTEXT / rootCause.fixSuggestion 与 CWE）；## 多条推测链路；
                         ## 组合漏洞可能性；## 动态证据与覆盖；## 发现与风险分级；## 未覆盖区域、限制与下一步验证。
                         STATIC_ONLY 只能写「静态候选/未动态确认」，不得写成已绕过或已确认。证据不足时明确写
                         “证据不足”，不得编造 sink、链路或漏洞。严格保留 STATIC_INFERRED、DYNAMIC_SUSPECTED、
@@ -608,11 +629,15 @@ public final class AiJobOrchestrator implements AutoCloseable {
             case PRE_ANALYSIS -> """
                     Query SCAN metadata, ENTRY, DEPENDENCY, SINK, and EVIDENCE first. Build the entrypoint,
                     business, parameter/permission, dependency, and trigger model, and add missing entry candidates
-                    as MODEL_SUPPLEMENT with reasons and evidence. Never rewrite static facts or claim runtime reachability.
+                    as MODEL_SUPPLEMENT with reasons and evidence. Prefer server-injected RANKED_SINK_CATALOG,
+                    TAINT_GRAPH_SUMMARY, and BRANCH_CONSTRAINT_FACTS; deepen with code_query kind=TAINT_GRAPH
+                    (optional sinkId/entryId). Never rewrite static facts or claim runtime reachability.
                     """;
             case AUTH_ANALYSIS -> """
                     From static facts and PRE_ANALYSIS hypotheses, build the auth model and emit structured
-                    bypass-feasibility PoCs (hypotheses, not verified). Use plan_propose and/or a final
+                    bypass-feasibility PoCs (hypotheses, not verified). Consume FRAMEWORK_ADAPTER_CONTEXT and
+                    PARAMETER_CONSTRAINT_HINTS to refine authorizationHeader/claims/query/bodyHint from
+                    framework match and parameter constraints (equals/maxLen/type). Use plan_propose and/or a final
                     bypassPoCs/bypassCandidates JSON with entryRef, techniqueId, track, rationale, evidenceRefs,
                     confidence, and AI-authored authorizationHeader/bladeAuthHeader/query/bodyHint (JWT, alg-none,
                     custom claims allowed). The server schema-gates then DYNAMIC executes. Use only
@@ -627,24 +652,27 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     surface plus emptyReason. Server will re-ask once or seed RULE_GENERATED drafts if still empty.
                     """;
             case PATH_EXPLORATION -> """
-                    Consume PRE_ANALYSIS, AUTH_ANALYSIS, DYNAMIC_VERIFICATION, PathRun (HTTP/Agent/SQL), and
-                    CONTRAST_LEDGER / STATIC_CONTRAST. Model multiple distinct paths with track, actual requests,
-                    responses, data/state transitions, triggers, evidence, counterevidence, confidence, and stop
-                    conditions. Prefer MATCHED/PARTIAL for probeable nextExperiments; STATIC_ONLY is
-                    static-candidate / not dynamically touched — never elevate to bypassed/confirmed.
-                    Never turn an unexecuted candidate into fact. Emit nextExperiments[] with entryRef, objective,
-                    track, optional techniqueId/candidateInputs/pathRunRefs — steps must be sandbox_probe-consumable,
-                    not AUTH_GAP essays.
+                    Consume PRE_ANALYSIS, AUTH_ANALYSIS, DYNAMIC_VERIFICATION, PathRun (HTTP/Agent/SQL),
+                    CONTRAST_LEDGER / STATIC_CONTRAST, and COVERAGE_GAP_FACTS. Emit a nextExperiment per gap when
+                    possible. Deepen taint structure with code_query kind=TAINT_GRAPH. Model multiple distinct paths
+                    with track, actual requests, responses, data/state transitions, triggers, evidence,
+                    counterevidence, confidence, and stop conditions. Prefer MATCHED/PARTIAL for probeable
+                    nextExperiments; STATIC_ONLY is static-candidate / not dynamically touched — never elevate to
+                    bypassed/confirmed. Never turn an unexecuted candidate into fact. Emit nextExperiments[] with
+                    entryRef, objective, track, optional techniqueId/candidateInputs/pathRunRefs — steps must be
+                    sandbox_probe-consumable, not AUTH_GAP essays.
                     """;
             case DYNAMIC_VERIFICATION -> """
                     Consume AUTH_BYPASS_FEASIBILITY / bypassPoCs. When that list is non-empty you MUST call
                     sandbox_probe for top-N PoCs (at least min(N,3), at most min(N,8)) with entry:* + techniqueId
-                    and authorizationHeader when present BEFORE any narrative conclusion. Call fuzz_strategy_get
-                    for SQL/COMMAND/JNDI sinks and use probeTemplates.inputHint as candidateInputs.
-                    Do not skip to facts_search-only or narrative-only. Compare PathRun/HTTP/SQL/Agent observations.
-                    Zero sandbox_probe triggers DYNAMIC_POC_ATTEMPT_REQUIRED re-ask or server auto-enqueue.
-                    Never change commands, network, mounts, UID, or budget. Never alone upgrade to
-                    DYNAMIC_CONFIRMED or VERIFIED.
+                    and authorizationHeader when present BEFORE any narrative conclusion. Consume
+                    FUZZ_STRATEGY_CONTEXT and BRANCH_CONSTRAINT_FACTS. Call fuzz_strategy_get for
+                    SQL/COMMAND/JNDI sinks and use probeTemplates.inputHint plus constraint literals as
+                    candidateInputs. Conclusion JSON must include selectedProbes:[{name,input,expectedSignal}]
+                    matching ProbeTemplate names. Do not skip to facts_search-only or narrative-only. Compare
+                    PathRun/HTTP/SQL/Agent observations. Zero sandbox_probe triggers DYNAMIC_POC_ATTEMPT_REQUIRED
+                    re-ask or server auto-enqueue. Never change commands, network, mounts, UID, or budget. Never
+                    alone upgrade to DYNAMIC_CONFIRMED or VERIFIED.
                     """;
             case VULNERABILITY_TRIAGE -> """
                     Base the analysis on PRE_ANALYSIS, AUTH_ANALYSIS, DYNAMIC_VERIFICATION, PATH_EXPLORATION,
@@ -655,15 +683,16 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     STATIC_ONLY contrast rows must not be elevated to bypassed/confirmed.
                     DYNAMIC_CONFIRMED is server-gated for SQL only. Emit nextExperiments[] consumable by sandbox_probe;
                     combination chains only when PathRuns share identity/resource/file evidence — not AUTH_GAP essays.
-                    Conclusion JSON must include rootCause with attackPath steps that each carry non-empty evidenceRefs;
-                    prefer CWE_MAPPING_HINTS for cweId.
+                    Conclusion JSON must include rootCause shaped like ROOT_CAUSE_TEMPLATE, with attackPath steps
+                    that each carry non-empty evidenceRefs; prefer CWE_MAPPING_HINTS for cweId.
                     """;
             case REPORT_GENERATION -> """
                     Query SCAN, ENTRY, SINK, EVIDENCE, PathRun, STATIC_CONTRAST, and DYNAMIC_EVIDENCE first.
                     Produce a complete English Markdown report with: Executive Summary and Evidence Boundary;
                     Entrypoint-Track-PathRun Matrix; Static-Dynamic Contrast Ledger (must cover every STATIC_ONLY /
                     unmatched CONTRAST_LEDGER row); Attack Path (Mermaid flowchart, >=3 steps); Iteration Summary
-                    (consume LEDGER_DIFF_SUMMARY); Multiple Hypothesized Paths; Combined Vulnerability Possibilities;
+                    (consume LEDGER_DIFF_SUMMARY); Remediation / Fix Suggestions (consume FIX_SUGGESTION_CONTEXT /
+                    rootCause.fixSuggestion and CWE); Multiple Hypothesized Paths; Combined Vulnerability Possibilities;
                     Dynamic Evidence and Coverage; Findings and Severity; Gaps, Limitations, and Next Validation Steps.
                     STATIC_ONLY may only be described as static-candidate / not dynamically confirmed — never bypassed.
                     Preserve STATIC_INFERRED / DYNAMIC_SUSPECTED / DYNAMIC_CONFIRMED / VERIFIED / UNREACHED.
@@ -738,8 +767,16 @@ public final class AiJobOrchestrator implements AutoCloseable {
                 .append(rolePrompt(job, language));
         String authSurface = authSurfacePromptContext(job, language);
         if (!authSurface.isBlank()) prompt.append('\n').append(authSurface);
+        String frameworkAdapter = frameworkAdapterContext(job, language);
+        if (!frameworkAdapter.isBlank()) prompt.append('\n').append(frameworkAdapter);
+        String parameterHints = parameterConstraintHintsContext(job, language);
+        if (!parameterHints.isBlank()) prompt.append('\n').append(parameterHints);
         String preFacts = preAnalysisStaticFactsContext(job, language);
         if (!preFacts.isBlank()) prompt.append('\n').append(preFacts);
+        String taintSummary = taintGraphSummaryContext(job, language);
+        if (!taintSummary.isBlank()) prompt.append('\n').append(taintSummary);
+        String branchConstraints = branchConstraintFactsContext(job, language);
+        if (!branchConstraints.isBlank()) prompt.append('\n').append(branchConstraints);
         // For DYNAMIC, put validated AUTH PoCs before PATH_RUN flood so sandbox_probe
         // targets are not truncated out of the stored prompt / buried under PathRun rows.
         String bypass = authBypassFeasibilityContext(job, language);
@@ -751,6 +788,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
             if (!pathRuns.isBlank()) prompt.append('\n').append(pathRuns);
             if (!bypass.isBlank()) prompt.append('\n').append(bypass);
         }
+        String fuzzStrategy = fuzzStrategyContext(job, language);
+        if (!fuzzStrategy.isBlank()) prompt.append('\n').append(fuzzStrategy);
         String authConfirm = authBypassConfirmPromptContext(job, language);
         if (!authConfirm.isBlank()) prompt.append('\n').append(authConfirm);
         String contrast = contrastLedgerContext(job, language);
@@ -759,8 +798,12 @@ public final class AiJobOrchestrator implements AutoCloseable {
         if (!ledgerDiff.isBlank()) prompt.append('\n').append(ledgerDiff);
         String cweHints = cweMappingHintsContext(job, language);
         if (!cweHints.isBlank()) prompt.append('\n').append(cweHints);
+        String rootCauseTemplate = rootCauseTemplateContext(job, language);
+        if (!rootCauseTemplate.isBlank()) prompt.append('\n').append(rootCauseTemplate);
         String gaps = coverageGapContext(job, language);
         if (!gaps.isBlank()) prompt.append('\n').append(gaps);
+        String fixSuggestion = fixSuggestionContext(job, language);
+        if (!fixSuggestion.isBlank()) prompt.append('\n').append(fixSuggestion);
         String prior = priorInferenceContext(job, language);
         if (!prior.isBlank()) prompt.append('\n').append(prior);
         return prompt.toString();
@@ -791,6 +834,257 @@ public final class AiJobOrchestrator implements AutoCloseable {
         } catch (RuntimeException ignored) {
             return "";
         }
+    }
+
+    private String rootCauseTemplateContext(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job.role() != AgentRole.VULNERABILITY_TRIAGE) return "";
+        if (language == AiOutputLanguage.ZH_CN) {
+            return """
+                    ROOT_CAUSE_TEMPLATE（示例形状；须填真实 evidenceRefs；非 VERIFIED）：
+                    {"rootCause":{"attackPath":[{"layer":"HTTP","label":"POST /api/user/query","evidenceRefs":["entry:xxx"]},{"layer":"param","label":"username 无过滤","evidenceRefs":["tp-001"]},{"layer":"sink","label":"SQL 拼接","evidenceRefs":["pathrun:yyy"]}],"rootCauseStatement":"缺少参数化查询","affectedComponent":"UserRepository#findByUsername","cweId":"CWE-89","fixSuggestion":"改用 PreparedStatement 占位符"}}
+                    """;
+        }
+        return """
+                ROOT_CAUSE_TEMPLATE (example shape; fill real evidenceRefs; not VERIFIED):
+                {"rootCause":{"attackPath":[{"layer":"HTTP","label":"POST /api/user/query","evidenceRefs":["entry:xxx"]},{"layer":"param","label":"username unsanitized","evidenceRefs":["tp-001"]},{"layer":"sink","label":"SQL concat","evidenceRefs":["pathrun:yyy"]}],"rootCauseStatement":"missing parameterized query","affectedComponent":"UserRepository#findByUsername","cweId":"CWE-89","fixSuggestion":"use PreparedStatement placeholders"}}
+                """;
+    }
+
+    private String taintGraphSummaryContext(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job.role() != AgentRole.PRE_ANALYSIS || job.scanId() == null) return "";
+        try {
+            ControlPlaneStore.ScanRecord scan = store.requireScan(job.scanId());
+            TaintGraph graph = TaintGraphProjector.project(
+                    ContrastLedger.taintPathsFromSinks(scan.dto().sinks()));
+            StringBuilder block = new StringBuilder();
+            block.append(language == AiOutputLanguage.ZH_CN
+                    ? "TAINT_GRAPH_SUMMARY（服务端投影；细节用 code_query kind=TAINT_GRAPH；非 VERIFIED）：\n"
+                    : "TAINT_GRAPH_SUMMARY (server projection; deepen via code_query kind=TAINT_GRAPH; not VERIFIED):\n");
+            block.append("- nodeCount=").append(graph.nodes().size())
+                    .append(" edgeCount=").append(graph.edges().size())
+                    .append(" truncated=").append(graph.truncated()).append('\n');
+            int emitted = 0;
+            for (TaintGraph.TaintNode node : graph.nodes()) {
+                if (node.kind() != TaintGraph.NodeKind.SINK) continue;
+                if (emitted >= MAX_TAINT_PATH_SUMMARY_ROWS) break;
+                block.append("- highRiskSink nodeId=").append(node.id())
+                        .append(" class=").append(truncatePromptValue(node.classname(), 120))
+                        .append(" method=").append(truncatePromptValue(node.methodDesc(), 80))
+                        .append('\n');
+                emitted++;
+            }
+            if (emitted == 0) {
+                block.append(language == AiOutputLanguage.ZH_CN
+                        ? "- 无 SINK 节点；可用 code_query kind=TAINT_GRAPH 再查。\n"
+                        : "- No SINK nodes; retry with code_query kind=TAINT_GRAPH.\n");
+            }
+            return block.toString();
+        } catch (RuntimeException ignored) {
+            return "";
+        }
+    }
+
+    private String branchConstraintFactsContext(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job.scanId() == null) return "";
+        if (job.role() != AgentRole.PRE_ANALYSIS && job.role() != AgentRole.DYNAMIC_VERIFICATION) {
+            return "";
+        }
+        return formatParameterConstraintBlock(job, language,
+                language == AiOutputLanguage.ZH_CN
+                        ? "BRANCH_CONSTRAINT_FACTS（服务端启发式约束；非 VERIFIED）：\n"
+                        : "BRANCH_CONSTRAINT_FACTS (server heuristic constraints; not VERIFIED):\n");
+    }
+
+    private String parameterConstraintHintsContext(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job.role() != AgentRole.AUTH_ANALYSIS || job.scanId() == null) return "";
+        return formatParameterConstraintBlock(job, language,
+                language == AiOutputLanguage.ZH_CN
+                        ? "PARAMETER_CONSTRAINT_HINTS（辅助精化 auth header/claims；非 VERIFIED）：\n"
+                        : "PARAMETER_CONSTRAINT_HINTS (refine auth header/claims; not VERIFIED):\n");
+    }
+
+    private String formatParameterConstraintBlock(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language, String header) {
+        try {
+            ControlPlaneStore.ScanRecord scan = store.requireScan(job.scanId());
+            StringBuilder block = new StringBuilder(header);
+            int emitted = 0;
+            for (ApiDtos.EntryDto entry : scan.dto().entries()) {
+                List<ParameterSpec> specs = BranchConstraintHarvester.harvest(
+                        entry.parameters(), entry.preconditions());
+                for (ParameterSpec spec : specs) {
+                    if (spec.constraints().isEmpty() && "string".equals(spec.type())) continue;
+                    if (emitted >= MAX_CONSTRAINT_PROMPT_ROWS) break;
+                    block.append("- entryRef=entry:").append(entry.id())
+                            .append(" param=").append(spec.name())
+                            .append(" type=").append(spec.type())
+                            .append(" origin=").append(spec.origin())
+                            .append(" constraints=");
+                    try {
+                        block.append(JSON.writeValueAsString(spec.constraints()));
+                    } catch (Exception ignored) {
+                        block.append(spec.toLegacyEncoding());
+                    }
+                    block.append('\n');
+                    emitted++;
+                }
+                if (emitted >= MAX_CONSTRAINT_PROMPT_ROWS) break;
+            }
+            if (emitted == 0) {
+                block.append(language == AiOutputLanguage.ZH_CN ? "- （空）\n" : "- (empty)\n");
+            }
+            return block.toString();
+        } catch (RuntimeException ignored) {
+            return "";
+        }
+    }
+
+    private String frameworkAdapterContext(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job.role() != AgentRole.AUTH_ANALYSIS || job.scanId() == null) return "";
+        try {
+            ControlPlaneStore.ScanRecord scan = store.requireScan(job.scanId());
+            java.nio.file.Path artifactPath = null;
+            try {
+                ControlPlaneStore.ProjectRecord project = store.requireProject(job.projectId());
+                var artifact = store.artifact(project, job.artifactDigest());
+                if (artifact != null) artifactPath = artifact.normalizedPath();
+            } catch (RuntimeException ignored) {
+                artifactPath = null;
+            }
+            List<String> routes = scan.dto().entries().stream()
+                    .map(ApiDtos.EntryDto::route)
+                    .filter(route -> route != null && !route.isBlank())
+                    .limit(64)
+                    .toList();
+            List<FrameworkAdapter> matched = FrameworkAdapterRegistry.matching(artifactPath, routes);
+            StringBuilder block = new StringBuilder();
+            block.append(language == AiOutputLanguage.ZH_CN
+                    ? "FRAMEWORK_ADAPTER_CONTEXT（服务端匹配；非 VERIFIED）：\n"
+                    : "FRAMEWORK_ADAPTER_CONTEXT (server match; not VERIFIED):\n");
+            if (matched.isEmpty()) {
+                block.append(language == AiOutputLanguage.ZH_CN
+                        ? "- 未匹配专用 FrameworkAdapter；按通用 Spring/JWT 假设编写 bypassPoCs。\n"
+                        : "- No FrameworkAdapter matched; author bypassPoCs with generic Spring/JWT hypotheses.\n");
+                return block.toString();
+            }
+            for (FrameworkAdapter adapter : matched) {
+                block.append("- adapterId=").append(adapter.id());
+                adapter.suggestJwtSecret(artifactPath).ifPresent(secret ->
+                        block.append(" defaultKeyHintPresent=true keyLen=").append(secret.length()));
+                if (adapter.preferBladeAuthHeader(null)) {
+                    block.append(" preferBladeAuthHeader=true");
+                }
+                if (!adapter.defaultBypassTechniques().isEmpty()) {
+                    block.append(" defaultTechniques=").append(adapter.defaultBypassTechniques());
+                }
+                block.append('\n');
+            }
+            return block.toString();
+        } catch (RuntimeException ignored) {
+            return "";
+        }
+    }
+
+    private String fuzzStrategyContext(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job.role() != AgentRole.DYNAMIC_VERIFICATION || job.scanId() == null) return "";
+        try {
+            ControlPlaneStore.ScanRecord scan = store.requireScan(job.scanId());
+            StringBuilder block = new StringBuilder();
+            block.append(language == AiOutputLanguage.ZH_CN
+                    ? "FUZZ_STRATEGY_CONTEXT（按 sink 类别的探针模板；调用 fuzz_strategy_get 取明细；非 VERIFIED）：\n"
+                    : "FUZZ_STRATEGY_CONTEXT (sink-category probe templates; call fuzz_strategy_get for detail; not VERIFIED):\n");
+            LinkedHashSet<String> categories = new LinkedHashSet<>();
+            for (ApiDtos.SinkDto sink : scan.dto().sinks()) {
+                if (sink.category() == null || sink.category().isBlank()) continue;
+                String cat = sink.category().trim().toUpperCase(java.util.Locale.ROOT);
+                if ("JWT".equals(cat) || "AUTH_GAP".equals(cat)) continue;
+                categories.add(cat);
+                if (categories.size() >= MAX_FUZZ_CATEGORY_PROMPT_ROWS) break;
+            }
+            if (categories.isEmpty()) {
+                block.append(language == AiOutputLanguage.ZH_CN ? "- （空）\n" : "- (empty)\n");
+                return block.toString();
+            }
+            for (String category : categories) {
+                FuzzStrategyRegistry.FuzzStrategy strategy = FuzzStrategyRegistry.forSink(category);
+                block.append("- category=").append(strategy.sinkCategory()).append(" templates=");
+                List<String> templates = new ArrayList<>();
+                for (FuzzStrategyRegistry.ProbeTemplate template : strategy.probeTemplates()) {
+                    templates.add(template.name() + ":" + truncatePromptValue(template.inputHint(), 48)
+                            + "->" + template.expectedSignal());
+                }
+                block.append(templates).append('\n');
+            }
+            block.append(language == AiOutputLanguage.ZH_CN
+                    ? "- 结论须输出 selectedProbes[{name,input,expectedSignal}]。\n"
+                    : "- Emit selectedProbes[{name,input,expectedSignal}] in the conclusion.\n");
+            return block.toString();
+        } catch (RuntimeException ignored) {
+            return "";
+        }
+    }
+
+    private String fixSuggestionContext(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job.role() != AgentRole.REPORT_GENERATION || job.scanId() == null) return "";
+        StringBuilder block = new StringBuilder();
+        block.append(language == AiOutputLanguage.ZH_CN
+                ? "FIX_SUGGESTION_CONTEXT（来自 TRIAGE rootCause / findings；须写入 ## 修复建议；非 VERIFIED）：\n"
+                : "FIX_SUGGESTION_CONTEXT (from TRIAGE rootCause / findings; require Remediation section; not VERIFIED):\n");
+        int emitted = 0;
+        String triageRootCause = latestRootCauseJson(job.projectId(), job.scanId(), AgentRole.VULNERABILITY_TRIAGE);
+        if (triageRootCause != null && !triageRootCause.isBlank()) {
+            block.append("- source=PRIOR_TRIAGE rootCause=").append(triageRootCause).append('\n');
+            emitted++;
+        }
+        try {
+            ControlPlaneStore.ScanRecord scan = store.requireScan(job.scanId());
+            for (ApiDtos.FindingDto finding : scan.dto().findings()) {
+                if (finding.rootCause() == null || finding.rootCause().isEmpty()) continue;
+                if (emitted >= 8) break;
+                Object fix = finding.rootCause().get("fixSuggestion");
+                Object cwe = finding.rootCause().get("cweId");
+                block.append("- findingId=").append(finding.findingId())
+                        .append(" cweId=").append(cwe == null ? "" : cwe)
+                        .append(" fixSuggestion=").append(fix == null ? "" : truncatePromptValue(String.valueOf(fix), 240))
+                        .append('\n');
+                emitted++;
+            }
+        } catch (RuntimeException ignored) {
+            // Keep triage-only inject if findings unavailable.
+        }
+        if (emitted == 0) {
+            block.append(language == AiOutputLanguage.ZH_CN
+                    ? "- （空）证据不足时在 ## 修复建议 写明证据不足，勿编造补丁。\n"
+                    : "- (empty) If evidence is insufficient, say so under Remediation; do not invent patches.\n");
+        }
+        return block.toString();
+    }
+
+    private String latestRootCauseJson(String projectId, String scanId, AgentRole role) {
+        return store.aiJobs(projectId).stream()
+                .filter(job -> scanId.equals(job.scanId()) && job.role() == role
+                        && "COMPLETED".equals(job.status()) && job.conclusionJson() != null)
+                .sorted((left, right) -> right.createdAt().compareTo(left.createdAt()))
+                .map(job -> {
+                    try {
+                        JsonNode root = JSON.readTree(job.conclusionJson()).path("rootCause");
+                        if (root.isMissingNode() || root.isNull() || root.isEmpty()) return "";
+                        String text = root.toString();
+                        return text.length() <= 1_024 ? text : text.substring(0, 1_024);
+                    } catch (Exception ignored) {
+                        return "";
+                    }
+                })
+                .filter(value -> !value.isBlank())
+                .findFirst()
+                .orElse("");
     }
 
     private String ledgerDiffContext(
@@ -839,7 +1133,9 @@ public final class AiJobOrchestrator implements AutoCloseable {
                 block.append(language == AiOutputLanguage.ZH_CN ? "- （空）\n" : "- (empty)\n");
                 return block.toString();
             }
+            int emitted = 0;
             for (CoverageGapProjector.CoverageGap gap : gaps) {
+                if (emitted >= MAX_COVERAGE_GAP_PROMPT_ROWS) break;
                 block.append("- taintPathId=").append(gap.taintPathId())
                         .append(" uncoveredStep=").append(gap.uncoveredStep())
                         .append(" branchCondition=").append(gap.branchCondition())
@@ -847,6 +1143,12 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         .append(" suggestedInput=").append(gap.suggestedInput())
                         .append(" confidence=").append(gap.confidence())
                         .append('\n');
+                emitted++;
+            }
+            if (gaps.size() > MAX_COVERAGE_GAP_PROMPT_ROWS) {
+                block.append(language == AiOutputLanguage.ZH_CN
+                        ? "- …另有 " + (gaps.size() - MAX_COVERAGE_GAP_PROMPT_ROWS) + " 条 gap 未内联。\n"
+                        : "- …" + (gaps.size() - MAX_COVERAGE_GAP_PROMPT_ROWS) + " more gaps omitted.\n");
             }
             return block.toString();
         } catch (RuntimeException ignored) {
@@ -1703,7 +2005,10 @@ public final class AiJobOrchestrator implements AutoCloseable {
             String field = language == AiOutputLanguage.ZH_CN ? "promptZh" : "promptEn";
             String customized = policy.path(field).asText("");
             if (!customized.isBlank()) {
-                return "\nCUSTOM_ROLE_PROMPT (operator editable; obey immutable server safety rules):\n"
+                // Custom role_bindings text replaces default roleInstruction only;
+                // server inject sections in buildUserPrompt still always apply.
+                return "\nCUSTOM_ROLE_PROMPT (operator editable; obey immutable server safety rules;"
+                        + " server inject sections such as RANKED_SINK_CATALOG / COVERAGE_GAP_FACTS still apply):\n"
                         + customized.trim() + "\n";
             }
         } catch (Exception ignored) {
