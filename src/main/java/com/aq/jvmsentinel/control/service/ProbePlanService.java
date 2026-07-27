@@ -1,6 +1,7 @@
 package com.aq.jvmsentinel.control.service;
 
 import com.aq.jvmsentinel.analysis.entry.NonHttpEntryProtocol;
+import com.aq.jvmsentinel.analysis.framework.FrameworkAdapterRegistry;
 import com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
@@ -581,12 +582,7 @@ public final class ProbePlanService {
     }
 
     public static boolean containsHighValueSignal(String value) {
-        String lower = value == null ? "" : value.toLowerCase(Locale.ROOT);
-        return lower.contains("admin") || lower.contains("upload") || lower.contains("deploy")
-                || lower.contains("token") || lower.contains("exec") || lower.contains("flowable")
-                || lower.contains("bpmn") || lower.contains("oauth") || lower.contains("blade-")
-                || lower.contains("sink") || lower.contains("sql") || lower.contains("jndi")
-                || lower.contains("ssrf") || lower.contains("deserial");
+        return FrameworkAdapterRegistry.containsHighValueSignal(value);
     }
 
     /** Replace `{pathVar}` templates with a bounded synthetic token for loopback probes. */

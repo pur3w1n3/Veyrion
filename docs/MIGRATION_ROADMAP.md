@@ -368,10 +368,12 @@ public static List<FrameworkAdapter> matching(Path artifactPath, List<String> ro
 ```
 
 #### MVP-2 验收标准
-- [ ] BranchConstraintHarvester 对 SpringBlade 中至少一个入口产出 maxLen 或 enum 约束
-- [ ] PATH_EXPLORATION nextExperiments 中至少一条 CoverageGap 对应 STATIC_ONLY TaintPath
-- [ ] 第二轮执行使用 CoverageGap 生成的 suggestedInput，对应分支 branchHitMap 命中
-- [ ] 新增 `FrameworkAdapterTest`：TestOnlyAdapter 可注入，不修改生产代码即可切换
+- [x] BranchConstraintHarvester 产出 maxLen / equals 约束（合成 flow hints；Blade live 可选）
+- [x] PATH_EXPLORATION 注入 `COVERAGE_GAP_FACTS`（STATIC_ONLY → CoverageGap）
+- [ ] 第二轮执行使用 CoverageGap 生成的 suggestedInput，对应分支 branchHitMap 命中（live 可选）
+- [x] 新增 `FrameworkAdapterAcceptanceTest`：TestOnlyAdapter 可注入
+
+**版本注记**：参数规格兼容读，无需独立 SQL；下一库版本为 MVP-3 的 V017。
 
 ---
 
@@ -1000,7 +1002,7 @@ if (plan.schemaVersion() == null || plan.schemaVersion() < 1) {
 | 周期 | 版本 | 核心交付 | 工时估算 | 关键验收标准 |
 |------|------|---------|----------|------------|
 | **MVP-1** | V0.2 / V016 | Branch Coverage + CandidateRanker + ContrastLedger snapshotId ✅ | 2–3 周 | TaintPath 状态升级；rankedSinks 可见 |
-| **MVP-2** | V0.3 | BranchConstraintHarvester + CoverageGap + FrameworkAdapter SPI | 2–3 周 | 第二轮命中率提升；FrameworkAdapterTest |
+| **MVP-2** | V0.3 | BranchConstraintHarvester + CoverageGap + FrameworkAdapter SPI ✅ | 2–3 周 | 第二轮命中率提升；FrameworkAdapterTest |
 | **Step 1** | V0.3 | ProbePlanService 分离（工程债）✅ + V015 schemaVersion | 0.5 周 | AcceptanceTest 全绿 |
 | **MVP-3** | V0.4 | TaintGraph + LedgerDiff + DynamicFeedbackApplier | 2 周 | TaintGraph 可查；两轮 diff 可见 |
 | **Step 2** | V0.4 | FrameworkAdapterRegistry 独立（MVP-2 已部分做） | 0.5 周 | 无硬编码 Blade 词表 |

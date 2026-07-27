@@ -747,3 +747,11 @@ Live 复盘（SpringBlade JAR，对照 PDF）：洪水 PathRun 仅 401/`BUSINESS
 - `V016__branch_hit_map_and_contrast_ledger_snapshots.sql`。
 - 验收：`BranchCoverageAcceptanceTest` PASS（合成）；live JAR 覆盖仍可选。
 - **不得**标生产可用或 `VERIFIED`。
+
+## 70. 架构迁移 MVP-2 Constraints + FrameworkAdapter（2026-07-27）
+
+- `ParameterSpec` / `ParameterConstraint` + `BranchConstraintHarvester`；PreAnalysis 入口参数编码增强。
+- `CoverageGapProjector` + PATH_EXPLORATION `COVERAGE_GAP_FACTS`。
+- `FrameworkAdapter` SPI（`SpringBladeAdapter` / `SpringMvcAdapter` / `FrameworkAdapterRegistry`）；ProbePlan 高价值信号改查注册表。
+- 验收：`FrameworkAdapterAcceptanceTest` PASS；TestOnlyAdapter 可注入。
+- **不得**标生产可用或 `VERIFIED`。

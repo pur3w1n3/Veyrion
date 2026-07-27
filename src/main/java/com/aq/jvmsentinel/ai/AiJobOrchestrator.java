@@ -7,6 +7,7 @@ import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource.DynamicProbeExecutor;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource.PathRunSource;
 import com.aq.jvmsentinel.analysis.CandidateRanker;
+import com.aq.jvmsentinel.analysis.CoverageGapProjector;
 import com.aq.jvmsentinel.analysis.contrast.ContrastLedger;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.ai.tool.ToolExecutionContext;
@@ -746,9 +747,43 @@ public final class AiJobOrchestrator implements AutoCloseable {
         if (!authConfirm.isBlank()) prompt.append('\n').append(authConfirm);
         String contrast = contrastLedgerContext(job, language);
         if (!contrast.isBlank()) prompt.append('\n').append(contrast);
+        String gaps = coverageGapContext(job, language);
+        if (!gaps.isBlank()) prompt.append('\n').append(gaps);
         String prior = priorInferenceContext(job, language);
         if (!prior.isBlank()) prompt.append('\n').append(prior);
         return prompt.toString();
+    }
+
+    private String coverageGapContext(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job.scanId() == null || job.role() != AgentRole.PATH_EXPLORATION) return "";
+        try {
+            ControlPlaneStore.ScanRecord scan = store.requireScan(job.scanId());
+            ContrastLedger.Ledger ledger = loadContrastLedger(job);
+            List<CoverageGapProjector.CoverageGap> gaps = CoverageGapProjector.project(
+                    ContrastLedger.taintPathsFromSinks(scan.dto().sinks()),
+                    ledger.rows(), scan.dto().entries());
+            StringBuilder block = new StringBuilder();
+            block.append(language == AiOutputLanguage.ZH_CN
+                    ? "COVERAGE_GAP_FACTS（服务端确定性；对每条 gap 生成 nextExperiment；非 VERIFIED）：\n"
+                    : "COVERAGE_GAP_FACTS (deterministic; emit nextExperiment per gap; not VERIFIED):\n");
+            if (gaps.isEmpty()) {
+                block.append(language == AiOutputLanguage.ZH_CN ? "- （空）\n" : "- (empty)\n");
+                return block.toString();
+            }
+            for (CoverageGapProjector.CoverageGap gap : gaps) {
+                block.append("- taintPathId=").append(gap.taintPathId())
+                        .append(" uncoveredStep=").append(gap.uncoveredStep())
+                        .append(" branchCondition=").append(gap.branchCondition())
+                        .append(" suggestedTrack=").append(gap.suggestedTrack())
+                        .append(" suggestedInput=").append(gap.suggestedInput())
+                        .append(" confidence=").append(gap.confidence())
+                        .append('\n');
+            }
+            return block.toString();
+        } catch (RuntimeException ignored) {
+            return "";
+        }
     }
 
     private String contrastLedgerContext(

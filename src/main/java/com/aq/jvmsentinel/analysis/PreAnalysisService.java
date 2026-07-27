@@ -199,7 +199,15 @@ public final class PreAnalysisService {
             if (httpMethods.isEmpty()) continue;
             PermissionData methodPermission = permissions(method.annotations());
             PermissionData combinedPermission = classPermission.merge(methodPermission);
-            List<String> parameters = describeParameters(method.parameters());
+            List<String> rawParameters = describeParameters(method.parameters());
+            List<String> flowHints = List.of(
+                    metadata.className() + "#" + method.name(),
+                    String.join(" ", rawParameters));
+            List<String> parameters = BranchConstraintHarvester.harvest(rawParameters, flowHints)
+                    .stream()
+                    .map(ParameterSpec::toLegacyEncoding)
+                    .toList();
+            if (parameters.isEmpty()) parameters = rawParameters;
             for (String route : routes) {
                 for (String httpMethod : httpMethods) {
                     if (entries.size() >= MAX_DISCOVERED_ENTRIES) {
