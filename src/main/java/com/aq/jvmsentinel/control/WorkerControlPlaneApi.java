@@ -450,10 +450,8 @@ final class WorkerControlPlaneApi implements HttpHandler {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("status", snapshot.lifecycle().name());
         payload.put("reason", snapshot.stopReason() == null ? snapshot.lifecycle().name() : snapshot.stopReason().name());
-        boolean completedDynamicTask = snapshot.spec().requiredCapability() != WorkerCapability.STATIC_ONLY
-                && snapshot.lifecycle() == TaskLifecycle.COMPLETED
-                && snapshot.stopReason() == StopReason.COMPLETED;
-        payload.put("verificationStatus", completedDynamicTask ? ApiDtos.DYNAMIC_SUSPECTED : ApiDtos.UNREACHED);
+        // P0-20: task lifecycle events never promote DYNAMIC_SUSPECTED; PathRun projection owns suspicion.
+        payload.put("verificationStatus", ApiDtos.UNREACHED);
         payload.put("dependencyMode", ApiDtos.MOCK);
         payload.put("fixtureOnly", false);
         payload.put("requiredCapability", snapshot.spec().requiredCapability().name());

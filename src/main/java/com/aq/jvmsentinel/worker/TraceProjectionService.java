@@ -280,7 +280,8 @@ public final class TraceProjectionService {
         PathOutcomeClass outcome = sqlCopy.isEmpty()
                 ? PathOutcomeClass.UNKNOWN
                 : PathOutcomeClass.DEPENDENCY_MOCK_GAP;
-        String verificationStatus = verificationStatusFor(outcome, -1);
+        boolean hasSqlSignal = !sqlCopy.isEmpty();
+        String verificationStatus = verificationStatusFor(outcome, -1, null, hasSqlSignal);
         PathRun provisional = new PathRun(
                 "pathrun-" + snapshot.scope().taskId() + "-task",
                 snapshot.scope().scanId(), entryRef, IdentityTrack.UNAUTH, "attempt-task",
@@ -345,7 +346,8 @@ public final class TraceProjectionService {
                 "application/json",
                 requestSummary,
                 outcome, status, entryHit, parameterBound,
-                sqlCopy, stopReason, verificationStatusFor(outcome, status),
+                sqlCopy, stopReason,
+                verificationStatusFor(outcome, status, entryHit, !sqlCopy.isEmpty()),
                 List.of(evidenceId), ApiDtos.MOCK,
                 track == IdentityTrack.UNAUTH ? "no credentials" : "synthetic identity");
         String marker = detail.getOrDefault("sqlProbeMarker", SqlDiffProbe.META_MARKER);
@@ -363,25 +365,43 @@ public final class TraceProjectionService {
                 && "main".equals(event.method())) {
             return true;
         }
-        String status = detail.getOrDefault("status", "");
+        String statusText = detail.getOrDefault("status", "");
         String requestTarget = detail.getOrDefault("requestTarget", "");
         String port = detail.getOrDefault("port", "");
-        return !status.isBlank() && !requestTarget.isBlank() && port.matches("[0-9]{1,5}");
+        return !statusText.isBlank() && !requestTarget.isBlank() && port.matches("[0-9]{1,5}");
     }
 
+    /**
+     * P0-20: DYNAMIC_SUSPECTED only when a real HTTP/effect observation exists.
+     * {@code httpStatus=-1}, UNKNOWN/timeout/MOCK-gap/no-bind, and empty signals stay UNREACHED.
+     */
     static String verificationStatusFor(PathOutcomeClass outcome, int httpStatus) {
-        if (outcome == null) return ApiDtos.UNREACHED;
-        if (httpStatus < 0) {
-            return switch (outcome) {
-                case COLD_START, BUSINESS_TIMEOUT, TRANSPORT_ERROR, PROBE_BUDGET,
-                        IDENTITY_UNAVAILABLE, UNKNOWN -> ApiDtos.UNREACHED;
-                default -> VerificationStatus.DYNAMIC_SUSPECTED.name();
-            };
+        return verificationStatusFor(outcome, httpStatus, null, false);
+    }
+
+    static String verificationStatusFor(PathOutcomeClass outcome, int httpStatus,
+                                        Boolean entryHit, boolean hasEffectOrSqlSignal) {
+        if (outcome == null || isDiagnosticUnreached(outcome)) {
+            return ApiDtos.UNREACHED;
         }
+        if (httpStatus < 0) {
+            return ApiDtos.UNREACHED;
+        }
+        if (Boolean.TRUE.equals(entryHit) || hasEffectOrSqlSignal) {
+            return VerificationStatus.DYNAMIC_SUSPECTED.name();
+        }
+        if ((outcome == PathOutcomeClass.HTTP_OBSERVED || outcome == PathOutcomeClass.AUTH_CHALLENGE)
+                && httpStatus >= 200 && httpStatus < 500 && httpStatus != 404) {
+            return VerificationStatus.DYNAMIC_SUSPECTED.name();
+        }
+        return ApiDtos.UNREACHED;
+    }
+
+    private static boolean isDiagnosticUnreached(PathOutcomeClass outcome) {
         return switch (outcome) {
             case COLD_START, BUSINESS_TIMEOUT, TRANSPORT_ERROR, PROBE_BUDGET,
-                    IDENTITY_UNAVAILABLE, UNKNOWN -> ApiDtos.UNREACHED;
-            default -> VerificationStatus.DYNAMIC_SUSPECTED.name();
+                    IDENTITY_UNAVAILABLE, UNKNOWN, DEPENDENCY_MOCK_GAP, REACHED_NO_BIND -> true;
+            default -> false;
         };
     }
 

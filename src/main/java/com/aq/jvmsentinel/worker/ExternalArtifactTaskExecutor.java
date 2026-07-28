@@ -912,11 +912,22 @@ public final class ExternalArtifactTaskExecutor {
     }
 
     private static String failureCode(RuntimeException failure) {
-        if (failure instanceof ExternalArtifactExecutionException external) return external.code();
+        if (failure instanceof ExternalArtifactExecutionException external) {
+            String code = external.code();
+            if (code != null && !code.isBlank() && !"EXTERNAL_ARTIFACT_EXECUTION_FAILED".equals(code)) {
+                return code;
+            }
+            SandboxStartupDiagnostics.Diagnosis diagnosis =
+                    SandboxStartupDiagnostics.classify(extractExitCode(external.getMessage()),
+                            external.getMessage());
+            return diagnosis.code();
+        }
         if (failure instanceof SecurityException || failure instanceof IllegalArgumentException) {
             return "EXTERNAL_ARTIFACT_REJECTED";
         }
-        return "EXTERNAL_ARTIFACT_EXECUTION_FAILED";
+        SandboxStartupDiagnostics.Diagnosis diagnosis =
+                SandboxStartupDiagnostics.classify(-1, failure.getMessage());
+        return diagnosis.code();
     }
 
     private static String failureDiagnostic(RuntimeException failure) {
@@ -927,7 +938,26 @@ public final class ExternalArtifactTaskExecutor {
                 .replaceAll("(?i)bearer\\s+[A-Za-z0-9._~+/-]{4,}", "Bearer [REDACTED]")
                 .replaceAll("\\bsk-[A-Za-z0-9_-]{4,}\\b", "[REDACTED]")
                 .replaceAll("[\\p{Cntrl}&&[^\\n\\t]]", " ").strip();
-        return value.length() <= 2048 ? value : value.substring(0, 2048);
+        SandboxStartupDiagnostics.Diagnosis diagnosis =
+                SandboxStartupDiagnostics.classify(extractExitCode(value), value);
+        String classified = "[" + diagnosis.failureClass().name() + "] " + diagnosis.summary()
+                + " | " + value;
+        return classified.length() <= 2048 ? classified : classified.substring(0, 2048);
+    }
+
+    private static int extractExitCode(String message) {
+        if (message == null) return -1;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("exit (\\d{1,3})")
+                .matcher(message);
+        if (matcher.find()) {
+            try {
+                return Integer.parseInt(matcher.group(1));
+            } catch (NumberFormatException ignored) {
+                return -1;
+            }
+        }
+        return -1;
     }
 
     static String diagnostic(String probeStdout, String probeStderr, String applicationLog) {
@@ -970,7 +1000,10 @@ public final class ExternalArtifactTaskExecutor {
     }
 
     private static String exitDiagnostic(int exitCode, String detail) {
-        String prefix = "external artifact returned exit " + exitCode;
+        SandboxStartupDiagnostics.Diagnosis diagnosis =
+                SandboxStartupDiagnostics.classify(exitCode, detail);
+        String prefix = "external artifact returned exit " + exitCode
+                + " [" + diagnosis.failureClass().name() + "] " + diagnosis.summary();
         if (exitCode == 70) {
             prefix += " (loopback HTTP listen never classified as ready; application likely failed to bind"
                     + " an HTTP port under deny-all - often blocked by unavailable DB/external deps)";

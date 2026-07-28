@@ -12,6 +12,7 @@ public enum ObservationKind {
     STATE,
     DEPENDENCY,
     EXCEPTION,
+    BRANCH,
     UNKNOWN;
 
     public static ObservationKind parse(String raw) {

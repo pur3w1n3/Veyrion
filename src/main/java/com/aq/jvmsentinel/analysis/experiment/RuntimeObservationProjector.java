@@ -56,9 +56,9 @@ public final class RuntimeObservationProjector {
             return emptyOrFailed(hypothesisId, planKind, "EMPTY_OR_FAILED_PROJECTION");
         }
 
-        ObservationKind kind = kindFor(planKind, entryHit, effectHit);
+        ObservationKind kind = kindFor(planKind, entryHit, effectHit, signalHint);
         String signal = resolveSignal(planKind, outcomeClass, entryHit, effectHit, signalHint);
-        List<ObservationKind> incremental = incrementalSubjects(planKind, kind);
+        List<ObservationKind> incremental = incrementalSubjects(planKind, kind, signalHint);
 
         return new RuntimeObservation(
                 "obs:" + pathRunId,
@@ -77,7 +77,11 @@ public final class RuntimeObservationProjector {
 
     private static ObservationKind kindFor(ExperimentPlanKind planKind,
                                            Boolean entryHit,
-                                           Boolean effectHit) {
+                                           Boolean effectHit,
+                                           String signalHint) {
+        if (signalHint != null && signalHint.toUpperCase(Locale.ROOT).contains("BRANCH")) {
+            return ObservationKind.BRANCH;
+        }
         return switch (planKind) {
             case REACHABILITY -> Boolean.TRUE.equals(entryHit) ? ObservationKind.ENTRY : ObservationKind.EXCEPTION;
             case DATAFLOW_DIFF -> Boolean.TRUE.equals(effectHit) ? ObservationKind.EFFECT : ObservationKind.ENTRY;
@@ -101,7 +105,10 @@ public final class RuntimeObservationProjector {
         if ("AUTH_CHALLENGE".equals(outcome) && planKind != ExperimentPlanKind.GUARD_DIFF) {
             return "AUTH_CHALLENGE";
         }
-        if ("UNREACHED".equals(outcome) || "COLD_START".equals(outcome) || "PROBE_BUDGET".equals(outcome)) {
+        if ("UNREACHED".equals(outcome) || "COLD_START".equals(outcome) || "PROBE_BUDGET".equals(outcome)
+                || "UNKNOWN".equals(outcome) || "TRANSPORT_ERROR".equals(outcome)
+                || "BUSINESS_TIMEOUT".equals(outcome) || "IDENTITY_UNAVAILABLE".equals(outcome)
+                || "DEPENDENCY_MOCK_GAP".equals(outcome)) {
             return "UNREACHED";
         }
         return switch (planKind) {
@@ -115,9 +122,13 @@ public final class RuntimeObservationProjector {
     }
 
     private static List<ObservationKind> incrementalSubjects(ExperimentPlanKind planKind,
-                                                             ObservationKind primary) {
+                                                             ObservationKind primary,
+                                                             String signalHint) {
         List<ObservationKind> subjects = new ArrayList<>();
         subjects.add(primary);
+        if (signalHint != null && signalHint.toUpperCase(Locale.ROOT).contains("BRANCH")) {
+            subjects.add(ObservationKind.BRANCH);
+        }
         switch (planKind) {
             case DATAFLOW_DIFF -> {
                 subjects.add(ObservationKind.EFFECT);

@@ -2812,21 +2812,38 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         body.put("scanId", dto.scanId());
         boolean confirmed = pathRuns.stream()
                 .anyMatch(run -> ApiDtos.DYNAMIC_CONFIRMED.equals(run.verificationStatus()));
+        boolean suspected = pathRuns.stream()
+                .anyMatch(run -> ApiDtos.DYNAMIC_SUSPECTED.equals(run.verificationStatus()));
+        // P0-20: do not promote scan status merely because dynamic paths/tasks exist.
         body.put("verificationStatus", confirmed ? ApiDtos.DYNAMIC_CONFIRMED
-                : dynamicPaths.isEmpty() ? dto.verificationStatus() : "DYNAMIC_SUSPECTED");
+                : suspected ? ApiDtos.DYNAMIC_SUSPECTED : dto.verificationStatus());
+        long dynamicFailedPathRuns = pathRuns.stream()
+                .filter(run -> ApiDtos.UNREACHED.equals(run.verificationStatus())
+                        || run.httpStatus() < 0
+                        || "UNKNOWN".equalsIgnoreCase(run.outcomeClass()))
+                .count();
+        body.put("dynamicSupportedPathRuns", pathRuns.stream()
+                .filter(run -> ApiDtos.DYNAMIC_CONFIRMED.equals(run.verificationStatus())
+                        || ApiDtos.DYNAMIC_SUSPECTED.equals(run.verificationStatus()))
+                .count());
+        body.put("dynamicFailedPathRuns", dynamicFailedPathRuns);
         body.put("dependencyMode", dto.dependencyMode());
         List<String> dashboardEvidence = new ArrayList<>(dto.evidenceRefs());
         for (ApiDtos.PathDto pathDto : dynamicPaths) dashboardEvidence.addAll(pathDto.evidenceRefs());
         body.put("evidenceRefs", List.copyOf(dashboardEvidence));
         List<Object> entries = new ArrayList<>();
         for (ApiDtos.EntryDto entry : dto.entries()) entries.add(entryMap(entry));
-        List<Object> findings = new ArrayList<>();
+        List<ApiDtos.FindingDto> primaryFindings = new ArrayList<>();
         int authGapFindingCount = 0;
         for (ApiDtos.FindingDto finding : dto.findings()) {
             if (isAuthGapFinding(finding)) {
                 authGapFindingCount++;
                 continue;
             }
+            primaryFindings.add(finding);
+        }
+        List<Object> findings = new ArrayList<>();
+        for (ApiDtos.FindingDto finding : com.aq.jvmsentinel.analysis.FindingRanker.rank(primaryFindings)) {
             findings.add(findingMap(finding));
         }
         int authGapSinkCount = 0;

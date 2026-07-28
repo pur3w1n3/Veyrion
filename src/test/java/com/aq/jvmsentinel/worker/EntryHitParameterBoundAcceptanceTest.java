@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.worker;
 
+import com.aq.jvmsentinel.AcceptanceAssertions;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.model.PathOutcomeClass;
 
@@ -11,6 +12,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * P0-02: PathRun entryHit / parameterBound must be honest — prefer event detail,
@@ -18,15 +20,19 @@ import java.util.Set;
  */
 public final class EntryHitParameterBoundAcceptanceTest {
     private static final String DIGEST = "c".repeat(64);
+    private static final AtomicInteger ASSERTIONS = new AtomicInteger();
 
     public static void main(String[] args) throws Exception {
+        AcceptanceAssertions.reset();
+        ASSERTIONS.set(0);
         unitHeuristics();
         projectionPositive200();
         projectionNegative404();
         projectionTimeoutUnknown();
         projectionInternalHttpDoesNotCreatePathRuns();
         projectionSpringBoundEvidence();
-        System.out.println("EntryHitParameterBoundAcceptanceTest: PASS");
+        System.out.println("EntryHitParameterBoundAcceptanceTest: PASS ("
+                + Math.max(ASSERTIONS.get(), AcceptanceAssertions.get()) + " assertions)");
     }
 
     private static void unitHeuristics() {
@@ -217,5 +223,7 @@ public final class EntryHitParameterBoundAcceptanceTest {
 
     private static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
+        ASSERTIONS.incrementAndGet();
+        AcceptanceAssertions.record();
     }
 }
