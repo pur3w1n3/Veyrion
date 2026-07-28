@@ -1,4 +1,5 @@
 package com.aq.jvmsentinel.ai.tool;
+import com.aq.jvmsentinel.AcceptanceAssertions;
 
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.OutputKind;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolCall;
@@ -44,6 +45,7 @@ public final class AiToolRegistryAcceptanceTest {
         entryReferenceContractsAreStable(registry, source);
         missingAuthSandboxProbeIsValid(registry, source);
         bladeAuthHeaderOptionalBlankIsValid(registry, source);
+        fuzzStrategyRequiresScopedSink(registry);
         terminalStatusesAreExplicit(registry);
 
         System.out.println("AiToolRegistryAcceptanceTest: PASS");
@@ -70,7 +72,8 @@ public final class AiToolRegistryAcceptanceTest {
                         .equals(Set.of("facts_search", "evidence_get", "plan_propose", "code_query")),
                 "auth-analysis allowlist");
         check(names(registry, AgentRole.PATH_EXPLORATION)
-                        .equals(Set.of("facts_search", "evidence_get", "plan_propose", "code_query")),
+                        .equals(Set.of("facts_search", "evidence_get", "plan_propose", "code_query",
+                                "sandbox_probe")),
                 "path-exploration allowlist");
         check(names(registry, AgentRole.DYNAMIC_VERIFICATION)
                         .equals(Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe",
@@ -120,6 +123,12 @@ public final class AiToolRegistryAcceptanceTest {
                         .status() == ToolStatus.DENIED,
                 "cross-project data source result is denied");
         source.returnWrongScope = false;
+
+        source.throwSecurity = true;
+        check(registry.execute(call("source-security", "facts_search", object("kind", "METHOD")),
+                        context(AgentRole.PRE_ANALYSIS, 2, 4096, 8, 4096)).status() == ToolStatus.DENIED,
+                "data source security rejection is reported as DENIED");
+        source.throwSecurity = false;
 
         check(registry.execute(call("role-denied", "plan_propose",
                         planArguments()), context(AgentRole.PRE_ANALYSIS, 2, 4096, 8, 4096))
@@ -350,6 +359,29 @@ public final class AiToolRegistryAcceptanceTest {
         source.lastBladeAuthHeader = null;
     }
 
+    private static void fuzzStrategyRequiresScopedSink(AiToolRegistry registry) {
+        ObjectNode arguments = object("sinkId", "sink-a");
+        ToolResult result = registry.execute(call("fuzz-valid", "fuzz_strategy_get", arguments),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(result.status() == ToolStatus.SUCCESS, "existing scoped sink has a fuzz strategy");
+        check(result.outputs().get(0).kind() == OutputKind.INFERENCE,
+                "server-generated fuzz strategy is inference");
+        check("RULE_GENERATED".equals(result.outputs().get(0).value().get("classification").asText()),
+                "fuzz strategy classification is rule-generated");
+
+        ToolResult missing = registry.execute(call("fuzz-missing", "fuzz_strategy_get",
+                        object("sinkId", "sink-missing")),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(missing.status() == ToolStatus.NOT_FOUND, "missing sink cannot receive a strategy");
+
+        ObjectNode mismatchArguments = object("sinkId", "sink-a");
+        mismatchArguments.put("sinkCategory", "COMMAND");
+        ToolResult mismatch = registry.execute(call("fuzz-mismatch", "fuzz_strategy_get", mismatchArguments),
+                context(AgentRole.DYNAMIC_VERIFICATION, 1, 4096, 8, 4096));
+        check(mismatch.status() == ToolStatus.INVALID_ARGUMENTS,
+                "caller cannot override the server-owned sink category");
+    }
+
     private static void terminalStatusesAreExplicit(AiToolRegistry registry) {
         check(EnumSet.allOf(ToolStatus.class).equals(EnumSet.of(
                 ToolStatus.SUCCESS, ToolStatus.DENIED, ToolStatus.INVALID_ARGUMENTS,
@@ -398,10 +430,12 @@ public final class AiToolRegistryAcceptanceTest {
 
     private static void check(boolean value, String message) {
         if (!value) throw new AssertionError(message);
+        AcceptanceAssertions.record();
     }
 
     private static final class FakeSource implements ToolDataSource {
         private boolean returnWrongScope;
+        private boolean throwSecurity;
         private boolean manyFacts;
         private ProbeMode probeMode = ProbeMode.NONE;
         private String lastTechniqueId;
@@ -415,7 +449,15 @@ public final class AiToolRegistryAcceptanceTest {
         @Override
         public List<FactRecord> searchFacts(ToolExecutionContext.Scope scope, String kind,
                                             String query, int limit) {
+            if (throwSecurity) throw new SecurityException("scope denied");
             ToolExecutionContext.Scope returnedScope = returnWrongScope ? OTHER_SCOPE : scope;
+            if ("SINK".equals(kind)) {
+                if (!"sink-a".equals(query)) return List.of();
+                ObjectNode sink = JSON.createObjectNode();
+                sink.put("id", "sink-a");
+                sink.put("category", "SQL");
+                return List.of(new FactRecord(returnedScope, "sink:sink-a", sink));
+            }
             int count = manyFacts ? 20 : 1;
             List<FactRecord> records = new ArrayList<>();
             for (int i = 0; i < count; i++) {
@@ -466,12 +508,14 @@ public final class AiToolRegistryAcceptanceTest {
         public Optional<FactRecord> requestSandboxProbe(ToolExecutionContext.Scope scope,
                                                        String principalId,
                                                        String jobId,
+                                                       String toolCallId,
                                                        String entrypointRef,
                                                        List<String> candidateInputs,
                                                        int maxRequests,
                                                        String techniqueId,
                                                        String authorizationHeader,
-                                                       String bladeAuthHeader) {
+                                                       String bladeAuthHeader,
+                                                       String experimentPlanId) {
             if (probeMode == ProbeMode.NONE) return Optional.empty();
             if (probeMode == ProbeMode.THROW) {
                 throw new IllegalStateException("EXTERNAL_ARTIFACT_EXIT_NONZERO");
@@ -494,17 +538,25 @@ public final class AiToolRegistryAcceptanceTest {
             if (bladeAuthHeader != null && !bladeAuthHeader.isBlank()) {
                 value.put("bladeAuthHeaderPresent", true);
             }
+            if (experimentPlanId != null && !experimentPlanId.isBlank()) {
+                value.put("experimentPlanId", experimentPlanId);
+            }
+            String attemptRef = "sandbox-probe:attempt:" + jobId + ":"
+                    + (toolCallId == null || toolCallId.isBlank() ? "legacy" : toolCallId);
+            value.put("probeAttemptId", attemptRef);
             if (probeMode == ProbeMode.BUSY) {
                 value.put("state", "BUSY");
                 value.put("retryable", true);
-                return Optional.of(new FactRecord(scope, "sandbox-probe:busy:" + jobId, value));
+                value.put("pathRunCount", 0);
+                return Optional.of(new FactRecord(scope, "sandbox-probe:busy:" + attemptRef, value));
             }
             value.put("state", "FAILED");
             value.put("lifecycle", "FAILED");
             value.put("stopReason", "WORKER_FAILURE");
             value.put("failureCode", "EMPTY_PROBE_EVENTS");
+            value.put("pathRunCount", 0);
             value.putArray("pathRuns");
-            return Optional.of(new FactRecord(scope, "sandbox-probe:task-a", value));
+            return Optional.of(new FactRecord(scope, attemptRef, value));
         }
 
         private static ApiDtos.EntryDto entry(String id, String method, String route) {

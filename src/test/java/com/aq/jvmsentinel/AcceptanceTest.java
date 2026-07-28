@@ -43,7 +43,10 @@ public final class AcceptanceTest {
         }
         expect(ArtifactValidationException.class, () -> new ArtifactRegistry(root, Clock.systemUTC(), 1024, 1, 1024).register(archive));
 
-        expect(PolicyViolationException.class, () -> PolicyValidator.requireStartAllowed(ScanPolicy.safeDefault()));
+        ScanPolicy safeDefault = ScanPolicy.safeDefault();
+        check(safeDefault.maxMemoryBytes() == 2L * 1024 * 1024 * 1024,
+                "safe scan policy defaults memory to 2048 MiB");
+        expect(PolicyViolationException.class, () -> PolicyValidator.requireStartAllowed(safeDefault));
         ScanPolicy policy = new ScanPolicy(true, NetworkMode.DENY, DangerousActionMode.DRY_RUN, List.of(), 1, 1, 1);
         PolicyValidator.requireStartAllowed(policy);
 

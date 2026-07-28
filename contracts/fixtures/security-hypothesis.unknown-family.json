@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "hypothesisId": "hyp-future-1",
+  "scanId": "scan-1",
+  "securityProperty": "CUSTOM_PROPERTY",
+  "family": "FUTURE_FAMILY_X",
+  "lifecycle": "CANDIDATE",
+  "detectorVersion": "experimental-v0"
+}

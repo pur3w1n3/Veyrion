@@ -2,12 +2,48 @@ package com.aq.jvmsentinel.control;
 
 import com.aq.jvmsentinel.control.routing.ControlPlaneRouteActions;
 import com.aq.jvmsentinel.control.routing.RouteTable;
+import com.aq.jvmsentinel.adapter.control.DelegatingCoverageQueryAdapter;
+import com.aq.jvmsentinel.adapter.control.DelegatingEvidenceGraphQueryAdapter;
+import com.aq.jvmsentinel.adapter.control.DelegatingPathRunQueryAdapter;
+import com.aq.jvmsentinel.adapter.control.StoreAnalyzerIrIngestAdapter;
+import com.aq.jvmsentinel.adapter.control.StoreFindingQueryAdapter;
+import com.aq.jvmsentinel.adapter.control.StoreHypothesisQueryAdapter;
+import com.aq.jvmsentinel.adapter.control.StoreProviderQueryAdapter;
+import com.aq.jvmsentinel.adapter.control.StoreScanQueryAdapter;
+import com.aq.jvmsentinel.adapter.http.ScanQueryHttpSupport;
+import com.aq.jvmsentinel.application.port.AnalyzerIrIngestPort;
+import com.aq.jvmsentinel.application.port.CoverageQueryPort;
+import com.aq.jvmsentinel.application.port.EvidenceGraphQueryPort;
+import com.aq.jvmsentinel.application.port.FindingQueryPort;
+import com.aq.jvmsentinel.application.port.HypothesisQueryPort;
+import com.aq.jvmsentinel.application.port.PathRunQueryPort;
+import com.aq.jvmsentinel.application.port.ProviderQueryPort;
+import com.aq.jvmsentinel.application.port.ScanQueryPort;
 
 import com.aq.jvmsentinel.analysis.CandidateRanker;
 import com.aq.jvmsentinel.analysis.PreAnalysisResult;
 import com.aq.jvmsentinel.analysis.PreAnalysisInput;
 import com.aq.jvmsentinel.analysis.ArtifactMetadataReader;
+import com.aq.jvmsentinel.analysis.coverage.CoverageMatrixProjector;
+import com.aq.jvmsentinel.analysis.detector.DetectorContext;
+import com.aq.jvmsentinel.analysis.detector.DetectorRegistry;
+import com.aq.jvmsentinel.analysis.hypothesis.SecurityHypothesisProjector;
+import com.aq.jvmsentinel.analysis.spi.ProviderBundle;
+import com.aq.jvmsentinel.analysis.spi.ProviderContext;
+import com.aq.jvmsentinel.analysis.spi.ProviderContribution;
+import com.aq.jvmsentinel.analysis.spi.ProviderRegistry;
+import com.aq.jvmsentinel.analysis.ir.EvidenceGraphProjector;
+import com.aq.jvmsentinel.domain.ir.EffectNode;
+import com.aq.jvmsentinel.domain.ir.EntryNode;
+import com.aq.jvmsentinel.domain.ir.GuardNode;
 import com.aq.jvmsentinel.analysis.contrast.ContrastLedger;
+import com.aq.jvmsentinel.analysis.universe.ArtifactUniverseBuilder;
+import com.aq.jvmsentinel.domain.coverage.CoverageMatrix;
+import com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis;
+import com.aq.jvmsentinel.domain.ir.EvidenceGraph;
+import com.aq.jvmsentinel.domain.ir.EvidenceGraphMerge;
+import com.aq.jvmsentinel.domain.ir.IrNode;
+import com.aq.jvmsentinel.domain.universe.ArtifactUniverse;
 import com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService;
 import com.aq.jvmsentinel.analysis.entry.NonHttpEntryProtocol;
 import com.aq.jvmsentinel.analysis.pack.AnalysisPack;
@@ -38,6 +74,7 @@ import com.aq.jvmsentinel.event.EventFactory;
 import com.aq.jvmsentinel.event.IdempotencyKey;
 import com.aq.jvmsentinel.event.VersionedEvent;
 import com.aq.jvmsentinel.model.ArtifactDescriptor;
+import com.aq.jvmsentinel.model.BytecodeFactIndex;
 import com.aq.jvmsentinel.model.DependencyAccess;
 import com.aq.jvmsentinel.model.Entrypoint;
 import com.aq.jvmsentinel.model.Evidence;
@@ -111,7 +148,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.jar.JarFile;
@@ -132,16 +171,28 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     private static final int MAX_BODY_BYTES = 1 * 1024 * 1024;
     private static final int MAX_LIST_ITEMS = 10_000;
     private static final long DEFAULT_WALL_CLOCK_SECONDS = 900;
-    private static final long DEFAULT_MEMORY_BYTES = 4L * 1024 * 1024 * 1024;
+    private static final long DEFAULT_MEMORY_BYTES = 2L * 1024 * 1024 * 1024;
     private static final long DEFAULT_DISK_BYTES = 2L * 1024 * 1024 * 1024;
     private static final int MAX_IDEMPOTENCY_KEYS = 50_000;
     private static final int MAX_AI_JOB_EVENTS = 128;
+    /** Dynamic tasks that remain QUEUED without a Worker become DYNAMIC_DISABLED. */
+    static final Duration DYNAMIC_QUEUE_TIMEOUT = Duration.ofMinutes(10);
     
     private final InetSocketAddress bindAddress;
     private final ArtifactRegistry artifactRegistry;
     private final ArtifactUploadService artifactUploadService;
     private final PreAnalysisServiceAdapter analysis = new PreAnalysisServiceAdapter();
     private final ControlPlaneStore store;
+    /** P1-08 query ports — new read paths prefer these over growing RouteTable logic. */
+    private final ScanQueryPort scanQueryPort;
+    private final EvidenceGraphQueryPort evidenceGraphQueryPort;
+    private final CoverageQueryPort coverageQueryPort;
+    private final HypothesisQueryPort hypothesisQueryPort;
+    private final FindingQueryPort findingQueryPort;
+    private final PathRunQueryPort pathRunQueryPort;
+    private final ProviderQueryPort providerQueryPort;
+    private final AnalyzerIrIngestPort analyzerIrIngestPort;
+    private final ScanQueryHttpSupport scanQueryHttp;
     private final SseHub sseHub;
     private final Map<String, String> idempotentProjects = new ConcurrentHashMap<>();
     private final Map<String, String> idempotentArtifacts = new ConcurrentHashMap<>();
@@ -177,6 +228,11 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     private final AuditPipelineCoordinator auditPipeline;
     private final Clock clock;
     private final Authorizer authorizer = new Authorizer();
+    private final ScheduledExecutorService pipelineReaper = Executors.newSingleThreadScheduledExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "audit-pipeline-reaper");
+        thread.setDaemon(true);
+        return thread;
+    });
     private volatile HttpServer server;
     private volatile ExecutorService executor;
 
@@ -272,6 +328,17 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         this.mutationToken = requireToken(mutationToken);
         this.clock = Objects.requireNonNull(clock, "clock");
         this.store = Objects.requireNonNull(store, "store");
+        this.analyzerIrIngestPort = new StoreAnalyzerIrIngestAdapter(this.store);
+        this.hypothesisQueryPort = new StoreHypothesisQueryAdapter(this.store);
+        this.scanQueryPort = new StoreScanQueryAdapter(this.store, this::scanViewForPort);
+        this.coverageQueryPort = new DelegatingCoverageQueryAdapter(this.store, this::coverageMatrixForScan);
+        this.evidenceGraphQueryPort = new DelegatingEvidenceGraphQueryAdapter(
+                this.store, this::projectEvidenceGraphBase, this.analyzerIrIngestPort);
+        this.findingQueryPort = new StoreFindingQueryAdapter(this.store, ControlPlaneServer::findingMap);
+        this.pathRunQueryPort = new DelegatingPathRunQueryAdapter(this.store, this::pathRunViewsForPort);
+        this.providerQueryPort = new StoreProviderQueryAdapter(this.store, ControlPlaneServer::providerMap);
+        this.scanQueryHttp = new ScanQueryHttpSupport(
+                this.evidenceGraphQueryPort, this.coverageQueryPort, this.hypothesisQueryPort);
         this.sseHub = Objects.requireNonNull(sseHub, "sseHub");
         this.sseHub.attachPersistence(this.store.loadSseEvents(), this.store::persistSseEvent);
         this.artifactUploadService = new ArtifactUploadService(this.artifactRegistry, this.clock,
@@ -296,29 +363,37 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         if ("SQLITE".equals(this.store.persistenceMode())) {
             this.store.bootstrapOperator(this.mutationToken, Instant.now(this.clock).toString());
         }
+        ProviderRegistry.ensureDefaults();
         this.aiJobOrchestrator = new AiJobOrchestrator(this.store,
                 Objects.requireNonNull(chatTransport, "chatTransport"), this.clock,
                 this.traceProjectionService::evidenceForScan,
-                this::requestSandboxProbe,
+                (scanId, scope, principalId, jobId, toolCallId, entrypointRef, candidateInputs,
+                 maxRequests, techniqueId, authorizationHeader, bladeAuthHeader, experimentPlanId) ->
+                        requestSandboxProbe(scanId, scope, principalId, jobId, toolCallId,
+                                entrypointRef, candidateInputs, maxRequests, techniqueId,
+                                authorizationHeader, bladeAuthHeader, experimentPlanId),
                 this::mergedPathRunsForScan,
                 this::acceptExperimentPlan);
         this.auditPipeline = new AuditPipelineCoordinator(new AuditPipelineCoordinator.Actions() {
             @Override
-            public boolean hasRoleJob(String projectId, String scanId, AgentRole role) {
-                return store.aiJobs(projectId).stream()
-                        .anyMatch(AuditPipelineCoordinator.busyOrDoneFor(scanId, role));
+            public String createRoleJob(String projectId, String scanId, AgentRole role,
+                                        AiOutputLanguage language, String actorId) {
+                var job = store.createAiJob(projectId, role, scanId, language, true, actorId,
+                        Instant.now(clock).toString());
+                store.auditChange(projectId, actorId, "audit-pipeline.enqueue-role", "ai-job",
+                        job.aiJobId(), "{\"role\":\"" + role.name() + "\",\"scanId\":\"" + scanId + "\"}",
+                        Instant.now(clock).toString());
+                return job.aiJobId();
             }
 
             @Override
-            public int countRoleJobs(String projectId, String scanId, AgentRole role) {
-                return (int) store.aiJobs(projectId).stream()
-                        .filter(AuditPipelineCoordinator.busyOrDoneFor(scanId, role))
-                        .count();
+            public void submitRoleJob(String jobId, String actorId) {
+                aiJobOrchestrator.submit(store.requireAiJob(jobId), actorId);
             }
 
             @Override
-            public boolean hasBusyDynamicTask(String scanId) {
-                return hasRunningDynamicTask(scanId);
+            public String enqueueDynamic(String scanId, String actorId) {
+                return enqueueDynamicForPipeline(scanId, actorId).scope().taskId();
             }
 
             @Override
@@ -328,46 +403,112 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
             }
 
             @Override
-            public boolean hasCompletedDynamicTask(String scanId) {
-                return workerApi.snapshots(store.requireScan(scanId).dto().projectId(), scanId).stream()
-                        .anyMatch(snapshot -> snapshot.lifecycle() == TaskLifecycle.COMPLETED);
+            public void replaceCursor(AuditPipelineCoordinator.Cursor cursor, boolean armed, String stopReason) {
+                store.persistPipelineRun(pipelineRunData(cursor, armed, stopReason));
             }
 
             @Override
-            public void enqueueRole(String projectId, String scanId, AgentRole role,
-                                    AiOutputLanguage language, String actorId) {
-                var job = store.createAiJob(projectId, role, scanId, language, true, actorId,
-                        Instant.now(clock).toString());
-                aiJobOrchestrator.submit(job, actorId);
-                store.auditChange(projectId, actorId, "audit-pipeline.enqueue-role", "ai-job",
-                        job.aiJobId(), "{\"role\":\"" + role.name() + "\",\"scanId\":\"" + scanId + "\"}",
-                        Instant.now(clock).toString());
+            public boolean compareAndAdvance(AuditPipelineCoordinator.Cursor expected,
+                                             AuditPipelineCoordinator.Cursor next,
+                                             boolean armed, String stopReason) {
+                return store.compareAndAdvancePipelineRun(
+                        pipelineRunData(expected, true, null),
+                        pipelineRunData(next, armed, stopReason));
             }
 
             @Override
-            public void enqueueDynamic(String scanId, String actorId) {
-                enqueueDynamicForPipeline(scanId, actorId);
+            public String jobStatus(String jobId) {
+                try {
+                    return store.requireAiJob(jobId).status();
+                } catch (ControlPlaneStore.MissingRecordException | IllegalStateException missing) {
+                    return null;
+                }
             }
 
             @Override
-            public void persistState(AuditPipelineCoordinator.Arm arm, String nextStage, boolean armed) {
-                store.persistPipelineRun(new SQLiteControlPlanePersistence.PipelineRunData(
-                        arm.scanId(), arm.projectId(), arm.actorId(), arm.outputLanguage().name(),
-                        armed, nextStage, Instant.now(clock).toString()));
+            public String jobStopReason(String jobId) {
+                try {
+                    return store.requireAiJob(jobId).stopReason();
+                } catch (ControlPlaneStore.MissingRecordException | IllegalStateException missing) {
+                    return null;
+                }
+            }
+
+            @Override
+            public String taskLifecycle(String projectId, String scanId, String taskId) {
+                for (TaskSnapshot snapshot : workerApi.snapshots(projectId, scanId)) {
+                    if (taskId.equals(snapshot.scope().taskId())) {
+                        return snapshot.lifecycle().name();
+                    }
+                }
+                return null;
             }
         });
         this.aiJobOrchestrator.setTerminalListener(auditPipeline::onAiJobFinished);
         this.workerApi.setTerminalListener(auditPipeline::onDynamicTaskFinished);
+        reclaimStaleDynamicTasks(DYNAMIC_QUEUE_TIMEOUT);
         recoverAuditPipelines();
+        this.pipelineReaper.scheduleAtFixedRate(
+                () -> {
+                    try {
+                        reclaimStaleDynamicTasks(DYNAMIC_QUEUE_TIMEOUT);
+                    } catch (RuntimeException ignored) {
+                        // Reaper faults must not stop the control plane.
+                    }
+                },
+                DYNAMIC_QUEUE_TIMEOUT.toSeconds(),
+                Math.max(30L, DYNAMIC_QUEUE_TIMEOUT.toSeconds() / 2),
+                TimeUnit.SECONDS);
+    }
+
+    /**
+     * Fail-closed reclaim for QUEUED dynamic tasks with no Worker. Visible for acceptance tests.
+     */
+    public int reclaimStaleDynamicTasks(Duration maxQueuedAge) {
+        List<TaskSnapshot> failed = workerApi.failStaleQueuedTasks(maxQueuedAge, Instant.now(clock));
+        for (TaskSnapshot snapshot : failed) {
+            store.auditChange(snapshot.scope().projectId(), "local-admin",
+                    "audit-pipeline.dynamic-disabled", "worker-task", snapshot.scope().taskId(),
+                    "{\"reason\":\"WORKER_UNAVAILABLE\",\"failureCode\":\"WORKER_UNAVAILABLE\","
+                            + "\"scanId\":\"" + snapshot.scope().scanId() + "\"}",
+                    Instant.now(clock).toString());
+        }
+        return failed.size();
+    }
+
+    private SQLiteControlPlanePersistence.PipelineRunData pipelineRunData(
+            AuditPipelineCoordinator.Cursor cursor, boolean armed, String stopReason) {
+        AuditPipelineCoordinator.Arm arm = cursor.arm();
+        return new SQLiteControlPlanePersistence.PipelineRunData(
+                arm.scanId(), arm.projectId(), arm.actorId(), arm.outputLanguage().name(),
+                armed, cursor.stage().name(), Instant.now(clock).toString(),
+                arm.pipelineRunId(), cursor.stageAttemptId(),
+                cursor.expectedJobId(), cursor.expectedTaskId(), stopReason);
     }
 
     private void recoverAuditPipelines() {
         for (SQLiteControlPlanePersistence.PipelineRunData run : store.loadPipelineRuns()) {
-            if (!run.armed()) continue;
+            if (!run.armed()) {
+                continue;
+            }
             ControlPlaneStore.ScanRecord scan = store.scan(run.scanId());
             if (scan == null || !scan.dto().projectId().equals(run.projectId())) {
                 throw new SQLiteControlPlanePersistence.PersistenceException(
                         "pipeline run scope does not match a persistent scan");
+            }
+            if (!run.hasStageIdentity()) {
+                SQLiteControlPlanePersistence.PipelineRunData stopped =
+                        new SQLiteControlPlanePersistence.PipelineRunData(
+                                run.scanId(), run.projectId(), run.actorId(), run.outputLanguage(),
+                                false, run.nextStage(), Instant.now(clock).toString(),
+                                run.pipelineRunId(), run.stageAttemptId(),
+                                run.expectedJobId(), run.expectedTaskId(),
+                                "LEGACY_ARMED_WITHOUT_STAGE_IDENTITY");
+                store.persistPipelineRun(stopped);
+                store.auditChange(run.projectId(), run.actorId(), "audit-pipeline.fail-closed", "scan",
+                        run.scanId(), "{\"reason\":\"LEGACY_ARMED_WITHOUT_STAGE_IDENTITY\"}",
+                        Instant.now(clock).toString());
+                continue;
             }
             AiOutputLanguage language;
             try {
@@ -376,43 +517,34 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                 throw new SQLiteControlPlanePersistence.PersistenceException(
                         "pipeline run output language is invalid", invalid);
             }
-            List<SQLiteControlPlanePersistence.AiJobData> jobs = store.aiJobs(run.projectId()).stream()
-                    .filter(job -> run.scanId().equals(job.scanId())).toList();
-            boolean pre = completed(jobs, AgentRole.PRE_ANALYSIS);
-            long authCount = jobs.stream()
-                    .filter(job -> job.role() == AgentRole.AUTH_ANALYSIS && "COMPLETED".equals(job.status()))
-                    .count();
-            boolean dynamicVerification = completed(jobs, AgentRole.DYNAMIC_VERIFICATION);
-            boolean path = completed(jobs, AgentRole.PATH_EXPLORATION);
-            boolean triage = completed(jobs, AgentRole.VULNERABILITY_TRIAGE);
-            boolean report = completed(jobs, AgentRole.REPORT_GENERATION);
-            List<TaskSnapshot> tasks = workerApi.snapshots(run.projectId(), run.scanId());
-            boolean dynamicCompleted = tasks.stream()
-                    .anyMatch(task -> task.lifecycle() == TaskLifecycle.COMPLETED);
             AuditPipelineCoordinator.PipelineStage stage;
-            if (report) stage = AuditPipelineCoordinator.PipelineStage.COMPLETE;
-            else if (triage) stage = AuditPipelineCoordinator.PipelineStage.REPORT_GENERATION;
-            else if (path) stage = AuditPipelineCoordinator.PipelineStage.VULNERABILITY_TRIAGE;
-            else if (dynamicVerification) stage = AuditPipelineCoordinator.PipelineStage.PATH_EXPLORATION;
-            else if (dynamicCompleted && authCount >= 2) {
-                stage = AuditPipelineCoordinator.PipelineStage.DYNAMIC_VERIFICATION;
-            } else if (dynamicCompleted) {
-                stage = AuditPipelineCoordinator.PipelineStage.AUTH_BYPASS_CONFIRM;
-            } else if (authCount >= 1) {
-                stage = AuditPipelineCoordinator.PipelineStage.DYNAMIC_OBSERVATION;
-            } else if (pre) stage = AuditPipelineCoordinator.PipelineStage.AUTH_ANALYSIS;
-            else stage = AuditPipelineCoordinator.PipelineStage.PRE_ANALYSIS;
+            try {
+                stage = AuditPipelineCoordinator.PipelineStage.valueOf(run.nextStage());
+            } catch (IllegalArgumentException invalid) {
+                SQLiteControlPlanePersistence.PipelineRunData stopped =
+                        new SQLiteControlPlanePersistence.PipelineRunData(
+                                run.scanId(), run.projectId(), run.actorId(), run.outputLanguage(),
+                                false, run.nextStage(), Instant.now(clock).toString(),
+                                run.pipelineRunId(), run.stageAttemptId(),
+                                run.expectedJobId(), run.expectedTaskId(),
+                                "INVALID_PERSISTED_STAGE");
+                store.persistPipelineRun(stopped);
+                store.auditChange(run.projectId(), run.actorId(), "audit-pipeline.fail-closed", "scan",
+                        run.scanId(), "{\"reason\":\"INVALID_PERSISTED_STAGE\"}",
+                        Instant.now(clock).toString());
+                continue;
+            }
             AuditPipelineCoordinator.Arm arm = new AuditPipelineCoordinator.Arm(
-                    run.scanId(), run.projectId(), run.actorId(), language);
-            auditPipeline.resumeAt(arm, stage);
+                    run.scanId(), run.projectId(), run.actorId(), language, run.pipelineRunId());
+            AuditPipelineCoordinator.Cursor cursor = new AuditPipelineCoordinator.Cursor(
+                    arm, stage, run.stageAttemptId(), run.expectedJobId(), run.expectedTaskId());
+            auditPipeline.resume(cursor);
             store.auditChange(run.projectId(), run.actorId(), "audit-pipeline.recover", "scan",
-                    run.scanId(), "{\"stage\":\"" + stage.name() + "\"}",
+                    run.scanId(), "{\"stage\":\"" + stage.name()
+                            + "\",\"pipelineRunId\":\"" + run.pipelineRunId()
+                            + "\",\"stageAttemptId\":\"" + run.stageAttemptId() + "\"}",
                     Instant.now(clock).toString());
         }
-    }
-
-    private static boolean completed(List<SQLiteControlPlanePersistence.AiJobData> jobs, AgentRole role) {
-        return jobs.stream().anyMatch(job -> job.role() == role && "COMPLETED".equals(job.status()));
     }
 
     /** Starts listening; calling start more than once is idempotent. */
@@ -440,6 +572,7 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         server = null;
         if (current != null) current.stop(Math.max(0, delaySeconds));
         sseHub.close();
+        pipelineReaper.shutdownNow();
         ExecutorService pool = executor;
         executor = null;
         if (pool != null) pool.shutdownNow();
@@ -475,6 +608,16 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     public ControlPlaneStore store() { return store; }
     public SseHub sseHub() { return sseHub; }
     public ArtifactRegistry artifactRegistry() { return artifactRegistry; }
+
+    /** P1-08: application ports for tests and gradual RouteTable migration. */
+    public ScanQueryPort scanQueryPort() { return scanQueryPort; }
+    public EvidenceGraphQueryPort evidenceGraphQueryPort() { return evidenceGraphQueryPort; }
+    public CoverageQueryPort coverageQueryPort() { return coverageQueryPort; }
+    public HypothesisQueryPort hypothesisQueryPort() { return hypothesisQueryPort; }
+    public FindingQueryPort findingQueryPort() { return findingQueryPort; }
+    public PathRunQueryPort pathRunQueryPort() { return pathRunQueryPort; }
+    public ProviderQueryPort providerQueryPort() { return providerQueryPort; }
+    public AnalyzerIrIngestPort analyzerIrIngestPort() { return analyzerIrIngestPort; }
 
     private final class ApiHandler implements HttpHandler {
         @Override public void handle(HttpExchange exchange) throws IOException {
@@ -629,8 +772,7 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     }
 
     @Override public void listProviders(HttpExchange exchange) throws IOException {
-        List<Object> items = new ArrayList<>();
-        for (var provider : store.providers()) items.add(providerMap(provider));
+        List<Object> items = new ArrayList<>(providerQueryPort.listProviders());
         sendJson(exchange, 200, stringEnvelope("providers", items));
     }
 
@@ -821,8 +963,21 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                     "create a new explicitly authorized AI job");
         }
         if (!"cancel".equals(action)) throw new ApiException(400, "INVALID_ACTION", "action must be cancel or retry");
-        var cancelled = store.cancelAiJob(jobId, actor(exchange).operatorId(), Instant.now(clock).toString());
+        String operatorId = actor(exchange).operatorId();
+        var cancelled = store.cancelAiJob(jobId, operatorId, Instant.now(clock).toString());
         aiJobOrchestrator.cancel(jobId);
+        AuditPipelineCoordinator.Cursor cursor = cancelled.scanId() == null
+                ? null : auditPipeline.cursor(cancelled.scanId());
+        if (cursor != null && jobId.equals(cursor.expectedJobId())) {
+            store.auditChange(cancelled.projectId(), operatorId, "audit-pipeline.cancel", "ai-job", jobId,
+                    "{\"reason\":\"USER_CANCELLED\",\"pipelineRunId\":\"" + cursor.arm().pipelineRunId()
+                            + "\",\"stageAttemptId\":\"" + cursor.stageAttemptId()
+                            + "\",\"stage\":\"" + cursor.stage().name()
+                            + "\",\"scanId\":\"" + cancelled.scanId() + "\"}",
+                    Instant.now(clock).toString());
+        }
+        // Terminal cancel must reach the pipeline even when the orchestrator never started the job.
+        auditPipeline.onAiJobFinished(cancelled);
         sendJson(exchange, 200, aiJobMap(cancelled));
     }
 
@@ -1041,9 +1196,14 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         var job = store.createAiJob(projectId, AgentRole.PRE_ANALYSIS,
                 started.scan().dto().scanId(), outputLanguage, true, operatorId,
                 Instant.now(clock).toString());
-        auditPipeline.arm(new AuditPipelineCoordinator.Arm(
-                started.scan().dto().scanId(), projectId, operatorId, outputLanguage));
-        aiJobOrchestrator.submit(job, operatorId);
+        auditPipeline.armForJob(started.scan().dto().scanId(), projectId, operatorId, outputLanguage,
+                AuditPipelineCoordinator.PipelineStage.PRE_ANALYSIS, job.aiJobId());
+        if ("BLOCKED".equals(job.status()) || "FAILED".equals(job.status())
+                || "CANCELLED".equals(job.status())) {
+            auditPipeline.onAiJobFinished(job);
+        } else {
+            aiJobOrchestrator.submit(job, operatorId);
+        }
         idempotentAuditRuns.put(replayKey,
                 new AuditRunReplay(payload, started.scan().dto().scanId(), job.aiJobId()));
         rememberDurableIdempotency(durableScope, key, payload, started.scan().dto().scanId(),
@@ -1078,6 +1238,18 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         if (!scan.dto().projectId().equals(projectId)) {
             throw new ApiException(404, "SCAN_NOT_FOUND", "scan not found for project");
         }
+        String key = requireIdempotencyKey(exchange);
+        String payload = JsonCodec.stringify(body);
+        String durableScope = "audit-stage-retry:" + projectId + ":" + scanId + ":" + stage;
+        ensureIdempotencyCapacity(durableIdempotency, idempotencyMapKey(durableScope, key));
+        SQLiteControlPlanePersistence.IdempotencyData durable = existingDurableIdempotency(
+                durableScope, key, payload);
+        if (durable != null && durable.resultJson() != null) {
+            sendJson(exchange, 202, JsonCodec.parseObject(durable.resultJson()));
+            return;
+        }
+        requireRetryPrerequisite(projectId, scanId, stage);
+        invalidateArmedPipelineForRetry(scanId, actor(exchange).operatorId());
         String operatorId = actor(exchange).operatorId();
         AiOutputLanguage language = outputLanguage(optionalText(
                 body, "outputLanguage", AiOutputLanguage.ZH_CN.name()));
@@ -1089,6 +1261,7 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         switch (stage) {
             case "PRE_ANALYSIS", "AUTH_ANALYSIS", "AUTH_BYPASS_CONFIRM", "PATH_EXPLORATION",
                     "DYNAMIC_VERIFICATION", "VULNERABILITY_TRIAGE", "REPORT_GENERATION" -> {
+                String pipelineStageName = stage;
                 if ("AUTH_BYPASS_CONFIRM".equals(stage)) {
                     stage = "AUTH_ANALYSIS";
                 }
@@ -1096,16 +1269,25 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                     throw new ApiException(403, "AI_AUTHORIZATION_REQUIRED",
                             "explicit AI authorization is required to retry a model stage");
                 }
-                // Arm only after authorization/stage validation so a rejected retry cannot
-                // leave the pipeline armed and auto-enqueue a zombie dynamic task on recovery.
-                auditPipeline.arm(new AuditPipelineCoordinator.Arm(scanId, projectId, operatorId, language));
-                result.put("pipelineArmed", true);
                 AgentRole role = AgentRole.valueOf(stage);
                 var job = store.createAiJob(projectId, role, scanId, language, true, operatorId,
                         Instant.now(clock).toString());
-                aiJobOrchestrator.submit(job, operatorId);
+                AuditPipelineCoordinator.PipelineStage pipelineStage =
+                        AuditPipelineCoordinator.PipelineStage.valueOf(pipelineStageName);
+                AuditPipelineCoordinator.Arm armed = auditPipeline.armForJob(
+                        scanId, projectId, operatorId, language, pipelineStage, job.aiJobId());
+                result.put("pipelineArmed", !"BLOCKED".equals(job.status())
+                        && !"FAILED".equals(job.status())
+                        && !"CANCELLED".equals(job.status()));
+                if ("BLOCKED".equals(job.status()) || "FAILED".equals(job.status())
+                        || "CANCELLED".equals(job.status())) {
+                    auditPipeline.onAiJobFinished(job);
+                } else {
+                    aiJobOrchestrator.submit(job, operatorId);
+                }
                 store.auditChange(projectId, operatorId, "audit-stage.retry", "ai-job", job.aiJobId(),
-                        "{\"stage\":\"" + stage + "\",\"scanId\":\"" + scanId + "\"}",
+                        "{\"stage\":\"" + pipelineStageName + "\",\"scanId\":\"" + scanId
+                                + "\",\"pipelineRunId\":\"" + armed.pipelineRunId() + "\"}",
                         Instant.now(clock).toString());
                 result.put("aiJob", aiJobMap(job));
             }
@@ -1119,13 +1301,17 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                     throw new ApiException(409, "DYNAMIC_TASK_BUSY",
                             "a dynamic task is already active for this scan; stop it before retrying");
                 }
-                auditPipeline.arm(new AuditPipelineCoordinator.Arm(scanId, projectId, operatorId, language));
-                result.put("pipelineArmed", true);
                 TaskSnapshot snapshot = enqueueDynamicForPipeline(scanId, operatorId);
+                AuditPipelineCoordinator.Arm armed = auditPipeline.armForTask(
+                        scanId, projectId, operatorId, language,
+                        AuditPipelineCoordinator.PipelineStage.DYNAMIC_OBSERVATION,
+                        snapshot.scope().taskId());
+                result.put("pipelineArmed", true);
                 store.auditChange(projectId, operatorId, "audit-stage.retry", "worker-task",
                         snapshot.scope().taskId(),
                         "{\"stage\":\"DYNAMIC_OBSERVATION\",\"scanId\":\"" + scanId
-                                + "\",\"supersededCount\":" + superseded.size() + "}",
+                                + "\",\"supersededCount\":" + superseded.size()
+                                + "\",\"pipelineRunId\":\"" + armed.pipelineRunId() + "\"}",
                         Instant.now(clock).toString());
                 result.put("dynamicTask", dynamicTaskMap(snapshot));
                 result.put("supersededCount", superseded.size());
@@ -1133,7 +1319,74 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
             default -> throw new ApiException(400, "RETRY_STAGE_UNKNOWN",
                     "unsupported retry stage");
         }
+        rememberDurableIdempotency(durableScope, key, payload, scanId, JsonCodec.stringify(result));
         sendJson(exchange, 202, result);
+    }
+
+    private void invalidateArmedPipelineForRetry(String scanId, String operatorId) {
+        AuditPipelineCoordinator.Cursor existing = auditPipeline.cursor(scanId);
+        if (existing == null) {
+            return;
+        }
+        if (existing.expectedJobId() != null) {
+            var cancelled = store.cancelAiJob(existing.expectedJobId(), operatorId,
+                    Instant.now(clock).toString());
+            aiJobOrchestrator.cancel(existing.expectedJobId());
+            auditPipeline.onAiJobFinished(cancelled);
+        }
+        if (existing.expectedTaskId() != null) {
+            workerApi.cancelActiveDynamicTasks(existing.arm().projectId(), scanId);
+        }
+        store.auditChange(existing.arm().projectId(), operatorId, "audit-pipeline.invalidate", "scan",
+                scanId, "{\"reason\":\"STAGE_RETRY\",\"pipelineRunId\":\""
+                        + existing.arm().pipelineRunId()
+                        + "\",\"stageAttemptId\":\"" + existing.stageAttemptId() + "\"}",
+                Instant.now(clock).toString());
+    }
+
+    private void requireRetryPrerequisite(String projectId, String scanId, String stage) {
+        List<SQLiteControlPlanePersistence.AiJobData> jobs = store.aiJobs(projectId).stream()
+                .filter(job -> scanId.equals(job.scanId()))
+                .toList();
+        List<TaskSnapshot> tasks = workerApi.snapshots(projectId, scanId);
+        switch (stage) {
+            case "PRE_ANALYSIS" -> { }
+            case "AUTH_ANALYSIS" -> requireCompletedRole(jobs, AgentRole.PRE_ANALYSIS,
+                    "AUTH_ANALYSIS retry requires a completed PRE_ANALYSIS job");
+            case "DYNAMIC_OBSERVATION", "TRUSTED_DOCKER", "DYNAMIC" -> requireCompletedRole(jobs,
+                    AgentRole.AUTH_ANALYSIS,
+                    "DYNAMIC_OBSERVATION retry requires a completed AUTH_ANALYSIS job");
+            case "AUTH_BYPASS_CONFIRM" -> {
+                if (tasks.stream().noneMatch(task -> task.lifecycle() == TaskLifecycle.COMPLETED)) {
+                    throw new ApiException(409, "RETRY_PREREQUISITE_MISSING",
+                            "AUTH_BYPASS_CONFIRM retry requires a completed dynamic observation task");
+                }
+            }
+            case "DYNAMIC_VERIFICATION" -> {
+                if (tasks.stream().noneMatch(task -> task.lifecycle() == TaskLifecycle.COMPLETED)) {
+                    throw new ApiException(409, "RETRY_PREREQUISITE_MISSING",
+                            "DYNAMIC_VERIFICATION retry requires a completed dynamic observation task");
+                }
+                requireCompletedRole(jobs, AgentRole.AUTH_ANALYSIS,
+                        "DYNAMIC_VERIFICATION retry requires a completed AUTH_ANALYSIS job");
+            }
+            case "PATH_EXPLORATION" -> requireCompletedRole(jobs, AgentRole.DYNAMIC_VERIFICATION,
+                    "PATH_EXPLORATION retry requires a completed DYNAMIC_VERIFICATION job");
+            case "VULNERABILITY_TRIAGE" -> requireCompletedRole(jobs, AgentRole.PATH_EXPLORATION,
+                    "VULNERABILITY_TRIAGE retry requires a completed PATH_EXPLORATION job");
+            case "REPORT_GENERATION" -> requireCompletedRole(jobs, AgentRole.VULNERABILITY_TRIAGE,
+                    "REPORT_GENERATION retry requires a completed VULNERABILITY_TRIAGE job");
+            default -> { }
+        }
+    }
+
+    private static void requireCompletedRole(List<SQLiteControlPlanePersistence.AiJobData> jobs,
+                                             AgentRole role, String message) {
+        boolean completed = jobs.stream()
+                .anyMatch(job -> job.role() == role && "COMPLETED".equals(job.status()));
+        if (!completed) {
+            throw new ApiException(409, "RETRY_PREREQUISITE_MISSING", message);
+        }
     }
 
     private static ResourceBudget dynamicBudgetForArtifact(ArtifactDescriptor artifact, int probeCount) {
@@ -1147,7 +1400,8 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         long slowWaves = (slowRetryCap + 7L) / 8L;
         long wallSeconds = Math.min(3_600L,
                 Math.max(baseWall, baseWall + probeWaves * 2L + slowWaves * 4L + 90L));
-        long memoryBytes = size >= 80L * 1024 * 1024 ? 3L * 1024 * 1024 * 1024 : 2L * 1024 * 1024 * 1024;
+        long memoryBytes = size >= 80L * 1024 * 1024
+                ? 3L * 1024 * 1024 * 1024 : DEFAULT_MEMORY_BYTES;
         // Keep room for agent events plus one APPLICATION_REPORTED HTTP line per probe.
         long traceBytes = Math.min(16L * 1024 * 1024,
                 Math.max(size >= 20L * 1024 * 1024 ? 4L * 1024 * 1024 : 512L * 1024,
@@ -1177,7 +1431,12 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         Map<String, Object> body = readObject(exchange);
         ScanStart started = createOrReplayScan(projectId, body, requestIdempotencyKey(exchange),
                 actor(exchange).operatorId());
-        sendJson(exchange, started.replayed() ? 200 : 202, scanMap(started.scan().dto()));
+        String scanId = started.scan().dto().scanId();
+        // Create-response projection via ScanQueryPort (hypotheses + coverage), not ad-hoc store reads.
+        Map<String, Object> response = scanQueryPort.scanView(scanId)
+                .orElseThrow(() -> new ApiException(500, "SCAN_PROJECTION_FAILED",
+                        "scan projection missing after create"));
+        sendJson(exchange, started.replayed() ? 200 : 202, response);
     }
 
     private ScanStart createOrReplayScan(String projectId, Map<String, Object> body,
@@ -1228,9 +1487,10 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
             // Re-check after metadata extraction as well as before it.  This
             // closes the TOCTOU window where a file can be replaced while a
             // ZIP/class listing is being read.
-            PreAnalysisResult result = analysis.analyze(ArtifactMetadataReader.read(descriptor));
+            PreAnalysisInput analysisInput = ArtifactMetadataReader.read(descriptor);
+            PreAnalysisResult result = analysis.analyze(analysisInput);
             artifactRegistry.verifyUnchanged(descriptor);
-            build = buildScan(projectId, descriptor, scanId, result);
+            build = buildScan(projectId, descriptor, scanId, result, analysisInput.configurationLines());
         } catch (ArtifactValidationException invalidArtifact) {
             publishEvent(scanId, context, "TaskStopped", "preanalysis", Map.of(
                     "status", "STOPPED", "reason", "INVALID_ARTIFACT"));
@@ -1247,6 +1507,12 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         ControlPlaneStore.ScanRecord scanRecord =
                 new ControlPlaneStore.ScanRecord(build.scan(), build.evidence(), build.findings(), build.chains());
         store.saveScan(scanRecord, operatorId);
+        if (build.hypotheses() != null && !build.hypotheses().isEmpty()) {
+            store.saveHypotheses(scanId, build.hypotheses(), operatorId);
+        }
+        if (build.staticFacts() != null) {
+            store.saveStaticFacts(scanId, build.staticFacts(), operatorId);
+        }
         if (idempotencyHeader != null) {
             idempotentScans.putIfAbsent(projectId + ":" + idempotencyHeader, scanId);
             rememberDurableIdempotency(durableScope, idempotencyHeader, payload, scanId, null);
@@ -1263,7 +1529,102 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     }
 
     @Override public void sendScan(HttpExchange exchange, String scanId) throws IOException {
-        sendJson(exchange, 200, scanMap(store.requireScan(scanId).dto()));
+        Map<String, Object> body = scanQueryPort.scanView(scanId)
+                .orElseThrow(() -> new ApiException(404, "SCAN_NOT_FOUND", "scan not found"));
+        sendJson(exchange, 200, body);
+    }
+
+    @Override public void sendScanCoverage(HttpExchange exchange, String scanId) throws IOException {
+        Map<String, Object> body = scanQueryHttp.coverageBody(scanId)
+                .orElseThrow(() -> new ApiException(404, "SCAN_NOT_FOUND", "scan not found"));
+        sendJson(exchange, 200, body);
+    }
+
+    @Override public void sendScanEvidenceGraph(HttpExchange exchange, String scanId) throws IOException {
+        Map<String, Object> body = scanQueryHttp.evidenceGraphBody(scanId)
+                .orElseThrow(() -> new ApiException(404, "SCAN_NOT_FOUND", "scan not found"));
+        sendJson(exchange, 200, body);
+    }
+
+    @Override public void sendScanHypotheses(HttpExchange exchange, String scanId) throws IOException {
+        if (!scanQueryPort.exists(scanId)) {
+            throw new ApiException(404, "SCAN_NOT_FOUND", "scan not found");
+        }
+        Map<String, Object> body = scanQueryHttp.hypothesesBody(scanId)
+                .orElseThrow(() -> new ApiException(404, "SCAN_NOT_FOUND", "scan not found"));
+        sendJson(exchange, 200, body);
+    }
+
+    /** Read-only coverage matrix projection; SUCCESS is never mapped to safe/secure. */
+    CoverageMatrix coverageMatrixForScan(String scanId) {
+        return coverageMatrixForScan(scanId, CoverageMatrixProjector.SuppressMode.NONE);
+    }
+
+    CoverageMatrix coverageMatrixForScan(String scanId, CoverageMatrixProjector.SuppressMode suppressMode) {
+        ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
+        ApiDtos.ScanDto dto = scan.dto();
+        List<ApiDtos.PathRunDto> pathRuns = mergedPathRunsForScan(
+                dto.projectId(), dto.artifactDigest(), scanId);
+        return CoverageMatrixProjector.project(
+                scanId,
+                store.staticFacts(scanId),
+                dto.entries(),
+                dto.dependencies(),
+                dto.sinks(),
+                store.hypotheses(scanId),
+                pathRuns,
+                suppressMode);
+    }
+
+    /**
+     * Base Evidence Graph projection without analyzer overlays (P1-02 / P1-08).
+     * Public query path goes through {@link #evidenceGraphQueryPort()}.
+     */
+    EvidenceGraph projectEvidenceGraphBase(String scanId) {
+        ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
+        ApiDtos.ScanDto dto = scan.dto();
+        Optional<StaticFactSnapshot> facts = store.staticFacts(scanId);
+        // P1-02: prefer authoritative persisted graph from StaticFactSnapshot (schema v4).
+        if (facts.isPresent() && facts.get().hasPersistedEvidenceGraph()) {
+            return facts.get().evidenceGraph().orElseThrow();
+        }
+        List<ApiDtos.PathRunDto> pathRuns = mergedPathRunsForScan(
+                dto.projectId(), dto.artifactDigest(), scanId);
+        return EvidenceGraphProjector.fromScan(
+                scanId,
+                facts,
+                dto.entries(),
+                dto.sinks(),
+                dto.dependencies(),
+                store.hypotheses(scanId),
+                dto.findings(),
+                pathRuns);
+    }
+
+    /** Read-only Evidence Graph including analyzer ProgramNode overlays (P1-08). */
+    EvidenceGraph evidenceGraphForScan(String scanId) {
+        return evidenceGraphQueryPort.evidenceGraph(scanId)
+                .orElseThrow(() -> new ControlPlaneStore.MissingRecordException("scan not found: " + scanId));
+    }
+
+    private Map<String, Object> scanViewForPort(String scanId) {
+        Map<String, Object> body = scanMap(store.requireScan(scanId).dto());
+        body.put("hypotheses", hypothesisMaps(hypothesisQueryPort.hypotheses(scanId)));
+        coverageQueryPort.coverage(scanId).ifPresent(matrix -> body.put("coverage", matrix.toMap()));
+        return body;
+    }
+
+    /** PathRun maps for {@link PathRunQueryPort}; MOCK provenance remains visible. */
+    private List<Map<String, Object>> pathRunViewsForPort(String scanId) {
+        ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
+        ApiDtos.ScanDto dto = scan.dto();
+        List<ApiDtos.PathRunDto> pathRuns = mergedPathRunsForScan(
+                dto.projectId(), dto.artifactDigest(), scanId);
+        List<Map<String, Object>> maps = new ArrayList<>(pathRuns.size());
+        for (ApiDtos.PathRunDto run : pathRuns) {
+            maps.add(pathRunMap(run));
+        }
+        return maps;
     }
 
     @Override public synchronized void createDynamicTask(HttpExchange exchange, String scanId) throws IOException {
@@ -1321,19 +1682,24 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
 
     private Optional<ToolDataSource.FactRecord> requestSandboxProbe(
             String scanId, ToolExecutionContext.Scope scope, String principalId, String jobId,
-            String entrypointRef, List<String> candidateInputs, int maxRequests,
-            String techniqueId, String authorizationHeader) {
-        return requestSandboxProbe(scanId, scope, principalId, jobId, entrypointRef, candidateInputs,
-                maxRequests, techniqueId, authorizationHeader, null);
+            String toolCallId, String entrypointRef, List<String> candidateInputs, int maxRequests,
+            String techniqueId, String authorizationHeader, String bladeAuthHeader) {
+        return requestSandboxProbe(scanId, scope, principalId, jobId, toolCallId, entrypointRef,
+                candidateInputs, maxRequests, techniqueId, authorizationHeader, bladeAuthHeader, null);
     }
 
     private Optional<ToolDataSource.FactRecord> requestSandboxProbe(
             String scanId, ToolExecutionContext.Scope scope, String principalId, String jobId,
-            String entrypointRef, List<String> candidateInputs, int maxRequests,
-            String techniqueId, String authorizationHeader, String bladeAuthHeader) {
+            String toolCallId, String entrypointRef, List<String> candidateInputs, int maxRequests,
+            String techniqueId, String authorizationHeader, String bladeAuthHeader,
+            String experimentPlanId) {
         if (!"local".equals(scope.workspaceId()) || principalId == null || principalId.isBlank()) {
             throw new SecurityException("sandbox probe scope is invalid");
         }
+        if (jobId == null || jobId.isBlank()) {
+            throw new SecurityException("sandbox probe job identity is required");
+        }
+        String probeAttemptId = probeAttemptId(jobId, toolCallId);
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         if (!scope.projectId().equals(scan.dto().projectId())) {
             throw new SecurityException("sandbox probe project scope mismatch");
@@ -1361,11 +1727,22 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         if (!boundedBlade.isEmpty()) {
             com.aq.jvmsentinel.model.AuthBypassCandidate.validateAuthMaterialOnly(boundedBlade);
         }
+        String boundedPlanId = experimentPlanId == null ? "" : experimentPlanId.trim();
+        if (!boundedPlanId.isEmpty()) {
+            ExperimentPlan accepted = findAcceptedPlan(scanId, boundedPlanId).orElseThrow(() ->
+                    new IllegalArgumentException("EXPERIMENT_PLAN_NOT_FOUND"));
+            EntryRefResolver.Resolution planned = EntryRefResolver.resolve(
+                    scan.dto().entries(), accepted.entrypointRef());
+            if (!planned.resolved() || !canonicalRef.equals(planned.canonicalRef())) {
+                throw new IllegalArgumentException("EXPERIMENT_PLAN_ENTRYPOINT_MISMATCH");
+            }
+        }
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("entrypointRef", canonicalRef);
         request.put("candidateInputs", candidateInputs == null ? List.of() : candidateInputs);
         request.put("maxRequests", maxRequests);
         if (!boundedTechnique.isEmpty()) request.put("techniqueId", boundedTechnique);
+        if (!boundedPlanId.isEmpty()) request.put("experimentPlanId", boundedPlanId);
         if (!boundedAuth.isEmpty()) {
             request.put("authorizationHeaderBytes", boundedAuth.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
             request.put("authorizationHeaderSha256", payloadHash(boundedAuth));
@@ -1375,42 +1752,49 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
             request.put("bladeAuthHeaderSha256", payloadHash(boundedBlade));
         }
         String requestPayload = JsonCodec.stringify(request);
-        String durableScope = "sandbox-probe:job";
-        ensureIdempotencyCapacity(durableIdempotency, idempotencyMapKey(durableScope, jobId));
+        // Attempt-scoped identity: jobId + canonical toolCallId (P0-03). Legacy job-only keys remain readable.
+        String durableScope = "sandbox-probe:attempt";
+        ensureIdempotencyCapacity(durableIdempotency, idempotencyMapKey(durableScope, probeAttemptId));
         SQLiteControlPlanePersistence.IdempotencyData durable = existingDurableIdempotency(
-                durableScope, jobId, requestPayload);
-        TaskSnapshot existing = aiProbeTasks.get(jobId);
-        if (existing == null && durable != null) {
+                durableScope, probeAttemptId, requestPayload);
+        if (durable == null && (toolCallId == null || toolCallId.isBlank())) {
+            durable = existingDurableIdempotency("sandbox-probe:job", jobId, requestPayload);
+        }
+        final SQLiteControlPlanePersistence.IdempotencyData durableHit = durable;
+        TaskSnapshot existing = aiProbeTasks.get(probeAttemptId);
+        if (existing == null && durableHit != null) {
             existing = workerApi.snapshots(scan.dto().projectId(), scanId).stream()
-                    .filter(value -> value.scope().taskId().equals(durable.resultRef())).findFirst()
+                    .filter(value -> value.scope().taskId().equals(durableHit.resultRef())).findFirst()
                     .orElse(null);
             if (existing == null) {
-                return Optional.of(probeExecutionFailureFact(scope, jobId, scanId, canonicalRef, entry,
+                return Optional.of(probeExecutionFailureFact(scope, probeAttemptId, scanId, canonicalRef, entry,
                         candidateInputs, maxRequests, "SANDBOX_PROBE_REPLAY_MISSING",
                         "sandbox probe replay has no persistent worker task"));
             }
-            aiProbeTasks.putIfAbsent(jobId, existing);
+            aiProbeTasks.putIfAbsent(probeAttemptId, existing);
         }
         try {
             if (existing != null) {
                 TaskSnapshot refreshed = refreshTaskSnapshot(scan.dto().projectId(), scanId, existing.scope().taskId())
                         .orElse(existing);
-                aiProbeTasks.put(jobId, refreshed);
+                aiProbeTasks.put(probeAttemptId, refreshed);
                 if (isActiveLifecycle(refreshed.lifecycle())) {
                     refreshed = awaitDynamicTaskTerminal(scan.dto().projectId(), scanId, refreshed.scope().taskId(),
                             Duration.ofMinutes(8)).orElse(refreshed);
-                    aiProbeTasks.put(jobId, refreshed);
+                    aiProbeTasks.put(probeAttemptId, refreshed);
                 }
-                return Optional.of(probeFact(scope, refreshed, entry, probeState(refreshed), candidateInputs, maxRequests));
+                return Optional.of(probeFact(scope, refreshed, entry, probeState(refreshed),
+                        candidateInputs, maxRequests, probeAttemptId));
             }
             boolean scanBusy = workerApi.snapshots(scan.dto().projectId(), scanId).stream()
                     .anyMatch(value -> isActiveLifecycle(value.lifecycle()));
             if (scanBusy) {
-                // Do not bind a foreign in-flight task to the requested entry.
+                // Do not bind a foreign in-flight task to the requested entry / attempt.
                 Map<String, Object> busy = new LinkedHashMap<>();
                 busy.put("schemaVersion", 1);
                 busy.put("state", "BUSY");
                 busy.put("scanId", scanId);
+                busy.put("probeAttemptId", probeAttemptId);
                 busy.put("entrypointRef", canonicalRef);
                 busy.put("method", entry.method());
                 busy.put("route", entry.route());
@@ -1419,40 +1803,52 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                 busy.put("candidateCount", candidateInputs == null ? 0 : Math.min(16, candidateInputs.size()));
                 busy.put("requestLimit", Math.min(8, Math.max(1, maxRequests)));
                 busy.put("retryable", true);
-                return Optional.of(new ToolDataSource.FactRecord(scope, "sandbox-probe:busy:" + jobId,
-                        JSON.valueToTree(busy)));
+                return Optional.of(new ToolDataSource.FactRecord(scope,
+                        "sandbox-probe:busy:" + probeAttemptId, JSON.valueToTree(busy)));
             }
+
             TaskSnapshot snapshot = enqueueDynamicForPipeline(scanId, principalId, entryId, candidateInputs,
                     maxRequests, boundedTechnique.isEmpty() ? null : boundedTechnique,
                     boundedAuth.isEmpty() ? null : boundedAuth,
                     boundedBlade.isEmpty() ? null : boundedBlade);
-            if (aiProbeTasks.size() >= MAX_IDEMPOTENCY_KEYS && !aiProbeTasks.containsKey(jobId)) {
-                return Optional.of(probeExecutionFailureFact(scope, jobId, scanId, canonicalRef, entry,
-                        candidateInputs, maxRequests, "SANDBOX_PROBE_JOB_LIMIT",
-                        "sandbox probe job limit reached"));
+            if (!boundedPlanId.isEmpty()) {
+                traceProjectionService.bindExperimentPlan(snapshot.scope().taskId(), boundedPlanId);
             }
-            aiProbeTasks.putIfAbsent(jobId, snapshot);
-            rememberDurableIdempotency(durableScope, jobId, requestPayload, snapshot.scope().taskId(), null);
+            if (aiProbeTasks.size() >= MAX_IDEMPOTENCY_KEYS && !aiProbeTasks.containsKey(probeAttemptId)) {
+                return Optional.of(probeExecutionFailureFact(scope, probeAttemptId, scanId, canonicalRef, entry,
+                        candidateInputs, maxRequests, "SANDBOX_PROBE_JOB_LIMIT",
+                        "sandbox probe attempt limit reached"));
+            }
+            aiProbeTasks.putIfAbsent(probeAttemptId, snapshot);
+            rememberDurableIdempotency(durableScope, probeAttemptId, requestPayload,
+                    snapshot.scope().taskId(), null);
             TaskSnapshot finished = awaitDynamicTaskTerminal(scan.dto().projectId(), scanId, snapshot.scope().taskId(),
                     Duration.ofMinutes(8)).orElse(snapshot);
-            aiProbeTasks.put(jobId, finished);
-            return Optional.of(probeFact(scope, finished, entry, probeState(finished), candidateInputs, maxRequests));
+            aiProbeTasks.put(probeAttemptId, finished);
+            return Optional.of(probeFact(scope, finished, entry, probeState(finished),
+                    candidateInputs, maxRequests, probeAttemptId));
         } catch (ApiException apiException) {
-            return Optional.of(probeExecutionFailureFact(scope, jobId, scanId, canonicalRef, entry,
+            return Optional.of(probeExecutionFailureFact(scope, probeAttemptId, scanId, canonicalRef, entry,
                     candidateInputs, maxRequests, apiException.code,
                     apiException.getMessage() == null ? apiException.code : apiException.getMessage()));
         } catch (RuntimeException runtime) {
             String code = runtime.getMessage() != null && runtime.getMessage().matches("[A-Z][A-Z0-9_]{2,127}")
                     ? runtime.getMessage()
                     : "SANDBOX_PROBE_EXECUTION_FAILED";
-            return Optional.of(probeExecutionFailureFact(scope, jobId, scanId, canonicalRef, entry,
+            return Optional.of(probeExecutionFailureFact(scope, probeAttemptId, scanId, canonicalRef, entry,
                     candidateInputs, maxRequests, code,
                     runtime.getMessage() == null ? code : runtime.getMessage()));
         }
     }
 
+    /** Stable attempt identity: {@code jobId + canonical toolCallId} (P0-03). */
+    public static String probeAttemptId(String jobId, String toolCallId) {
+        String call = toolCallId == null || toolCallId.isBlank() ? "legacy" : toolCallId.trim();
+        return "patt-" + payloadHash(jobId + "\0" + call).substring(0, 32);
+    }
+
     private ToolDataSource.FactRecord probeExecutionFailureFact(
-            ToolExecutionContext.Scope scope, String jobId, String scanId, String canonicalRef,
+            ToolExecutionContext.Scope scope, String probeAttemptId, String scanId, String canonicalRef,
             ApiDtos.EntryDto entry, List<String> candidateInputs, int maxRequests,
             String failureCode, String detail) {
         Map<String, Object> value = new LinkedHashMap<>();
@@ -1460,6 +1856,7 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         value.put("state", "FAILED");
         value.put("lifecycle", "FAILED");
         value.put("scanId", scanId);
+        value.put("probeAttemptId", probeAttemptId);
         value.put("entrypointRef", canonicalRef);
         value.put("method", entry.method());
         value.put("route", entry.route());
@@ -1467,6 +1864,7 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         value.put("executor", "SERVER_OWNED_TRUSTED_DOCKER");
         value.put("candidateCount", candidateInputs == null ? 0 : Math.min(16, candidateInputs.size()));
         value.put("requestLimit", Math.min(8, Math.max(1, maxRequests)));
+        value.put("pathRunCount", 0);
         value.put("failureCode", failureCode == null || failureCode.isBlank()
                 ? "SANDBOX_PROBE_EXECUTION_FAILED" : failureCode);
         value.put("stopReason", "WORKER_FAILURE");
@@ -1474,7 +1872,8 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         if (detail != null && !detail.isBlank()) {
             value.put("detail", detail.length() > 240 ? detail.substring(0, 240) : detail);
         }
-        return new ToolDataSource.FactRecord(scope, "sandbox-probe:failed:" + jobId, JSON.valueToTree(value));
+        return new ToolDataSource.FactRecord(scope, "sandbox-probe:failed:" + probeAttemptId,
+                JSON.valueToTree(value));
     }
 
     private static boolean isActiveLifecycle(TaskLifecycle lifecycle) {
@@ -1523,10 +1922,12 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                                                 ApiDtos.EntryDto entry,
                                                 String state,
                                                 List<String> candidateInputs,
-                                                int maxRequests) {
+                                                int maxRequests,
+                                                String probeAttemptId) {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("schemaVersion", 1);
         value.put("state", state);
+        value.put("probeAttemptId", probeAttemptId);
         value.put("taskId", snapshot.scope().taskId());
         value.put("scanId", snapshot.scope().scanId());
         value.put("lifecycle", snapshot.lifecycle().name());
@@ -1538,6 +1939,10 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         value.put("candidateCount", candidateInputs == null ? 0 : Math.min(16, candidateInputs.size()));
         value.put("requestLimit", Math.min(8, Math.max(1, maxRequests)));
         value.put("probePlanId", "probe-plan:" + snapshot.scope().taskId());
+        String boundPlan = traceProjectionService.experimentPlanIdForTask(snapshot.scope().taskId());
+        if (boundPlan != null && !boundPlan.isBlank()) {
+            value.put("experimentPlanId", boundPlan);
+        }
         if (snapshot.stopReason() != null) value.put("stopReason", snapshot.stopReason().name());
         if (snapshot.failureCode() != null) value.put("failureCode", snapshot.failureCode());
         List<ApiDtos.PathRunDto> pathRuns = mergedPathRunsForTask(snapshot.scope());
@@ -1559,7 +1964,7 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         value.put("sqlEventCount", sqlTotal);
         value.put("outcomeClassCounts", outcomeCounts);
         value.put("pathRunFactHint", "facts_search kind=PATH_RUN or evidence_get pathrun:<pathRunId>");
-        return new ToolDataSource.FactRecord(scope, "sandbox-probe:" + snapshot.scope().taskId(),
+        return new ToolDataSource.FactRecord(scope, "sandbox-probe:attempt:" + probeAttemptId,
                 JSON.valueToTree(value));
     }
 
@@ -1892,16 +2297,17 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     }
 
     @Override public void listScanFindings(HttpExchange exchange, String scanId) throws IOException {
+        List<Map<String, Object>> views = findingQueryPort.findingsForScan(scanId)
+                .orElseThrow(() -> new ApiException(404, "SCAN_NOT_FOUND", "scan not found"));
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
-        List<Object> items = new ArrayList<>();
-        for (ApiDtos.FindingDto item : scan.findings()) items.add(findingMap(item));
+        List<Object> items = new ArrayList<>(views);
         sendJson(exchange, 200, envelope(scan, "findings", items));
     }
 
     @Override public void sendFinding(HttpExchange exchange, String findingId) throws IOException {
-        ApiDtos.FindingDto finding = store.finding(findingId);
-        if (finding == null) throw new ApiException(404, "FINDING_NOT_FOUND", "finding not found");
-        sendJson(exchange, 200, findingMap(finding));
+        Map<String, Object> view = findingQueryPort.findingView(findingId)
+                .orElseThrow(() -> new ApiException(404, "FINDING_NOT_FOUND", "finding not found"));
+        sendJson(exchange, 200, view);
     }
 
     @Override public synchronized void replayFinding(HttpExchange exchange, String findingId) throws IOException {
@@ -2102,13 +2508,21 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                 boundedTechnique.isEmpty() ? null : boundedTechnique,
                 authorizationHeader == null || authorizationHeader.isBlank() ? null : authorizationHeader,
                 bladeAuthHeader == null || bladeAuthHeader.isBlank() ? null : bladeAuthHeader);
+        if (experimentPlanId != null && !experimentPlanId.isBlank()) {
+            traceProjectionService.bindExperimentPlan(snapshot.scope().taskId(), experimentPlanId.trim());
+        }
         idempotentEntryFocusProbes.put(replayKey, new EntryFocusProbe(scanId, entryId, snapshot));
         rememberDurableIdempotency(durableScope, key, requestPayload, snapshot.scope().taskId(), null);
+        String focusAudit = "{\"scanId\":\"" + scanId + "\",\"entrypointId\":\"" + entryId
+                + "\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\",\"maxRequests\":" + maxRequests
+                + ",\"attemptKind\":\"INITIAL\",\"taskId\":\"" + snapshot.scope().taskId()
+                + "\",\"replayed\":false";
+        if (experimentPlanId != null && !experimentPlanId.isBlank()) {
+            focusAudit += ",\"experimentPlanId\":\"" + experimentPlanId.trim() + "\"";
+        }
+        focusAudit += "}";
         store.auditChange(scan.dto().projectId(), operatorId, "entry.focus-probe", "entry", entryId,
-                "{\"scanId\":\"" + scanId + "\",\"entrypointId\":\"" + entryId
-                        + "\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\",\"maxRequests\":"
-                        + maxRequests + "}",
-                Instant.now(clock).toString());
+                focusAudit, Instant.now(clock).toString());
         sendJson(exchange, 202, entryFocusProbeMap(scan, entryId, snapshot, false));
     }
 
@@ -2121,23 +2535,34 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         Objects.requireNonNull(plan, "plan");
         ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
         ExperimentPlanValidator.validate(plan, 8);
+        EntryRefResolver.Resolution entry = EntryRefResolver.resolve(scan.dto().entries(), plan.entrypointRef());
+        if (!entry.resolved()) {
+            throw new IllegalArgumentException(entry.code());
+        }
+        final ExperimentPlan acceptedPlan = entry.canonicalRef().equals(plan.entrypointRef())
+                ? plan
+                : new ExperimentPlan(
+                        plan.planId(), entry.canonicalRef(), plan.track(), plan.method(), plan.contentType(),
+                        plan.requiredParameters(), plan.authRequired(), plan.successHttpHint(),
+                        plan.successJsonPath(), plan.maxAttempts(), plan.candidateInputs(),
+                        plan.stopCondition(), plan.packId(), plan.fuzzStrategyJson());
         List<ExperimentPlan> plans = scanExperimentPlans.computeIfAbsent(scanId,
                 ignored -> new ArrayList<>());
-        plans.removeIf(existing -> existing.planId().equals(plan.planId()));
-        plans.add(plan);
+        plans.removeIf(existing -> existing.planId().equals(acceptedPlan.planId()));
+        plans.add(acceptedPlan);
         while (plans.size() > 64) {
             plans.remove(0);
         }
         try {
             store.persistExperimentPlan(new SQLiteControlPlanePersistence.ExperimentPlanData(
-                    plan.planId(),
+                    acceptedPlan.planId(),
                     scanId,
                     scan.dto().projectId(),
                     scan.dto().artifactDigest(),
                     PayloadSchemaGuard.withSchemaVersion(
-                            JSON, plan, PayloadSchemaGuard.MIN_SCHEMA_VERSION),
+                            JSON, acceptedPlan, PayloadSchemaGuard.MIN_SCHEMA_VERSION),
                     Instant.now(clock).toString(),
-                    plan.fuzzStrategyJson()));
+                    acceptedPlan.fuzzStrategyJson()));
         } catch (RuntimeException failure) {
             throw new ApiException(500, "EXPERIMENT_PLAN_PERSIST_FAILED",
                     "could not persist experiment plan");
@@ -2262,23 +2687,32 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         }
         TaskSnapshot snapshot = enqueueDynamicForPipeline(scanId, operatorId, entry.id(), inputs, 2,
                 AuthBypassTechnique.CUSTOM_POC.name(), null, null);
+        if (card.experimentPlanId() != null && !card.experimentPlanId().isBlank()) {
+            traceProjectionService.bindExperimentPlan(snapshot.scope().taskId(), card.experimentPlanId().trim());
+        }
         idempotentExperimentCardReplays.put(replayKey, new EntryFocusProbe(scanId, entry.id(), snapshot));
         rememberDurableIdempotency(durableScope, key, requestPayload, snapshot.scope().taskId(), null);
+        String replayAudit = "{\"scanId\":\"" + scanId + "\",\"cardId\":\"" + cardId
+                + "\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\",\"dependencyMode\":\"MOCK\""
+                + ",\"attemptKind\":\"REPLAY\",\"taskId\":\"" + snapshot.scope().taskId()
+                + "\",\"replayed\":false";
+        if (card.experimentPlanId() != null && !card.experimentPlanId().isBlank()) {
+            replayAudit += ",\"experimentPlanId\":\"" + card.experimentPlanId().trim() + "\"";
+        }
+        replayAudit += "}";
         store.auditChange(scan.dto().projectId(), operatorId, "sql-experiment-card.replay", "entry",
-                entry.id(),
-                "{\"scanId\":\"" + scanId + "\",\"cardId\":\"" + cardId
-                        + "\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\",\"dependencyMode\":\"MOCK\"}",
-                Instant.now(clock).toString());
+                entry.id(), replayAudit, Instant.now(clock).toString());
         Map<String, Object> accepted = entryFocusProbeMap(scan, entry.id(), snapshot, false);
+        accepted.put("attemptKind", "REPLAY");
         accepted.put("cardId", cardId);
         accepted.put("sqlExperimentReplay", true);
         sendJson(exchange, 202, accepted);
     }
 
-    private static Map<String, Object> entryFocusProbeMap(ControlPlaneStore.ScanRecord scan,
-                                                          String entryId,
-                                                          TaskSnapshot snapshot,
-                                                          boolean replayed) {
+    private Map<String, Object> entryFocusProbeMap(ControlPlaneStore.ScanRecord scan,
+                                                  String entryId,
+                                                  TaskSnapshot snapshot,
+                                                  boolean replayed) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("schemaVersion", ApiDtos.SCHEMA_VERSION);
         result.put("projectId", scan.dto().projectId());
@@ -2290,6 +2724,11 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         result.put("verificationStatus", "DYNAMIC_SUSPECTED");
         result.put("dependencyMode", "MOCK");
         result.put("replayed", replayed);
+        result.put("attemptKind", replayed ? "REPLAY" : "INITIAL");
+        String boundPlan = traceProjectionService.experimentPlanIdForTask(snapshot.scope().taskId());
+        if (boundPlan != null && !boundPlan.isBlank()) {
+            result.put("experimentPlanId", boundPlan);
+        }
         result.put("requiredCapability", snapshot.spec().requiredCapability().name());
         result.put("dynamicExecutionMode", snapshot.spec().requiredCapability().name());
         return result;
@@ -2399,8 +2838,9 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         List<Object> paths = new ArrayList<>();
         for (ApiDtos.PathDto path : dto.paths()) paths.add(pathMap(path));
         for (ApiDtos.PathDto dynamic : dynamicPaths) paths.add(pathMap(dynamic));
-        List<Object> pathRunMaps = new ArrayList<>();
-        for (ApiDtos.PathRunDto run : pathRuns) pathRunMaps.add(pathRunMap(run));
+        // PathRun wire maps go through PathRunQueryPort (P1-08); DTOs still drive cards/gates.
+        List<Object> pathRunMaps = new ArrayList<>(pathRunQueryPort.pathRunsForScan(dto.scanId())
+                .orElse(List.of()));
         List<Object> path = new ArrayList<>();
         for (ApiDtos.PathStepDto step : flattened) path.add(pathStepMap(step));
         List<SqlExperimentCard> cards = SqlExperimentCardBuilder.fromPathRuns(dto.scanId(), pathRuns);
@@ -2448,10 +2888,11 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         budgetMap.put("entryTrackPlans", budget.entryTrackPlans());
         body.put("entries", entries);
         body.put("findings", findings);
-        // authGapFindingCount = demoted secondary finding rows omitted from findings[].
-        // authGapSinkCount = AUTH_GAP sink signals (often much larger; not finding rows).
+        // authGapFindingCount = GuardCoverage / AUTH_GAP finding rows demoted from primary findings[].
+        // authGapSinkCount = AUTH_GAP sink signals (legacy wire); hypotheses[] is authoritative for GUARD_COVERAGE.
         body.put("authGapFindingCount", authGapFindingCount);
         body.put("authGapSinkCount", authGapSinkCount);
+        body.put("hypotheses", hypothesisMaps(store.hypotheses(dto.scanId())));
         body.put("paths", paths);
         body.put("pathRuns", pathRunMaps);
         body.put("path", path);
@@ -2465,9 +2906,12 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         body.put("analysisPacks", packMaps);
         body.put("probeBudget", budgetMap);
         ContrastLedger.Ledger ledger = ContrastLedger.build(
-                dto.entries(), dto.sinks(), scan.evidence(), pathRuns);
+                dto.entries(), dto.sinks(), scan.evidence(), pathRuns,
+                StaticFactSnapshot.resolveTaintPaths(store.staticFacts(scan.dto().scanId()), dto.sinks()));
         body.put("rankedSinks", com.aq.jvmsentinel.control.service.DashboardService.rankedSinkMaps(
-                dto.sinks(), dto.entries(), ledger.rows()));
+                dto.sinks(),
+                StaticFactSnapshot.resolveTaintPaths(store.staticFacts(scan.dto().scanId()), dto.sinks()),
+                dto.entries(), ledger.rows()));
         body.put("contrastSnapshotId", ledger.snapshotId());
         body.put("contrastRoundIndex", ledger.roundIndex());
         List<ApiDtos.PathRunDto> priorRuns = pathRuns.stream()
@@ -2481,7 +2925,8 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                         Map.of()))
                 .toList();
         ContrastLedger.Ledger previous = ContrastLedger.build(
-                dto.entries(), dto.sinks(), scan.evidence(), priorRuns);
+                dto.entries(), dto.sinks(), scan.evidence(), priorRuns,
+                StaticFactSnapshot.resolveTaintPaths(store.staticFacts(scan.dto().scanId()), dto.sinks()));
         body.put("ledgerDiff",
                 com.aq.jvmsentinel.control.service.DashboardService.ledgerDiffMap(previous, ledger));
         body.put("verifiedFindings", List.of());
@@ -2572,8 +3017,15 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     private static boolean isAuthGapFinding(ApiDtos.FindingDto finding) {
         if (finding == null) return false;
         String sinkId = finding.sinkId() == null ? "" : finding.sinkId().toLowerCase(Locale.ROOT);
+        String sink = finding.sink() == null ? "" : finding.sink().toLowerCase(Locale.ROOT);
+        String property = finding.securityProperty() == null ? "" : finding.securityProperty().toUpperCase(Locale.ROOT);
         String title = finding.title() == null ? "" : finding.title();
         return sinkId.startsWith("sink-auth-gap")
+                || sinkId.startsWith("guard:")
+                || sinkId.startsWith("hypothesis:")
+                || SecurityHypothesisProjector.GUARD_COVERAGE_SINK_LABEL.equalsIgnoreCase(sink)
+                || "AUTH_GAP".equals(property)
+                || "GUARD_COVERAGE".equals(property)
                 || title.contains("鉴权缺口")
                 || title.toLowerCase(Locale.ROOT).contains("auth gap");
     }
@@ -2703,7 +3155,7 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     }
 
     private ScanBuild buildScan(String projectId, ArtifactDescriptor descriptor, String scanId,
-                                PreAnalysisResult result) {
+                                PreAnalysisResult result, List<String> configurationLines) {
         String now = Instant.now(clock).toString();
         Map<String, String> evidenceIds = new LinkedHashMap<>();
         Map<String, ApiDtos.EvidenceDto> evidence = new LinkedHashMap<>();
@@ -2748,8 +3200,43 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                     source.id(), source.category(), source.symbol(), source.source(), source.status().name(),
                     source.confidence(), prefixRefs(source.evidenceRefs(), evidenceIds)));
         }
-        List<ApiDtos.FindingDto> findings = buildFindings(
-                projectId, descriptor, scanId, entries, dependencies, sinks, evidence);
+        // P1-03: ProviderBundle/Registry is an authoritative entry/effect/guard source (thin merge).
+        ProviderRegistry.ensureDefaults();
+        ProviderContext providerContext = ProviderContext.of(
+                projectId, descriptor.sha256(), scanId, descriptor, result);
+        ProviderBundle providerBundle = ProviderRegistry.collect(providerContext);
+        mergeProviderBundleIntoScan(
+                providerBundle, projectId, descriptor.sha256(), scanId, now, entries, sinks, evidence);
+        BytecodeFactIndex factIndex = result.bytecodeFactIndex();
+        List<String> entryProtocols = new ArrayList<>();
+        for (Entrypoint source : result.entryCatalog().entries()) {
+            entryProtocols.add(source.protocol());
+        }
+        ArtifactUniverse artifactUniverse =
+                ArtifactUniverseBuilder.build(descriptor, factIndex, entryProtocols);
+        StaticFactSnapshot staticFacts =
+                StaticFactSnapshot.fromBytecodeIndex(factIndex, artifactUniverse);
+        SecurityHypothesisProjector.Result projected = buildFindings(
+                projectId, descriptor, scanId, entries, dependencies, sinks, evidence, factIndex.taintPaths());
+        List<ApiDtos.FindingDto> findings = projected.findings();
+        DetectorContext detectorContext = new DetectorContext(
+                scanId,
+                artifactUniverse,
+                staticFacts,
+                entries,
+                sinks,
+                dependencies,
+                evidence,
+                configurationLines);
+        List<SecurityHypothesis> detected = new ArrayList<>(
+                DetectorRegistry.defaults().analyzeAll(detectorContext));
+        for (ProviderContribution.Detector detector : providerBundle.detectors()) {
+            if (detector != null && detector.hypothesis() != null) {
+                detected.add(detector.hypothesis());
+            }
+        }
+        List<SecurityHypothesis> hypotheses =
+                SecurityHypothesisProjector.mergeWithDetectors(projected.hypotheses(), detected);
         List<ApiDtos.PathDto> paths = buildPaths(
                 projectId, descriptor, scanId, entries, sinks, evidence);
         List<String> allEvidence = new ArrayList<>(evidence.keySet());
@@ -2758,40 +3245,181 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         ApiDtos.ScanDto scan = new ApiDtos.ScanDto(ApiDtos.SCHEMA_VERSION, projectId, descriptor.sha256(), scanId,
                 "COMPLETED", ApiDtos.STATIC_INFERRED, ApiDtos.MOCK, now, now, allEvidence,
                 entries, dependencies, sinks, findings, paths);
-        return new ScanBuild(scan, evidence, findings, chains);
+        // P1-02: persist authoritative Evidence Graph wire inside StaticFactSnapshot (schema v4).
+        EvidenceGraph authoritativeGraph = EvidenceGraphProjector.fromScan(
+                scanId,
+                Optional.of(staticFacts),
+                entries,
+                sinks,
+                dependencies,
+                hypotheses,
+                findings,
+                List.of());
+        List<IrNode> providerNodes = new ArrayList<>();
+        for (ProviderContribution.TrustBoundary contribution : providerBundle.trustBoundaries()) {
+            if (contribution != null && contribution.node() != null) providerNodes.add(contribution.node());
+        }
+        for (ProviderContribution.Guard contribution : providerBundle.guards()) {
+            if (contribution != null && contribution.node() != null) providerNodes.add(contribution.node());
+        }
+        for (ProviderContribution.Sanitizer contribution : providerBundle.sanitizers()) {
+            if (contribution != null && contribution.node() != null) providerNodes.add(contribution.node());
+        }
+        authoritativeGraph = EvidenceGraphMerge.withExtraNodes(authoritativeGraph, providerNodes);
+        staticFacts = staticFacts.withEvidenceGraph(authoritativeGraph);
+        return new ScanBuild(scan, evidence, findings, chains, staticFacts, hypotheses);
     }
 
-    private List<ApiDtos.FindingDto> buildFindings(String projectId, ArtifactDescriptor descriptor, String scanId,
-                                                   List<ApiDtos.EntryDto> entries, List<ApiDtos.DependencyDto> dependencies,
-                                                   List<ApiDtos.SinkDto> sinks,
-                                                   Map<String, ApiDtos.EvidenceDto> evidence) {
-        List<ApiDtos.FindingDto> findings = new ArrayList<>();
-        String dependencyId = dependencies.isEmpty() ? "none" : dependencies.get(0).id();
-        String dependency = dependencies.isEmpty() ? "none" : dependencies.get(0).target();
-        int index = 0;
-        for (ApiDtos.SinkDto sink : sinks) {
-            // AUTH_GAP remains as a sink/fact for tools; it must not flood the primary findings list.
-            if (sink.category() != null && "AUTH_GAP".equalsIgnoreCase(sink.category())) {
+    /**
+     * P1-01: merge runtime-loaded class list into persisted universe + CoverageMatrix gaps.
+     * Used by agent/fixture callbacks; static-only scans leave the list empty.
+     */
+    public void mergeRuntimeLoadedClasses(String scanId, List<String> loadedClassNames, String actorId) {
+        Objects.requireNonNull(scanId, "scanId");
+        // audit_events.operator_id FK requires a real operators row (bootstrap local-admin).
+        String requestedOperatorId = (actorId == null || actorId.isBlank()) ? "local-admin" : actorId;
+        String operatorId = requestedOperatorId;
+        if (!"local-admin".equals(requestedOperatorId)
+                && store.operators().stream().noneMatch(op -> requestedOperatorId.equals(op.operatorId()))) {
+            operatorId = "local-admin";
+        }
+        StaticFactSnapshot prior = store.staticFacts(scanId)
+                .orElseThrow(() -> new ControlPlaneStore.MissingRecordException("static facts missing"));
+        store.saveStaticFacts(scanId, prior.withRuntimeLoadedClasses(loadedClassNames), operatorId);
+    }
+
+    /**
+     * Thin P1-03 merge: provider-only entry/effect/guard contributions become scan DTOs when
+     * not already represented by PreAnalysis (compatibility retained).
+     */
+    private static void mergeProviderBundleIntoScan(
+            ProviderBundle bundle,
+            String projectId,
+            String artifactDigest,
+            String scanId,
+            String now,
+            List<ApiDtos.EntryDto> entries,
+            List<ApiDtos.SinkDto> sinks,
+            Map<String, ApiDtos.EvidenceDto> evidence) {
+        if (bundle == null) return;
+        Set<String> entryIds = new LinkedHashSet<>();
+        Set<String> entryRoutes = new LinkedHashSet<>();
+        for (ApiDtos.EntryDto entry : entries) {
+            entryIds.add(entry.id());
+            entryRoutes.add(entryKey(entry.protocol(), entry.method(), entry.route()));
+        }
+        for (ProviderContribution.Entry contribution : bundle.entries()) {
+            EntryNode node = contribution.node();
+            if (node == null) continue;
+            String entryId = stripPrefix(node.id(), "entry:");
+            if (entryIds.contains(entryId)
+                    || entryRoutes.contains(entryKey(node.protocol(), node.operation(), node.address()))) {
                 continue;
             }
-            String sinkBindingKey = sinkBindingKey(sink, evidence);
-            ApiDtos.EntryDto linkedEntry = entries.stream()
-                    .filter(entry -> entryBindingKey(entry, evidence).equals(sinkBindingKey))
-                    .findFirst().orElse(null);
-            String entryId = linkedEntry == null ? "entry-unbound" : linkedEntry.id();
-            String route = linkedEntry == null ? "UNBOUND" : linkedEntry.route();
-            // A class-name/static signal is not an exploitability verdict. In
-            // particular, an unbound sink has no demonstrated path from an entrypoint.
-            String severity = linkedEntry == null ? "info"
-                    : staticSinkSeverity(sink.category(), sink.confidence());
-            String title = "静态推断的" + sinkCategoryLabel(sink.category()) + "信号";
-            List<String> refs = sink.evidenceRefs();
-            findings.add(new ApiDtos.FindingDto(ApiDtos.SCHEMA_VERSION, projectId, descriptor.sha256(), scanId,
-                    "finding-" + scanId + "-" + (++index), title, severity, ApiDtos.STATIC_INFERRED,
-                    entryId, route, sink.id(), sink.symbol(), dependency, List.of(dependencyId), refs,
-                    refs.size(), sink.confidence(), ApiDtos.MOCK));
+            List<String> refs = new ArrayList<>(node.evidenceRefs());
+            ensureProviderEvidence(evidence, projectId, artifactDigest, scanId, now, refs,
+                    contribution.providerId());
+            entries.add(new ApiDtos.EntryDto(
+                    ApiDtos.SCHEMA_VERSION, projectId, artifactDigest, scanId,
+                    entryId, node.protocol(), node.operation(), node.address(),
+                    node.declaringSymbol(), simpleName(node.declaringSymbol()),
+                    node.inputs(), List.of(),
+                    node.verificationStatus(), 0.7, 0, refs));
+            entryIds.add(entryId);
         }
-        return findings;
+        Set<String> sinkIds = new LinkedHashSet<>();
+        for (ApiDtos.SinkDto sink : sinks) {
+            sinkIds.add(sink.id());
+        }
+        for (ProviderContribution.Effect contribution : bundle.effects()) {
+            EffectNode node = contribution.node();
+            if (node == null) continue;
+            String sinkId = stripPrefix(node.id(), "effect:");
+            if (sinkIds.contains(sinkId)) continue;
+            List<String> refs = new ArrayList<>(node.evidenceRefs());
+            ensureProviderEvidence(evidence, projectId, artifactDigest, scanId, now, refs,
+                    contribution.providerId());
+            sinks.add(new ApiDtos.SinkDto(
+                    ApiDtos.SCHEMA_VERSION, projectId, artifactDigest, scanId,
+                    sinkId, node.category(), node.symbol(), node.sourceLabel(),
+                    node.verificationStatus(), 0.7, refs));
+            sinkIds.add(sinkId);
+        }
+        for (ProviderContribution.Guard contribution : bundle.guards()) {
+            GuardNode node = contribution.node();
+            if (node == null) continue;
+            if (!"AUTH_GAP".equalsIgnoreCase(node.guardKind())) continue;
+            String sinkId = stripPrefix(node.id(), "guard:");
+            if (sinkIds.contains(sinkId)) continue;
+            List<String> refs = new ArrayList<>(node.evidenceRefs());
+            ensureProviderEvidence(evidence, projectId, artifactDigest, scanId, now, refs,
+                    contribution.providerId());
+            sinks.add(new ApiDtos.SinkDto(
+                    ApiDtos.SCHEMA_VERSION, projectId, artifactDigest, scanId,
+                    sinkId, "AUTH_GAP", node.expression(), "provider-guard:" + contribution.providerId(),
+                    ApiDtos.STATIC_INFERRED, 0.7, refs));
+            sinkIds.add(sinkId);
+        }
+    }
+
+    private static void ensureProviderEvidence(
+            Map<String, ApiDtos.EvidenceDto> evidence,
+            String projectId,
+            String artifactDigest,
+            String scanId,
+            String now,
+            List<String> refs,
+            String providerId) {
+        if (refs == null) return;
+        for (int i = 0; i < refs.size(); i++) {
+            String ref = refs.get(i);
+            if (ref == null || ref.isBlank()) continue;
+            if (evidence.containsKey(ref)) continue;
+            String id = ref.startsWith("evidence-") ? ref : "evidence-" + scanId + "-provider-" + ref;
+            if (!evidence.containsKey(id)) {
+                evidence.put(id, new ApiDtos.EvidenceDto(
+                        ApiDtos.SCHEMA_VERSION, projectId, artifactDigest, scanId, id,
+                        "INFERENCE", "provider:" + providerId + ":" + ref, 0.7,
+                        "provider contribution evidence", now, "provider-spi/0.1",
+                        "none", "artifact:" + artifactDigest, ApiDtos.MOCK));
+            }
+            refs.set(i, id);
+        }
+    }
+
+    private static String entryKey(String protocol, String method, String route) {
+        return String.valueOf(protocol).toUpperCase(Locale.ROOT) + "|"
+                + String.valueOf(method).toUpperCase(Locale.ROOT) + "|"
+                + String.valueOf(route);
+    }
+
+    private static String stripPrefix(String value, String prefix) {
+        if (value == null) return "";
+        return value.startsWith(prefix) ? value.substring(prefix.length()) : value;
+    }
+
+    private SecurityHypothesisProjector.Result buildFindings(String projectId, ArtifactDescriptor descriptor,
+                                                             String scanId,
+                                                             List<ApiDtos.EntryDto> entries,
+                                                             List<ApiDtos.DependencyDto> dependencies,
+                                                             List<ApiDtos.SinkDto> sinks,
+                                                             Map<String, ApiDtos.EvidenceDto> evidence,
+                                                             List<BytecodeFactIndex.TaintPath> taintPaths) {
+        return SecurityHypothesisProjector.project(
+                projectId,
+                descriptor.sha256(),
+                scanId,
+                entries,
+                dependencies,
+                sinks,
+                evidence,
+                taintPaths,
+                ControlPlaneServer::sinkBindingKey,
+                ControlPlaneServer::entryBindingKey,
+                (category, confidence, bound) -> bound
+                        ? staticSinkSeverity(category, confidence)
+                        : "info",
+                ControlPlaneServer::sinkCategoryLabel);
     }
 
     private static String sinkCategoryLabel(String category) {
@@ -3068,10 +3696,24 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         result.put("evidenceRefs", dto.evidenceRefs()); result.put("evidenceCount", dto.evidenceCount());
         result.put("evidence", dto.evidenceCount()); result.put("confidence", dto.confidence());
         result.put("dependencyMode", dto.dependencyMode());
+        if (dto.hypothesisId() != null && !dto.hypothesisId().isBlank()) {
+            result.put("hypothesisId", dto.hypothesisId());
+        }
+        if (dto.securityProperty() != null && !dto.securityProperty().isBlank()) {
+            result.put("securityProperty", dto.securityProperty());
+        }
         if (dto.rootCause() != null && !dto.rootCause().isEmpty()) {
             result.put("rootCause", dto.rootCause());
         }
         return result;
+    }
+
+    private static List<Object> hypothesisMaps(List<SecurityHypothesis> hypotheses) {
+        List<Object> items = new ArrayList<>();
+        for (SecurityHypothesis hypothesis : hypotheses == null ? List.<SecurityHypothesis>of() : hypotheses) {
+            items.add(hypothesis.toMap());
+        }
+        return items;
     }
 
     private static Map<String, Object> pathStepMap(ApiDtos.PathStepDto dto) {
@@ -3115,6 +3757,10 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         if (dto.experimentPlanId() != null && !dto.experimentPlanId().isBlank()) {
             result.put("experimentPlanId", dto.experimentPlanId());
         }
+        String correlationId = correlationIdFromPathRun(dto);
+        if (!correlationId.isBlank()) {
+            result.put("correlationId", correlationId);
+        }
         result.put("method", dto.method());
         result.put("contentType", dto.contentType());
         result.put("requestSummary", dto.requestSummary());
@@ -3141,6 +3787,21 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         result.put("identityPrecondition", dto.identityPrecondition());
         result.put("branchHitMap", dto.branchHitMap());
         return result;
+    }
+
+    private static String correlationIdFromPathRun(ApiDtos.PathRunDto dto) {
+        if (dto == null) return "";
+        String attempt = dto.attemptId() == null ? "" : dto.attemptId().trim();
+        if (attempt.startsWith("req-") && attempt.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")) {
+            return attempt;
+        }
+        String summary = dto.requestSummary() == null ? "" : dto.requestSummary();
+        int marker = summary.indexOf("correlationId=");
+        if (marker < 0) return "";
+        String rest = summary.substring(marker + "correlationId=".length()).trim();
+        int end = rest.indexOf(' ');
+        String value = end < 0 ? rest : rest.substring(0, end);
+        return value.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,63}") ? value : "";
     }
 
     private static Map<String, Object> scanMap(ApiDtos.ScanDto dto) {
@@ -3676,7 +4337,12 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     }
 
     private record ScanBuild(ApiDtos.ScanDto scan, Map<String, ApiDtos.EvidenceDto> evidence,
-                             List<ApiDtos.FindingDto> findings, List<ApiDtos.AttackChainDto> chains) { }
+                             List<ApiDtos.FindingDto> findings, List<ApiDtos.AttackChainDto> chains,
+                             StaticFactSnapshot staticFacts, List<SecurityHypothesis> hypotheses) {
+        private ScanBuild {
+            hypotheses = List.copyOf(hypotheses == null ? List.of() : hypotheses);
+        }
+    }
     private record ScanStart(ControlPlaneStore.ScanRecord scan, boolean replayed) { }
     private record AuditRunReplay(String payload, String scanId, String preAnalysisJobId) { }
     private record DynamicTaskPayload(String scanId, String artifactDigest, String targetEntryId) { }

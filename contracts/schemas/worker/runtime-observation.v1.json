@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/contracts/schemas/worker/runtime-observation.v1.json",
+  "title": "RuntimeObservation v1 (minimal)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "observationId",
+    "kind",
+    "scope",
+    "observedAt",
+    "coverageStatus",
+    "stopReason"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "observationId": { "type": "string", "minLength": 1 },
+    "kind": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Open taxonomy. Known: HTTP_PROBE, AGENT_EVENT, JDBC_EVENT, EXCEPTION, STATE, UNKNOWN. Unknown kinds degrade to UNKNOWN."
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "artifactDigest", "scanId", "taskId"],
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1 },
+        "artifactDigest": { "type": "string", "minLength": 1 },
+        "scanId": { "type": "string", "minLength": 1 },
+        "taskId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "observedAt": { "type": "string", "minLength": 1 },
+    "evidenceRefs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "coverageStatus": {
+      "type": "string",
+      "enum": ["OBSERVED", "PARTIAL", "UNKNOWN", "UNREACHED", "TRUNCATED"]
+    },
+    "stopReason": { "type": "string" },
+    "correlationId": { "type": "string" },
+    "payload": { "type": "object" },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "patternProperties": {
+    "^x-veyrion-": {}
+  }
+}

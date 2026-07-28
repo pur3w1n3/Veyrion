@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "p2-holdout-state-concurrency",
+  "kind": "holdout",
+  "parentBaselineId": "p2-state-concurrency",
+  "description": "Holdout / reserved-surface fixtures for STATE/CONCURRENCY. Must keep firing without AI.",
+  "expectedSecurityProperties": [
+    "QUOTA_FLOW_INVARIANT",
+    "RACE_WINDOW_HEURISTIC",
+    "LOCK_TRANSACTION_GAP"
+  ],
+  "holdout": {
+    "surfaces": [
+      "/wallet/credit without quota/state guard",
+      "Thread.start + HashMap.put without lock",
+      "SharedStore mutate without transaction"
+    ],
+    "detectorMustStillFire": [
+      "state-sequence",
+      "concurrency-resource"
+    ],
+    "notes": "Holdout is reserved-pattern coverage; deep state-machine / real race proof still out of scope."
+  },
+  "metrics": {
+    "stub": false,
+    "computedAtGate": true
+  },
+  "honesty": {
+    "aiNotInBaseJudgment": true,
+    "neverTreatSuccessAsSafe": true,
+    "syntheticBaselineOnly": true
+  }
+}

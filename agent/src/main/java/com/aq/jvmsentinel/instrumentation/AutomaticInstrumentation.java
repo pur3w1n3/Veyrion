@@ -17,6 +17,7 @@ import net.bytebuddy.utility.JavaModule;
 
 import java.lang.instrument.Instrumentation;
 import java.security.ProtectionDomain;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static net.bytebuddy.matcher.ElementMatchers.hasSuperType;
@@ -34,7 +35,8 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
  * Startup-only instrumentation. Bootstrap classes are deliberately not transformed; calls into selected JDK
  * APIs are observed at non-bootstrap application call sites instead.
  */
-final class AutomaticInstrumentation {
+/** Public so Byte Buddy advice inlined into foreign packages can call helpers/nested types. */
+public final class AutomaticInstrumentation {
     private static final String[] SPRING_MAPPING_ANNOTATIONS = {
             "org.springframework.web.bind.annotation.RequestMapping",
             "org.springframework.web.bind.annotation.GetMapping",
@@ -245,14 +247,16 @@ final class AutomaticInstrumentation {
                     : lower.startsWith("insert") || lower.startsWith("update")
                     || lower.startsWith("delete") || lower.startsWith("replace") ? "WRITE" : "UNKNOWN";
             boolean parameterized = sql.contains("?");
-            return Map.of("captureMode", "JDBC_STATEMENT",
-                    "sql", sql,
-                    "readWrite", readWrite,
-                    "parameterized", Boolean.toString(parameterized),
-                    "maliciousFragmentPresent",
-                    Boolean.toString(lower.contains("'\"veyrion-sqli-meta")),
-                    "parameterSummary", parameterized ? "jdbc-placeholders" : "inline",
-                    "outcome", "OBSERVED");
+            Map<String, String> detail = new LinkedHashMap<>();
+            detail.put("captureMode", "JDBC_STATEMENT");
+            detail.put("sql", sql);
+            detail.put("readWrite", readWrite);
+            detail.put("parameterized", Boolean.toString(parameterized));
+            detail.put("maliciousFragmentPresent",
+                    Boolean.toString(lower.contains("'\"veyrion-sqli-meta")));
+            detail.put("parameterSummary", parameterized ? "jdbc-placeholders" : "inline");
+            detail.put("outcome", "OBSERVED");
+            return detail;
         }
     }
 
@@ -261,41 +265,20 @@ final class AutomaticInstrumentation {
         }
 
         @Advice.OnMethodEnter(suppress = Throwable.class)
-        public static boolean enter(@Advice.Origin("#t") String className,
-                                    @Advice.Origin("#m") String methodName,
-                                    @Advice.AllArguments Object[] args) {
-            boolean coverageScope = AgentRuntime.beginCoverageRequest();
-            String httpMethod = "";
-            String route = "";
-            if (args != null) {
-                for (Object arg : args) {
-                    if (arg == null) continue;
-                    try {
-                        Object methodValue = arg.getClass().getMethod("getMethod").invoke(arg);
-                        Object uriValue = arg.getClass().getMethod("getRequestURI").invoke(arg);
-                        if (methodValue instanceof String text) httpMethod = text;
-                        if (uriValue instanceof String text) route = text;
-                        if (!httpMethod.isBlank() || !route.isBlank()) break;
-                    } catch (Throwable ignored) {
-                        // Not a servlet request argument.
-                    }
-                }
-            }
+        public static void enter(@Advice.Origin("#t") String className,
+                                 @Advice.Origin("#m") String methodName,
+                                 @Advice.AllArguments Object[] args) {
+            HttpRequestView view = HttpRequestView.fromArgs(args);
+            AgentRuntime.bindRequestCorrelation(view.correlationId);
+            AgentRuntime.beginCoverageRequest();
             AgentRuntime.recordTransformedDetail("HTTP", className, methodName,
-                    Map.of("captureMode", "SERVLET_METHOD",
-                            "httpMethod", truncate(httpMethod, 16),
-                            "route", truncate(route, 512)));
-            return coverageScope;
+                    httpDetail("SERVLET_METHOD", view));
         }
 
         @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
-        public static void exit(@Advice.Enter boolean coverageScope) {
-            AgentRuntime.endCoverageRequest(coverageScope);
-        }
-
-        private static String truncate(String value, int max) {
-            if (value == null) return "";
-            return value.length() <= max ? value : value.substring(0, max);
+        public static void exit() {
+            AgentRuntime.endCoverageRequest();
+            AgentRuntime.releaseRequestCorrelation();
         }
     }
 
@@ -304,41 +287,20 @@ final class AutomaticInstrumentation {
         }
 
         @Advice.OnMethodEnter(suppress = Throwable.class)
-        public static boolean enter(@Advice.Origin("#t") String className,
-                                    @Advice.Origin("#m") String methodName,
-                                    @Advice.AllArguments Object[] args) {
-            boolean coverageScope = AgentRuntime.beginCoverageRequest();
-            String httpMethod = "";
-            String route = "";
-            if (args != null) {
-                for (Object arg : args) {
-                    if (arg == null) continue;
-                    try {
-                        Object methodValue = arg.getClass().getMethod("getMethod").invoke(arg);
-                        Object uriValue = arg.getClass().getMethod("getRequestURI").invoke(arg);
-                        if (methodValue instanceof String text) httpMethod = text;
-                        if (uriValue instanceof String text) route = text;
-                        if (!httpMethod.isBlank() || !route.isBlank()) break;
-                    } catch (Throwable ignored) {
-                        // Not a servlet request argument.
-                    }
-                }
-            }
+        public static void enter(@Advice.Origin("#t") String className,
+                                 @Advice.Origin("#m") String methodName,
+                                 @Advice.AllArguments Object[] args) {
+            HttpRequestView view = HttpRequestView.fromArgs(args);
+            AgentRuntime.bindRequestCorrelation(view.correlationId);
+            AgentRuntime.beginCoverageRequest();
             AgentRuntime.recordTransformedDetail("HTTP", className, methodName,
-                    Map.of("captureMode", "SERVLET_FILTER",
-                            "httpMethod", truncate(httpMethod, 16),
-                            "route", truncate(route, 512)));
-            return coverageScope;
+                    httpDetail("SERVLET_FILTER", view));
         }
 
         @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
-        public static void exit(@Advice.Enter boolean coverageScope) {
-            AgentRuntime.endCoverageRequest(coverageScope);
-        }
-
-        private static String truncate(String value, int max) {
-            if (value == null) return "";
-            return value.length() <= max ? value : value.substring(0, max);
+        public static void exit() {
+            AgentRuntime.endCoverageRequest();
+            AgentRuntime.releaseRequestCorrelation();
         }
     }
 
@@ -347,41 +309,20 @@ final class AutomaticInstrumentation {
         }
 
         @Advice.OnMethodEnter(suppress = Throwable.class)
-        public static boolean enter(@Advice.Origin("#t") String className,
-                                    @Advice.Origin("#m") String methodName,
-                                    @Advice.AllArguments Object[] args) {
-            boolean coverageScope = AgentRuntime.beginCoverageRequest();
-            String httpMethod = "";
-            String route = "";
-            if (args != null) {
-                for (Object arg : args) {
-                    if (arg == null) continue;
-                    try {
-                        Object methodValue = arg.getClass().getMethod("getMethod").invoke(arg);
-                        Object uriValue = arg.getClass().getMethod("getRequestURI").invoke(arg);
-                        if (methodValue instanceof String text) httpMethod = text;
-                        if (uriValue instanceof String text) route = text;
-                        if (!httpMethod.isBlank() || !route.isBlank()) break;
-                    } catch (Throwable ignored) {
-                        // Not a servlet request argument.
-                    }
-                }
-            }
+        public static void enter(@Advice.Origin("#t") String className,
+                                 @Advice.Origin("#m") String methodName,
+                                 @Advice.AllArguments Object[] args) {
+            HttpRequestView view = HttpRequestView.fromArgs(args);
+            AgentRuntime.bindRequestCorrelation(view.correlationId);
+            AgentRuntime.beginCoverageRequest();
             AgentRuntime.recordTransformedDetail("HTTP", className, methodName,
-                    Map.of("captureMode", "SPRING_INTERCEPTOR",
-                            "httpMethod", truncate(httpMethod, 16),
-                            "route", truncate(route, 512)));
-            return coverageScope;
+                    httpDetail("SPRING_INTERCEPTOR", view));
         }
 
         @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
-        public static void exit(@Advice.Enter boolean coverageScope) {
-            AgentRuntime.endCoverageRequest(coverageScope);
-        }
-
-        private static String truncate(String value, int max) {
-            if (value == null) return "";
-            return value.length() <= max ? value : value.substring(0, max);
+        public static void exit() {
+            AgentRuntime.endCoverageRequest();
+            AgentRuntime.releaseRequestCorrelation();
         }
     }
 
@@ -390,45 +331,29 @@ final class AutomaticInstrumentation {
         }
 
         @Advice.OnMethodEnter(suppress = Throwable.class)
-        public static boolean enter(@Advice.Origin("#t") String className,
-                                    @Advice.Origin("#m") String methodName,
-                                    @Advice.AllArguments Object[] args) {
-            boolean coverageScope = AgentRuntime.beginCoverageRequest();
-            String httpMethod = "";
-            String route = "";
-            if (args != null) {
-                for (Object arg : args) {
-                    if (arg == null) continue;
-                    try {
-                        Object methodValue = arg.getClass().getMethod("getMethod").invoke(arg);
-                        Object uriValue = arg.getClass().getMethod("getRequestURI").invoke(arg);
-                        if (methodValue instanceof String text) httpMethod = text;
-                        if (uriValue instanceof String text) route = text;
-                        if (!httpMethod.isBlank() || !route.isBlank()) break;
-                    } catch (Throwable ignored) {
-                        // Controller args are often domain types, not the request.
-                    }
-                }
-            }
-            if (route.isBlank()) {
+        public static void enter(@Advice.Origin("#t") String className,
+                                 @Advice.Origin("#m") String methodName,
+                                 @Advice.AllArguments Object[] args) {
+            HttpRequestView view = HttpRequestView.fromArgs(args);
+            if (view.route.isBlank()) {
                 String[] fromContext = resolveRequestFromContext();
-                httpMethod = fromContext[0];
-                route = fromContext[1];
+                view = new HttpRequestView(fromContext[0], fromContext[1],
+                        view.correlationId.isBlank() ? correlationFromContext() : view.correlationId);
             }
+            AgentRuntime.bindRequestCorrelation(view.correlationId);
+            AgentRuntime.beginCoverageRequest();
             // Entering a Spring @*Mapping handler means argument resolution already succeeded.
-            java.util.HashMap<String, String> detail = new java.util.HashMap<>();
-            detail.put("captureMode", "SPRING_MAPPING_ANNOTATION");
+            Map<String, String> detail = httpDetail("SPRING_MAPPING_ANNOTATION", view);
+            detail = new LinkedHashMap<>(detail);
             detail.put("entryHit", "true");
             detail.put("parameterBound", "true");
-            if (!httpMethod.isBlank()) detail.put("httpMethod", truncate(httpMethod, 16));
-            if (!route.isBlank()) detail.put("route", truncate(route, 512));
             AgentRuntime.recordTransformedDetail("HTTP", className, methodName, detail);
-            return coverageScope;
         }
 
         @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
-        public static void exit(@Advice.Enter boolean coverageScope) {
-            AgentRuntime.endCoverageRequest(coverageScope);
+        public static void exit() {
+            AgentRuntime.endCoverageRequest();
+            AgentRuntime.releaseRequestCorrelation();
         }
 
         /** Best-effort URI from Spring RequestContextHolder when controllers omit the request arg. */
@@ -452,9 +377,85 @@ final class AutomaticInstrumentation {
             return new String[]{httpMethod, route};
         }
 
-        private static String truncate(String value, int max) {
-            if (value == null) return "";
-            return value.length() <= max ? value : value.substring(0, max);
+        public static String correlationFromContext() {
+            try {
+                Class<?> holder = Class.forName(
+                        "org.springframework.web.context.request.RequestContextHolder");
+                Object attrs = holder.getMethod("getRequestAttributes").invoke(null);
+                if (attrs == null) return "";
+                Object request = attrs.getClass().getMethod("getRequest").invoke(attrs);
+                return HttpRequestView.header(request, "X-Veyrion-Correlation-Id");
+            } catch (Throwable ignored) {
+                return "";
+            }
+        }
+    }
+
+    /** Visible to Advice bodies inlined into application / framework classes. */
+    public static Map<String, String> httpDetail(String captureMode, HttpRequestView view) {
+        Map<String, String> detail = new LinkedHashMap<>();
+        detail.put("captureMode", captureMode);
+        if (view.httpMethod != null && !view.httpMethod.isBlank()) {
+            detail.put("httpMethod", truncate(view.httpMethod, 16));
+        }
+        if (view.route != null && !view.route.isBlank()) {
+            detail.put("route", truncate(view.route, 512));
+        }
+        if (view.correlationId != null && !view.correlationId.isBlank()) {
+            detail.put("correlationId", truncate(view.correlationId, 64));
+        }
+        return detail;
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null) return "";
+        return value.length() <= max ? value : value.substring(0, max);
+    }
+
+    /** Public so Advice-inlined bodies in foreign classes can call helpers. */
+    public static final class HttpRequestView {
+        public final String httpMethod;
+        public final String route;
+        public final String correlationId;
+
+        public HttpRequestView(String httpMethod, String route, String correlationId) {
+            this.httpMethod = httpMethod == null ? "" : httpMethod;
+            this.route = route == null ? "" : route;
+            this.correlationId = correlationId == null ? "" : correlationId;
+        }
+
+        public static HttpRequestView fromArgs(Object[] args) {
+            String httpMethod = "";
+            String route = "";
+            String correlationId = "";
+            if (args != null) {
+                for (Object arg : args) {
+                    if (arg == null) continue;
+                    try {
+                        Object methodValue = arg.getClass().getMethod("getMethod").invoke(arg);
+                        Object uriValue = arg.getClass().getMethod("getRequestURI").invoke(arg);
+                        if (methodValue instanceof String text) httpMethod = text;
+                        if (uriValue instanceof String text) route = text;
+                        if (correlationId.isBlank()) {
+                            correlationId = header(arg, "X-Veyrion-Correlation-Id");
+                        }
+                        if (!httpMethod.isBlank() || !route.isBlank()) break;
+                    } catch (Throwable ignored) {
+                        // Not a servlet request argument.
+                    }
+                }
+            }
+            return new HttpRequestView(httpMethod, route, correlationId);
+        }
+
+        public static String header(Object request, String name) {
+            if (request == null || name == null || name.isBlank()) return "";
+            try {
+                Object value = request.getClass().getMethod("getHeader", String.class).invoke(request, name);
+                return value instanceof String text ? text.trim() : "";
+            } catch (Throwable ignored) {
+                return "";
+            }
         }
     }
 

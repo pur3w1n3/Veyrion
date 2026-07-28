@@ -311,6 +311,14 @@ public final class LoopbackMysqlStub implements AutoCloseable {
         if (normalized.matches("select\\s+1(?:\\s*;)?")) return "1";
         if (normalized.contains("@@version") || normalized.contains("version()")) return "8.0.36-veyrion-mock";
         if (normalized.contains("database()")) return "veyrion";
+        // Connector/J asks the server for transaction/read-only variables during pool startup.
+        // Empty scalars are not protocol-compatible and fail Druid connection acquisition.
+        if (normalized.contains("transaction_isolation")
+                || normalized.contains("tx_isolation")) return "REPEATABLE-READ";
+        if (normalized.contains("@@session.transaction_read_only")
+                || normalized.contains("@@session.tx_read_only")
+                || normalized.contains("@@global.read_only")
+                || normalized.contains("@@read_only")) return "0";
         return "";
     }
 

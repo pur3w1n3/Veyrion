@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { api, artifactLabel, type AiJobDto, type ArtifactDto, type AuditRetryStage, type DashboardSnapshot, type DynamicTaskDto, type OutputLanguage, type RoleAssignmentDto, type ScanDto } from '../api'
 import { confirmAiAuthorization } from '../aiAuthorization'
-import { dependencyModeLabel, jobStatusLabel, roleLabel, stopReasonLabel, timelineStateLabel } from '../labels'
-import { AI_ROLES } from '../labels'
+import { AI_ROLES, dependencyModeLabel, pipelineStatusLabel, roleLabel, stopReasonLabel, timelineStateLabel } from '../labels'
 import { ArtifactImportPanel } from './ArtifactImportPanel'
 import { errorMessage, Notice, PageHeader, StatusPill } from './Common'
 
@@ -146,12 +145,12 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
     : dynamicStatus === 'FAILED' || dynamicStatus === 'CANCELLED' ? 'unavailable'
       : dynamicStatus === 'QUEUED' || dynamicStatus === 'RUNNING' || dynamicStatus === 'LEASED' ? 'active' : 'waiting'
   const jobDetail = (job: AiJobDto | undefined, waiting: string) => job
-    ? `${job.aiJobId} · ${jobStatusLabel(job.status)}${job.errorCode ? ` · ${job.errorCode}` : ''}`
+    ? `${job.aiJobId} · ${pipelineStatusLabel(job.status, job.errorCode)}${job.errorCode ? ` · ${job.errorCode}` : ''}`
     : waiting
   const dynamicDetail = dynamicTask
     ? [
         dynamicTask.taskId,
-        jobStatusLabel(dynamicStatus),
+        pipelineStatusLabel(dynamicStatus, dynamicTask.failureCode),
         dynamicTask.progressDetail,
         stopReasonLabel(dynamicTask.stopReason),
         dynamicTask.failureCode,
@@ -224,7 +223,7 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
             <label className="field"><span>执行模式（外部依赖）</span><select name="dependencyMode"><option value="MOCK">{dependencyModeLabel('MOCK')}：外部依赖用规则/协议模拟代替（当前唯一可用）</option></select></label>
             <label className="field"><span>网络策略</span><input value="禁止外网（固定）" readOnly /></label>
             <label className="field"><span>超时（秒）</span><input name="timeout" type="number" min="10" max="3600" defaultValue="300" /></label>
-            <label className="field"><span>内存（MiB）</span><input name="memory" type="number" min="128" max="8192" defaultValue="512" /></label>
+            <label className="field"><span>内存（MiB）</span><input name="memory" type="number" min="128" max="4096" defaultValue="2048" /></label>
           </div>
           <div className="selected-ai"><small>自动流水线 · {language === 'ZH_CN' ? '简体中文输出' : 'English output'}</small><strong>{assignments.length}/6 个角色已绑定</strong><span>一次授权后，系统按前置建模、鉴权分析、按轨观察、绕过确认、动态验证、路径探索、漏洞研判、报告生成推进；模型不能改沙箱策略或单独升级状态。</span></div>
           <label className="check-field"><input type="checkbox" name="authorized" />我确认该制品与范围已获授权，并接受无外网、危险动作空跑演练，以及整条审计流水线自动推进。</label>

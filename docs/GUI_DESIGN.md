@@ -1,188 +1,166 @@
 # 溯脉 · Veyrion GUI 设计规范
 
-产品正式名称为“溯脉 · Veyrion”（英文：Veyrion）。前端显示使用该品牌；Java 内部包名 `com.aq.jvmsentinel`、Maven artifactId、内部 service name 和 `/api/v1` 路由保持兼容。商标和域名仍需法务检索。
+> 本文只定义界面信息架构、交互、状态展示和前端安全。运行方式见 [frontend/README](../frontend/README.md)，产品语义见 [PRD](PRD.md)，完成度见 [MVP Backlog](MVP_BACKLOG.md)。
 
-## 1. 设计结论
+## 1. 体验原则
 
-**个人本地版边界**：GUI 只承载本地项目、制品、扫描、证据和沙箱任务。当前不提供多租户切换、企业 RBAC/SSO 或真实供应商生产连接入口；Provider 和动态能力均须显示本地授权与沙箱状态，沙箱不可用时明确显示不可用，而不是提供宿主机执行按钮。
+1. 用户始终知道当前项目、制品、扫描、阶段、入口、身份轨和停止原因。
+2. 任何风险结论都能回到 PathRun、请求、调用位置、依赖副作用和证据引用。
+3. 静态推测、动态疑似、动态确认、已验证和未覆盖必须同时用文字与视觉区分。
+4. 大规模数据优先使用筛选、聚合、时间线和局部展开，不一次渲染完整图谱。
+5. 授权、真实连接、身份切换和动态执行必须显示策略状态并要求明确确认。
+6. Demo 与真实数据严格分离；真实 API 失败时不得伪造结果或自动回退 Demo。
 
-模型服务页的**六个**角色卡片（前置建模、鉴权分析、动态验证、路径探索、漏洞研判、报告生成）同时提供中文提示词和 English prompt 编辑器。保存时由后端校验长度、控制字符和项目作用域；任务创建时固化提示词快照。审计执行页按以下顺序显示阶段（与 [AUDIT_FLOW.md](AUDIT_FLOW.md) 一致）：
+当前产品是个人本地版。界面不承诺企业 SSO、多租户切换或生产级 RBAC；沙箱不可用时展示 `DYNAMIC_DISABLED`，不得提供宿主机执行按钮。
 
-- 前置建模 → 鉴权分析 → 沙箱按轨动态观察 → 鉴权绕过确认 → 动态验证 → 路径探索 → 漏洞研判 → 报告生成
-
-结果页主视图应以 **PathRun 会话**（入口 × 身份轨 × 尝试）组织，展示超时分类码、HTTP/Agent/SQL 摘要与合成身份前置条件；`AUTH_GAP` 与 `DYNAMIC_CONFIRMED` 等状态可筛选。筛选选项包含 `STATIC_INFERRED` / `DYNAMIC_SUSPECTED` / `DYNAMIC_CONFIRMED` / `VERIFIED` / `UNREACHED`。
-
-GUI 不采用 Swing、JavaFX 或把页面嵌入 Java 进程。Java 负责 JVM 制品分析、任务编排、证据和沙箱控制；GUI 作为独立的 React/TypeScript 应用，通过受控 API 访问后端。
-
-推荐形态：
-
-```text
-React + TypeScript GUI
-        │ REST / SSE（或 WebSocket）
-Java/Kotlin Control Plane
-        │
-本地 Worker / 私有化沙箱
-```
-
-企业桌面版可以在第二阶段使用 Tauri 2 包装同一套前端，将控制面和 Worker 运行在本机或客户内网；不单独维护一套 JavaFX 界面。
-
-## 2. 产品体验目标
-
-1. 用户始终知道系统正在探索哪一个入口、哪条路径、哪个分支和哪个依赖。
-2. 从任意风险结论都能一键回到请求、调用栈、字节码位置和依赖证据。
-3. 候选、疑似、已验证和未覆盖状态必须通过视觉和文字同时区分。
-4. 面对海量节点时优先提供筛选、聚合、时间线和局部展开，而不是一次绘制全部图谱。
-5. 危险操作、真实连接和身份切换必须有明确的策略状态和二次确认。
-
-## 3. 技术选型
-
-### 3.1 MVP
-
-- React 18+、TypeScript、Vite；
-- TanStack Query：服务端状态、缓存和重试；
-- React Router：项目、扫描和详情路由；
-- Tailwind CSS + 可审计的组件库（例如 shadcn/ui）：统一设计令牌；
-- React Flow 或 Cytoscape：入口图、数据流图和攻击链；
-- Monaco Editor：反编译代码、配置和证据定位；
-- Apache ECharts：覆盖率、任务吞吐和依赖统计；
-- SSE 优先用于扫描进度和事件流；需要双向实时控制时再启用 WebSocket。
-
-当前原型用轻量 SVG/CSS 绘制示例图，不把演示图误认为真实图谱；接入大规模事实图后再切换到 React Flow/Cytoscape 的局部/虚拟化渲染。
-
-### 3.2 部署
-
-- **本地开发/单机版**：Vite 静态资源由 Java API 服务提供，Worker 使用本地沙箱。
-- **企业私有化**：前端静态资源、Control Plane、Worker 和对象存储分离部署，支持 SSO/RBAC。
-- **桌面版（后续）**：Tauri 负责窗口、自动更新和本地服务生命周期；敏感制品默认不离开本机。
-
-前端不直接访问数据库、对象存储、沙箱或模型供应商，所有访问必须经过 Control Plane 的鉴权、脱敏和审计层。
-原型默认使用 `VITE_DEMO_MODE=true` 的本地 MOCK 数据；切换真实 API 必须显式关闭 demo 模式并配置项目 ID，避免把演示数据误认为扫描事实。
-
-## 4. 信息架构
+## 2. 信息架构
 
 ```text
-全局工作区切换器（左上角）
-├── 创建 / 选择 / 删除授权工作区
-└── 切换项目作用域
+全局工作区
+├── 创建、选择、删除项目
+└── 固定当前 project / artifact / scan 作用域
 
 主导航
 ├── 审计执行
-│   ├── 制品导入与策略
-│   ├── 静态事实 / 入口发现
-│   ├── PRE_ANALYSIS 前置建模与计划评审
-│   └── 沙箱动态观察 / 动态验证 / 路径探索 / 研判 / 报告时间线
+│   ├── 制品导入与授权
+│   ├── 静态事实与入口
+│   └── 固定阶段时间线
 ├── 审计结果
-│   └── 入口、路径、发现、证据和攻击链
+│   ├── 最终报告（默认）
+│   ├── Coverage Matrix / Unresolved
+│   ├── Security Hypotheses
+│   ├── PathRun / 身份轨
+│   ├── Findings / Evidence
+│   └── Evidence Graph / Static-Dynamic Contrast
 ├── 模型服务
-│   ├── 已保存 API 侧边选择
-│   ├── Provider / 模型清单
-│   └── 项目 AI 角色绑定
+│   ├── Provider / 模型
+│   └── 六角色绑定与双语提示词
 ├── AI 审计过程
-│   └── Provider、工具、推断摘要和失败事件
+│   └── Provider、工具、可见摘要和错误
 └── 全局设置
 ```
 
-工作区不是一次审计中的中转页面，而是所有页面共享的项目作用域。左侧导航保持稳定，顶部显示当前工作区和当前功能；任何结果和 AI 事件都必须绑定当前不可变扫描上下文。
+工作区是所有页面共享的作用域，不是一次审计中的中转页。结果页默认显示 `REPORT_GENERATION` 产生的最终 Markdown；coverage、hypothesis、PathRun、发现、Evidence Graph 和对照账本是并列证据视图，不以单一风险分数替代。
 
-## 5. 关键页面
+## 3. 审计执行
 
-### 5.1 项目总览
-
-首屏只展示可行动信息：
-
-- 入口总数、已运行入口、未覆盖入口；
-- 方法/分支/sink 覆盖度；
-- 已验证、动态疑似、静态推测和未覆盖数量；
-- 当前任务、资源消耗、替身命中率和模型成本；
-- 高价值攻击链卡片。
-
-每个指标可点击进入过滤后的证据列表，避免“漂亮但不可追溯”的仪表盘。
-
-### 5.2 入口地图
-
-左侧是协议/模块/风险/权限筛选，中心是入口节点图或表格，右侧是选中入口的参数、前置条件和静态可达 sink。入口节点支持“加入探索计划”“查看调用图”和“打开最近轨迹”。
-
-### 5.3 路径探索器
-
-采用调试器式三栏布局：
+阶段顺序必须与 [AUDIT_FLOW](AUDIT_FLOW.md) 一致：
 
 ```text
-路径树        调用/分支时间线             详情与证据
-入口          当前方法、参数、污点         请求/返回值
-  └─分支      分支条件、快照、回溯         DB 表字段、文件、网络、进程
+前置建模 -> 鉴权分析 -> 按轨动态观察 -> 鉴权绕过确认
+         -> 动态验证 -> 路径探索 -> 漏洞研判 -> 报告生成
 ```
 
-用户可在任意节点查看失败原因、修改合成身份/依赖响应并发起安全重放；重放结果生成新证据版本，不覆盖原轨迹。
+每个阶段展示：
 
-### 5.4 数据流与攻击链画布
+- 状态、当前 attempt、开始/结束时间和停止原因；
+- 输入证据范围、输出摘要、创建的 AI Job 或动态 task；
+- 是否等待 Worker、被策略阻断、取消、失败或进入证据投影；
+- 下一阶段为何可推进或为何不能推进。
 
-- 数据流图默认从一个 source 展开到 transform 和 sink；支持按表、字段、文件路径、域名和命令过滤。
-- 攻击链画布显示入口、漏洞、共享资源、权限和状态边；推测边为虚线，疑似边为橙色，已验证边为红色实线，模拟依赖用紫色标识。
-- 图谱采用局部展开、节点聚合和虚拟化渲染，默认不加载整个项目图。
+手工 job、焦点 probe、finding replay 和实验卡 replay 必须与主流水线 attempt 视觉隔离，不能表现成主阶段已完成。`BUSY`、`FAILED`、未投影 trace 和无 PathRun 的 probe 不能计为有效尝试。
 
-### 5.5 漏洞详情
+## 4. 审计结果
 
-顶部显示状态、风险等级、置信度、CWE 和“依赖模式”；正文按证据顺序展示请求、身份、调用栈、污点转换、sink、副作用和复现结果；底部提供确认、驳回、复测、标记误报和关联攻击链操作。
+### 4.1 最终报告
 
-## 6. API 与实时事件（Control Plane MVP 已完成）
+默认视图安全渲染 Markdown，显示生成角色、语言、模型、策略快照、证据范围和生成时间。报告中的 `INFERENCE` 不得渲染为事实徽标，模型 HTML 不得直接执行。
 
-前端只消费版本化 DTO，不直接依赖 Java 内部 record。最低接口集合：
+当前下载物要准确命名：
 
-- `POST /api/v1/projects`
-- `POST /api/v1/projects/{id}/artifacts`
-- `GET /api/v1/projects/{id}/entries`
-- `POST /api/v1/projects/{id}/audit-runs`（静态扫描 + PRE_ANALYSIS 组合主入口）
-- `POST /api/v1/projects/{id}/scans`
-- `GET /api/v1/scans/{id}`
-- `GET /api/v1/scans/{id}/events`（SSE）
-- `GET /api/v1/scans/{id}/paths/{pathId}`
-- `GET /api/v1/findings/{id}`
-- `POST /api/v1/findings/{id}/replay`
-- `GET /api/v1/attack-chains`
+- 最终报告 Markdown；
+- 发现摘要 HTML；
+- 扫描仪表盘快照 JSON。
 
-Control Plane 当前使用本地 SQLite 保存项目、制品元数据、scan、Provider、角色、AI Job/Event、审计记录、Worker task/trace、REST 幂等记录、probe plan 和流水线 cursor；这些恢复语义是单节点有界持久化，不是分布式 exactly-once。完整路由以实现为准，另包括：
+三者是不同制品，不得描述为同一报告的等价格式。
 
-- `GET /api/v1/projects/{id}/dashboard`、`GET /api/v1/projects/{id}/evidence`；
-- `GET /api/v1/scans/{id}/paths`、`GET /api/v1/scans/{id}/evidence`、`GET /api/v1/scans/{id}/findings`；
-- `GET /api/v1/evidence/{id}`；
-- `POST /api/v1/findings/{id}/replay`（显式授权后，由服务端创建绑定原 scan/entrypoint 的 `TRUSTED_DOCKER` 动态任务；返回 `202` 和 task 状态，不直接把 finding 标记为 `VERIFIED`）。请求体只允许 `{ "authorized": true }`，并要求 `Idempotency-Key`。
+### 4.2 PathRun
 
-写操作（创建项目、登记制品、创建扫描、组合审计、replay）要求 `X-Sentinel-Authorization: <token>`，也接受 `Authorization: Bearer <token>`。扫描 body 必须显式带 `authorized: true`；组合审计还必须独立带 `aiAuthorized:true`，并通过服务端一次编排创建 scan 与 PRE_ANALYSIS。令牌只完成本地调用认证，不代替授权同意。项目、制品、扫描、组合审计、动态任务、finding replay 和 AI `sandbox_probe` job 绑定使用 `Idempotency-Key` 去重（非空、无空白、最多 256 字符），记录写入 SQLite，最多 50,000 条，跨重启按 payload hash 复用；同键不同 payload 返回 409。删除、修改等其他 mutation 尚未全部纳入统一持久化幂等。
+按“入口 × 身份轨 × probe attempt”组织。每条 PathRun 至少展示请求摘要、HTTP 结果、`entryHit`、`parameterBound`、Agent/JDBC 事件摘要、依赖模式、验证状态、超时分类和停止原因。
 
-SSE 路由 `GET /api/v1/scans/{id}/events` 支持 `Last-Event-ID` 续接。客户端必须处理 `ScanCreated`、`TaskLeased`、`FindingUpdated`、`ScanCompleted`、`TaskStopped` 等事件，并在断线、事件窗口不足或收到终态后调用幂等 GET 进行补偿。SSE 是增量通知，不是事实来源；最终状态以 `GET /api/v1/scans/{id}` 为准。事件 DTO 带 `schemaVersion`、`projectId`、`artifactDigest`、`scanId`、`verificationStatus`、`dependencyMode` 和 `evidenceRefs`。
+支持按入口、轨、状态、阶段、technique 和 coverage gap 筛选。SQL 必须属于同一请求关联范围；任务级 SQL 不得无差别复制到多个 PathRun。合成身份与 MOCK 前置条件持续可见。
 
-静态元数据限制必须在 UI 中持续可见：调用图和跨方法污点是预算内 `STATIC_INFERRED` 事实/候选；`MOCK`、沙箱 trace 和模型输出不能直接显示为 `VERIFIED`。`DYNAMIC_CONFIRMED` 必须展示 MOCK/合成身份前置条件，且不得文案暗示生产实库已证实。动态验证仍必须依赖用户授权沙箱，个人本地版不承诺多租户/RBAC 或生产供应商互操作。
+### 4.3 Findings 与证据
 
-DTO 必须带 `schemaVersion`、`projectId`、`artifactDigest`、`scanId`、`verificationStatus`、`dependencyMode` 和 `evidenceRefs`。前端只把事件当作增量提示，最终状态以幂等的查询接口为准。
+发现列表支持标题、入口、sink、状态、CWE 和证据来源筛选。详情依次展示：
+
+1. 状态、严重度、置信度和前置条件；
+2. `rootCause`、affected component、attack path 和 counterevidence；
+3. 静态证据、PathRun、依赖副作用和重放引用；
+4. 修复建议与人工处理记录。
+
+动态结论必须绑定 PathRun。静态候选或未执行入口可以没有 PathRun，但必须保留静态证据、限制或停止原因。
+
+Finding 以 `hypothesisId + securityProperty` 为核心，不强制显示传统 source/sink。数据流型显示 trust boundary、transforms、sanitizer 和 effect；IDOR/鉴权型显示 guard/ownership/tenant；状态型显示 transition/sequence；配置、typestate、并发和资源型显示各自证据关系。
+
+### 4.4 对照与图谱
+
+Static-Dynamic Contrast 以 `STATIC_ONLY`、`DYNAMIC_REACHED`、`CONTRADICTED` 等明确标签呈现静态候选与动态观察的差异。图谱只局部展开选中的入口、source、transform 和 sink；推测边、运行时观察边和服务端确认边必须使用不同线型及文字标签。
+
+Evidence Graph 支持按 hypothesis 展开 Program、Entry、TrustBoundary、Effect、Guard、Sanitizer、State、Resource 和 RuntimeObservation。默认只加载当前假设的一跳关系；所有边展示来源、分析器版本和 coverage 状态。
+
+### 4.5 Coverage Matrix
+
+Coverage 页面至少展示 Artifact Universe 展开率、入口族、调用解析率、source/effect/guard/sanitizer model、各 detector、动态实验和 stop reason。`UNKNOWN`、`UNRESOLVED`、`TRUNCATED` 与 `UNREACHED` 必须可筛选并跳到对应 IR node 或 coverage gap。
+
+扫描成功、报告已生成或 finding 为零都不能渲染为“项目安全”；只能显示“在声明覆盖范围内未发现已支持结论”。
+
+### 4.6 多语言与扩展展示
+
+主导航、扫描流程和 Finding 详情按 capability、hypothesis family、security property 与 entry protocol 组织，不按 Java/Spring/Python/某框架复制页面。ProgramNode 和 RuntimeObservation 先显示中立字段；语言/框架 namespaced extension 由可选 renderer 补充。
+
+未知 language、node kind、entry protocol 或 extension 不能导致解析整页失败。界面必须保留 stable ID、producer、位置、evidence、coverage、stop reason 和受限原始属性的通用降级视图，并明确标记“当前无专用渲染器”。前端不得把未知枚举归类为已覆盖、低风险或空结果。
+
+## 5. 模型服务与 AI 审计
+
+模型服务页固定展示六个角色：`PRE_ANALYSIS`、`AUTH_ANALYSIS`、`DYNAMIC_VERIFICATION`、`PATH_EXPLORATION`、`VULNERABILITY_TRIAGE`、`REPORT_GENERATION`。每个角色可绑定 Provider/模型并编辑中文、English 提示词；任务创建时显示不可变快照版本。
+
+界面必须提示：自定义提示词不能改变服务端工具白名单、安全策略、预算或验证等级。目标角色提示词还应表达：
+
+- AUTH 先查询代码，再提出多个机制不同的 PoC，并在有界轮次中补证和修订；
+- PATH 只为明确 coverage gap 发起 `sandbox_probe`，说明入口、轨、目标、输入和停止条件；
+- TRIAGE 可用 `sandbox_probe` 复现或证伪，但必须保留结构化 root cause、反证与 evidence refs。
+
+AI 审计页展示服务端持久化的 Provider 元数据、白名单工具决策、结果摘要和错误诊断。隐藏 chain-of-thought 不展示或还原。Provider 显式返回并被服务端保存的 `MODEL_THINKING` 摘录必须标为“不可信审计元数据”，与事实证据分栏，且不得进入工具或状态升级路径。
+
+## 6. 状态呈现
+
+| 状态 | UI 文案要求 |
+|------|-------------|
+| `STATIC_INFERRED` | 静态推测；未运行 |
+| `DYNAMIC_SUSPECTED` | 动态疑似；闭环不足 |
+| `DYNAMIC_CONFIRMED` | 动态确认；展示 H3 与 MOCK/身份前置条件 |
+| `VERIFIED` | 已验证；必须显示强化沙箱和重放证据；当前不应出现 |
+| `UNREACHED` | 未覆盖；显示身份、预算、启动、超时或依赖原因 |
+
+超时不能只显示“失败”，至少区分 `AUTH_CHALLENGE`、`BUSINESS_TIMEOUT`、`COLD_START`、`ENTRY_NOT_HIT`、`IDENTITY_UNAVAILABLE` 和预算耗尽。状态不得只靠颜色表达。
 
 ## 7. 安全与隐私
 
-- 使用严格 CSP、同源 API、CSRF 防护和短期令牌；禁止把制品内容插入 `innerHTML`。
-- 代码、配置、SQL、响应和模型文本均按不可信内容渲染，统一转义并显示脱敏标识。
-- 前端不保存原始凭据；下载证据前再次进行项目/角色校验。
-- 危险操作按钮显示当前策略、审批人、范围和审计编号；默认只提供 dry-run/安全探针。
-- 支持键盘导航、色盲可辨识状态、缩放和中英文文案；颜色不能是状态的唯一表达。
+- 制品名、代码、配置、SQL、响应、模型文本和 Markdown 都按不可信内容转义。
+- 前端不保存 Provider 原始凭据，不直接访问 SQLite、对象存储、Worker 或模型接口。
+- 本地调试 token 会进入浏览器 bundle，界面必须标注 loopback 开发用途；不得描述成生产会话。
+- CSP 只允许同源与精确 loopback Control Plane；其他部署通过模板精确生成，禁止 `connect-src *`。
+- 动态执行、replay、真实连接和破坏性策略需要显示授权范围、依赖模式、沙箱能力和审计标识。
+- 所有页面都要校验 project/artifact/scan 作用域，切换工作区后清除旧选择和缓存。
+- 下载物保留原始验证状态和 MOCK 标识，不因导出格式改变结论。
 
-## 8. MVP 页面验收
+## 8. 当前技术形态
 
-1. 用户可以在项目总览看到扫描状态、覆盖度和依赖模式，并跳转到证据。
-2. 用户可以从入口地图打开一条路径，看到参数、分支、表字段和停止原因。
-3. 同一发现的候选/疑似/已验证状态在列表、详情和图谱中一致。
-4. SSE 断线重连后不会重复计数或丢失最终扫描状态。
-5. 低权限用户无法通过前端接口读取原始制品、未脱敏轨迹或其他项目数据。
+当前实现使用 React 19、TypeScript、Vite、普通 CSS 和轻量 SVG，本地 view state 驱动。开发模式是 `5173` Vite 与 `18080` Control Plane 两个 loopback 服务。`VITE_DEMO_MODE=true` 才启用 Demo；未设置时使用真实 API。
 
-## 9. 后续演进
+TanStack Query、React Router、Tailwind、React Flow/Cytoscape、Monaco、ECharts 和 Tauri 都属于容量或交付需求出现后的候选演进，不是当前依赖或已交付能力。Java 托管前端静态资源、`jlink/jpackage` Desktop Core 和企业私有化分层同样属于目标打包形态。
 
-- 支持大型图谱的 WebGL/分层渲染；
-- 用户自定义仪表盘和报告模板；
-- Tauri 桌面版离线工作区；
-- 多人协作批注、审计签名和修复工单集成。
+## 9. 页面验收
 
-## 10. 前端运行模式与当前状态
+1. 新用户可从工作区完成上传、显式授权、组合审计，并看到固定阶段时间线。
+2. 报告默认打开，且可切换到关联 PathRun、finding、证据和对照视图。
+3. 同一状态在列表、详情、时间线、图谱和下载物中语义一致。
+4. SSE 断线重连后不重复计数，终态通过 GET 补偿。
+5. Demo、真实 API 错误、Worker 不可用和策略阻断不会被显示为成功。
+6. 键盘、缩放、窄屏和长文本下无重叠；颜色不是状态唯一信号。
+7. 低权限或错误作用域请求不能读取原始制品、凭据、未脱敏轨迹或其他项目数据。
+8. 非 source-sink finding 可以通过 guard/state/config/typestate/concurrency 关系完整展示，不出现伪造的 `entry-unbound` 或 `sink-none`。
+9. 用户可以从任一 coverage gap 跳到未解析节点、停止原因和建议 Provider/实验。
 
-- `VITE_DEMO_MODE=true`：启用本地 DEMO/MOCK 数据，不请求后端；适合产品演示和视觉开发。
-- `VITE_DEMO_MODE=false` 或未设置：启用真实 Control Plane；必须配置 `VITE_API_BASE_URL`（默认 `/api/v1`）和 `VITE_PROJECT_ID`，可选 `VITE_SCAN_ID`。
-- 当前本地 MVP 的写操作使用 `VITE_API_TOKEN`；它只适合短期调试并会进入浏览器 bundle。生产级 HttpOnly 会话、CSRF、SSO/RBAC 和 SSE 会话鉴权尚未在 Java Control Plane 实现，不能把该配置说明当作生产安全承诺。
-- 真实模式连接失败时显示错误，不自动回退到 Mock，避免把演示数据误认为扫描事实。
-
-当前完成：React/TypeScript/Vite 原型、全局工作区切换、制品上传、静态扫描与 PRE_ANALYSIS 连续启动、阶段式审计时间线、Provider/角色配置、AI Job 事件审计、当前 scan 的最终 `AI INFERENCE` Markdown 报告、真实 API DTO 校验和 SSE 订阅边界。全局设置决定新 AI Job 使用中文或英文，默认中文；旧结果不可变。结果页安全渲染 Markdown 并支持 Markdown/HTML/JSON 下载，发现列表支持筛选，选中发现后展示证据引用、前置条件和按节点查看的攻击链画布。AI 审计事件可展开查看数据来源、组件流向、白名单工具决策和结果，但明确不记录模型隐藏思维链。动态安全摘要按 project/artifact/scan 复核后可供后续 AI 角色只读查询。当前 `TRUSTED_DOCKER` 仅用于本地受信内部 JAR 调试，普通 Docker 不是恶意制品强化隔离；容器任务完成也不表示入口已调用。生产级鉴权、多租户、完整反编译/污点/入口覆盖反馈、gVisor/Kata 验收和真实漏洞 `VERIFIED` 闭环仍未完成。
+实际完成度和缺口只在 [MVP Backlog](MVP_BACKLOG.md) 维护，本文不记录逐次实现历史。

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "veyrion://schemas/domain/provider-bundle.v1.json",
+  "title": "ProviderBundle",
+  "description": "Gated analysis Provider SPI collect output (P1-03). Providers must not write Findings or elevate verification status.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "projectId",
+    "artifactDigest",
+    "scanId",
+    "entryCount",
+    "effectCount",
+    "guardCount",
+    "detectorCount",
+    "rejected"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "minimum": 1 },
+    "projectId": { "type": "string", "minLength": 1 },
+    "artifactDigest": { "type": "string", "minLength": 1 },
+    "scanId": { "type": "string", "minLength": 1 },
+    "entryCount": { "type": "integer", "minimum": 0 },
+    "effectCount": { "type": "integer", "minimum": 0 },
+    "guardCount": { "type": "integer", "minimum": 0 },
+    "detectorCount": { "type": "integer", "minimum": 0 },
+    "probeCount": { "type": "integer", "minimum": 0 },
+    "rejected": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "truncateReasons": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

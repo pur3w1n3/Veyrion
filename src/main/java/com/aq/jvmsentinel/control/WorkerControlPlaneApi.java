@@ -56,7 +56,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
     private static final int MAX_BODY_BYTES = 1_500_000;
     private static final long DEFAULT_WALL_SECONDS = 900;
     private static final long DEFAULT_CPU_MILLIS = 300_000;
-    private static final long DEFAULT_MEMORY_BYTES = 512L * 1024 * 1024;
+    private static final long DEFAULT_MEMORY_BYTES = 2L * 1024 * 1024 * 1024;
     private static final long DEFAULT_DISK_BYTES = 512L * 1024 * 1024;
     private static final long DEFAULT_TRACE_BYTES = 16L * 1024 * 1024;
 
@@ -230,6 +230,47 @@ final class WorkerControlPlaneApi implements HttpHandler {
                 .anyMatch(snapshot -> isActiveLifecycle(snapshot.lifecycle()));
     }
 
+    /**
+     * Fail-closed reclaim for dynamic tasks that remain {@code QUEUED} without a Worker.
+     * Emits terminal callbacks so the audit pipeline can disarm instead of waiting forever.
+     */
+    synchronized List<TaskSnapshot> failStaleQueuedTasks(Duration maxQueuedAge, Instant now) {
+        Objects.requireNonNull(maxQueuedAge, "maxQueuedAge");
+        Objects.requireNonNull(now, "now");
+        if (maxQueuedAge.isNegative()) {
+            throw new IllegalArgumentException("maxQueuedAge");
+        }
+        List<TaskSnapshot> failed = new ArrayList<>();
+        for (TaskSnapshot snapshot : snapshots(null, null)) {
+            if (snapshot.lifecycle() != TaskLifecycle.QUEUED) {
+                continue;
+            }
+            if (snapshot.spec().requiredCapability() == WorkerCapability.STATIC_ONLY) {
+                continue;
+            }
+            Duration age = Duration.between(snapshot.updatedAt(), now);
+            if (age.compareTo(maxQueuedAge) < 0) {
+                continue;
+            }
+            String key = "stale-queue:" + snapshot.scope().taskId() + ":" + now;
+            TaskSnapshot result = coordinator.failQueued(
+                    snapshot.scope(), StopReason.WALL_CLOCK_TIMEOUT, "WORKER_UNAVAILABLE", key);
+            failureDiagnostics.putIfAbsent(result.scope(),
+                    "dynamic task remained QUEUED without a Worker beyond "
+                            + maxQueuedAge.toSeconds() + "s");
+            if (isTerminal(result.lifecycle())) {
+                publishTerminal(result, key);
+                try {
+                    terminalListener.accept(result);
+                } catch (RuntimeException ignored) {
+                    // Pipeline faults must not rewrite worker terminal state.
+                }
+            }
+            failed.add(result);
+        }
+        return List.copyOf(failed);
+    }
+
     private static boolean isActiveLifecycle(TaskLifecycle lifecycle) {
         return lifecycle == TaskLifecycle.QUEUED
                 || lifecycle == TaskLifecycle.LEASED
@@ -298,8 +339,22 @@ final class WorkerControlPlaneApi implements HttpHandler {
                     requiredText(body, "workerId"), key);
             case "cancel" -> snapshot = coordinator.cancel(scope, optionalText(body, "leaseId", null),
                     optionalText(body, "workerId", null), stopReason(body, "reason", StopReason.USER_CANCELLED), key);
-            case "complete" -> snapshot = coordinator.complete(scope, requiredText(body, "leaseId"),
-                    requiredText(body, "workerId"), key);
+            case "complete" -> {
+                String leaseId = requiredText(body, "leaseId");
+                String workerId = requiredText(body, "workerId");
+                TaskSnapshot running = coordinator.get(scope);
+                try {
+                    // Fail closed before COMPLETED so bad traces cannot advance the pipeline (P0-06).
+                    projectionService.validateProjectable(running);
+                } catch (IllegalArgumentException | IllegalStateException | SecurityException rejected) {
+                    snapshot = coordinator.fail(scope, leaseId, workerId, StopReason.WORKER_FAILURE,
+                            "PROJECTION_FAILED", key);
+                    failureDiagnostics.putIfAbsent(scope,
+                            rejected.getMessage() == null ? "PROJECTION_FAILED" : rejected.getMessage());
+                    break;
+                }
+                snapshot = coordinator.complete(scope, leaseId, workerId, key);
+            }
             case "fail" -> {
                 snapshot = coordinator.fail(scope, requiredText(body, "leaseId"),
                         requiredText(body, "workerId"), stopReason(body, "reason", StopReason.WORKER_FAILURE),
@@ -320,7 +375,10 @@ final class WorkerControlPlaneApi implements HttpHandler {
             try {
                 persistProjectedPathRuns(snapshot, projectionService.publishCompleted(snapshot));
             } catch (IllegalArgumentException | IllegalStateException | SecurityException rejected) {
-                // Execution completion remains authoritative; an invalid or over-budget trace is omitted.
+                // Should be rare after validateProjectable; keep COMPLETED but do not advance on empty PathRuns.
+                failureDiagnostics.putIfAbsent(scope,
+                        "PROJECTION_PERSIST_FAILED:" + (rejected.getMessage() == null
+                                ? "unknown" : rejected.getMessage()));
             }
         }
         if (isTerminal(snapshot.lifecycle())) {

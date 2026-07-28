@@ -101,6 +101,21 @@ public final class RouteTable {
         if (path.size() == 2 && "scans".equals(path.get(0))) {
             if ("GET".equals(method)) { actions.sendScan(exchange, path.get(1)); return; }
         }
+        if (path.size() == 3 && "scans".equals(path.get(0)) && "coverage".equals(path.get(2))
+                && "GET".equals(method)) {
+            actions.sendScanCoverage(exchange, path.get(1));
+            return;
+        }
+        if (path.size() == 3 && "scans".equals(path.get(0)) && "evidence-graph".equals(path.get(2))
+                && "GET".equals(method)) {
+            actions.sendScanEvidenceGraph(exchange, path.get(1));
+            return;
+        }
+        if (path.size() == 3 && "scans".equals(path.get(0)) && "hypotheses".equals(path.get(2))
+                && "GET".equals(method)) {
+            actions.sendScanHypotheses(exchange, path.get(1));
+            return;
+        }
         if (path.size() == 3 && "scans".equals(path.get(0)) && "events".equals(path.get(2))
                 && "GET".equals(method)) {
             actions.streamEvents(exchange, path.get(1));

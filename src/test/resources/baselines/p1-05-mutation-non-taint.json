@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "p1-05-mutation-non-taint",
+  "kind": "mutation",
+  "parentBaselineId": "p1-05-non-taint-detectors",
+  "description": "Mutation variants that must still fire GuardConsistency / OwnershipIdor / DangerousConfig. Removing the owning detector fails recallGate.",
+  "expectedSecurityProperties": [
+    "GUARD_INCONSISTENCY",
+    "IDOR_OWNERSHIP_GAP",
+    "JWT_ALG_NONE"
+  ],
+  "mutation": {
+    "changedSurfaces": [
+      "PreAuthorize -> Secured on sibling; open route remains unguarded",
+      "PathVariable userId -> accountId without ownership expression",
+      "jwt.algorithm=none -> JWT_ALG=none case/spacing variant"
+    ],
+    "detectorMustStillFire": [
+      "guard-consistency",
+      "ownership-idor",
+      "dangerous-config"
+    ],
+    "notes": "Approximate positive mutations; not a production recall claim beyond declared fixtures."
+  },
+  "metrics": {
+    "stub": false,
+    "computedAtGate": true
+  },
+  "honesty": {
+    "aiNotInBaseJudgment": true,
+    "neverTreatSuccessAsSafe": true,
+    "syntheticBaselineOnly": true
+  }
+}

@@ -20,6 +20,12 @@
             <artifactId>byte-buddy</artifactId>
             <version>${byte-buddy.version}</version>
         </dependency>
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <version>8.0.33</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

@@ -22,6 +22,6 @@ public record ScanPolicy(boolean authorized, NetworkMode networkMode, DangerousA
     }
 
     public static ScanPolicy safeDefault() {
-        return new ScanPolicy(false, NetworkMode.DENY, DangerousActionMode.DRY_RUN, List.of(), 900, 4L * 1024 * 1024 * 1024, 2L * 1024 * 1024 * 1024);
+        return new ScanPolicy(false, NetworkMode.DENY, DangerousActionMode.DRY_RUN, List.of(), 900, 2L * 1024 * 1024 * 1024, 2L * 1024 * 1024 * 1024);
     }
 }

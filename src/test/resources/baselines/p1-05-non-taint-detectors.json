@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "p1-05-non-taint-detectors",
+  "kind": "detector-baseline",
+  "description": "P1-05 non-taint detector first batch (declared AUDITED scope): GuardConsistency, OwnershipIdor, DangerousConfig plus deser/dep/resource skeletons. AI must not participate in base judgment. Independent recallGate fails when a required detector is removed.",
+  "expectedDetectorIds": [
+    "guard-consistency",
+    "ownership-idor",
+    "dangerous-config",
+    "deserialization-config",
+    "dependency-version",
+    "resource-lifecycle"
+  ],
+  "expectedSecurityProperties": [
+    "GUARD_INCONSISTENCY",
+    "IDOR_OWNERSHIP_GAP",
+    "JWT_ALG_NONE",
+    "SENSITIVE_CONFIG_MATERIAL"
+  ],
+  "expectedFamilies": [
+    "GUARD_COVERAGE",
+    "CONFIG",
+    "TYPESTATE",
+    "DEPENDENCY"
+  ],
+  "recallGate": {
+    "requiredProperties": [
+      "GUARD_INCONSISTENCY",
+      "IDOR_OWNERSHIP_GAP",
+      "JWT_ALG_NONE"
+    ],
+    "failWhenDetectorRemoved": [
+      "guard-consistency",
+      "ownership-idor",
+      "dangerous-config"
+    ],
+    "notes": "Removing any failWhenDetectorRemoved id must make the corresponding required property missing."
+  },
+  "honesty": {
+    "aiNotInBaseJudgment": true,
+    "noFakeSinkNone": true,
+    "neverTreatSuccessAsSafe": true,
+    "notFullDominanceIfds": true,
+    "declaredAuditedScope": "unit+live fixtures for GuardConsistency/OwnershipIdor/DangerousConfig with mutation/holdout recall gates"
+  },
+  "fixtures": {
+    "positive": "MixedController + jwt.algorithm=none + password config + PathVariable userId",
+    "negative": "fully PreAuthorize'd siblings + ownership expression + benign config"
+  }
+}

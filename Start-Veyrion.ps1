@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Artifacts = (Join-Path $PSScriptRoot 'samples'),
+    [string]$Artifacts,
     [ValidateRange(1, 65535)]
     [int]$BackendPort = 18080,
     [ValidateRange(1, 65535)]
@@ -12,6 +12,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($Artifacts)) {
+    $Artifacts = Join-Path $PSScriptRoot 'samples'
+}
 
 # Local Control Plane SQLite lives at <Artifacts>/.veyrion/control-plane.db
 # (default Artifacts = samples). Migration checksum mismatches fail closed;
@@ -118,6 +121,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'frontend\node_modules
         throw "Frontend dependency installation failed with exit code $LASTEXITCODE"
     }
 }
+$nodeExecutable = (Get-Command node -ErrorAction Stop).Source
 
 & mvn -q '-Dmaven.repo.local=.m2' '-DskipTests' package
 if ($LASTEXITCODE -ne 0) {
@@ -137,5 +141,6 @@ $runtimeClasspath = $applicationClasses + [System.IO.Path]::PathSeparator + $run
     --artifacts $artifactPath `
     --backend-port $BackendPort `
     --frontend-port $FrontendPort `
+    --node $nodeExecutable `
     --docker-artifact-worker $WithDockerRuntime.IsPresent
 exit $LASTEXITCODE

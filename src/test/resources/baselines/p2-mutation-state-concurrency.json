@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "p2-mutation-state-concurrency",
+  "kind": "mutation",
+  "parentBaselineId": "p2-state-concurrency",
+  "description": "Mutation surface for STATE/CONCURRENCY heuristics. Removing owning detector fails DetectorRecallGate.",
+  "expectedSecurityProperties": [
+    "STATE_TRANSITION_GAP",
+    "REPEAT_SUBMIT_RISK",
+    "TOCTOU_CHECK_THEN_ACT"
+  ],
+  "mutations": {
+    "surfaces": [
+      "stated draft entry + submit without state precondition",
+      "mutating submit without idempotency hint",
+      "File.exists then File.delete without lock in SharedStore"
+    ]
+  },
+  "metrics": {
+    "stub": false,
+    "computedAtGate": true
+  },
+  "honesty": {
+    "aiNotInBaseJudgment": true,
+    "neverTreatSuccessAsSafe": true,
+    "syntheticBaselineOnly": true
+  }
+}

@@ -19,10 +19,33 @@ final class AgentConfig {
     private static final long MAX_MAX_BYTES = 64L * 1024 * 1024;
     private static final int DEFAULT_MAX_EVENTS = 10_000;
     private static final int MAX_MAX_EVENTS = 100_000;
+    /**
+     * Never rewrite call sites / branch coverage inside these prefixes. HTTP surfaces
+     * (Servlet/Filter/Interceptor) still match via {@code isHttpObservabilityType} and receive
+     * HTTP-only advice. Empty {@code classPrefix} otherwise instruments the whole fat JAR and
+     * VerifyError (StackMapTable) commonly surfaces in Druid/Spring auto-config.
+     */
     private static final List<String> BUILT_IN_EXCLUDES = List.of(
             "com/aq/jvmsentinel/instrumentation/",
             "net/bytebuddy/",
-            "java/", "javax/", "jdk/", "sun/", "com/sun/");
+            "java/", "javax/", "jakarta/", "jdk/", "sun/", "com/sun/",
+            "org/springframework/",
+            "org/apache/",
+            "org/hibernate/",
+            "org/mybatis/",
+            "com/alibaba/druid/",
+            "com/alibaba/fastjson/",
+            "com/alibaba/nacos/",
+            "com/baomidou/",
+            "com/fasterxml/",
+            "com/google/",
+            "io/netty/",
+            "io/micrometer/",
+            "ch/qos/logback/",
+            "org/slf4j/",
+            "org/jboss/",
+            "kotlin/",
+            "scala/");
 
     final Path traceFile;
     final long maxBytes;

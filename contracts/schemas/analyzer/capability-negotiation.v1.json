@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/contracts/schemas/analyzer/capability-negotiation.v1.json",
+  "title": "Analyzer Capability Negotiation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "analyzerId",
+    "analyzerVersion",
+    "languages",
+    "mediaTypes",
+    "capabilities",
+    "schemaRange",
+    "artifactDigest",
+    "policyDigest",
+    "scope"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "analyzerId": { "type": "string", "minLength": 1 },
+    "analyzerVersion": { "type": "string", "minLength": 1 },
+    "languages": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1
+    },
+    "mediaTypes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Open taxonomy. Known: PROGRAM_IR, ENTRY_SURFACE, COVERAGE_GAP, DIAGNOSTIC. Unknown capabilities are rejected by Control Plane negotiation."
+      },
+      "minItems": 1
+    },
+    "schemaRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minSchemaVersion", "maxSchemaVersion"],
+      "properties": {
+        "minSchemaVersion": { "type": "integer", "minimum": 1 },
+        "maxSchemaVersion": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "artifactDigest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "policyDigest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "artifactDigest", "scanId", "analysisId"],
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1 },
+        "artifactDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "scanId": { "type": "string", "minLength": 1 },
+        "analysisId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "requestedAnalysisKinds": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "patternProperties": {
+    "^x-veyrion-": {}
+  }
+}

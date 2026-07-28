@@ -3,6 +3,7 @@ package com.aq.jvmsentinel.control.persistence;
 import com.aq.jvmsentinel.artifact.ArtifactUploadService;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
+import com.aq.jvmsentinel.control.StaticFactSnapshot;
 import com.aq.jvmsentinel.event.EventContext;
 import com.aq.jvmsentinel.event.IdempotencyKey;
 import com.aq.jvmsentinel.event.VersionedEvent;
@@ -62,6 +63,8 @@ import java.util.UUID;
  */
 public final class SQLiteControlPlanePersistence {
     private static final int BUSY_TIMEOUT_MILLIS = 5_000;
+    private static final int IDEMPOTENCY_BUSY_RETRIES = 5;
+    private static final long IDEMPOTENCY_BUSY_BACKOFF_MILLIS = 25L;
     private static final int MAX_AI_JOB_EVENTS = 128;
     private static final List<String> MIGRATIONS = List.of(
             "db/migration/V001__control_plane.sql",
@@ -84,7 +87,10 @@ public final class SQLiteControlPlanePersistence {
             "db/migration/V018__fuzz_strategy.sql",
             "db/migration/V019__root_cause.sql",
             "db/migration/V020__verified_findings.sql",
-            "db/migration/V021__artifact_original_file_name.sql");
+            "db/migration/V021__artifact_original_file_name.sql",
+            "db/migration/V022__pipeline_run_stage_attempt_identity.sql",
+            "db/migration/V023__security_hypotheses.sql",
+            "db/migration/V024__scope_security_hypothesis_ids.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 
@@ -124,6 +130,25 @@ public final class SQLiteControlPlanePersistence {
     /** Inserts an immutable record or returns the record already committed for the same scope/key. */
     public IdempotencyData putIdempotency(IdempotencyData candidate) {
         Objects.requireNonNull(candidate, "candidate");
+        SQLException lastBusy = null;
+        for (int attempt = 1; attempt <= IDEMPOTENCY_BUSY_RETRIES; attempt++) {
+            try {
+                return putIdempotencyOnce(candidate);
+            } catch (PersistenceException persistenceFailure) {
+                throw persistenceFailure;
+            } catch (SQLException failure) {
+                lastBusy = failure;
+                if (!isSqliteBusyOrLocked(failure) || attempt >= IDEMPOTENCY_BUSY_RETRIES) {
+                    throw databaseFailure("could not persist idempotency record", failure);
+                }
+                sleepQuietly(IDEMPOTENCY_BUSY_BACKOFF_MILLIS * attempt);
+            }
+        }
+        throw databaseFailure("could not persist idempotency record",
+                lastBusy != null ? lastBusy : new SQLException("idempotency persist retries exhausted"));
+    }
+
+    private IdempotencyData putIdempotencyOnce(IdempotencyData candidate) throws SQLException {
         try (Connection connection = open()) {
             connection.setAutoCommit(false);
             try {
@@ -174,20 +199,23 @@ public final class SQLiteControlPlanePersistence {
             } finally {
                 connection.setAutoCommit(true);
             }
-        } catch (SQLException | RuntimeException failure) {
-            if (failure instanceof PersistenceException persistenceFailure) throw persistenceFailure;
-            throw databaseFailure("could not persist idempotency record", failure instanceof SQLException sql ? sql : new SQLException(failure));
         }
     }
 
     public List<PipelineRunData> loadPipelineRuns() {
         try (Connection connection = open(); Statement statement = connection.createStatement();
              ResultSet rows = statement.executeQuery(
-                     "SELECT scan_id,project_id,actor_id,output_language,armed,next_stage,updated_at "
+                     "SELECT scan_id,project_id,actor_id,output_language,armed,next_stage,updated_at,"
+                             + "pipeline_run_id,stage_attempt_id,expected_job_id,expected_task_id,stop_reason "
                              + "FROM audit_pipeline_runs ORDER BY updated_at,scan_id")) {
             List<PipelineRunData> result = new ArrayList<>();
-            while (rows.next()) result.add(new PipelineRunData(rows.getString(1), rows.getString(2), rows.getString(3),
-                    rows.getString(4), rows.getInt(5) != 0, rows.getString(6), rows.getString(7)));
+            while (rows.next()) {
+                result.add(new PipelineRunData(
+                        rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4),
+                        rows.getInt(5) != 0, rows.getString(6), rows.getString(7),
+                        rows.getString(8), rows.getString(9), rows.getString(10), rows.getString(11),
+                        rows.getString(12)));
+            }
             if (result.size() > 20_000) throw new PersistenceException("persistent pipeline run limit exceeded");
             return List.copyOf(result);
         } catch (SQLException failure) {
@@ -198,12 +226,67 @@ public final class SQLiteControlPlanePersistence {
     public void savePipelineRun(PipelineRunData run) {
         Objects.requireNonNull(run, "run");
         transaction("could not persist pipeline run", connection -> update(connection,
-                "INSERT INTO audit_pipeline_runs(scan_id,project_id,actor_id,output_language,armed,next_stage,updated_at) "
-                        + "VALUES(?,?,?,?,?,?,?) ON CONFLICT(scan_id) DO UPDATE SET project_id=excluded.project_id,"
-                        + "actor_id=excluded.actor_id,output_language=excluded.output_language,armed=excluded.armed,"
-                        + "next_stage=excluded.next_stage,updated_at=excluded.updated_at",
+                "INSERT INTO audit_pipeline_runs(scan_id,project_id,actor_id,output_language,armed,next_stage,"
+                        + "updated_at,pipeline_run_id,stage_attempt_id,expected_job_id,expected_task_id,stop_reason) "
+                        + "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scan_id) DO UPDATE SET "
+                        + "project_id=excluded.project_id,actor_id=excluded.actor_id,"
+                        + "output_language=excluded.output_language,armed=excluded.armed,"
+                        + "next_stage=excluded.next_stage,updated_at=excluded.updated_at,"
+                        + "pipeline_run_id=excluded.pipeline_run_id,stage_attempt_id=excluded.stage_attempt_id,"
+                        + "expected_job_id=excluded.expected_job_id,expected_task_id=excluded.expected_task_id,"
+                        + "stop_reason=excluded.stop_reason",
                 run.scanId(), run.projectId(), run.actorId(), run.outputLanguage(), run.armed() ? 1 : 0,
-                run.nextStage(), run.updatedAt()));
+                run.nextStage(), run.updatedAt(), run.pipelineRunId(), run.stageAttemptId(),
+                run.expectedJobId(), run.expectedTaskId(), run.stopReason()));
+    }
+
+    /**
+     * CAS cursor advance: only the armed row matching scan/run/attempt and expected
+     * resource may move. Returns false for foreign, stale, duplicate, or late writers.
+     */
+    public boolean compareAndAdvancePipelineRun(PipelineRunData expected, PipelineRunData next) {
+        Objects.requireNonNull(expected, "expected");
+        Objects.requireNonNull(next, "next");
+        if (!expected.scanId().equals(next.scanId())) {
+            throw new PersistenceException("pipeline CAS scanId mismatch");
+        }
+        try (Connection connection = open()) {
+            connection.setAutoCommit(true);
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "UPDATE audit_pipeline_runs SET project_id=?,actor_id=?,output_language=?,armed=?,"
+                            + "next_stage=?,updated_at=?,pipeline_run_id=?,stage_attempt_id=?,"
+                            + "expected_job_id=?,expected_task_id=?,stop_reason=? "
+                            + "WHERE scan_id=? AND armed=1 "
+                            + "AND pipeline_run_id IS NOT NULL AND pipeline_run_id=? "
+                            + "AND stage_attempt_id IS NOT NULL AND stage_attempt_id=? "
+                            + "AND next_stage=? "
+                            + "AND ((? IS NULL AND expected_job_id IS NULL) OR expected_job_id=?) "
+                            + "AND ((? IS NULL AND expected_task_id IS NULL) OR expected_task_id=?)")) {
+                int index = 1;
+                statement.setObject(index++, next.projectId());
+                statement.setObject(index++, next.actorId());
+                statement.setObject(index++, next.outputLanguage());
+                statement.setObject(index++, next.armed() ? 1 : 0);
+                statement.setObject(index++, next.nextStage());
+                statement.setObject(index++, next.updatedAt());
+                statement.setObject(index++, next.pipelineRunId());
+                statement.setObject(index++, next.stageAttemptId());
+                statement.setObject(index++, next.expectedJobId());
+                statement.setObject(index++, next.expectedTaskId());
+                statement.setObject(index++, next.stopReason());
+                statement.setObject(index++, expected.scanId());
+                statement.setObject(index++, expected.pipelineRunId());
+                statement.setObject(index++, expected.stageAttemptId());
+                statement.setObject(index++, expected.nextStage());
+                statement.setObject(index++, expected.expectedJobId());
+                statement.setObject(index++, expected.expectedJobId());
+                statement.setObject(index++, expected.expectedTaskId());
+                statement.setObject(index, expected.expectedTaskId());
+                return statement.executeUpdate() == 1;
+            }
+        } catch (SQLException failure) {
+            throw databaseFailure("could not CAS-advance pipeline run", failure);
+        }
     }
 
     public List<ProbePlanData> loadProbePlans() {
@@ -654,10 +737,79 @@ public final class SQLiteControlPlanePersistence {
                             chains.getOrDefault(scanId, List.of())));
                 }
             }
-            return new Snapshot(projects, artifacts, scans);
+            Map<String, StaticFactSnapshot> staticFacts = new LinkedHashMap<>();
+            try (Statement statement = connection.createStatement();
+                 ResultSet rows = statement.executeQuery(
+                         "SELECT scan_id, graph_json FROM taint_graphs ORDER BY rowid")) {
+                while (rows.next()) {
+                    staticFacts.put(rows.getString(1), StaticFactSnapshot.fromJson(rows.getString(2)));
+                }
+            }
+            Map<String, List<com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis>> hypotheses =
+                    loadHypotheses(connection);
+            return new Snapshot(projects, artifacts, scans, staticFacts, hypotheses);
         } catch (SQLException failure) {
             throw databaseFailure("could not load Control Plane state", failure);
         }
+    }
+
+    public void insertHypotheses(String scanId,
+                                 List<com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis> hypotheses,
+                                 String actorId) {
+        Objects.requireNonNull(scanId, "scanId");
+        Objects.requireNonNull(hypotheses, "hypotheses");
+        transaction("could not persist security hypotheses", connection -> {
+            try (PreparedStatement delete = connection.prepareStatement(
+                    "DELETE FROM security_hypotheses WHERE scan_id=?")) {
+                delete.setString(1, scanId);
+                delete.executeUpdate(); // 0 rows on first persist is expected
+            }
+            for (com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis item : hypotheses) {
+                if (item == null) continue;
+                if (!scanId.equals(item.scanId())) {
+                    throw new PersistenceException("hypothesis scanId does not match insert scan");
+                }
+                update(connection,
+                        "INSERT INTO security_hypotheses(hypothesis_id,scan_id,payload_json) VALUES(?,?,?)",
+                        item.hypothesisId(), scanId, write(item.toMap()));
+            }
+            String projectId;
+            try (PreparedStatement lookup = connection.prepareStatement(
+                    "SELECT project_id FROM scans WHERE scan_id=?")) {
+                lookup.setString(1, scanId);
+                try (ResultSet rows = lookup.executeQuery()) {
+                    if (!rows.next()) {
+                        throw new PersistenceException("scan not found for security hypotheses: " + scanId);
+                    }
+                    projectId = rows.getString(1);
+                }
+            }
+            audit(connection, projectId, actorId, "scan.security_hypotheses", "scan", scanId,
+                    "{\"count\":" + hypotheses.size() + "}", Instant.now().toString());
+        });
+    }
+
+    public void insertTaintGraph(String scanId, String graphJson, String createdAt, String actorId) {
+        Objects.requireNonNull(scanId, "scanId");
+        Objects.requireNonNull(graphJson, "graphJson");
+        Objects.requireNonNull(createdAt, "createdAt");
+        transaction("could not persist static facts", connection -> {
+            update(connection, "INSERT OR REPLACE INTO taint_graphs(scan_id, graph_json, created_at) VALUES(?,?,?)",
+                    scanId, graphJson, createdAt);
+            String projectId;
+            try (PreparedStatement lookup = connection.prepareStatement(
+                    "SELECT project_id FROM scans WHERE scan_id=?")) {
+                lookup.setString(1, scanId);
+                try (ResultSet rows = lookup.executeQuery()) {
+                    if (!rows.next()) {
+                        throw new PersistenceException("scan not found for static facts: " + scanId);
+                    }
+                    projectId = rows.getString(1);
+                }
+            }
+            audit(connection, projectId, actorId, "scan.static_facts", "scan", scanId,
+                    "{\"coverage\":\"persisted\"}", createdAt);
+        });
     }
 
     public void insertProject(String id, String name, String status, String createdAt, String updatedAt,
@@ -1172,6 +1324,33 @@ public final class SQLiteControlPlanePersistence {
         return result;
     }
 
+    private Map<String, List<com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis>> loadHypotheses(
+            Connection connection) throws SQLException {
+        Map<String, List<com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis>> result = new LinkedHashMap<>();
+        try (Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery(
+                     "SELECT hypothesis_id,scan_id,payload_json FROM security_hypotheses ORDER BY rowid")) {
+            while (rows.next()) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> payload = read(rows.getString(3), Map.class);
+                com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis hypothesis =
+                        com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis.fromMap(payload);
+                if (!rows.getString(1).equals(hypothesis.hypothesisId())
+                        || !rows.getString(2).equals(hypothesis.scanId())) {
+                    throw new PersistenceException("stored hypothesis identifier does not match its payload");
+                }
+                result.computeIfAbsent(rows.getString(2), ignored -> new ArrayList<>()).add(hypothesis);
+            }
+        } catch (SQLException missingTable) {
+            if (missingTable.getMessage() != null
+                    && missingTable.getMessage().toLowerCase(java.util.Locale.ROOT).contains("no such table")) {
+                return result;
+            }
+            throw missingTable;
+        }
+        return result;
+    }
+
     private void migrate() {
         List<String> sql = MIGRATIONS.stream().map(SQLiteControlPlanePersistence::resource).toList();
         List<String> checksums = sql.stream().map(SQLiteControlPlanePersistence::sha256).toList();
@@ -1572,6 +1751,37 @@ public final class SQLiteControlPlanePersistence {
         return new PersistenceException(message, failure);
     }
 
+    /** SQLITE_BUSY (5) / SQLITE_LOCKED (6) and driver messages such as "database is locked". */
+    private static boolean isSqliteBusyOrLocked(Throwable failure) {
+        for (Throwable cursor = failure; cursor != null; cursor = cursor.getCause()) {
+            if (cursor instanceof SQLException sql) {
+                int code = sql.getErrorCode();
+                if (code == 5 || code == 6) {
+                    return true;
+                }
+                String message = sql.getMessage();
+                if (message != null) {
+                    String lower = message.toLowerCase(Locale.ROOT);
+                    if (lower.contains("sqlite_busy")
+                            || lower.contains("sqlite_locked")
+                            || lower.contains("database is locked")
+                            || lower.contains("database table is locked")) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(Math.max(1L, millis));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     public record ProjectData(String projectId, String name, String status, String createdAt,
                               String updatedAt, String deletedAt) { }
     public record ArtifactData(String projectId, ArtifactDescriptor descriptor) { }
@@ -1609,7 +1819,38 @@ public final class SQLiteControlPlanePersistence {
                                   String resultJson, String createdAt) { }
     public record PipelineRunData(String scanId, String projectId, String actorId,
                                   String outputLanguage, boolean armed, String nextStage,
-                                  String updatedAt) { }
+                                  String updatedAt, String pipelineRunId, String stageAttemptId,
+                                  String expectedJobId, String expectedTaskId, String stopReason) {
+        public PipelineRunData {
+            if (expectedJobId != null && expectedJobId.isBlank()) {
+                expectedJobId = null;
+            }
+            if (expectedTaskId != null && expectedTaskId.isBlank()) {
+                expectedTaskId = null;
+            }
+            if (pipelineRunId != null && pipelineRunId.isBlank()) {
+                pipelineRunId = null;
+            }
+            if (stageAttemptId != null && stageAttemptId.isBlank()) {
+                stageAttemptId = null;
+            }
+            if (stopReason != null && stopReason.isBlank()) {
+                stopReason = null;
+            }
+        }
+
+        /** Legacy constructor for pre-identity rows and narrow test fixtures. */
+        public PipelineRunData(String scanId, String projectId, String actorId,
+                               String outputLanguage, boolean armed, String nextStage,
+                               String updatedAt) {
+            this(scanId, projectId, actorId, outputLanguage, armed, nextStage, updatedAt,
+                    null, null, null, null, null);
+        }
+
+        public boolean hasStageIdentity() {
+            return pipelineRunId != null && stageAttemptId != null;
+        }
+    }
     public record ProbePlanData(String taskId, String projectId, String artifactDigest,
                                 String scanId, String targetEntryId, String candidateInputsJson,
                                 int maxRequests, String planHash, String createdAt) { }
@@ -1622,11 +1863,36 @@ public final class SQLiteControlPlanePersistence {
         }
     }
     public record Snapshot(List<ProjectData> projects, List<ArtifactData> artifacts,
-                           List<ControlPlaneStore.ScanRecord> scans) {
+                           List<ControlPlaneStore.ScanRecord> scans,
+                           Map<String, StaticFactSnapshot> staticFacts,
+                           Map<String, List<com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis>> hypotheses) {
+        public Snapshot(List<ProjectData> projects, List<ArtifactData> artifacts,
+                        List<ControlPlaneStore.ScanRecord> scans) {
+            this(projects, artifacts, scans, Map.of(), Map.of());
+        }
+
+        public Snapshot(List<ProjectData> projects, List<ArtifactData> artifacts,
+                        List<ControlPlaneStore.ScanRecord> scans,
+                        Map<String, StaticFactSnapshot> staticFacts) {
+            this(projects, artifacts, scans, staticFacts, Map.of());
+        }
+
         public Snapshot {
             projects = List.copyOf(projects);
             artifacts = List.copyOf(artifacts);
             scans = List.copyOf(scans);
+            staticFacts = staticFacts == null ? Map.of() : Map.copyOf(staticFacts);
+            if (hypotheses == null) {
+                hypotheses = Map.of();
+            } else {
+                Map<String, List<com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis>> copied =
+                        new LinkedHashMap<>();
+                for (Map.Entry<String, List<com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis>> item
+                        : hypotheses.entrySet()) {
+                    copied.put(item.getKey(), List.copyOf(item.getValue() == null ? List.of() : item.getValue()));
+                }
+                hypotheses = Map.copyOf(copied);
+            }
         }
     }
     public record WorkerState(List<TaskSnapshot> tasks, List<InMemoryTraceStore.StoredTrace> traces) {

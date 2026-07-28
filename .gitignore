@@ -1,6 +1,7 @@
 # Java/Maven
 target/
 .m2/
+\ .m2/
 
 # Node/Vite
 frontend/node_modules/
@@ -11,10 +12,13 @@ frontend/.env*
 !frontend/.env.example
 
 # Local/editor files
+.agents/
 .idea/
 *.iml
 *.log
+.tmp-*/
+.flood-*.json
 
 # Local Veyrion databases and encryption keys
-samples/.veyrion/
+.veyrion/
 sandbox-pack/.runtime/

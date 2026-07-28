@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "p1-20-single-entry-debug",
+  "status": "AUDITED",
+  "auditedScope": "mock-transport fixture; not live Docker",
+  "notes": [
+    "Fixed single-entry debug strategy without live Docker or external providers.",
+    "Highest allowed verification is DYNAMIC_CONFIRMED via server H3; VERIFIED remains closed.",
+    "Transport may be mocked; identity chain AUTH→AUTH_CONFIRM→PathRun→TRIAGE→report→replay must stay bound.",
+    "AUTH_CONFIRM is distinct from AUTH_INITIAL (authPass=AUTH_BYPASS_CONFIRM)."
+  ],
+  "artifact": {
+    "fixtureKind": "spring-boot-focus-controller",
+    "entryRoute": "/focus",
+    "entryMethod": "GET",
+    "parameter": "q",
+    "highValue": true,
+    "digestStrategy": "sha256-of-fixture-bytes-at-scan-time",
+    "digestPlaceholder": "FIXED_BY_ACCEPTANCE_AT_RUNTIME"
+  },
+  "identity": {
+    "experimentPlanId": "plan:p1-20-single-entry-debug",
+    "track": "UNAUTH",
+    "authTechniques": ["MISSING_AUTH", "EMPTY_BEARER", "ALG_NONE"],
+    "authPasses": {
+      "initial": "AUTH_INITIAL",
+      "confirm": "AUTH_BYPASS_CONFIRM"
+    },
+    "unavailableMustNotForgeToken": true
+  },
+  "pipeline": {
+    "stages": ["AUTH", "AUTH_CONFIRM", "PathRun", "TRIAGE", "report", "replay"],
+    "mockTransportAllowed": true,
+    "forbidVerified": true,
+    "maxVerificationStatus": ["DYNAMIC_SUSPECTED", "DYNAMIC_CONFIRMED"]
+  },
+  "evidence": {
+    "requireExperimentPlanIdOnPathRun": true,
+    "requireExperimentPlanIdOnReplay": true,
+    "requireExperimentPlanIdOnReport": true,
+    "requireExperimentPlanIdOnReportToReplay": true,
+    "requireEvidenceRefsForH3": true
+  }
+}

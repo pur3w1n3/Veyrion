@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "projectId": "project-demo",
+  "scanId": "scan-1",
+  "findingId": "finding-1",
+  "title": "incomplete",
+  "severity": "low",
+  "verificationStatus": "STATIC_INFERRED"
+}

@@ -14,19 +14,22 @@ public final class DevLauncherAcceptanceTest {
         Path workspace = Files.createTempDirectory("veyrion-dev-launcher-");
         Path frontend = Files.createDirectory(workspace.resolve("frontend"));
         Files.writeString(frontend.resolve("package.json"), "{}");
+        Path vite = Files.createDirectories(frontend.resolve("node_modules/vite/bin"))
+                .resolve("vite.js");
+        Files.writeString(vite, "// fixture");
 
         DevLauncherMain.Configuration config = DevLauncherMain.Configuration.parse(new String[] {
                 "--workspace", workspace.toString(),
                 "--backend-port", "18080",
                 "--frontend-port", "15173",
-                "--npm", "trusted-npm"
+                "--node", "trusted-node"
         }, workspace);
         check(config.artifactRoot().equals(workspace.resolve("samples")),
                 "default artifact directory stays in workspace");
         check(DevLauncherMain.frontendCommand(config).equals(List.of(
-                        "trusted-npm", "run", "dev", "--", "--host", "127.0.0.1",
+                        "trusted-node", vite.toString(), "--host", "127.0.0.1",
                         "--port", "15173", "--strictPort")),
-                "frontend command is direct and loopback-only");
+                "frontend command launches Vite directly and loopback-only");
 
         reject(() -> DevLauncherMain.Configuration.parse(new String[] {
                 "--workspace", workspace.toString(), "--artifacts", workspace.resolve("..").toString()

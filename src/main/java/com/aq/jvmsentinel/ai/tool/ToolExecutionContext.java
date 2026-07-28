@@ -20,7 +20,8 @@ public final class ToolExecutionContext {
             AgentRole.AUTH_ANALYSIS, Set.of("facts_search", "evidence_get", "plan_propose", "code_query"),
             AgentRole.DYNAMIC_VERIFICATION, Set.of("facts_search", "evidence_get", "plan_propose",
                     "sandbox_probe", "fuzz_strategy_get"),
-            AgentRole.PATH_EXPLORATION, Set.of("facts_search", "evidence_get", "plan_propose", "code_query"),
+            AgentRole.PATH_EXPLORATION, Set.of("facts_search", "evidence_get", "plan_propose",
+                    "code_query", "sandbox_probe"),
             AgentRole.VULNERABILITY_TRIAGE, Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe", "code_query"),
             AgentRole.REPORT_GENERATION, Set.of("facts_search", "evidence_get", "plan_propose"));
 

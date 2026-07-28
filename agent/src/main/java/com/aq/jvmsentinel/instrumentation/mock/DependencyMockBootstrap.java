@@ -23,6 +23,7 @@ public final class DependencyMockBootstrap {
                 instrumentation.appendToSystemClassLoaderSearch(agentJar);
             }
             VeyrionMockDriver.register();
+            QuartzInstanceIdFailOpen.install(instrumentation);
             if (redisStub == null) {
                 redisStub = LoopbackRedisStub.start(6379);
             }

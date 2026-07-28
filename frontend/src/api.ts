@@ -5,7 +5,18 @@
  * validation here is important: a malformed response must never be rendered
  * as a verified security result.  The demo adapter uses the same UI-shaped
  * values, but is selected only when VITE_DEMO_MODE=true.
+ *
+ * Schema field constants (Finding / Hypothesis / Coverage) are generated from
+ * contracts/schemas via scripts/generate-contract-types.ps1 into
+ * frontend/src/generated/contracts.ts — import those for drift checks; parsers
+ * below remain the runtime wire validators.
  */
+
+export {
+  FindingRequiredFields,
+  SecurityHypothesisRequiredFields,
+  CoverageMatrixRequiredFields,
+} from './generated/contracts'
 
 export type VerificationStatus =
   | 'VERIFIED'
@@ -82,6 +93,52 @@ export type RootCauseDto = {
   affectedComponent?: string
   cweId?: string
   fixSuggestion?: string
+  /** Optional TRIAGE counterevidence refs preserved through FindingDto wire copy. */
+  counterevidence?: string[]
+}
+
+/** Known HypothesisFamily taxonomy (open wire; unknown → UNKNOWN). */
+export const HYPOTHESIS_FAMILIES = [
+  'DATAFLOW',
+  'GUARD_COVERAGE',
+  'STATE',
+  'TYPESTATE',
+  'CONFIG',
+  'DEPENDENCY',
+  'CONCURRENCY',
+  'COMPOSITION',
+  'UNKNOWN'
+] as const
+
+export type HypothesisFamily = (typeof HYPOTHESIS_FAMILIES)[number]
+
+/** Normalize open-taxonomy family strings; unknown values degrade to UNKNOWN. */
+export const normalizeHypothesisFamily = (raw: unknown): HypothesisFamily => {
+  if (typeof raw !== 'string' || raw.trim() === '') return 'UNKNOWN'
+  const upper = raw.trim().toUpperCase()
+  return (HYPOTHESIS_FAMILIES as readonly string[]).includes(upper)
+    ? (upper as HypothesisFamily)
+    : 'UNKNOWN'
+}
+
+/** P0-12 SecurityHypothesis wire DTO from dashboard/scan.hypotheses[]. */
+export type SecurityHypothesisDto = {
+  schemaVersion: number
+  hypothesisId: string
+  scanId: string
+  securityProperty: string
+  family: HypothesisFamily
+  /** Raw wire family before normalize (for unknown degradation display). */
+  familyRaw?: string
+  lifecycle: string
+  lifecycleRaw?: string
+  detectorVersion: string
+  supportingEvidenceRefs: string[]
+  contradictingEvidenceRefs: string[]
+  coverageGapRefs: string[]
+  source?: string
+  effect?: string
+  extensions?: Record<string, unknown>
 }
 
 export type Finding = {
@@ -107,6 +164,9 @@ export type Finding = {
   confidence?: number
   /** Present only if the API attaches RootCauseAnalysis (MVP-5); not on FindingDto today. */
   rootCause?: RootCauseDto
+  /** Optional P0-12 SecurityHypothesis binding; absent on legacy findings. */
+  hypothesisId?: string
+  securityProperty?: string
 }
 
 /** CandidateRanker row from dashboard.rankedSinks (MVP-1). */
@@ -245,6 +305,9 @@ export type FocusEntryProbeDto = {
   verificationStatus: VerificationStatus
   dependencyMode: DependencyMode
   replayed: boolean
+  /** INITIAL focus vs REPLAY of an experiment card / idempotent retry. */
+  attemptKind?: 'INITIAL' | 'REPLAY' | string
+  experimentPlanId?: string
   requiredCapability?: WorkerCapability
   dynamicExecutionMode?: string
 }
@@ -289,6 +352,8 @@ export type DashboardSnapshot = {
   authGapFindingCount?: number
   /** AUTH_GAP category sink signals in the scan (often larger than authGapFindingCount). */
   authGapSinkCount?: number
+  /** First-class SecurityHypothesis rows (P0-12); authoritative for multi-family views. */
+  hypotheses?: SecurityHypothesisDto[]
   path: PathStep[]
   paths: PathTrace[]
   pathRuns: PathRunDto[]
@@ -366,6 +431,124 @@ export const artifactLabel = (artifact: Pick<ArtifactDto, 'type' | 'artifactId' 
 }
 export type Artifact = ArtifactDto
 
+/** P0-13 Coverage Matrix (read-only aggregation; SUCCESS ≠ safe). */
+export type CoverageMatrixDto = {
+  schemaVersion: number
+  scanId: string
+  artifactUniverseSummary: {
+    classCount: number
+    methodCount: number
+    fieldCount: number
+    dependencyCount: number
+    incomplete: boolean
+    note: string
+  }
+  entryFamilies: Array<{ name: string; count: number }>
+  callResolution: {
+    DIRECT: number
+    CHA: number
+    UNRESOLVED: number
+    unresolvedIsGap: true
+  }
+  detectors: Array<{
+    family: string
+    detectorVersion: string
+    signals: number
+    countedAsCovered: boolean
+    note: string
+  }>
+  dynamicExperiments: {
+    pathRunCount: number
+    effectiveAttemptCount: number
+    unreachedCount: number
+    stopReasonSamples: string[]
+  }
+  stopReasons: Array<{ name: string; count: number }>
+  gaps: {
+    unknown: number
+    unresolved: number
+    truncated: number
+    unreached: number
+    total: number
+    countedAsCovered: false
+  }
+  honestyFlags: {
+    neverTreatSuccessAsSafe: true
+    gapsNeverCountAsCovered: true
+    scanSuccessMeans: 'analysis_finished_not_safe'
+  }
+  checksum: string
+}
+
+/** Known Evidence Graph node kinds; unknown kinds degrade without failing the page. */
+export const EVIDENCE_NODE_KINDS = [
+  'PROGRAM',
+  'ENTRY',
+  'TRUST_BOUNDARY',
+  'EFFECT',
+  'GUARD',
+  'SANITIZER',
+  'STATE',
+  'RESOURCE',
+  'RUNTIME_OBSERVATION'
+] as const
+export type EvidenceNodeKind = (typeof EVIDENCE_NODE_KINDS)[number] | 'UNKNOWN'
+
+/** P1-02 / P1-08 Evidence Graph wire node (open taxonomy + namespaced extensions). */
+export type EvidenceGraphNodeDto = {
+  id: string
+  kind: EvidenceNodeKind
+  /** Raw wire kind before normalize. */
+  kindRaw?: string
+  language?: string
+  symbol?: string
+  location?: string
+  elementKind?: string
+  protocol?: string
+  evidenceRefs: string[]
+  provenanceKind: string
+  verificationStatus?: VerificationStatus
+  extensions?: Record<string, unknown>
+  /** Remaining open fields preserved for degraded display. */
+  extras?: Record<string, unknown>
+}
+
+export type EvidenceGraphEdgeDto = {
+  id: string
+  kind: string
+  fromId: string
+  toId: string
+  evidenceRefs: string[]
+  provenanceKind?: string
+}
+
+export type EvidenceGraphDto = {
+  schemaVersion: number
+  scanId: string
+  nodes: EvidenceGraphNodeDto[]
+  edges: EvidenceGraphEdgeDto[]
+  truncated: boolean
+  maxNodes: number
+  maxEdges: number
+  stopReason?: string
+  nodeCount?: number
+  edgeCount?: number
+  compatibilityGap: {
+    entryDtoCount: number
+    entryNodeCount: number
+    filteredEntryIds: string[]
+    notes: string[]
+  }
+  extensions?: Record<string, unknown>
+}
+
+export type ScanHypothesesDto = {
+  schemaVersion: number
+  scanId: string
+  hypotheses: SecurityHypothesisDto[]
+  count: number
+}
+
 export type ScanDto = {
   schemaVersion: number
   scanId: string
@@ -380,7 +563,10 @@ export type ScanDto = {
   completedAt?: string
   entries?: EntryDto[]
   findings?: Finding[]
+  hypotheses?: SecurityHypothesisDto[]
   paths?: PathStep[]
+  /** Embedded when returned by create/get scan (P0-13). */
+  coverage?: CoverageMatrixDto
 }
 export type Scan = ScanDto
 export type Evidence = EvidenceDto
@@ -542,6 +728,8 @@ export type PathRunDto = {
   track: IdentityTrack | string
   attemptId: string
   experimentPlanId?: string
+  /** HTTP probe ↔ JDBC join key when present (P0-06). */
+  correlationId?: string
   method: string
   contentType?: string
   requestSummary?: string
@@ -740,6 +928,9 @@ export interface SentinelApi {
   deleteAiJob(aiJobId: string): Promise<void>
   getEntries(projectId?: string, scanId?: string): Promise<EntryDto[]>
   getScan(scanId: string): Promise<ScanDto>
+  getScanCoverage(scanId: string): Promise<CoverageMatrixDto>
+  getEvidenceGraph(scanId: string): Promise<EvidenceGraphDto>
+  getScanHypotheses(scanId: string): Promise<ScanHypothesesDto>
   getEvidence(evidenceId: string): Promise<EvidenceDto>
   subscribe(scanId: string, onEvent: (event: ScanEvent) => void, options?: SubscribeOptions): () => void
 }
@@ -837,13 +1028,22 @@ const evidenceRefsOf = (value: unknown, field: string, optional = true): Evidenc
 const pathKind = (value: unknown): PathStep['kind'] => {
   if (value === 'entry' || value === 'transform' || value === 'branch' || value === 'dependency' || value === 'sink') return value
   // Server-side traces occasionally use node names. Keep the projection safe.
-  if (value === 'resource' || value === 'database') return 'dependency'
-  if (value === 'source') return 'entry'
+  if (value === 'resource' || value === 'database' || value === 'jdbc' || value === 'file') return 'dependency'
+  if (value === 'source' || value === 'http') return 'entry'
+  // ProbePlan IDENTITY_UNAVAILABLE steps; treat as a decision/branch node.
+  if (value === 'identity' || value === 'auth' || value === 'precondition') return 'branch'
+  if (value === 'call' || value === 'param' || value === 'return' || value === 'sanitizer' || value === 'guard') {
+    return 'transform'
+  }
+  // Unknown kind must not fail the whole scan view (frontend AGENTS: degrade).
+  if (typeof value === 'string' && value.trim() !== '') return 'transform'
   throw new Error('invalid path step kind')
 }
 
 const pathState = (value: unknown): PathStep['state'] => {
   if (value === 'blocked' || value === 'active' || value === 'done') return value
+  // Unknown state: prefer blocked over crashing the dashboard.
+  if (typeof value === 'string' && value.trim() !== '') return 'blocked'
   throw new Error('invalid path step state')
 }
 
@@ -914,12 +1114,19 @@ const parseRootCause = (value: unknown, field: string): RootCauseDto | undefined
         }
       })
       : (() => { throw new Error(`invalid ${field}.attackPath`) })()
+  const counterRaw = value.counterevidence
+  const counterevidence = counterRaw === undefined
+    ? undefined
+    : Array.isArray(counterRaw)
+      ? listOfText(counterRaw, `${field}.counterevidence`)
+      : (() => { throw new Error(`invalid ${field}.counterevidence`) })()
   return {
     attackPath,
     rootCauseStatement: optionalText(value.rootCauseStatement) ?? '',
     affectedComponent: strictOptionalText(value.affectedComponent, `${field}.affectedComponent`),
     cweId: strictOptionalText(value.cweId, `${field}.cweId`),
-    fixSuggestion: strictOptionalText(value.fixSuggestion, `${field}.fixSuggestion`)
+    fixSuggestion: strictOptionalText(value.fixSuggestion, `${field}.fixSuggestion`),
+    ...(counterevidence !== undefined && counterevidence.length > 0 ? { counterevidence } : {})
   }
 }
 
@@ -990,6 +1197,228 @@ const parseVerifiedFinding = (value: unknown): VerifiedFindingDto => {
   }
 }
 
+export const parseSecurityHypothesis = (item: unknown): SecurityHypothesisDto => {
+  if (!isRecord(item)) throw new Error('invalid securityHypothesis')
+  const familyRaw = typeof item.family === 'string' ? item.family : undefined
+  const lifecycleRaw = optionalText(item.lifecycle)
+  const lifecycleValues = new Set(['CANDIDATE', 'SUPPORTED', 'CONTRADICTED', 'INSUFFICIENT_EVIDENCE', 'DISMISSED'])
+  const lifecycle = lifecycleRaw && lifecycleValues.has(lifecycleRaw) ? lifecycleRaw : 'CANDIDATE'
+  const family = normalizeHypothesisFamily(item.family)
+  if (family === 'DATAFLOW') {
+    if (typeof item.source !== 'string' || item.source.trim() === '' || typeof item.effect !== 'string' || item.effect.trim() === '') {
+      throw new Error('invalid securityHypothesis.DATAFLOW')
+    }
+  }
+  if (item.extensions !== undefined && !isRecord(item.extensions)) throw new Error('invalid securityHypothesis.extensions')
+  const listRefs = (value: unknown, field: string): string[] => {
+    if (value === undefined) return []
+    if (!Array.isArray(value)) throw new Error(`invalid ${field}`)
+    return value.map((entry, index) => asText(entry, `${field}[${index}]`))
+  }
+  return {
+    schemaVersion: asSafeInteger(item.schemaVersion, 'securityHypothesis.schemaVersion', 1),
+    hypothesisId: asText(item.hypothesisId, 'securityHypothesis.hypothesisId'),
+    scanId: asText(item.scanId, 'securityHypothesis.scanId'),
+    securityProperty: asText(item.securityProperty, 'securityHypothesis.securityProperty'),
+    family,
+    familyRaw,
+    lifecycle,
+    lifecycleRaw,
+    detectorVersion: asText(item.detectorVersion, 'securityHypothesis.detectorVersion'),
+    supportingEvidenceRefs: listRefs(item.supportingEvidenceRefs, 'securityHypothesis.supportingEvidenceRefs'),
+    contradictingEvidenceRefs: listRefs(item.contradictingEvidenceRefs, 'securityHypothesis.contradictingEvidenceRefs'),
+    coverageGapRefs: listRefs(item.coverageGapRefs, 'securityHypothesis.coverageGapRefs'),
+    source: optionalText(item.source),
+    effect: optionalText(item.effect),
+    extensions: isRecord(item.extensions) ? { ...item.extensions } : undefined
+  }
+}
+
+export const parseCoverageMatrix = (value: unknown): CoverageMatrixDto => {
+  if (!isRecord(value)) throw new Error('invalid coverage matrix')
+  if (!isRecord(value.artifactUniverseSummary)) throw new Error('invalid coverage.artifactUniverseSummary')
+  if (!Array.isArray(value.entryFamilies)) throw new Error('invalid coverage.entryFamilies')
+  if (!isRecord(value.callResolution)) throw new Error('invalid coverage.callResolution')
+  if (!Array.isArray(value.detectors)) throw new Error('invalid coverage.detectors')
+  if (!isRecord(value.dynamicExperiments)) throw new Error('invalid coverage.dynamicExperiments')
+  if (!Array.isArray(value.stopReasons)) throw new Error('invalid coverage.stopReasons')
+  if (!isRecord(value.gaps)) throw new Error('invalid coverage.gaps')
+  if (!isRecord(value.honestyFlags)) throw new Error('invalid coverage.honestyFlags')
+  if (value.callResolution.unresolvedIsGap !== true) throw new Error('invalid coverage.callResolution.unresolvedIsGap')
+  if (value.gaps.countedAsCovered !== false) throw new Error('invalid coverage.gaps.countedAsCovered')
+  if (value.honestyFlags.neverTreatSuccessAsSafe !== true
+      || value.honestyFlags.gapsNeverCountAsCovered !== true
+      || value.honestyFlags.scanSuccessMeans !== 'analysis_finished_not_safe') {
+    throw new Error('invalid coverage.honestyFlags')
+  }
+  if (typeof value.checksum !== 'string' || !/^[0-9a-f]{64}$/.test(value.checksum)) {
+    throw new Error('invalid coverage.checksum')
+  }
+
+  const namedCounts = (rows: unknown[], field: string) => rows.map((row, index) => {
+    if (!isRecord(row)) throw new Error(`invalid ${field}[${index}]`)
+    return {
+      name: asText(row.name, `${field}[${index}].name`),
+      count: asSafeInteger(row.count, `${field}[${index}].count`, 0)
+    }
+  })
+
+  return {
+    schemaVersion: asSafeInteger(value.schemaVersion, 'coverage.schemaVersion', 1),
+    scanId: asText(value.scanId, 'coverage.scanId'),
+    artifactUniverseSummary: {
+      classCount: asSafeInteger(value.artifactUniverseSummary.classCount, 'coverage.classCount', 0),
+      methodCount: asSafeInteger(value.artifactUniverseSummary.methodCount, 'coverage.methodCount', 0),
+      fieldCount: asSafeInteger(value.artifactUniverseSummary.fieldCount, 'coverage.fieldCount', 0),
+      dependencyCount: asSafeInteger(value.artifactUniverseSummary.dependencyCount, 'coverage.dependencyCount', 0),
+      incomplete: asBoolean(value.artifactUniverseSummary.incomplete, 'coverage.incomplete'),
+      note: asText(value.artifactUniverseSummary.note, 'coverage.note')
+    },
+    entryFamilies: namedCounts(value.entryFamilies, 'coverage.entryFamilies'),
+    callResolution: {
+      DIRECT: asSafeInteger(value.callResolution.DIRECT, 'coverage.callResolution.DIRECT', 0),
+      CHA: asSafeInteger(value.callResolution.CHA, 'coverage.callResolution.CHA', 0),
+      UNRESOLVED: asSafeInteger(value.callResolution.UNRESOLVED, 'coverage.callResolution.UNRESOLVED', 0),
+      unresolvedIsGap: true
+    },
+    detectors: value.detectors.map((row, index) => {
+      if (!isRecord(row)) throw new Error(`invalid coverage.detectors[${index}]`)
+      return {
+        family: asText(row.family, `coverage.detectors[${index}].family`),
+        detectorVersion: asText(row.detectorVersion, `coverage.detectors[${index}].detectorVersion`),
+        signals: asSafeInteger(row.signals, `coverage.detectors[${index}].signals`, 0),
+        countedAsCovered: asBoolean(row.countedAsCovered, `coverage.detectors[${index}].countedAsCovered`),
+        note: asText(row.note, `coverage.detectors[${index}].note`)
+      }
+    }),
+    dynamicExperiments: {
+      pathRunCount: asSafeInteger(value.dynamicExperiments.pathRunCount, 'coverage.dynamicExperiments.pathRunCount', 0),
+      effectiveAttemptCount: asSafeInteger(value.dynamicExperiments.effectiveAttemptCount, 'coverage.dynamicExperiments.effectiveAttemptCount', 0),
+      unreachedCount: asSafeInteger(value.dynamicExperiments.unreachedCount, 'coverage.dynamicExperiments.unreachedCount', 0),
+      stopReasonSamples: stringRefList(value.dynamicExperiments.stopReasonSamples, 'coverage.dynamicExperiments.stopReasonSamples')
+    },
+    stopReasons: namedCounts(value.stopReasons, 'coverage.stopReasons'),
+    gaps: {
+      unknown: asSafeInteger(value.gaps.unknown, 'coverage.gaps.unknown', 0),
+      unresolved: asSafeInteger(value.gaps.unresolved, 'coverage.gaps.unresolved', 0),
+      truncated: asSafeInteger(value.gaps.truncated, 'coverage.gaps.truncated', 0),
+      unreached: asSafeInteger(value.gaps.unreached, 'coverage.gaps.unreached', 0),
+      total: asSafeInteger(value.gaps.total, 'coverage.gaps.total', 0),
+      countedAsCovered: false
+    },
+    honestyFlags: {
+      neverTreatSuccessAsSafe: true,
+      gapsNeverCountAsCovered: true,
+      scanSuccessMeans: 'analysis_finished_not_safe'
+    },
+    checksum: asText(value.checksum, 'coverage.checksum')
+  }
+}
+const knownEvidenceNodeKinds = new Set<string>(EVIDENCE_NODE_KINDS)
+
+export const normalizeEvidenceNodeKind = (raw: unknown): EvidenceNodeKind => {
+  if (typeof raw !== 'string' || raw.trim() === '') return 'UNKNOWN'
+  const upper = raw.trim().toUpperCase()
+  return knownEvidenceNodeKinds.has(upper) ? upper as EvidenceNodeKind : 'UNKNOWN'
+}
+
+const stringRefList = (value: unknown, field: string): string[] => {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) throw new Error(`invalid ${field}`)
+  return value.map((entry, index) => asText(entry, `${field}[${index}]`))
+}
+
+export const parseEvidenceGraphNode = (value: unknown): EvidenceGraphNodeDto => {
+  if (!isRecord(value)) throw new Error('invalid evidence graph node')
+  const kindRaw = optionalText(value.kind)
+  if (value.extensions !== undefined && !isRecord(value.extensions)) throw new Error('invalid evidenceGraph.node.extensions')
+  const knownKeys = new Set([
+    'id', 'kind', 'language', 'symbol', 'location', 'elementKind', 'protocol',
+    'evidenceRefs', 'provenanceKind', 'extensions', 'verificationStatus'
+  ])
+  const extras: Record<string, unknown> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (!knownKeys.has(key)) extras[key] = entry
+  }
+  return {
+    id: asText(value.id, 'evidenceGraph.node.id'),
+    kind: normalizeEvidenceNodeKind(value.kind),
+    kindRaw,
+    language: optionalText(value.language),
+    symbol: optionalText(value.symbol),
+    location: optionalText(value.location),
+    elementKind: optionalText(value.elementKind),
+    protocol: optionalText(value.protocol),
+    evidenceRefs: stringRefList(value.evidenceRefs, 'evidenceGraph.node.evidenceRefs'),
+    provenanceKind: typeof value.provenanceKind === 'string' && value.provenanceKind.trim()
+      ? value.provenanceKind
+      : 'UNKNOWN',
+    verificationStatus: value.verificationStatus === undefined
+      ? undefined
+      : statusOf(value.verificationStatus, 'evidenceGraph.node.verificationStatus'),
+    extensions: isRecord(value.extensions) ? { ...value.extensions } : undefined,
+    extras: Object.keys(extras).length > 0 ? extras : undefined
+  }
+}
+
+export const parseEvidenceGraph = (value: unknown): EvidenceGraphDto => {
+  if (!isRecord(value)) throw new Error('invalid evidence graph')
+  if (!Array.isArray(value.nodes)) throw new Error('invalid evidenceGraph.nodes')
+  if (!Array.isArray(value.edges)) throw new Error('invalid evidenceGraph.edges')
+  if (!isRecord(value.compatibilityGap)) throw new Error('invalid evidenceGraph.compatibilityGap')
+  if (value.extensions !== undefined && !isRecord(value.extensions)) throw new Error('invalid evidenceGraph.extensions')
+
+  const nodes = value.nodes.map(parseEvidenceGraphNode)
+  const edges = value.edges.map((edge, index) => {
+    if (!isRecord(edge)) throw new Error(`invalid evidenceGraph.edges[${index}]`)
+    return {
+      id: asText(edge.id, `evidenceGraph.edges[${index}].id`),
+      kind: asText(edge.kind, `evidenceGraph.edges[${index}].kind`),
+      fromId: asText(edge.fromId, `evidenceGraph.edges[${index}].fromId`),
+      toId: asText(edge.toId, `evidenceGraph.edges[${index}].toId`),
+      evidenceRefs: stringRefList(edge.evidenceRefs, `evidenceGraph.edges[${index}].evidenceRefs`),
+      provenanceKind: optionalText(edge.provenanceKind)
+    }
+  })
+  return {
+    schemaVersion: asSafeInteger(value.schemaVersion, 'evidenceGraph.schemaVersion', 1),
+    scanId: asText(value.scanId, 'evidenceGraph.scanId'),
+    nodes,
+    edges,
+    truncated: asBoolean(value.truncated, 'evidenceGraph.truncated'),
+    maxNodes: asSafeInteger(value.maxNodes, 'evidenceGraph.maxNodes', 1),
+    maxEdges: asSafeInteger(value.maxEdges, 'evidenceGraph.maxEdges', 1),
+    stopReason: optionalText(value.stopReason),
+    nodeCount: value.nodeCount === undefined
+      ? nodes.length
+      : asSafeInteger(value.nodeCount, 'evidenceGraph.nodeCount', 0),
+    edgeCount: value.edgeCount === undefined
+      ? edges.length
+      : asSafeInteger(value.edgeCount, 'evidenceGraph.edgeCount', 0),
+    compatibilityGap: {
+      entryDtoCount: asSafeInteger(value.compatibilityGap.entryDtoCount, 'evidenceGraph.compatibilityGap.entryDtoCount', 0),
+      entryNodeCount: asSafeInteger(value.compatibilityGap.entryNodeCount, 'evidenceGraph.compatibilityGap.entryNodeCount', 0),
+      filteredEntryIds: stringRefList(value.compatibilityGap.filteredEntryIds, 'evidenceGraph.compatibilityGap.filteredEntryIds'),
+      notes: stringRefList(value.compatibilityGap.notes, 'evidenceGraph.compatibilityGap.notes')
+    },
+    extensions: isRecord(value.extensions) ? { ...value.extensions } : undefined
+  }
+}
+
+export const parseScanHypotheses = (value: unknown): ScanHypothesesDto => {
+  if (!isRecord(value)) throw new Error('invalid scan hypotheses')
+  if (!Array.isArray(value.hypotheses)) throw new Error('invalid scanHypotheses.hypotheses')
+  const hypotheses = value.hypotheses.map(parseSecurityHypothesis)
+  const count = asSafeInteger(value.count, 'scanHypotheses.count', 0)
+  if (count !== hypotheses.length) throw new Error('invalid scanHypotheses.count')
+  return {
+    schemaVersion: asSafeInteger(value.schemaVersion, 'scanHypotheses.schemaVersion', 1),
+    scanId: asText(value.scanId, 'scanHypotheses.scanId'),
+    hypotheses,
+    count
+  }
+}
+
 export const parseFinding = (item: unknown, context?: { schemaVersion?: number; projectId?: string; artifactDigest?: string; scanId?: string }): Finding => {
   if (!isRecord(item)) throw new Error('invalid finding')
   const refs = evidenceRefsOf(item.evidenceRefs, 'finding.evidenceRefs')
@@ -1019,7 +1448,9 @@ export const parseFinding = (item: unknown, context?: { schemaVersion?: number; 
     scanId: optionalText(item.scanId) ?? context?.scanId,
     evidenceRefs: refs,
     confidence: item.confidence === undefined ? undefined : asFiniteNumber(item.confidence, 'finding.confidence', 0, 1),
-    rootCause
+    rootCause,
+    hypothesisId: optionalText(item.hypothesisId),
+    securityProperty: optionalText(item.securityProperty)
   }
 }
 
@@ -1057,6 +1488,8 @@ export const parseFocusEntryProbe = (item: unknown): FocusEntryProbeDto => {
     verificationStatus: status,
     dependencyMode: asText(item.dependencyMode, 'focusEntryProbe.dependencyMode'),
     replayed: asBoolean(item.replayed, 'focusEntryProbe.replayed'),
+    attemptKind: strictOptionalText(item.attemptKind, 'focusEntryProbe.attemptKind'),
+    experimentPlanId: strictOptionalText(item.experimentPlanId, 'focusEntryProbe.experimentPlanId'),
     requiredCapability: optionalText(item.requiredCapability) as WorkerCapability | undefined,
     dynamicExecutionMode: optionalText(item.dynamicExecutionMode)
   }
@@ -1133,6 +1566,11 @@ export const parseDashboard = (value: unknown): DashboardSnapshot => {
     authGapSinkCount: typeof value.authGapSinkCount === 'number' && Number.isFinite(value.authGapSinkCount)
       ? Math.max(0, Math.floor(value.authGapSinkCount))
       : undefined,
+    hypotheses: value.hypotheses === undefined
+      ? []
+      : Array.isArray(value.hypotheses)
+        ? value.hypotheses.map(parseSecurityHypothesis)
+        : (() => { throw new Error('invalid dashboard.hypotheses') })(),
     path: pathValue.map(parsePath),
     paths: richPaths,
     pathRuns,
@@ -1285,6 +1723,7 @@ const parsePathRun = (value: unknown): PathRunDto => {
     track: asText(value.track, 'pathRun.track'),
     attemptId: asText(value.attemptId, 'pathRun.attemptId'),
     experimentPlanId: strictOptionalText(value.experimentPlanId, 'pathRun.experimentPlanId'),
+    correlationId: strictOptionalText(value.correlationId, 'pathRun.correlationId'),
     method: asText(value.method ?? 'GET', 'pathRun.method'),
     contentType: strictOptionalText(value.contentType, 'pathRun.contentType'),
     requestSummary: strictOptionalText(value.requestSummary, 'pathRun.requestSummary'),
@@ -1371,6 +1810,11 @@ export const parseScan = (value: unknown): ScanDto => {
   const findings = body.findings === undefined
     ? undefined
     : Array.isArray(body.findings) ? body.findings.map((item) => parseFinding(item, { schemaVersion: version, projectId, artifactDigest, scanId })) : (() => { throw new Error('invalid scan.findings') })()
+  const hypotheses = body.hypotheses === undefined
+    ? undefined
+    : Array.isArray(body.hypotheses)
+      ? body.hypotheses.map(parseSecurityHypothesis)
+      : (() => { throw new Error('invalid scan.hypotheses') })()
   const paths = body.paths === undefined
     ? undefined
     : Array.isArray(body.paths) ? body.paths.flatMap((item) => isRecord(item) && Array.isArray(item.steps) ? item.steps.map(parsePath) : [parsePath(item)]) : (() => { throw new Error('invalid scan.paths') })()
@@ -1390,6 +1834,7 @@ export const parseScan = (value: unknown): ScanDto => {
     completedAt,
     entries,
     findings,
+    hypotheses,
     paths
   }
 }
@@ -1723,9 +2168,25 @@ const demoSnapshot: DashboardSnapshot = {
     { id: 'e-04', route: '/ws/events', method: 'CONNECT', module: 'events', protocol: 'WebSocket', precondition: '未探索', status: 'UNREACHED', coverage: 0 }
   ],
   findings: [
-    { id: 'f-01', title: '上传路径可控', severity: 'high', status: 'VERIFIED', entry: '/api/upload', sink: 'FileOutputStream', dependency: 'attachment.path', evidence: 12 },
+    { id: 'f-01', title: '上传路径可控', severity: 'high', status: 'VERIFIED', entry: '/api/upload', sink: 'FileOutputStream', dependency: 'attachment.path', evidence: 12, hypothesisId: 'hyp-demo-df', securityProperty: 'DATAFLOW' },
     { id: 'f-02', title: '服务器路径信息泄露', severity: 'medium', status: 'VERIFIED', entry: '/api/info', sink: 'HTTP response', dependency: 'filesystem', evidence: 7 },
     { id: 'f-03', title: '文件内容进入执行器', severity: 'critical', status: 'DYNAMIC_SUSPECTED', entry: '/api/run', sink: 'ProcessBuilder', dependency: 'ROLE_ADMIN', evidence: 4 }
+  ],
+  hypotheses: [
+    {
+      schemaVersion: 1,
+      hypothesisId: 'hyp-demo-df',
+      scanId: 'scan-07f2',
+      securityProperty: 'DATAFLOW',
+      family: 'DATAFLOW',
+      lifecycle: 'CANDIDATE',
+      detectorVersion: 'demo/0.1',
+      supportingEvidenceRefs: [],
+      contradictingEvidenceRefs: [],
+      coverageGapRefs: [],
+      source: 'param:filename',
+      effect: 'FileOutputStream'
+    }
   ],
   paths: [],
   pathRuns: [],
@@ -2302,6 +2763,30 @@ export class HttpSentinelApi implements SentinelApi {
     return parseScan(response)
   }
 
+  async getScanCoverage(scanId: string): Promise<CoverageMatrixDto> {
+    const id = asText(scanId, 'scanId')
+    const response = await this.request(`scans/${encodeURIComponent(id)}/coverage`, {
+      credentials: 'include', headers: jsonHeaders(this.token)
+    }, 'scan coverage request')
+    return parseCoverageMatrix(response)
+  }
+
+  async getEvidenceGraph(scanId: string): Promise<EvidenceGraphDto> {
+    const id = asText(scanId, 'scanId')
+    const response = await this.request(`scans/${encodeURIComponent(id)}/evidence-graph`, {
+      credentials: 'include', headers: jsonHeaders(this.token)
+    }, 'evidence graph request')
+    return parseEvidenceGraph(response)
+  }
+
+  async getScanHypotheses(scanId: string): Promise<ScanHypothesesDto> {
+    const id = asText(scanId, 'scanId')
+    const response = await this.request(`scans/${encodeURIComponent(id)}/hypotheses`, {
+      credentials: 'include', headers: jsonHeaders(this.token)
+    }, 'scan hypotheses request')
+    return parseScanHypotheses(response)
+  }
+
   async getEvidence(evidenceId: string): Promise<EvidenceDto> {
     const id = asText(evidenceId, 'evidenceId')
     const response = await this.request(`evidence/${encodeURIComponent(id)}`, {
@@ -2562,6 +3047,78 @@ export class MockSentinelApi implements SentinelApi {
 
   async getScan(_scanId: string): Promise<ScanDto> {
     return this.createScan()
+  }
+
+  async getScanCoverage(scanId: string): Promise<CoverageMatrixDto> {
+    return {
+      schemaVersion: 1,
+      scanId,
+      artifactUniverseSummary: {
+        classCount: 0,
+        methodCount: 0,
+        fieldCount: 0,
+        dependencyCount: 0,
+        incomplete: true,
+        note: 'DEMO_ONLY'
+      },
+      entryFamilies: [],
+      callResolution: {
+        DIRECT: 0,
+        CHA: 0,
+        UNRESOLVED: 0,
+        unresolvedIsGap: true
+      },
+      detectors: [],
+      dynamicExperiments: {
+        pathRunCount: 0,
+        effectiveAttemptCount: 0,
+        unreachedCount: 0,
+        stopReasonSamples: []
+      },
+      stopReasons: [],
+      gaps: { unknown: 0, unresolved: 0, truncated: 0, unreached: 0, total: 0, countedAsCovered: false },
+      honestyFlags: {
+        neverTreatSuccessAsSafe: true,
+        gapsNeverCountAsCovered: true,
+        scanSuccessMeans: 'analysis_finished_not_safe'
+      },
+      checksum: '0'.repeat(64)
+    }
+  }
+
+  async getEvidenceGraph(scanId: string): Promise<EvidenceGraphDto> {
+    return {
+      schemaVersion: 1,
+      scanId,
+      nodes: [{
+        id: 'program:module:demo-lang:demo.mod',
+        kind: 'PROGRAM',
+        language: 'demo-lang',
+        symbol: 'demo.mod',
+        location: 'demo/mod.ts:1',
+        evidenceRefs: ['ev-demo-1'],
+        provenanceKind: 'FACT',
+        extensions: { 'demo-lang': { note: 'unknown language extension sample' } }
+      }],
+      edges: [],
+      truncated: false,
+      maxNodes: 2000,
+      maxEdges: 4000,
+      nodeCount: 1,
+      edgeCount: 0,
+      compatibilityGap: {
+        entryDtoCount: 0,
+        entryNodeCount: 0,
+        filteredEntryIds: [],
+        notes: ['DEMO_ONLY']
+      }
+    }
+  }
+
+  async getScanHypotheses(scanId: string): Promise<ScanHypothesesDto> {
+    const dashboard = await this.loadDashboard()
+    const hypotheses = dashboard.hypotheses ?? []
+    return { schemaVersion: 1, scanId, hypotheses, count: hypotheses.length }
   }
 
   async getEvidence(evidenceId: string): Promise<EvidenceDto> {

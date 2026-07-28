@@ -89,6 +89,8 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
                 dockerExecutable, "run", "--detach", "--name", name,
                 "--label", "com.veyrion.trusted-docker=true",
                 "--network", "none",
+                // Stable hostname so Quartz AUTO / getLocalHost does not fail under deny-all.
+                "--hostname", "veyrion-sandbox",
                 "--user", SANDBOX_UID + ":" + SANDBOX_GID,
                 "--tmpfs", "/tmp/veyrion-trace:rw,nosuid,nodev,size=" + request.tmpfsBytes()
                         + ",mode=1777,uid=" + SANDBOX_UID + ",gid=" + SANDBOX_GID,

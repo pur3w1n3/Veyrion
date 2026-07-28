@@ -1,4 +1,5 @@
 package com.aq.jvmsentinel.worker;
+import com.aq.jvmsentinel.AcceptanceAssertions;
 
 import com.aq.jvmsentinel.control.JsonCodec;
 import com.aq.jvmsentinel.sandbox.CommandRequest;
@@ -24,6 +25,8 @@ import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -132,6 +135,20 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     "empty probe events fail closed");
             ExternalArtifactTaskExecutor.requireHttpProbeEvidence(
                     registration, MockServices.probeJsonl().getBytes(StandardCharsets.UTF_8));
+            expect(ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.class,
+                    () -> ExternalArtifactTaskExecutor.requireHttpProbeEvidence(registration,
+                            MockServices.probeJsonl()
+                                    .replace("/sample/http-entry", "/tmp/veyrion-trace/probe-plan.txt")
+                                    .getBytes(StandardCharsets.UTF_8)),
+                    "mismatched probe target must fail closed");
+            chunkedTraceReadContract();
+            String prioritized = ExternalArtifactTaskExecutor.diagnostic(
+                    "probe-out", "Exception in thread main: probe failed\nstack-frame",
+                    "application-noise-".repeat(300));
+            check(prioritized.startsWith("probe stderr:\nException in thread main: probe failed")
+                            && prioritized.contains("application log tail:")
+                            && prioritized.length() <= 1_600,
+                    "failure diagnostic prioritizes the probe exception within the public limit");
 
             System.out.println("ExternalArtifactTaskExecutorAcceptanceTest: PASS");
         } finally {
@@ -140,6 +157,63 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
             Files.deleteIfExists(mysqlJar);
             Files.deleteIfExists(directory);
         }
+    }
+
+    private static void chunkedTraceReadContract() throws Exception {
+        byte[] large = new byte[ExternalArtifactTaskExecutor.TRACE_READ_BLOCK_BYTES * 2 + 137];
+        for (int i = 0; i < large.length; i++) large[i] = (byte) (i * 31);
+
+        TraceFileRuntimeClient runtime = new TraceFileRuntimeClient(large);
+        byte[] read = ExternalArtifactTaskExecutor.readTraceFile(
+                runtime, "sandbox-1", ExternalArtifactTaskExecutor.TRACE_FILE,
+                large.length, true);
+        check(Arrays.equals(large, read) && runtime.blockReads == 3,
+                "trace larger than command response is read in bounded blocks");
+
+        ResourceBudget fourMiB = new ResourceBudget(
+                60, 60_000, 256L * 1024 * 1024, 64L * 1024 * 1024, 4L * 1024 * 1024);
+        check(ExternalArtifactTaskExecutor.agentTraceBudget(fourMiB, 512)
+                        == 4L * 1024 * 1024 - 64L * 1024 - 512L * 2_048,
+                "Agent trace budget reserves bounded room for 512 probe events");
+
+        TraceFileRuntimeClient oversized = new TraceFileRuntimeClient(large);
+        var tooLarge = expect(ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.class,
+                () -> ExternalArtifactTaskExecutor.readTraceFile(
+                        oversized, "sandbox-1", ExternalArtifactTaskExecutor.TRACE_FILE,
+                        large.length - 1L, true),
+                "trace over task budget");
+        check("TRACE_TOO_LARGE".equals(tooLarge.code()) && oversized.blockReads == 0,
+                "oversized trace rejected before any block download");
+
+        TraceFileRuntimeClient malformed = new TraceFileRuntimeClient(large);
+        malformed.malformedBlock = 1;
+        var badBase64 = expect(ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.class,
+                () -> ExternalArtifactTaskExecutor.readTraceFile(
+                        malformed, "sandbox-1", ExternalArtifactTaskExecutor.TRACE_FILE,
+                        large.length, true),
+                "malformed Base64 trace block");
+        check("TRACE_READ_FAILED".equals(badBase64.code()),
+                "malformed trace block fails closed");
+
+        TraceFileRuntimeClient shortRead = new TraceFileRuntimeClient(large);
+        shortRead.shortBlock = 2;
+        var shortFailure = expect(ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.class,
+                () -> ExternalArtifactTaskExecutor.readTraceFile(
+                        shortRead, "sandbox-1", ExternalArtifactTaskExecutor.TRACE_FILE,
+                        large.length, true),
+                "short trace block");
+        check("TRACE_READ_FAILED".equals(shortFailure.code()),
+                "short trace block fails closed");
+
+        TraceFileRuntimeClient missing = new TraceFileRuntimeClient(null);
+        byte[] optional = ExternalArtifactTaskExecutor.readTraceFile(
+                missing, "sandbox-1", ExternalArtifactTaskExecutor.PROBE_TRACE_FILE,
+                1024, false);
+        check(optional.length == 0, "missing optional probe trace is empty");
+        expect(SecurityException.class,
+                () -> ExternalArtifactTaskExecutor.readTraceFile(
+                        runtime, "sandbox-1", "/tmp/not-allowlisted", large.length, true),
+                "trace path allowlist");
     }
 
     private static ExternalArtifactTaskExecutor executor(
@@ -202,6 +276,7 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
 
     private static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
+        AcceptanceAssertions.record();
     }
 
     private static <T extends Throwable> T expect(
@@ -218,6 +293,89 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
     @FunctionalInterface
     private interface ThrowingRunnable {
         void run() throws Exception;
+    }
+
+    private static String traceReadOutput(String command) {
+        byte[] source;
+        String path;
+        if (command.startsWith("wc -c < " + ExternalArtifactTaskExecutor.TRACE_FILE)) {
+            return Integer.toString(MockServices.agentJsonl().getBytes(StandardCharsets.UTF_8).length);
+        }
+        if (command.startsWith("if [ -f " + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)) {
+            return Integer.toString(MockServices.probeJsonl().getBytes(StandardCharsets.UTF_8).length);
+        }
+        if (command.startsWith("dd if=" + ExternalArtifactTaskExecutor.TRACE_FILE)) {
+            source = MockServices.agentJsonl().getBytes(StandardCharsets.UTF_8);
+            path = ExternalArtifactTaskExecutor.TRACE_FILE;
+        } else if (command.startsWith("dd if=" + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)) {
+            source = MockServices.probeJsonl().getBytes(StandardCharsets.UTF_8);
+            path = ExternalArtifactTaskExecutor.PROBE_TRACE_FILE;
+        } else {
+            return null;
+        }
+        int block = blockIndex(command);
+        int from = Math.min(source.length,
+                block * ExternalArtifactTaskExecutor.TRACE_READ_BLOCK_BYTES);
+        int to = Math.min(source.length,
+                from + ExternalArtifactTaskExecutor.TRACE_READ_BLOCK_BYTES);
+        check(command.startsWith("dd if=" + path), "fixed trace path command");
+        return Base64.getEncoder().encodeToString(Arrays.copyOfRange(source, from, to));
+    }
+
+    private static int blockIndex(String command) {
+        int start = command.indexOf(" skip=");
+        if (start < 0) throw new AssertionError("trace block command has no skip");
+        start += " skip=".length();
+        int end = start;
+        while (end < command.length() && Character.isDigit(command.charAt(end))) end++;
+        return Integer.parseInt(command.substring(start, end));
+    }
+
+    private static final class TraceFileRuntimeClient implements SandboxRuntimeClient {
+        private final byte[] data;
+        private int blockReads;
+        private int malformedBlock = -1;
+        private int shortBlock = -1;
+
+        private TraceFileRuntimeClient(byte[] data) {
+            this.data = data == null ? null : data.clone();
+        }
+
+        @Override
+        public SandboxHandle create(SandboxRequest request) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public CommandResult command(String sandboxId, CommandRequest request) {
+            String command = request.command();
+            if (command.startsWith("wc -c < ")) {
+                return data == null
+                        ? new CommandResult(null, "", "missing", 1)
+                        : new CommandResult(null, data.length + "\n", "", 0);
+            }
+            if (command.startsWith("if [ -f ")) {
+                return new CommandResult(null, data == null ? "0\n" : data.length + "\n", "", 0);
+            }
+            if (!command.startsWith("dd if=") || data == null) {
+                return new CommandResult(null, "", "unsupported", 1);
+            }
+            int block = blockIndex(command);
+            blockReads++;
+            if (block == malformedBlock) return new CommandResult(null, "%%%", "", 0);
+            int from = Math.min(data.length,
+                    block * ExternalArtifactTaskExecutor.TRACE_READ_BLOCK_BYTES);
+            int to = Math.min(data.length,
+                    from + ExternalArtifactTaskExecutor.TRACE_READ_BLOCK_BYTES);
+            if (block == shortBlock && to > from) to--;
+            return new CommandResult(null,
+                    Base64.getEncoder().encodeToString(Arrays.copyOfRange(data, from, to)), "", 0);
+        }
+
+        @Override
+        public void delete(String sandboxId) {
+            throw new UnsupportedOperationException();
+        }
     }
 
     private static final class TrustedRuntimeClient implements SandboxRuntimeClient {
@@ -242,10 +400,8 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         public CommandResult command(String sandboxId, CommandRequest request) {
             check(created && sandboxId.equals("trusted-sandbox-1"), "known trusted sandbox");
             String command = request.command();
-            String stdout = command.equals("/bin/cat /tmp/veyrion-trace/agent-events.jsonl")
-                    ? MockServices.agentJsonl()
-                    : command.contains("probe-events.jsonl") ? MockServices.probeJsonl() : "";
-            return new CommandResult(null, stdout, "", 0);
+            String stdout = traceReadOutput(command);
+            return new CommandResult(null, stdout == null ? "" : stdout, "", 0);
         }
 
         @Override
@@ -310,11 +466,9 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                 boolean artifactRun = commandText.contains(" -jar ")
                         || commandText.contains("/opt/veyrion/artifact/application.jar");
                 if (artifactRun) lastCommand = command;
-                String stdout = commandText.equals("/bin/cat /tmp/veyrion-trace/agent-events.jsonl")
-                        ? agentJsonl()
-                        : commandText.contains("probe-events.jsonl") ? probeJsonl() : "";
+                String stdout = traceReadOutput(commandText);
                 respond(exchange, 200, Map.of(
-                        "id", "command-1", "stdout", stdout, "stderr", "",
+                        "id", "command-1", "stdout", stdout == null ? "" : stdout, "stderr", "",
                         "exit_code", failCommand && artifactRun ? 17 : 0));
             } else if (path.equals("/v1/sandboxes/sandbox-1")
                     && exchange.getRequestMethod().equals("DELETE")) {
@@ -454,20 +608,36 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     && command.contains("-javaagent:/opt/veyrion/agent/veyrion-agent.jar")
                     && command.contains("-Djava.io.tmpdir=/tmp")
                     && command.contains("com.aq.jvmsentinel.agent.WaitHttpReady")
-                    && command.contains("com.aq.jvmsentinel.agent.LoopbackHttpProbe @")
+                    && command.contains("/tmp/veyrion-trace/http-port.stdout")
+                    && command.contains("/tmp/veyrion-trace/wait-http-ready.err")
+                    && command.contains("com.aq.jvmsentinel.agent.LoopbackHttpProbe --batch /tmp/veyrion-trace/probe-plan.txt \"$HTTP_PORT\"")
                     && command.contains("probe-plan.txt")
                     && command.contains("-Xmx64m")
+                    && command.contains("probe selected http port")
+                    && command.contains("invalid or dependency HTTP_PORT for probe")
+                    && command.contains("-Dveyrion.loopbackProbe.port=\"$HTTP_PORT\"")
+                    && !command.contains("probe preflight http-port.txt")
+                    && !command.contains("od -An -tx1 /tmp/veyrion-trace/http-port.txt")
                     && command.contains("PROBE_JVM_OK=0")
                     && command.contains("probe_jvm_status=$?")
-                    && !command.contains(
-                            "LoopbackHttpProbe @/tmp/veyrion-trace/probe-plan.txt \"$HTTP_PORT\" || true")
+                    && command.contains("probe-status.txt")
+                    && command.contains("probe_jvm_status=%s")
+                    && !command.contains("LoopbackHttpProbe @/tmp/veyrion-trace/probe-plan.txt || true")
                     && !command.contains("--server.port=")
                     && command.contains("--spring.main.lazy-initialization=true")
                     && command.contains("jdbc:veyrion-mock:mem:veyrion")
                     && command.contains("--spring.datasource.hikari.initialization-fail-timeout=-1")
                     && command.contains("--spring.datasource.druid.initial-size=0")
                     && command.contains("--spring.flyway.enabled=false")
+                    && command.contains("-Dorg.quartz.scheduler.instanceId=veyrion-sandbox")
+                    && !command.contains("-Dorg.quartz.scheduler.instanceId=AUTO")
+                    && command.contains("--spring.quartz.auto-startup=false")
+                    && command.contains("--spring.quartz.job-store-type=memory")
                     && command.contains("probe_status=1")
+                    && command.contains("[ \"$elapsed\" -lt 90 ]")
+                    && !command.contains("[ \"$elapsed\" -lt 105 ]")
+                    && !command.contains("[ \"$elapsed\" -lt 120 ]")
+                    && !command.contains("while kill -0 \"$APP_PID\" 2>/dev/null && [ \"$probe_status\" -ne 0 ]")
                     && command.contains("exit 70")
                     && command.contains("exit 71")
                     && command.contains("kill -TERM \"$APP_PID\"")

@@ -16,6 +16,7 @@ import java.sql.DriverManager;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
@@ -30,6 +31,7 @@ public final class PipelineRestartRecoveryAcceptanceTest {
         Path database = root.resolve("control.db");
         Path artifact = executableControllerJar(root);
         String token = "pipeline-restart-token";
+        String keys = UUID.randomUUID().toString();
         HttpClient client = HttpClient.newHttpClient();
         String projectId;
         String scanId;
@@ -37,26 +39,26 @@ public final class PipelineRestartRecoveryAcceptanceTest {
         try {
             try (ControlPlaneServer first = server(root, database, token).start()) {
                 projectId = text(ok(send(client, uri(first, "/projects"), "POST",
-                        "{\"name\":\"pipeline restart\"}", token, "project")), "projectId");
+                        "{\"name\":\"pipeline restart\"}", token, keys + "-project")), "projectId");
                 String artifactId = text(ok(send(client,
                         uri(first, "/projects/" + projectId + "/artifacts"), "POST",
-                        "{\"path\":\"" + escape(artifact.toString()) + "\"}", token, "artifact")),
+                        "{\"path\":\"" + escape(artifact.toString()) + "\"}", token, keys + "-artifact")),
                         "artifactId");
                 String providerId = text(ok(send(client, uri(first, "/providers"), "POST",
                         "{\"name\":\"pipeline provider\",\"kind\":\"OPENAI_CHAT\"," +
                                 "\"baseUrl\":\"http://127.0.0.1:3000\",\"model\":\"pipeline-model\"," +
-                                "\"apiKey\":\"pipeline-secret\"}", token, "provider")), "providerId");
+                                "\"apiKey\":\"pipeline-secret\"}", token, keys + "-provider")), "providerId");
                 for (String role : List.of("PRE_ANALYSIS", "AUTH_ANALYSIS")) {
                     ok(send(client, uri(first, "/projects/" + projectId + "/role-assignments/" + role),
                             "PATCH", "{\"providerId\":\"" + providerId + "\",\"model\":\"pipeline-model\"}",
-                            token, "binding-" + role));
+                            token, keys + "-binding-" + role));
                 }
                 Map<String, Object> audit = ok(send(client,
                         uri(first, "/projects/" + projectId + "/audit-runs"), "POST",
                         "{\"artifactId\":\"" + artifactId + "\",\"authorized\":true,"
                                 + "\"aiAuthorized\":true,\"outputLanguage\":\"ZH_CN\","
                                 + "\"networkMode\":\"DENY\",\"dangerousActionMode\":\"DRY_RUN\"}",
-                        token, "audit"));
+                        token, keys + "-audit"));
                 scanId = text(audit, "scanId");
                 String jobId = text(object(audit, "preAnalysisJob"), "aiJobId");
                 check("COMPLETED".equals(awaitJob(client, first, jobId, token).get("status")),
@@ -90,12 +92,25 @@ public final class PipelineRestartRecoveryAcceptanceTest {
 
             try (var connection = DriverManager.getConnection("jdbc:sqlite:" + database);
                  var statement = connection.prepareStatement(
-                         "SELECT armed,next_stage FROM audit_pipeline_runs WHERE scan_id=?")) {
+                         "SELECT armed,next_stage,pipeline_run_id,stage_attempt_id,expected_task_id,expected_job_id "
+                                 + "FROM audit_pipeline_runs WHERE scan_id=?")) {
                 statement.setString(1, scanId);
                 try (var rows = statement.executeQuery()) {
                     check(rows.next() && rows.getInt(1) == 1
                                     && "DYNAMIC_OBSERVATION".equals(rows.getString(2)),
                             "pipeline cursor remains armed at the active dynamic stage");
+                    String pipelineRunId = rows.getString(3);
+                    String stageAttemptId = rows.getString(4);
+                    String expectedTaskId = rows.getString(5);
+                    String expectedJobId = rows.getString(6);
+                    check(pipelineRunId != null && !pipelineRunId.isBlank(),
+                            "restart recovery uses a persisted pipelineRunId");
+                    check(stageAttemptId != null && !stageAttemptId.isBlank(),
+                            "restart recovery uses a persisted stageAttemptId");
+                    check(taskId.equals(expectedTaskId),
+                            "restart recovery waits on the exact expectedTaskId");
+                    check(expectedJobId == null,
+                            "dynamic observation cursor does not wait on an AI job");
                 }
             }
         } finally {
@@ -273,5 +288,6 @@ public final class PipelineRestartRecoveryAcceptanceTest {
 
     private static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
+        AcceptanceAssertions.record();
     }
 }

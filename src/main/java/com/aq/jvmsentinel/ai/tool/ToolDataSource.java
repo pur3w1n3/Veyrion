@@ -26,6 +26,17 @@ public interface ToolDataSource {
         return List.of();
     }
 
+    /**
+     * Versioned {@code code_query} kinds. Default ignores {@code kind} and delegates
+     * to {@link #queryCode(ToolExecutionContext.Scope, String, int)}.
+     * Known kinds: METHOD_VIEW, CALLERS, CALLEES, CFG_VIEW, DATAFLOW_SLICE,
+     * GUARD_QUERY, FIELD_USES, CONFIG_SEARCH, AUTH, TAINT_GRAPH.
+     */
+    default List<FactRecord> queryCode(ToolExecutionContext.Scope scope, String kind,
+                                       String query, int limit) throws Exception {
+        return queryCode(scope, query, limit);
+    }
+
     Optional<FactRecord> findEvidence(ToolExecutionContext.Scope scope, String evidenceRef)
             throws Exception;
 
@@ -73,7 +84,60 @@ public interface ToolDataSource {
                                                      String techniqueId,
                                                      String authorizationHeader,
                                                      String bladeAuthHeader) throws Exception {
+        return requestSandboxProbe(scope, principalId, jobId, null, entrypointRef, candidateInputs,
+                maxRequests, techniqueId, authorizationHeader, bladeAuthHeader, null);
+    }
+
+    /**
+     * Attempt-scoped sandbox probe. {@code toolCallId} (canonical ToolCall.callId) forms the
+     * probeAttemptId with {@code jobId}; null/blank falls back to a legacy job-level attempt.
+     */
+    default Optional<FactRecord> requestSandboxProbe(ToolExecutionContext.Scope scope,
+                                                     String principalId, String jobId,
+                                                     String toolCallId,
+                                                     String entrypointRef,
+                                                     List<String> candidateInputs,
+                                                     int maxRequests,
+                                                     String techniqueId,
+                                                     String authorizationHeader,
+                                                     String bladeAuthHeader) throws Exception {
+        return requestSandboxProbe(scope, principalId, jobId, toolCallId, entrypointRef,
+                candidateInputs, maxRequests, techniqueId, authorizationHeader, bladeAuthHeader, null);
+    }
+
+    default Optional<FactRecord> requestSandboxProbe(ToolExecutionContext.Scope scope,
+                                                     String principalId, String jobId,
+                                                     String toolCallId,
+                                                     String entrypointRef,
+                                                     List<String> candidateInputs,
+                                                     int maxRequests,
+                                                     String techniqueId,
+                                                     String authorizationHeader,
+                                                     String bladeAuthHeader,
+                                                     String experimentPlanId) throws Exception {
         return Optional.empty();
+    }
+
+    /**
+     * Validates model-supplied hypothesis/experiment labels against the server-owned scan
+     * before labels are copied into a probe fact. Implementations must fail closed.
+     */
+    default void validateHypothesisBinding(ToolExecutionContext.Scope scope,
+                                            String hypothesisId,
+                                            String planKind,
+                                            String experimentPlanId,
+                                            String entrypointRef) throws Exception {
+        // Legacy test sources have no hypothesis store; they cannot authorize a binding.
+        if ((hypothesisId != null && !hypothesisId.isBlank())
+                || (planKind != null && !planKind.isBlank())
+                || (experimentPlanId != null && !experimentPlanId.isBlank())) {
+            throw new SecurityException("HYPOTHESIS_BINDING_UNAVAILABLE");
+        }
+    }
+
+    /** Coverage gap ids (taintPathId) for PATH_EXPLORATION sandbox_probe gating. */
+    default List<String> coverageGapIds(ToolExecutionContext.Scope scope) throws Exception {
+        return List.of();
     }
 
     /**

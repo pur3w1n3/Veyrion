@@ -44,6 +44,9 @@ public interface ControlPlaneRouteActions {
     void dashboard(HttpExchange exchange, String projectId) throws IOException;
     void listEvidence(HttpExchange exchange, String projectId) throws IOException;
     void sendScan(HttpExchange exchange, String scanId) throws IOException;
+    void sendScanCoverage(HttpExchange exchange, String scanId) throws IOException;
+    void sendScanEvidenceGraph(HttpExchange exchange, String scanId) throws IOException;
+    void sendScanHypotheses(HttpExchange exchange, String scanId) throws IOException;
     void streamEvents(HttpExchange exchange, String scanId) throws IOException;
     void listDynamicTasks(HttpExchange exchange, String scanId) throws IOException;
     void createDynamicTask(HttpExchange exchange, String scanId) throws IOException;

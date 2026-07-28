@@ -35,9 +35,29 @@ public final class TraceProjectionService {
     private final InMemoryTraceStore traces;
     private final Map<TaskScope, Projection> projections = new ConcurrentHashMap<>();
     private final Map<String, ApiDtos.EvidenceDto> evidence = new ConcurrentHashMap<>();
+    /** Optional taskId → experimentPlanId binder (P0-08). */
+    private final Map<String, String> taskExperimentPlanIds = new ConcurrentHashMap<>();
 
     public TraceProjectionService(InMemoryTraceStore traces) {
         this.traces = Objects.requireNonNull(traces, "traces");
+    }
+
+    public void bindExperimentPlan(String taskId, String experimentPlanId) {
+        if (taskId == null || taskId.isBlank()) {
+            return;
+        }
+        if (experimentPlanId == null || experimentPlanId.isBlank()) {
+            taskExperimentPlanIds.remove(taskId);
+            return;
+        }
+        taskExperimentPlanIds.put(taskId, experimentPlanId.trim());
+    }
+
+    public String experimentPlanIdForTask(String taskId) {
+        if (taskId == null || taskId.isBlank()) {
+            return null;
+        }
+        return taskExperimentPlanIds.get(taskId);
     }
 
     /**
@@ -74,6 +94,10 @@ public final class TraceProjectionService {
     /** Visible for contract tests and alternate immutable trace backends. */
     public Projection project(TaskSnapshot snapshot, TraceManifest manifest, List<TraceChunk> chunks) {
         requireEligible(snapshot);
+        return projectBody(snapshot, manifest, chunks);
+    }
+
+    private Projection projectBody(TaskSnapshot snapshot, TraceManifest manifest, List<TraceChunk> chunks) {
         Objects.requireNonNull(manifest, "manifest");
         Objects.requireNonNull(chunks, "chunks");
         validateChain(snapshot, manifest, chunks);
@@ -84,7 +108,10 @@ public final class TraceProjectionService {
         Map<String, ApiDtos.EvidenceDto> projectedEvidence = new LinkedHashMap<>();
         Map<String, List<ApiDtos.PathStepDto>> routeSteps = new LinkedHashMap<>();
         Map<String, List<String>> routeRefs = new LinkedHashMap<>();
-        List<SqlEvent> jdbcSql = new ArrayList<>();
+        // Request-window SQL only (P0-06): never copy the full task JDBC list onto every HTTP PathRun.
+        // When correlationId is present on HTTP/JDBC, only same-correlation SQL joins the PathRun.
+        List<PendingSql> pendingSql = new ArrayList<>();
+        List<SqlEvent> orphanSql = new ArrayList<>();
         List<ApiDtos.PathRunDto> pathRuns = new ArrayList<>();
         Set<String> springBoundRouteKeys = new HashSet<>();
         String scopeDigest = WorkerContracts.sha256((snapshot.scope().projectId() + "\n"
@@ -115,16 +142,24 @@ public final class TraceProjectionService {
                 summary = "HTTP probe observed " + observation.method() + " "
                         + observation.route() + " (target " + observation.requestTarget() + ") -> "
                         + observation.response() + " at " + symbol;
+                String corr = correlationId(event.detail());
+                if (!corr.isBlank()) {
+                    summary = summary + " correlationId=" + corr;
+                }
                 stepDetail = summary;
             }
             if ("JDBC".equals(event.eventType())) {
                 SqlEvent sqlEvent = sqlEventFromDetail(event.detail());
                 if (sqlEvent != null) {
-                    jdbcSql.add(sqlEvent);
+                    pendingSql.add(new PendingSql(sqlEvent, correlationId(event.detail())));
                     String sqlPreview = truncate(sqlEvent.sqlText(), 160);
                     summary = "JDBC " + sqlEvent.readWrite() + " observed (capture="
                             + sqlEvent.captureMode() + ")"
                             + (sqlPreview.isBlank() ? "" : ": " + sqlPreview);
+                    String corr = correlationId(event.detail());
+                    if (!corr.isBlank()) {
+                        summary = summary + " correlationId=" + corr;
+                    }
                 } else {
                     String capture = event.detail().getOrDefault("captureMode", "UNKNOWN");
                     String protocolMeta = event.detail().getOrDefault("summary",
@@ -155,13 +190,36 @@ public final class TraceProjectionService {
                 String routeKey = (httpMethod.isBlank() ? "GET" : httpMethod) + " " + route;
                 routeSteps.computeIfAbsent(routeKey, ignored -> new ArrayList<>()).add(step);
                 routeRefs.computeIfAbsent(routeKey, ignored -> new ArrayList<>()).add(evidenceId);
+                String httpCorr = correlationId(event.detail());
+                List<SqlEvent> windowSql = new ArrayList<>();
+                List<PendingSql> retained = new ArrayList<>();
+                for (PendingSql pending : pendingSql) {
+                    if (httpCorr.isBlank()) {
+                        // Request-window mode: consume all pending SQL into the next HTTP PathRun.
+                        windowSql.add(pending.event());
+                    } else if (pending.correlationId().isBlank()) {
+                        // HTTP is correlated; uncorrelated SQL must not cross-attach.
+                        orphanSql.add(pending.event());
+                    } else if (httpCorr.equals(pending.correlationId())) {
+                        windowSql.add(pending.event());
+                    } else {
+                        // Keep other correlations for a later HTTP PathRun.
+                        retained.add(pending);
+                    }
+                }
+                pendingSql.clear();
+                pendingSql.addAll(retained);
                 pathRuns.add(pathRunFromHttp(
-                        snapshot, event, evidenceId, httpAttempt++, jdbcSql, springBoundRouteKeys));
+                        snapshot, event, evidenceId, httpAttempt++, List.copyOf(windowSql),
+                        springBoundRouteKeys));
             }
             if ("BRANCH_COVERAGE".equals(event.eventType()) && !pathRuns.isEmpty()) {
                 ApiDtos.PathRunDto last = pathRuns.remove(pathRuns.size() - 1);
                 pathRuns.add(mergeBranchCoverage(last, event));
             }
+        }
+        for (PendingSql pending : pendingSql) {
+            orphanSql.add(pending.event());
         }
         ApiDtos.PathDto path = new ApiDtos.PathDto(
                 ApiDtos.SCHEMA_VERSION, snapshot.scope().projectId(),
@@ -190,7 +248,7 @@ public final class TraceProjectionService {
         // Flood / cold-start tasks may emit JDBC/Agent evidence without HTTP events.
         // Still materialize one PathRun so AI tools and dashboard retain SQL detail.
         if (pathRuns.isEmpty()) {
-            pathRuns.add(taskLevelPathRun(snapshot, refs, jdbcSql));
+            pathRuns.add(taskLevelPathRun(snapshot, refs, orphanSql));
         }
         return new Projection(snapshot.scope(), path, List.copyOf(paths), List.copyOf(pathRuns),
                 projectedEvidence, snapshot.updatedAt().toString());
@@ -212,7 +270,7 @@ public final class TraceProjectionService {
         return projection == null ? List.of() : projection.pathRuns();
     }
 
-    private static ApiDtos.PathRunDto taskLevelPathRun(
+    private ApiDtos.PathRunDto taskLevelPathRun(
             TaskSnapshot snapshot, List<String> evidenceRefs, List<SqlEvent> jdbcSql) {
         List<SqlEvent> sqlCopy = List.copyOf(jdbcSql);
         String entryRef = "entry:" + snapshot.spec().targetEntryId();
@@ -224,7 +282,8 @@ public final class TraceProjectionService {
                 : PathOutcomeClass.DEPENDENCY_MOCK_GAP;
         PathRun provisional = new PathRun(
                 "pathrun-" + snapshot.scope().taskId() + "-task",
-                snapshot.scope().scanId(), entryRef, IdentityTrack.UNAUTH, "attempt-task", null,
+                snapshot.scope().scanId(), entryRef, IdentityTrack.UNAUTH, "attempt-task",
+                experimentPlanIdForTask(snapshot.scope().taskId()),
                 "GET", "application/json", summary, outcome, -1, null, null,
                 sqlCopy, stop, VerificationStatus.DYNAMIC_SUSPECTED.name(),
                 List.copyOf(evidenceRefs), ApiDtos.MOCK, "no credentials");
@@ -232,7 +291,7 @@ public final class TraceProjectionService {
         return toPathRunDto(applyD2Differential(gated));
     }
 
-    private static ApiDtos.PathRunDto pathRunFromHttp(
+    private ApiDtos.PathRunDto pathRunFromHttp(
             TaskSnapshot snapshot, AgentJsonlTraceConverter.AgentEvent event,
             String evidenceId, int attempt, List<SqlEvent> jdbcSql,
             Set<String> springBoundRouteKeys) {
@@ -262,10 +321,14 @@ public final class TraceProjectionService {
         Boolean entryHit = resolveEntryHit(detail, status);
         Boolean parameterBound = resolveParameterBound(
                 detail, status, routeKey, springBoundRouteKeys);
-        String attemptId = "attempt-" + attempt;
+        String correlation = correlationId(detail);
+        String attemptId = !correlation.isBlank() ? correlation : "attempt-" + attempt;
         String entryRef = "entry:" + normalizedMethod + ":" + route;
         List<SqlEvent> sqlCopy = List.copyOf(jdbcSql);
         String requestSummary = normalizedMethod + " " + route + " track=" + track.name();
+        if (!correlation.isBlank()) {
+            requestSummary = requestSummary + " correlationId=" + correlation;
+        }
         if (parameterBound == null) {
             requestSummary = requestSummary + " parameterBound=unknown";
         }
@@ -275,7 +338,8 @@ public final class TraceProjectionService {
         }
         PathRun provisional = new PathRun(
                 "pathrun-" + snapshot.scope().taskId() + "-" + attempt,
-                snapshot.scope().scanId(), entryRef, track, attemptId, null,
+                snapshot.scope().scanId(), entryRef, track, attemptId,
+                experimentPlanIdForTask(snapshot.scope().taskId()),
                 normalizedMethod,
                 "application/json",
                 requestSummary,
@@ -437,6 +501,21 @@ public final class TraceProjectionService {
      * Protocol listen/handshake meta ({@code port=6379}, {@code sqlClass=…,bytes=N}, Redis RESP,
      * auth accept) stays on dependency evidence steps and must not pretend to be SQL text.
      */
+    static String correlationId(Map<String, String> detail) {
+        if (detail == null) return "";
+        String value = detail.getOrDefault("correlationId", "").trim();
+        if (value.isEmpty() || value.length() > 64) return "";
+        if (!value.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")) return "";
+        return value;
+    }
+
+    private record PendingSql(SqlEvent event, String correlationId) {
+        private PendingSql {
+            event = Objects.requireNonNull(event, "event");
+            correlationId = correlationId == null ? "" : correlationId;
+        }
+    }
+
     private static SqlEvent sqlEventFromDetail(Map<String, String> detail) {
         if (!isStatementSqlObservation(detail)) return null;
         String sql = detail.get("sql").trim();
@@ -559,6 +638,30 @@ public final class TraceProjectionService {
             throw new IllegalArgumentException(
                     "only completed authorized artifact tasks may be projected");
         }
+    }
+
+    /**
+     * Pre-complete validation (P0-06): project while task is still RUNNING so bad traces
+     * can fail closed before lifecycle becomes COMPLETED.
+     */
+    public Projection validateProjectable(TaskSnapshot snapshot) {
+        Objects.requireNonNull(snapshot, "snapshot");
+        WorkerTaskSpec spec = snapshot.spec();
+        boolean externalEligible = spec.authorized()
+                && (spec.requiredCapability() == WorkerCapability.TRUSTED_DOCKER
+                || spec.requiredCapability() == WorkerCapability.HARDENED_GVISOR
+                || spec.requiredCapability() == WorkerCapability.HARDENED_KATA);
+        if (!externalEligible) {
+            throw new IllegalArgumentException("task is not projection-eligible");
+        }
+        if (snapshot.lifecycle() != TaskLifecycle.RUNNING
+                && snapshot.lifecycle() != TaskLifecycle.COMPLETED) {
+            throw new IllegalArgumentException("task lifecycle cannot be projected");
+        }
+        TraceManifest manifest = traces.manifest(snapshot.scope());
+        List<TraceChunk> chunks = traces.readChunks(snapshot.scope(), MAX_CHUNKS,
+                snapshot.spec().resourceBudget().maxTraceBytes());
+        return projectBody(snapshot, manifest, chunks);
     }
 
     private static void validateChain(TaskSnapshot snapshot, TraceManifest manifest, List<TraceChunk> chunks) {

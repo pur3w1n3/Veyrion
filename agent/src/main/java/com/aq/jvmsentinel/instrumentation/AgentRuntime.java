@@ -18,6 +18,11 @@ public final class AgentRuntime {
             ThreadLocal.withInitial(() -> false);
     private static final ThreadLocal<CoverageState> COVERAGE_STATE =
             ThreadLocal.withInitial(CoverageState::new);
+    /** Per-request correlation for HTTP→JDBC join (P0-06). */
+    private static final ThreadLocal<String> REQUEST_CORRELATION =
+            ThreadLocal.withInitial(() -> "");
+    private static final ThreadLocal<Integer> REQUEST_CORRELATION_DEPTH =
+            ThreadLocal.withInitial(() -> 0);
 
     private AgentRuntime() {
     }
@@ -79,7 +84,45 @@ public final class AgentRuntime {
         return true;
     }
 
-    /** Ends an HTTP scope and emits compact coverage events when the outermost boundary returns. */
+    /** Bind server-observed correlation id for the active HTTP request scope. */
+    public static void bindRequestCorrelation(String correlationId) {
+        // Every HTTP Advice enter owns one balanced scope, even if that layer cannot
+        // access the request header. Otherwise a blank nested view clears the outer id.
+        REQUEST_CORRELATION_DEPTH.set(REQUEST_CORRELATION_DEPTH.get() + 1);
+        if (correlationId == null) return;
+        String trimmed = correlationId.trim();
+        if (trimmed.isEmpty() || trimmed.length() > 64) return;
+        if (!trimmed.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")) return;
+        if (REQUEST_CORRELATION.get().isEmpty()) {
+            REQUEST_CORRELATION.set(trimmed);
+        }
+    }
+
+    public static String currentRequestCorrelation() {
+        String value = REQUEST_CORRELATION.get();
+        return value == null ? "" : value;
+    }
+
+    public static void releaseRequestCorrelation() {
+        int depth = REQUEST_CORRELATION_DEPTH.get() - 1;
+        if (depth <= 0) {
+            REQUEST_CORRELATION.remove();
+            REQUEST_CORRELATION_DEPTH.remove();
+            return;
+        }
+        REQUEST_CORRELATION_DEPTH.set(depth);
+    }
+
+    /**
+     * Ends an HTTP scope and emits compact coverage events when the outermost boundary returns.
+     * Prefer the no-arg form from Byte Buddy advice so {@code disableClassFormatChanges} paths
+     * do not depend on {@code @Advice.Enter} locals (boolean enter breaks HTTP advice weaving).
+     */
+    public static void endCoverageRequest() {
+        endCoverageRequest(coverageEnabled);
+    }
+
+    /** Ends an HTTP scope when {@code entered} is true (legacy Advice.Enter boolean path). */
     public static void endCoverageRequest(boolean entered) {
         if (!entered || !coverageEnabled) return;
         CoverageState state = COVERAGE_STATE.get();
@@ -119,10 +162,19 @@ public final class AgentRuntime {
         if (current == null || current.isStopped() || IN_AUTOMATIC_OBSERVATION.get()) return;
         IN_AUTOMATIC_OBSERVATION.set(true);
         try {
-            current.writeInstrumented(eventType, className, methodName, detail);
+            current.writeInstrumented(eventType, className, methodName, withCorrelation(detail));
         } finally {
             IN_AUTOMATIC_OBSERVATION.set(false);
         }
+    }
+
+    private static Map<String, String> withCorrelation(Map<String, String> detail) {
+        String corr = currentRequestCorrelation();
+        if (corr.isEmpty()) return detail == null ? Map.of() : detail;
+        Map<String, String> merged = new LinkedHashMap<>();
+        if (detail != null) merged.putAll(detail);
+        merged.putIfAbsent("correlationId", corr);
+        return Map.copyOf(merged);
     }
 
     static void install(EventWriter eventWriter, boolean enableCoverage) {
@@ -136,6 +188,8 @@ public final class AgentRuntime {
             coverageEnabled = false;
             writer = null;
             COVERAGE_STATE.remove();
+            REQUEST_CORRELATION.remove();
+            REQUEST_CORRELATION_DEPTH.remove();
         }
     }
 

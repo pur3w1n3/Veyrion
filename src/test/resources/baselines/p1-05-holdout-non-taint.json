@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "p1-05-holdout-non-taint",
+  "kind": "holdout",
+  "parentBaselineId": "p1-05-non-taint-detectors",
+  "description": "Holdout / reserved-surface fixtures for first-batch non-taint detectors. Must keep firing without AI. Removing the owning detector fails recallGate.",
+  "expectedSecurityProperties": [
+    "GUARD_INCONSISTENCY",
+    "IDOR_OWNERSHIP_GAP",
+    "SENSITIVE_CONFIG_MATERIAL"
+  ],
+  "holdout": {
+    "surfaces": [
+      "controller with mixed RolesAllowed vs open sibling route",
+      "PathVariable orderId without ownership/tenant guard",
+      "blade.jwt.sign-key / spring.datasource.password sensitive config"
+    ],
+    "detectorMustStillFire": [
+      "guard-consistency",
+      "ownership-idor",
+      "dangerous-config"
+    ],
+    "notes": "Holdout is reserved-pattern coverage for release gate; depth dominance/IFDS still out of scope."
+  },
+  "metrics": {
+    "stub": false,
+    "computedAtGate": true
+  },
+  "honesty": {
+    "aiNotInBaseJudgment": true,
+    "neverTreatSuccessAsSafe": true,
+    "syntheticBaselineOnly": true
+  }
+}

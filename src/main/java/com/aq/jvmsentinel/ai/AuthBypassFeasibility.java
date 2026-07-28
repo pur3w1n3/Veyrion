@@ -47,6 +47,13 @@ public final class AuthBypassFeasibility {
     public static final int DYNAMIC_POC_PROBE_MAX = 8;
     /** Server auto-enqueue fallback cap (wall-clock / scan-busy aware). */
     public static final int DYNAMIC_POC_AUTO_PROBE_MAX = 3;
+    /** AUTH must diversify to at least this many mechanism/path keys when surface present. */
+    public static final int AUTH_POC_MECHANISM_MIN = 3;
+    public static final String CODE_QUERY_REQUIRED = "AUTH_CODE_QUERY_REQUIRED";
+    public static final String POC_DIVERSITY_REQUIRED = "AUTH_POC_DIVERSITY_REQUIRED";
+    public static final String AUTH_PASS_INITIAL = "AUTH_INITIAL";
+    public static final String AUTH_PASS_CONFIRM = "AUTH_BYPASS_CONFIRM";
+    public static final String INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE";
     private static final int MAX_SEEDED_ENTRIES = 3;
     private static final int MAX_SEEDED_POCS = 9;
 
@@ -484,6 +491,78 @@ public final class AuthBypassFeasibility {
                 && (candidates == null || candidates.isEmpty());
     }
 
+    /** Distinct entry+technique(+payload) mechanisms; used for AUTH multi-PoC band. */
+    public static int distinctMechanismCount(List<AuthBypassCandidate> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return 0;
+        }
+        Set<String> keys = new LinkedHashSet<>();
+        for (AuthBypassCandidate candidate : candidates) {
+            if (candidate != null) {
+                keys.add(key(candidate));
+            }
+        }
+        return keys.size();
+    }
+
+    /**
+     * Surface present but fewer than {@link #AUTH_POC_MECHANISM_MIN} distinct mechanisms,
+     * and model did not supply enough infeasible evidence refs to explain the gap.
+     */
+    public static boolean isSparseMechanisms(
+            List<AuthBypassCandidate> candidates, AuthSurface surface, int infeasibleEvidenceCount) {
+        if (!requiresStructuredBypassPoCs(surface)) {
+            return false;
+        }
+        int distinct = distinctMechanismCount(candidates);
+        if (distinct >= AUTH_POC_MECHANISM_MIN) {
+            return false;
+        }
+        int covered = distinct + Math.max(0, infeasibleEvidenceCount);
+        return covered < AUTH_POC_MECHANISM_MIN;
+    }
+
+    public static int countInfeasibleEvidence(String summaryOrJson) {
+        if (summaryOrJson == null || summaryOrJson.isBlank()) {
+            return 0;
+        }
+        try {
+            JsonNode root = extractJson(summaryOrJson);
+            if (root == null || !root.isObject()) {
+                return 0;
+            }
+            JsonNode infeasible = root.get("infeasibleEntries");
+            if (infeasible == null || !infeasible.isArray()) {
+                infeasible = root.get("infeasibleEvidence");
+            }
+            if (infeasible == null || !infeasible.isArray()) {
+                return 0;
+            }
+            int count = 0;
+            for (JsonNode item : infeasible) {
+                if (item == null || item.isNull()) {
+                    continue;
+                }
+                if (item.isTextual() && !item.asText("").isBlank()) {
+                    count++;
+                } else if (item.isObject()) {
+                    String entry = text(item, "entryRef");
+                    String reason = text(item, "reason");
+                    String evidence = text(item, "evidenceRef");
+                    if (!entry.isBlank() && (!reason.isBlank() || !evidence.isBlank())) {
+                        count++;
+                    }
+                }
+                if (count >= AUTH_POC_MECHANISM_MIN) {
+                    break;
+                }
+            }
+            return count;
+        } catch (RuntimeException ignored) {
+            return 0;
+        }
+    }
+
     /**
      * Prefer auth-material PoCs, then diversify by entryRef/technique for DYNAMIC
      * sandbox_probe attempts (prompt band and server auto-enqueue fallback).
@@ -877,6 +956,7 @@ public final class AuthBypassFeasibility {
     private static String key(AuthBypassCandidate candidate) {
         return candidate.entryRef() + "|" + candidate.techniqueId() + "|" + candidate.track().name()
                 + "|" + Integer.toHexString(Objects.hash(
-                candidate.authorizationHeader(), candidate.query(), candidate.bodyHint()));
+                candidate.authorizationHeader(), candidate.bladeAuthHeader(),
+                candidate.query(), candidate.bodyHint()));
     }
 }

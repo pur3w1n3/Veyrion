@@ -1,6 +1,6 @@
 # 路径实验模型（Path Experiment Model）
 
-本文档是路径调试型审计的**单一事实源**：PathRun、身份轨、实验计划、超时分类、SQL D1–D3 与 `DYNAMIC_CONFIRMED` 门禁。实现与其它文档若冲突，以本文为准；变更须同步 [AUDIT_FLOW.md](AUDIT_FLOW.md)、[PRD.md](PRD.md) 与 [PROJECT_MEMORY.md](../PROJECT_MEMORY.md)。
+本文档是动态实验的**单一事实源**：SecurityHypothesis、PathRun、身份轨、实验计划、超时分类、SQL D1–D3 与状态门禁。实现与其它文档若冲突，以本文为准；变更须同步 [AUDIT_FLOW.md](AUDIT_FLOW.md)、[PRD.md](PRD.md) 与 [PROJECT_MEMORY.md](../PROJECT_MEMORY.md)。
 
 ## 1. 产品定位
 
@@ -42,7 +42,7 @@ AI 负责编排实验与写笔记，不能改变沙箱权限、网络策略、�
 
 ## 4. PathRun（一等公民）
 
-键：`scanId + entryId + track + attemptId`。
+目标键：`scanId + entryId + track + probeAttemptId`。当前实现仍存在 job 级 probe 身份冲突，修复状态见 [MVP_BACKLOG.md](MVP_BACKLOG.md)。
 
 最小字段：
 
@@ -58,6 +58,20 @@ AI 负责编排实验与写笔记，不能改变沙箱权限、网络策略、�
 - `stopReason` / 证据引用列表
 
 GUI、动态验证、路径探索与漏洞研判围绕 PathRun 组织；`AUTH_GAP` 仅为次级静态信号，不得作为结果主列表。
+
+### 4.1 SecurityHypothesis 与 PathRun
+
+PathRun 是一次动态执行事实，不等同于 source-sink path。每次运行必须绑定一个或多个 `hypothesisId`，用于支持、反证或缩小 coverage gap。
+
+假设最小字段：
+
+- `family` 与 `securityProperty`；
+- 涉及的 IR nodes/relations 与 scope；
+- supporting / contradicting evidence refs；
+- coverage gaps 与当前 lifecycle；
+- recommended experiments 和 family-specific gate。
+
+非数据流假设可以没有 sink。例如 IDOR 绑定 entry、object ownership guard 与身份差分；状态绕过绑定一组 StateTransition；配置/API misuse 绑定 ConfigurationFact 或调用协议。它们仍通过 PathRun 或静态证据审计，不被强行转换为假 source/sink。
 
 ## 5. 超时与失败分类（最小必选）
 
@@ -108,6 +122,29 @@ GUI、动态验证、路径探索与漏洞研判围绕 PathRun 组织；`AUTH_GA
 
 服务端必须拒绝：非 `entry:*`、超长/非法字符头、破坏性 payload、试图改变 `NetworkPolicy.DENY` / 挂载 / UID / 命令。不得由模型单独升级 `DYNAMIC_CONFIRMED` / `VERIFIED`。
 
+### 6.1 多 PoC、多轮与探针身份
+
+`AUTH_ANALYSIS` 的工作循环固定为：`code_query` 阅读鉴权入口与执行链 → 生成不同机制的 PoC → 查询缺失代码/证据 → 修订候选。鉴权面存在时至少调用一次 `code_query`；目标生成不少于 3 个结构不同的候选或逐条给出不可行证据。同一 technique 仅替换 token 字面值不计为不同 PoC。
+
+`PATH_EXPLORATION` 可为 coverage gap 调用 `sandbox_probe`，`VULNERABILITY_TRIAGE` 可为候选漏洞调用 `sandbox_probe` 做复现或证伪。二者都必须提交已有 `entry:*`、目标身份轨、objective、candidate inputs、停止条件和预期信号，且只能消费服务端返回并成功投影的动态事实。
+
+每次探针调用必须分配 `probeAttemptId`，并绑定 `pipelineRunId`（若属于主流水线）、`stageAttemptId`、`jobId`、canonical `toolCallId`、规范化 payload hash、`experimentPlanId` 和最终 `taskId/pathRunIds`。同一调用重放必须幂等，不同调用不得因共用 jobId 冲突。`BUSY`、`FAILED`、`CANCELLED`、`QUEUED`、超时未投影或空 PathRun 均不计为成功尝试。
+
+探针计划跨重启时必须保持 technique、双鉴权通道、候选输入、停止条件和 hash 语义一致；若敏感材料无法安全恢复，应显式失败并要求重新授权，不得降级成另一套通用探针。
+
+### 6.2 实验类型
+
+| 类型 | 典型输入 | expected / counter signal |
+|------|----------|---------------------------|
+| `REACHABILITY` | entry、track、参数 | entry/branch/effect hit 或未达原因 |
+| `DATAFLOW_DIFF` | 良性/变异输入 | effect 结构差异、sanitizer/parameterization |
+| `GUARD_DIFF` | 身份、租户、对象组合 | guard decision 与相同 effect 的差异 |
+| `STATE_SEQUENCE` | 多请求前置与顺序 | state transition、不变量或重复提交 |
+| `TYPESTATE_API` | 调用协议/配置变化 | misuse condition 或安全拒绝 |
+| `CONCURRENCY_RESOURCE` | 并发度、时序、预算 | race、TOCTOU、lock/resource outcome |
+
+ExperimentPlan 必须包含 `hypothesisId`、`experimentPlanId`、实验类型、entry/sequence、track、inputs、expected signal、counter signal、stop condition 和预算。AI 只能提议这些字段；服务端按 detector/provider schema 编译为具体 probe。
+
 ## 7. SQL 观测 D1–D3 与 DYNAMIC_CONFIRMED
 
 | 级 | 承诺 |
@@ -125,6 +162,10 @@ GUI、动态验证、路径探索与漏洞研判围绕 PathRun 组织；`AUTH_GA
 
 `DYNAMIC_CONFIRMED` ≠ 生产实库已证实；报告必须标注 `MOCK` 依赖与合成身份前置条件。`VERIFIED` 仍留给强化隔离沙箱与更严门禁。
 
+目标架构允许未来为 Guard/Ownership、State/Sequence、Typestate 等 family 增加独立 `DYNAMIC_CONFIRMED` 门禁，但每个门禁必须有确定性 schema、正负测试和可重放证据。在完成独立审计前，非 SQL family 最高为 `DYNAMIC_SUSPECTED`。
+
+**当前实现警告：** 代码审计确认现有 JDBC/PathRun 投影存在任务级 SQL 复制风险，尚未可靠建立单请求输入与 SQL 副作用关联；当前 H3 实现也弱于上述四项门禁。完成请求级 correlation、JDBC evidenceRefs 绑定及负向门禁测试前，不得把现有 H3 命中宣称为符合本节目标契约。
+
 ## 8. 与流水线的关系
 
 见 [AUDIT_FLOW.md](AUDIT_FLOW.md)。摘要：
@@ -133,8 +174,10 @@ GUI、动态验证、路径探索与漏洞研判围绕 PathRun 组织；`AUTH_GA
 静态事实 → PRE_ANALYSIS → AUTH_ANALYSIS
   → DYNAMIC_OBSERVATION（按轨；非 AI）
   → AUTH_ANALYSIS 绕过确认（需动态 401/过闸证据）
-  → DYNAMIC_VERIFICATION → PATH_EXPLORATION
-  → VULNERABILITY_TRIAGE → REPORT_GENERATION
+  → DYNAMIC_VERIFICATION
+  → PATH_EXPLORATION ↔ sandbox_probe（coverage gap）
+  → VULNERABILITY_TRIAGE ↔ sandbox_probe（复现/证伪）
+  → REPORT_GENERATION
 ```
 
 ## 9. 非目标

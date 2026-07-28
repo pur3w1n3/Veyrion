@@ -343,7 +343,7 @@ public final class AuthCodeQueryService {
         List<AuthCodeFact> filtered = new ArrayList<>();
         for (AuthCodeFact fact : facts) {
             if (filtered.size() >= capped) break;
-            if (needle.isBlank() || matches(fact, needle)) {
+            if ("ERROR".equals(fact.category()) || needle.isBlank() || matches(fact, needle)) {
                 filtered.add(fact);
             }
         }

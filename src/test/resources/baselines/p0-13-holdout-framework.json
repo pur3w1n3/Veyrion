@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "p0-13-holdout-framework",
+  "kind": "holdout",
+  "description": "Holdout baseline: reserved framework/rule set for GUARD_COVERAGE. TP/FP/FN computed at gate from CoverageMatrix vs groundTruth — not stub placeholders.",
+  "expectedCoveredDetectorFamilies": [
+    "GUARD_COVERAGE"
+  ],
+  "groundTruth": {
+    "positiveFamilies": [
+      "GUARD_COVERAGE"
+    ],
+    "negativeFamilies": [
+      "CONCURRENCY"
+    ]
+  },
+  "holdout": {
+    "reservedFrameworkHints": [
+      "spring-security-filter-chain",
+      "jwt-skip-url-patterns"
+    ],
+    "reservedRuleIds": [
+      "auth-gap-v1",
+      "config-misuse-v0-stub"
+    ],
+    "notes": "Suppressing GUARD_COVERAGE must fail recall with FN>0; CONCURRENCY must not falsely fire."
+  },
+  "metrics": {
+    "stub": false,
+    "computedAtGate": true
+  },
+  "honesty": {
+    "neverTreatSuccessAsSafe": true,
+    "gapsNeverCountAsCovered": true,
+    "syntheticBaselineOnly": true
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "runtimeKind": "JVM",
+  "runtimeVersion": "17",
+  "imageDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "commandTemplate": ["java", "-jar", "/artifact/app.jar"],
+  "readOnlyMounts": [
+    {
+      "sourceDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "targetPath": "/artifact/app.jar",
+      "readOnly": true
+    }
+  ],
+  "uid": 65534,
+  "networkMode": "DENY",
+  "budget": {
+    "maxWallClockSeconds": 60,
+    "maxCpuMillis": 30000,
+    "maxMemoryBytes": 536870912,
+    "maxDiskBytes": 104857600,
+    "maxTraceBytes": 1048576
+  },
+  "allowedObservationKinds": ["HTTP_PROBE", "AGENT_EVENT", "EXCEPTION"],
+  "maxVerificationStatus": "DYNAMIC_SUSPECTED"
+}

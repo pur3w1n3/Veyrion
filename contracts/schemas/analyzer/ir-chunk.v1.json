@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/contracts/schemas/analyzer/ir-chunk.v1.json",
+  "title": "Analyzer IR Chunk v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "scope",
+    "sequence",
+    "kind",
+    "payloadDigest",
+    "payloadBytes",
+    "payload"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "artifactDigest", "scanId", "analysisId"],
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1 },
+        "artifactDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "scanId": { "type": "string", "minLength": 1 },
+        "analysisId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "kind": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Open taxonomy. Known: PROGRAM_NODE, ENTRY, COVERAGE_GAP. Unknown kinds stage but cannot elevate verification status."
+    },
+    "compression": {
+      "type": "string",
+      "enum": ["NONE", "GZIP"]
+    },
+    "payloadDigest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "payloadBytes": { "type": "integer", "minimum": 0 },
+    "payload": {
+      "type": "object",
+      "description": "Language-neutral IR fragment. Language specifics under extensions.*"
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "patternProperties": {
+    "^x-veyrion-": {}
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "hypothesisId": "hyp-guard-1",
+  "scanId": "scan-1",
+  "securityProperty": "GUARD_COVERAGE_AUTH",
+  "family": "GUARD_COVERAGE",
+  "lifecycle": "CANDIDATE",
+  "detectorVersion": "auth-gap-v1",
+  "supportingEvidenceRefs": ["ev-auth-1"],
+  "contradictingEvidenceRefs": [],
+  "coverageGapRefs": ["gap-1"]
+}

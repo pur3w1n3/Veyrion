@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/contracts/schemas/api/finding.v1.json",
+  "title": "FindingDto wire v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "projectId",
+    "artifactDigest",
+    "scanId",
+    "findingId",
+    "title",
+    "severity",
+    "verificationStatus",
+    "entrypointId",
+    "entry",
+    "sinkId",
+    "sink",
+    "dependency",
+    "dependencyMode",
+    "evidenceCount",
+    "confidence"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "projectId": { "type": "string", "minLength": 1 },
+    "artifactDigest": { "type": "string", "minLength": 1 },
+    "scanId": { "type": "string", "minLength": 1 },
+    "findingId": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "severity": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low", "info"]
+    },
+    "verificationStatus": {
+      "type": "string",
+      "enum": [
+        "STATIC_INFERRED",
+        "DYNAMIC_SUSPECTED",
+        "DYNAMIC_CONFIRMED",
+        "VERIFIED",
+        "UNREACHED"
+      ]
+    },
+    "entrypointId": { "type": "string", "minLength": 1 },
+    "entry": { "type": "string", "minLength": 1 },
+    "sinkId": { "type": "string", "minLength": 1 },
+    "sink": { "type": "string", "minLength": 1 },
+    "dependency": { "type": "string" },
+    "dependencyRefs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "evidenceRefs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "evidenceCount": { "type": "integer", "minimum": 0 },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "dependencyMode": { "type": "string", "minLength": 1 },
+    "rootCause": { "type": "object" },
+    "hypothesisId": { "type": "string" },
+    "securityProperty": { "type": "string" },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "patternProperties": {
+    "^x-veyrion-": {}
+  },
+  "description": "Wire FindingDto. hypothesisId/securityProperty optional (P0-12). Extensions via extensions.* or x-veyrion-*."
+}

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "p0-13-mutation-sql-variant",
+  "kind": "mutation",
+  "parentBaselineId": "p0-13-source-sink-auth-gap",
+  "description": "Mutation baseline: SQL sink signature variant. TP/FP/FN are computed at the recall gate from CoverageMatrix vs groundTruth — not stub placeholders.",
+  "expectedCoveredDetectorFamilies": [
+    "DATAFLOW"
+  ],
+  "groundTruth": {
+    "positiveFamilies": [
+      "DATAFLOW"
+    ],
+    "negativeFamilies": [
+      "CONFIG"
+    ]
+  },
+  "mutation": {
+    "changedSurface": "jdbc.execute -> jdbc.executeQuery",
+    "detectorMustStillFire": "DATAFLOW",
+    "notes": "Removing/suppressing DATAFLOW detector must fail recallGate with FN>0."
+  },
+  "metrics": {
+    "stub": false,
+    "computedAtGate": true
+  },
+  "honesty": {
+    "neverTreatSuccessAsSafe": true,
+    "gapsNeverCountAsCovered": true,
+    "syntheticBaselineOnly": true
+  }
+}

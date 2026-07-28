@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/contracts/schemas/runtime/run-profile.v1.json",
+  "title": "RuntimeAdapter Run Profile v1",
+  "description": "Server-fixed run profile. Command, image, mounts, UID, network and budget are never accepted from model/frontend/analyzer input.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runtimeKind",
+    "runtimeVersion",
+    "imageDigest",
+    "commandTemplate",
+    "readOnlyMounts",
+    "uid",
+    "networkMode",
+    "budget",
+    "maxVerificationStatus"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "runtimeKind": { "type": "string", "minLength": 1 },
+    "runtimeVersion": { "type": "string", "minLength": 1 },
+    "imageDigest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "commandTemplate": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "Fixed argv template registered by Control Plane; not model-supplied."
+    },
+    "readOnlyMounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourceDigest", "targetPath", "readOnly"],
+        "properties": {
+          "sourceDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "targetPath": { "type": "string", "minLength": 1 },
+          "readOnly": { "type": "boolean", "const": true }
+        }
+      }
+    },
+    "uid": { "type": "integer", "minimum": 1 },
+    "networkMode": {
+      "type": "string",
+      "enum": ["DENY", "ALLOWLIST"]
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxWallClockSeconds",
+        "maxCpuMillis",
+        "maxMemoryBytes",
+        "maxDiskBytes",
+        "maxTraceBytes"
+      ],
+      "properties": {
+        "maxWallClockSeconds": { "type": "integer", "minimum": 1 },
+        "maxCpuMillis": { "type": "integer", "minimum": 1 },
+        "maxMemoryBytes": { "type": "integer", "minimum": 1 },
+        "maxDiskBytes": { "type": "integer", "minimum": 1 },
+        "maxTraceBytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "allowedObservationKinds": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "maxVerificationStatus": {
+      "type": "string",
+      "enum": [
+        "STATIC_INFERRED",
+        "DYNAMIC_SUSPECTED",
+        "DYNAMIC_CONFIRMED",
+        "UNREACHED"
+      ],
+      "description": "VERIFIED is intentionally absent until attestation lands."
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "patternProperties": {
+    "^x-veyrion-": {}
+  }
+}

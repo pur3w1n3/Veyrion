@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "projectId": "project-demo",
+  "artifactDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "scanId": "scan-1",
+  "findingId": "finding-1",
+  "title": "SQL injection candidate",
+  "severity": "high",
+  "verificationStatus": "STATIC_INFERRED",
+  "entrypointId": "entry-1",
+  "entry": "GET /api/items",
+  "sinkId": "sink-1",
+  "sink": "Statement.execute",
+  "dependency": "none",
+  "dependencyRefs": [],
+  "evidenceRefs": ["ev-1"],
+  "evidenceCount": 1,
+  "confidence": 0.7,
+  "dependencyMode": "NONE",
+  "hypothesisId": "hyp-1",
+  "securityProperty": "DATAFLOW_SQLI",
+  "extensions": {
+    "jvm": { "className": "com.example.Repo" }
+  },
+  "x-veyrion-note": "namespaced extension sample"
+}

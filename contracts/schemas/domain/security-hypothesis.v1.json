@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/contracts/schemas/domain/security-hypothesis.v1.json",
+  "title": "SecurityHypothesis v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "hypothesisId",
+    "scanId",
+    "securityProperty",
+    "family",
+    "lifecycle",
+    "detectorVersion"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "minimum": 1 },
+    "hypothesisId": { "type": "string", "minLength": 1 },
+    "scanId": { "type": "string", "minLength": 1 },
+    "securityProperty": { "type": "string", "minLength": 1 },
+    "family": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Open taxonomy. Known: DATAFLOW, GUARD_COVERAGE, STATE, TYPESTATE, CONFIG, DEPENDENCY, CONCURRENCY, COMPOSITION, UNKNOWN. Unknown values project to UNKNOWN."
+    },
+    "lifecycle": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Known: CANDIDATE, SUPPORTED, CONTRADICTED, INSUFFICIENT_EVIDENCE, DISMISSED. Unknown wire values degrade to CANDIDATE without elevating verification status."
+    },
+    "detectorVersion": { "type": "string", "minLength": 1 },
+    "supportingEvidenceRefs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "contradictingEvidenceRefs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "coverageGapRefs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "source": { "type": "string" },
+    "effect": { "type": "string" },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "patternProperties": {
+    "^x-veyrion-": {}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "family": { "const": "DATAFLOW" } },
+        "required": ["family"]
+      },
+      "then": {
+        "required": ["source", "effect"]
+      }
+    }
+  ]
+}

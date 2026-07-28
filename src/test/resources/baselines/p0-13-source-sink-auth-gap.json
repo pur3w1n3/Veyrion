@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "p0-13-source-sink-auth-gap",
+  "description": "Minimal baseline: SQL source-sink DATAFLOW + AUTH_GAP GUARD_COVERAGE; unresolved/truncated are gaps, never covered. Scan SUCCESS must not mean safe.",
+  "expectedCoveredDetectorFamilies": [
+    "DATAFLOW",
+    "GUARD_COVERAGE"
+  ],
+  "honesty": {
+    "neverTreatSuccessAsSafe": true,
+    "gapsNeverCountAsCovered": true,
+    "unresolvedIsGap": true,
+    "truncatedIsGap": true,
+    "unreachedIsGap": true,
+    "unknownIsGap": true
+  },
+  "marks": {
+    "unresolved": true,
+    "truncated": true,
+    "authGap": true,
+    "sqlSink": true
+  },
+  "recallGate": {
+    "failWhenDetectorCleared": "DATAFLOW"
+  }
+}

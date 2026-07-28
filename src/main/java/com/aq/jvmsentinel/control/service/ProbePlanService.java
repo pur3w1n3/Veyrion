@@ -229,7 +229,7 @@ public final class ProbePlanService {
                     List.of(new ApiDtos.PathStepDto(
                             materialized.track().name() + " " + method + " " + route,
                             "synthetic identity unavailable; probe skipped",
-                            "identity", "blocked", primary.evidenceRefs()))));
+                            "branch", "blocked", primary.evidenceRefs()))));
         } else {
             probes = List.of(new ExternalArtifactTaskExecutor.ProbeTarget(
                     method, route, query, materialized.track().name(),
@@ -552,7 +552,7 @@ public final class ProbePlanService {
                     List.of(new ApiDtos.PathStepDto(
                             synth.track().name() + " " + probe.method() + " " + probe.route(),
                             "synthetic identity unavailable; probe skipped",
-                            "identity", "blocked", evidenceRefs))));
+                            "branch", "blocked", evidenceRefs))));
             return;
         }
         String token = normalizeProbeToken(synth.authorizationHeader());

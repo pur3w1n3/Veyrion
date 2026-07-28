@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/contracts/schemas/domain/coverage-matrix.v1.json",
+  "title": "CoverageMatrix v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "scanId", "artifactUniverseSummary", "entryFamilies",
+    "callResolution", "detectors", "dynamicExperiments", "stopReasons",
+    "gaps", "honestyFlags", "checksum"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "minimum": 1 },
+    "scanId": { "type": "string", "minLength": 1 },
+    "artifactUniverseSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classCount", "methodCount", "fieldCount", "dependencyCount", "incomplete", "note"],
+      "properties": {
+        "classCount": { "type": "integer", "minimum": 0 },
+        "methodCount": { "type": "integer", "minimum": 0 },
+        "fieldCount": { "type": "integer", "minimum": 0 },
+        "dependencyCount": { "type": "integer", "minimum": 0 },
+        "incomplete": { "type": "boolean" },
+        "note": { "type": "string" }
+      }
+    },
+    "entryFamilies": { "$ref": "#/$defs/namedCounts" },
+    "callResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["DIRECT", "CHA", "UNRESOLVED", "unresolvedIsGap"],
+      "properties": {
+        "DIRECT": { "type": "integer", "minimum": 0 },
+        "CHA": { "type": "integer", "minimum": 0 },
+        "UNRESOLVED": { "type": "integer", "minimum": 0 },
+        "unresolvedIsGap": { "const": true }
+      }
+    },
+    "detectors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["family", "detectorVersion", "signals", "countedAsCovered", "note"],
+        "properties": {
+          "family": { "type": "string", "minLength": 1 },
+          "detectorVersion": { "type": "string", "minLength": 1 },
+          "signals": { "type": "integer", "minimum": 0 },
+          "countedAsCovered": { "type": "boolean" },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "dynamicExperiments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pathRunCount", "effectiveAttemptCount", "unreachedCount", "stopReasonSamples"],
+      "properties": {
+        "pathRunCount": { "type": "integer", "minimum": 0 },
+        "effectiveAttemptCount": { "type": "integer", "minimum": 0 },
+        "unreachedCount": { "type": "integer", "minimum": 0 },
+        "stopReasonSamples": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "stopReasons": { "$ref": "#/$defs/namedCounts" },
+    "gaps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unknown", "unresolved", "truncated", "unreached", "total", "countedAsCovered"],
+      "properties": {
+        "unknown": { "type": "integer", "minimum": 0 },
+        "unresolved": { "type": "integer", "minimum": 0 },
+        "truncated": { "type": "integer", "minimum": 0 },
+        "unreached": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "countedAsCovered": { "const": false }
+      }
+    },
+    "honestyFlags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["neverTreatSuccessAsSafe", "gapsNeverCountAsCovered", "scanSuccessMeans"],
+      "properties": {
+        "neverTreatSuccessAsSafe": { "const": true },
+        "gapsNeverCountAsCovered": { "const": true },
+        "scanSuccessMeans": { "const": "analysis_finished_not_safe" }
+      }
+    },
+    "checksum": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "extensions": { "type": "object", "additionalProperties": true }
+  },
+  "patternProperties": { "^x-veyrion-": {} },
+  "$defs": {
+    "namedCounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "count"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "count": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  },
+  "description": "Aligned with domain.coverage.CoverageMatrix.toMap(). Gaps never count as covered."
+}

@@ -36,6 +36,7 @@ public final class AgentAcceptanceTest {
                 : createAgentJar(work.resolve("veyrion-agent-test.jar"));
         check(Files.isRegularFile(agentJar), "agent jar does not exist: " + agentJar);
 
+        verifyCorrelationNesting();
         verifyAutomaticObservation(agentJar, work.resolve("automatic"));
         verifyBranchCoverage(agentJar, work.resolve("coverage"));
         verifyExplicitProbeProvenance(agentJar, work.resolve("explicit"));
@@ -44,6 +45,17 @@ public final class AgentAcceptanceTest {
         verifyMissingAuthorizationFailsClosed(agentJar, work.resolve("unauthorized"));
 
         System.out.println("AgentAcceptanceTest: PASS");
+    }
+
+    private static void verifyCorrelationNesting() {
+        AgentRuntime.bindRequestCorrelation("req-outer");
+        AgentRuntime.bindRequestCorrelation("");
+        AgentRuntime.releaseRequestCorrelation();
+        check("req-outer".equals(AgentRuntime.currentRequestCorrelation()),
+                "blank nested HTTP view must not clear outer correlation");
+        AgentRuntime.releaseRequestCorrelation();
+        check(AgentRuntime.currentRequestCorrelation().isEmpty(),
+                "outer HTTP exit must clear request correlation");
     }
 
     private static void verifyAutomaticObservation(Path agentJar, Path traceDirectory) throws Exception {

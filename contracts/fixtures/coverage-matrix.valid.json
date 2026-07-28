@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "scanId": "scan-1",
+  "artifactUniverseSummary": {
+    "classCount": 16,
+    "methodCount": 42,
+    "fieldCount": 9,
+    "dependencyCount": 3,
+    "incomplete": true,
+    "note": "UNKNOWN_CLASSES_PRESENT"
+  },
+  "entryFamilies": [
+    { "name": "SPRING_MVC", "count": 4 },
+    { "name": "UNKNOWN", "count": 1 }
+  ],
+  "callResolution": {
+    "DIRECT": 40,
+    "CHA": 8,
+    "UNRESOLVED": 3,
+    "unresolvedIsGap": true
+  },
+  "detectors": [
+    { "family": "DATAFLOW", "detectorVersion": "dataflow-v1", "signals": 2, "countedAsCovered": true, "note": "" },
+    { "family": "GUARD_COVERAGE", "detectorVersion": "guard-v1", "signals": 1, "countedAsCovered": true, "note": "" },
+    { "family": "CONFIG", "detectorVersion": "config-v1", "signals": 0, "countedAsCovered": false, "note": "NO_SIGNAL" }
+  ],
+  "dynamicExperiments": {
+    "pathRunCount": 2,
+    "effectiveAttemptCount": 1,
+    "unreachedCount": 1,
+    "stopReasonSamples": ["BUDGET_EXCEEDED"]
+  },
+  "stopReasons": [
+    { "name": "BUDGET_EXCEEDED", "count": 1 },
+    { "name": "UNRESOLVED_CALL", "count": 3 }
+  ],
+  "gaps": {
+    "unknown": 1,
+    "unresolved": 3,
+    "truncated": 0,
+    "unreached": 1,
+    "total": 5,
+    "countedAsCovered": false
+  },
+  "honestyFlags": {
+    "neverTreatSuccessAsSafe": true,
+    "gapsNeverCountAsCovered": true,
+    "scanSuccessMeans": "analysis_finished_not_safe"
+  },
+  "checksum": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}

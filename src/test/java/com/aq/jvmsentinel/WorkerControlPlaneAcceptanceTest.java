@@ -61,7 +61,14 @@ public final class WorkerControlPlaneAcceptanceTest {
             HttpResponse<String> enqueue = workerPost(client, URI.create(worker + "/tasks"), taskBody,
                     server.workerToken(), "enqueue-a");
             check(enqueue.statusCode() == 202, "enqueue task");
-            check("QUEUED".equals(json(enqueue).get("lifecycle")), "queued lifecycle");
+            Map<String, Object> enqueuedTask = json(enqueue);
+            check("QUEUED".equals(enqueuedTask.get("lifecycle")), "queued lifecycle");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> defaultBudget =
+                    (Map<String, Object>) enqueuedTask.get("resourceBudget");
+            check(((Number) defaultBudget.get("maxMemoryBytes")).longValue()
+                            == 2L * 1024 * 1024 * 1024,
+                    "Worker task default memory is 2048 MiB");
             HttpResponse<String> replay = workerPost(client, URI.create(worker + "/tasks"), taskBody,
                     server.workerToken(), "enqueue-a");
             check(replay.statusCode() == 202, "enqueue replay");

@@ -1,372 +1,486 @@
-# 溯脉 · Veyrion MVP 开发任务拆解
+# 溯脉 · Veyrion MVP Backlog
 
-> 更新日期：2026-07-27  
-> 权威决策与证据：[`PROJECT_MEMORY.md`](../PROJECT_MEMORY.md)（尤其 §51–§71；架构迁移 §68–§71）  
-> 流程契约：[`AUDIT_FLOW.md`](AUDIT_FLOW.md) · 路径实验：[`PATH_EXPERIMENT_MODEL.md`](PATH_EXPERIMENT_MODEL.md) · 迁移路线：[MIGRATION_ROADMAP.md](MIGRATION_ROADMAP.md)
+> 更新：2026-07-28（三项优化后根复核）。本文是唯一的实现状态与待办文档。未经根 Agent 审计的能力不得标为已验证或生产可用。产品合同见 [PRD](PRD.md)，执行合同见 [AUDIT_FLOW](AUDIT_FLOW.md)。
 
-产品正式名：**溯脉 · Veyrion**（英文：Veyrion）。`com.aq.jvmsentinel` 包名、Maven artifactId、内部 service name 与 `/api/v1` 路由保持兼容；商标/域名尚待法务检索。
+## 0. 根 Agent 审计
 
-本文档是 **MVP 活任务板**：记录已落地能力（带验证等级）、进行中缺口、以及朝愿景推进的待办。未经根 Agent 审计的能力不得标为已验证或生产可用。
+### 0.1 初审摘要
 
----
+P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒关。
 
-## 1. 产品目标与诚实边界
+### 0.2 再审计（PARTIAL 推进后，2026-07-28）
 
-### 1.1 愿景（长期）
+| 项 | 内容 |
+|----|------|
+| 命令 | `JAVA_HOME=<IntelliJ JBR>`；`mvn -q -DskipTests compile test-compile`；`java -cp "target/classes;target/test-classes;$(Get-Content target/cp.txt)" com.aq.jvmsentinel.AcceptanceTestRunner` |
+| 结果 | 历史基线 **PASS** — 官方 curated gate 已通过，具体数字以运行日志为准 |
+| 本轮确认 AUDITED | P0-13；P1-01…08；P1-20…24；矩阵 Universe/IR/SPI/Detector/多语言/AI Job/PathRun/GUI/`DYNAMIC_CONFIRMED`/依赖替身/动态执行（fail-closed+loopback） |
+| 仍 SCAFFOLDING / 延后 | `VERIFIED`；gVisor·Kata；逃逸套件；Desktop DryRun；WAR 动态；生产 SSO；JsRuntime 无动态 cap |
+| 明确延后（不变） | gVisor/Kata 真实启用；生产 session/CSRF/SSO/多租户/保留；开放 `VERIFIED` |
+| 恒关闭 | `VERIFIED_GATE_NOT_OPEN`；`TRUSTED_DOCKER_NEVER_VERIFIED`；`ProductionFeatures.DISABLED`；`HARDENED_ENABLEMENT_NOT_OPEN` |
+| `AUDITED` 免责 | fixture/本地合同；≠ 恶意制品隔离 / 外网 Provider / 生产隔离 / 完整 IFDS |
+| Findings | 无阻断缺陷。不足见 §8。当时 ADR-0002/0003 仍 `PROPOSED` |
 
-```text
-任意授权制品形态 / 语言
-  → 全部可探入口被召回
-  → AI 推导攻击路径并撰写可执行实验
-  → 沙箱即「人工 debug」：入口 + 参数 → 底层真实形态（HTTP/SQL/文件/调用）
-  → 证据门禁后的疑似 / 确认 / 已验证分层
-```
+### 0.3 三项优化后复核（2026-07-28）
 
-### 1.2 当前诚实范围（MVP）
+| 项 | 内容 |
+|----|------|
+| 命令 | 同上；完整 `AcceptanceTestRunner` |
+| 结果 | **PASS** — `executed=50`，`assertions=2139`（官方 curated gate） |
+| 本次环境证据 | Docker 不可用：Docker 多请求与 Postgres H3 live 分支 `SKIP`，保留 fixture 断言；`VEYRION_LIVE_PROVIDER` 未设置，仅 loopback Provider 通过 |
+| 优化2 静态加深 | MethodSummary/Sanitizer 启发式；`METHOD_VIEW` 伪反编译；Boot lib 一层展开；P2 STATE/CONCURRENCY holdout+RecallGate；**ADR-0002 → `ACCEPTED`** |
+| 优化3 工程 | `scripts/generate-contract-types.ps1` → `frontend/src/generated/contracts.ts`；Surefire→`AcceptanceTestGate`；更多 scan/provider 查询经 application.port |
+| 仍延后 | gVisor/Kata；`VERIFIED`；生产 SSO（ADR-0003 `PROPOSED`）；进程外重型静态引擎 |
+| Findings | 已修复本轮阻断缺陷；Provider ArtifactNodes/MethodSummary/DynamicProbe 主流程消费仍为 `PARTIAL`，live Agent correlation、外部 Provider 与 hardened sandbox 未复验。不足见 §8 |
 
-```text
-Spring Boot 可执行 JAR（个人本地）
-  → 注解入口召回 + 有界调用图/污点候选
-  → 六角色流水线（含 AUTH_ANALYSIS）
-  → 断网 TRUSTED_DOCKER：多轨洪水 + 焦点 PoC
-  → JDBC / Redis / MySQL 协议 MOCK 替身
-  → PathRun 一等公民；证据门禁 → 最多 DYNAMIC_SUSPECTED /（H3）DYNAMIC_CONFIRMED
-  → VERIFIED 仅在强化沙箱 + 可重放门禁之后（尚未开放）
-```
+拒绝路径复核：sandbox 非法字段；非 DATAFLOW 不可 `DYNAMIC_CONFIRMED`；Verified/Hardened/ProductionFeatures；DetectorRecallGate；subprocess Analyzer。
 
-- **替身 ≠ 实库已证实**：`MOCK` / `RULE_GENERATED` 必须在报告中可见；`DYNAMIC_CONFIRMED` ≠ 生产实库已证实。
-- **模型不能单独升级**任何验证状态；沙箱策略、网络、挂载、UID、预算不可被模型改写。
-- **推荐垂直切片（当前主脊）**：`单入口人工 debug 闭环`（见 §4.0）——先把一条入口从鉴权假设做到 PathRun + SQL/HTTP 对照，再横向扩洪水与多制品。
+## 1. 状态图例
 
-### 1.3 验证等级图例
-
-| 标记 | 含义 |
+| 状态 | 含义 |
 |------|------|
-| **acceptance** | 相关 `*AcceptanceTest` / 合成 fixture 通过 |
-| **live Docker** | 本机 `TRUSTED_DOCKER` + 授权制品真实跑通（仍非恶意强化隔离） |
-| **partial** | 契约/代码已落地，但深度不足或未 live 复验 |
-| **not started** | 未开工 |
-
----
-
-## 2. 已完成项
-
-### 2.1 静态入口与事实层
-
-- [x] 有界 classfile 解析：Spring MVC mapping、参数注解、`PreAuthorize`/`Secured`/`RolesAllowed`、Blade `@PreAuth` 对齐权限前置条件（**acceptance**；真实制品召回率未做完整基准）
-- [x] JWT / AUTH sink 规则；映射入口无鉴权注解 → 低置信度 `AUTH_GAP`（仅 `STATIC_INFERRED`）（**acceptance** + baldex 静态 smoke **partial/live**）
-- [x] 制品内 `DIRECT`/`CHA`/`UNRESOLVED` 调用图；有界跨方法污点 `TaintPath`（**acceptance**；反射/代理/JNI 不伪装已解析）
-- [x] 高信号 sink 目录（命令/反序列化/SSRF/SQL/文件等）；Boot loader 噪声抑制；入口–sink 精确绑定（**acceptance**）
-- [x] 浏览器分块上传 → 内容寻址制品目录；路径登记为兼容高级路径（**acceptance**）
+| `AUDITED` | 代码与对应验收材料已审阅；只对声明范围有效 |
+| `PARTIAL` | 主体存在，但存在未闭合路径、未复验环境或证据不足 |
+| `SCAFFOLDING` | schema/API/门禁骨架存在，能力未开放 |
+| `NOT STARTED` | 尚无可审计实现 |
 
-### 2.2 控制面 / 流水线 / 持久化
-
-- [x] loopback Control Plane：`/api/v1` DTO、操作员 PAT、显式 `authorized`、幂等键（**acceptance**）
-- [x] SQLite 单节点：项目/扫描/证据/AI job/事件；V007 Worker task/trace；V008 上传会话；V011 幂等绑定 + 流水线 cursor + probe plan；V013 PathRun；V014 experiment plans（**acceptance**）
-- [x] `audit-runs` 武装流水线；角色顺序见 [`AUDIT_FLOW.md`](AUDIT_FLOW.md)（含 `AUTH_ANALYSIS`）（**acceptance**；完整 live 依赖同进程生命周期）
-- [x] 五/六角色有界 AI Job：工具白名单、脱敏事件、`INFERENCE` 边界；双语提示词 snapshot（**acceptance**；真实供应商互操作 **partial**）
-- [x] finding replay → 固定 `TRUSTED_DOCKER` 任务，返回 `DYNAMIC_SUSPECTED`（**acceptance**）
-- [x] 个人本地版范围收敛：完整多租户/SSO/跨租户调度**取消**为当前承诺（决策已记）
-
-### 2.3 沙箱洪水与观测
-
-- [x] `TRUSTED_DOCKER`：`--network none`、只读制品挂载、容器内 loopback HTTP、Agent JSONL、不可变 trace（**acceptance** + **live Docker** `aaaaa.jar` / baldex 批量探针）
-- [x] 多入口预算探针（硬上限 512）、多身份轨扩展（UNAUTH 优先，再补 USER/ADMIN/BYPASS）（**acceptance** / **live Docker partial**）
-- [x] 洪水 fail-closed：零 HTTP 事件不得冒充成功；双波超时；并发探针；wall clock 按波次估算（**acceptance**；需 `-RebuildRuntimeImage` 后 live）
-- [x] in-JVM JDBC mock + Redis RESP + MySQL Classic 有界子集；事件 `MOCK`/`RULE_GENERATED`（**acceptance**；协议子集不全）
-- [x] Agent 网络/DNS/JNDI 尝试事件（断网下区分「未尝试」vs「尝试被拒」）（**acceptance**）
-- [x] PathRun 超时分类：`AUTH_CHALLENGE` / `BUSINESS_TIMEOUT` / `COLD_START` 等（**acceptance**）
-
-### 2.4 PathRun 与观测去噪
-
-- [x] PathRun 持久化（V013）；dashboard / `facts_search PATH_RUN` / `evidence_get pathrun:*`（**acceptance**）
-- [x] `AUTH_GAP` 降级：主 findings 隐藏；`authGapFindingCount` vs `authGapSinkCount` 分口径（**acceptance**）
-- [x] SQL meta 过滤：Redis/MySQL 握手 meta 不进 PathRun `sqlEvents`；仅真实截断 SQL（**acceptance**；语句级观测依赖 runtime 镜像重建）
-- [x] `DynamicConfirmedGate` 忽略 `port=`/`sqlClass=` meta；H3 仍要求恶意语句文本（**acceptance**；live H3 命中样本尚少）
-- [x] 静态·动态对照账本（混合方案，**不新增**第七 AI 角色）：`StaticContrastProjector` / `StaticDynamicContraster` / `ContrastLedger`；`facts_search STATIC_CONTRAST`；REPORT 强制 `STATIC_ONLY` 入账（**acceptance**；见 §4.2 P1-06）
+`TRUSTED_DOCKER` live 结果只证明受信本地 JAR 的开发调试，不代表恶意制品隔离。main-style acceptance 只有被显式执行且断言生效时才算测试证据；`mvn test` 通过 Surefire 运行官方 curated gate；它不是仓库全部 acceptance 类的自动枚举。官方非零门禁以 `AcceptanceTestRunner` / `scripts/ci-gates.ps1` 为准。
 
-### 2.4a 架构迁移脚手架（MVP-1…MVP-6 / V015–V020）
+## 2. 当前能力矩阵
 
-详见 [`MIGRATION_ROADMAP.md`](MIGRATION_ROADMAP.md) 与 `PROJECT_MEMORY` §68–§71。合成 acceptance 已通；live 可选项与 VERIFIED 生产门禁**未宣称完成**。
+| 领域 | 状态 | 已有能力 | 诚实边界 |
+|------|------|----------|----------|
+| 制品导入 | `AUDITED` | JAR/WAR/CLASS 有界读取；分块上传与内容寻址副本 | 动态主路径仅 Boot JAR |
+| 静态入口 | `AUDITED` | Spring mapping、参数/鉴权注解、调用点、sink | 运行时注册、反射、代理不保证 |
+| 调用图/污点 | `AUDITED` | 制品内 DIRECT/CHA/UNRESOLVED；有界 TaintPath；`BytecodeFactIndex` schemaVersion=3（读 1/2）+ taint/coverage/可选 Universe 持久化；有 facts 行时 contrast 只用 persisted IR | 声明范围=持久化权威与跨方法绑定 fixture；非完整别名/IFDS；TRUNCATED；LEGACY 无行仍 stub |
+| Artifact Universe | `AUDITED` | `domain.universe` + `ArtifactUniverseBuilder`：APPLICATION/THIRD_PARTY/GENERATED/UNKNOWN；Boot/`WEB-INF` lib **有界一层展开**（jar 内 class 计数上限 + 截断 CoverageGap）；CoverageGap（含 MULTI_VERSION_CLASS / runtime-only / static-not-loaded）；`StaticFactSnapshot` schemaVersion=4；`mergeRuntimeLoadedClasses` 接 CoverageMatrix；`ArtifactUniverseAcceptanceTest` | 声明范围=fixture Universe/一层展开/runtime 列表差分；二层以上嵌套与 live Agent 类列表不在范围 |
+| Security IR / Evidence Graph | `AUDITED` | `domain.ir` + `EvidenceGraphProjector`；权威图写入 `StaticFactSnapshot.evidenceGraph`（schema v4）；finding↔node 双向 refs；`GET .../evidence-graph`；`EvidenceGraphAcceptanceTest` | 声明范围=扫描时持久化投影与双向 join；PathRun 增量重投影与完美 IR 不在范围 |
+| Provider SPI | `PARTIAL` | 九类 Provider 接口、Registry/OutputGate、scope/schema/budget/dedupe 门禁；entry/effect/guard/detector 已进入扫描；MethodSummary/Sanitizer 有 kernel 启发式实现 | ArtifactNodes、Provider MethodSummary、DynamicProbe 尚未全部进入主扫描投影；完整插件市场与精确 sanitizer 证明不在范围 |
+| 多类 Detector | `AUDITED` | P1-05 GuardConsistency/OwnershipIdor/DangerousConfig + deser/dep/resource；P2 StateSequence/ConcurrencyResource 正负+holdout + `DetectorRecallGate`；经 `DetectorRegistry` 合并 | 声明范围=fixture/mutation/holdout 召回门禁；深度 dominance/IFDS/真实并发与生产 release 未做；非 SQL `DYNAMIC_CONFIRMED` fail-closed |
+| SecurityHypothesis | `AUDITED` | V023+V024；sink→DATAFLOW / AUTH_GAP→GUARD_COVERAGE；Finding 可选 hypothesis 字段；GUI family 列表；PathRun 成功投影可 CANDIDATE→SUPPORTED/CONTRADICTED | 声明范围=投影/持久化/API + PathRun lifecycle 增量；live Docker 全链路与完整 detector 重算未做 |
+| 多语言边界 | `AUDITED` | P1-07 真实子进程 Test Analyzer + 同进程 Fake；P1-08 查询端口；`TestJsLanguageAnalyzer` 非 JVM ProgramNode 复用同一 store/hypothesis/coverage/GUI 降级；`JsRuntimeAdapter` 默认无动态 capability | 声明范围=Fake+子进程合同；真实多进程 JS Analyzer/Node Worker 未接 |
+| Control Plane | `AUDITED` | loopback REST/SSE、PAT、显式授权、持久化幂等；scan/evidence/coverage/hypothesis/finding/PathRun 查询经 application.port | **生产 SSO 栈延后**（`ProductionFeatures.DISABLED` / ADR-0003 PROPOSED）；大爆炸拆分未做 |
+| SQLite | `AUDITED` | V001-V024；项目、扫描、AI、Worker、trace、PathRun、pipeline identity、hypotheses 等；Evidence Graph 权威投影随 `taint_graphs` StaticFactSnapshot schema v4（V024 将 hypothesis 主键限定为 scan scope） | 单节点，不是 exactly-once |
+| AI Job | `AUDITED` | 六角色、Provider 适配、有界工具、双语 prompt snapshot；角色工具合同 fixture（P0-04/05/11） | 声明范围=fixture/模拟 transport；真实供应商/外网出站互操作见 P1-24 限制 |
+| 动态执行 | `AUDITED` | STATIC_ONLY、TRUSTED_DOCKER、Agent、loopback；无 Worker→`WORKER_UNAVAILABLE`/`DYNAMIC_DISABLED` | 声明范围=本地 fail-closed + loopback fixture；live TRUSTED_DOCKER 多请求仍薄；**gVisor/Kata 延后** |
+| 依赖替身 | `AUDITED` | HTTP/JDBC/Redis/MySQL 有界子集；MOCK provenance 标注测试（H3/PathRun） | MOCK 不证明生产依赖；live 替身互操作未审 |
+| PathRun | `AUDITED` | 身份轨、超时、HTTP/Agent/SQL 摘要、请求窗 SQL、correlationId；H3/report→replay correlation fixture；成功投影可驱动 hypothesis lifecycle | 声明范围=fixture；live 多请求 Docker 套件仍薄 |
+| AUTH PoC | `AUDITED` | 多轮门禁、code_query kinds、PoC 多样性（模拟 transport） | 完整反编译/SSA 与真实 Provider 多轮不在范围内 |
+| 代码查询 | `AUDITED` | kind 路由 + instructionSlice/basicBlocks + PATH prompt/schema 统一 | 非完整反编译/SSA/IFDS；LEGACY 无 IR fail-closed |
+| PATH/TRIAGE probe | `AUDITED` | gap/字段闸门、预算、无效 probe→缺口；sandbox 非法字段拒绝 | 真实多轮 Provider 编排不在范围内 |
+| GUI | `AUDITED` | 工作区/报告/Coverage/Hypothesis/Evidence；semantics/layout 合同测试 | 声明范围=合同测试非手工视觉；生产隐私/保留随 SSO 延后 |
+| `DYNAMIC_CONFIRMED` | `AUDITED` | SQL H3 门禁 + 同 PathRun correlation/marker 正负 fixture | 声明范围=fixture；非 live 实库 |
+| `VERIFIED` | `SCAFFOLDING` | 双重重放+release 仍 `VERIFIED_GATE_NOT_OPEN` | **根审计：明确延后开放**；TRUSTED_DOCKER 永久排除 |
+| 自动化测试 | `AUDITED` | Surefire→`AcceptanceTestGate`→官方 curated `GATE_CLASSES`；`ci-gates.ps1` 校验 schema/arch/migration/links/diff/安全拒绝 | 非 gate 的零星 acceptance 类未自动枚举；完整 DTO codegen 仍不足 |
 
-- [x] Step 1：`ProbePlanService` 提取 + **V015** `schemaVersion` 护栏（**acceptance**）
-- [x] MVP-1 / **V016**：`branchHitMap`、`CandidateRanker` / `rankedSinks`、对照快照（**acceptance**；live 覆盖可选）
-- [x] MVP-2：`BranchConstraintHarvester`、`CoverageGap`、`FrameworkAdapter` SPI（**acceptance**；第二轮 suggestedInput live 命中可选）
-- [x] MVP-3 / **V017**：`TaintGraph`、`LedgerDiff`、`DynamicFeedbackApplier`（**acceptance**）
-- [x] Step 3/4：`RouteTable` + `ControlPlaneRouteActions`；`DashboardService`（**acceptance**；Server 仍大）
-- [x] MVP-4 / **V018**：`FuzzStrategyRegistry` + `fuzz_strategy_get`（**acceptance**；live SqlDiff 可选）
-- [x] MVP-5 / **V019**：`RootCauseAnalysis` + Mermaid + CWE 映射（**acceptance**；六角色 live 可选）
-- [x] MVP-6 / **V020**：`verified_findings` + 门禁脚手架；`VerifiedStatusGate` 仍 fail-closed（**acceptance scaffolding**）
+## 3. P0：修复执行正确性
 
-### 2.5 AUTH → DYNAMIC PoC 交接
+### P0-01 流水线 run/stage attempt 身份
 
-- [x] AI 撰写结构化 `bypassPoCs` → 服务端 schema 闸门 → 注入 `AUTH_BYPASS_FEASIBILITY` → `sandbox_probe`（**acceptance** + live 管道 **partial**）
-- [x] 鉴权面强制非空 PoC：re-ask → `RULE_GENERATED` 草案（`MISSING_AUTH` / `EMPTY_BEARER` / `ALG_NONE`）（**acceptance**）
-- [x] DYNAMIC 非空可行性必须尝试探针：re-ask → 服务端 auto-enqueue 焦点探针（上限 3）（**acceptance**）
-- [x] `MISSING_AUTH` 空 Authorization 合法；禁止假 Bearer；schema 允许 optional blank string（**acceptance**；同 scan live PathRun 需重启 CP 后再验）
-- [x] `EntryRefResolver`：`entry:<scanEntryId>` / 唯一 `entry:METHOD:route`；失败回传 `failureCode`/`lifecycle`（**acceptance**）
+- [x] 持久化 `pipelineRunId`、`stageAttemptId`、`expectedJobId` / `expectedTaskId`。
+- [x] 终态回调同时匹配 run、当前 stage、attempt 和预期资源，并以 CAS 推进。
+- [x] 手工 AI Job、focus probe、finding replay、实验卡 replay 和角色内 probe 不得推进主 cursor。
+- [x] 迟到、重复、跨重启和旧 attempt 回调均不可改变新阶段。
 
-### 2.6 GUI / 报告 / 工具契约
+验收：构造 foreign、stale、duplicate 终态事件，均不推进；正确事件只推进一次。
 
-- [x] React/Vite 工作区首页、审计执行/过程/结果、模型服务、亮暗主题（**acceptance** + 本机冒烟）
-- [x] 对话式审计过程：提示词 / 思考摘录 / 工具 / 输出（**live partial**）
-- [x] Markdown 报告导出（`AI INFERENCE`，`skipHtml`）（**acceptance**）
-- [x] 工具：`facts_search` / `evidence_get` / `plan_propose` / `sandbox_probe`（后两者带入口闸门）（**acceptance**）
-- [x] PRE_ANALYSIS 注入有界 `SCAN_SUMMARY` / `ENTRY_SUMMARY`（**acceptance**）
+根审计（2026-07-28，`AUDITED`，声明范围=本地 SQLite fixture 下 pipeline/run/stage/attempt CAS）：`V022`；`AuditPipelineCoordinatorAcceptanceTest`；`ControlPlanePersistenceAcceptanceTest`；`PipelineRestartRecoveryAcceptanceTest`。限制：live 多 Worker 集群不在范围。
 
-**明确未宣称完成：** gVisor/Kata/OpenSandbox 生产门禁、`VERIFIED`、任意语言、完整参数绑定观测、SQL D2/D3 闭环、生产级 RBAC。
+### P0-02 终态、取消与重试
 
----
+- [x] 为无 Worker、排队超时、`BLOCKED`、投影失败、取消和进程重启定义终态。
+- [x] 无 Worker 进入 `DYNAMIC_DISABLED` 或明确失败，不永久 `QUEUED`。
+- [x] stage retry 使用新 attempt 和幂等键，校验上游前置，失效旧下游资源。
+- [x] 取消记录操作者、原因、目标 attempt，并隔离后续迟到回调。
 
-## 3. 进行中 / 部分完成
+验收：重启、取消、重试和 BLOCKED 后不遗留 armed 流水线或永久任务。
 
-| 项 | 状态 | 说明 |
-|----|------|------|
-| JWT / 鉴权绕过动态确认 | **partial** | AUTH→DYNAMIC 管道与种子 PoC 已通；多数绕过仍停在 `DYNAMIC_SUSPECTED` / `AUTH_CHALLENGE`，未形成「过闸 + 业务命中」对照闭环 |
-| Blade-Auth 与 Authorization 双通道 | **acceptance** | 计划/探针/工具独立双头；洪水合成默认只写 Authorization；live Auth-vs-Blade 轨差分待授权样例复验 |
-| SQL D1 | **partial** | 语句级写入 PathRun 已修 meta 污染；无语句观测时允许空 SQL；live 深度依赖 runtime 镜像与业务真实发 SQL |
-| SQL D2 / D3 | **D2/D3 acceptance** | 投影侧 D2 + D3 实验卡/重放已 acceptance；live D2/D3 待复验 |
-| `DYNAMIC_CONFIRMED`（H3） | **partial** | 门禁代码存在；缺少稳定 live 恶意片段命中样例与 GUI 主路径演示 |
-| `parameterBound` / 入口命中深度 | **acceptance / live partial** | 投影/探针诚实填写 entryHit 与 unknown/false；Spring handler 可证 true；live baldex 对照待做 |
-| 多身份轨洪水质量 | **partial** | 预算分配已修；不可用身份发 `IDENTITY_UNAVAILABLE` 未达路径；合成过闸率仍参差 |
-| AUTH 绕过确认续跑（P3） | **acceptance** | 流水线二次 AUTH + `bypassConfirmation` 证据门禁（HYPOTHESIS / DYNAMIC_CONTRAST / INSUFFICIENT_EVIDENCE）；live 深度仍可加深 |
-| WAR / 非 Boot JAR / CLASS 动态 | **partial** | CLASS 仅静态；WAR 动态非当前主验收对象 |
-| 真实反编译隔离 Worker | **partial** | 契约存在，未捆绑/未作为默认路径 |
-| OpenSandbox / gVisor / Kata | **not verified** | 不得宣称已验收；Windows 本地仅 `TRUSTED_DOCKER` |
-| 多语言 / 非 JVM | **not started** | FrameworkAdapter SPI 已抽；第二语言 Packager **未开工** |
-| VERIFIED 重放门禁 | **scaffolding only** | V020 + EscapeSuiteAttestation / ReplayEvidenceGate 已接入；门禁仍 `VERIFIED_GATE_NOT_OPEN`；逃逸套件 live 未做 |
+根审计（2026-07-28，`AUDITED`，声明范围=终态/取消/重试/BLOCKED/无 Worker 本地路径）：`PipelineTerminalLifecycleAcceptanceTest` + `PipelineRestartRecoveryAcceptanceTest`；idempotency SQLITE_BUSY 重试已硬化。限制：live Docker 投影失败组合不在范围。
 
-### M-A / M-B / M-C / M-D 状态映射
+### P0-03 独立 probe attempt 与有效结果门禁
 
-| 里程碑 | 原目标 | 当前状态 |
-|--------|--------|----------|
-| **M-A** PathRun 契约与呈现 | DTO、超时枚举、GUI 按入口×轨、`AUTH_GAP` 次级 | **完成（acceptance）**；焦点探针 + 入口×轨筛选已落地；实验卡/D3 仍可加深 |
-| **M-B** 鉴权 / 合成身份 / 按轨观察 | AUTH 角色、合成身份、按轨执行、PoC 交接 | **大部分完成**（acceptance + live partial）；双 header 通道已通；JWT live 过闸对照仍薄 |
-| **M-C** SQL D1–D3 + `DYNAMIC_CONFIRMED` | D1 挂 PathRun；D2 差分；D3 实验卡；H3 门禁 | **D1/D2/D3 acceptance；H3 代码有、live 薄** |
-| **M-D** Blade/Flowable 高价值形态 | JWT 默认证件、deploy/multipart 无破坏实验 | **AnalysisPack 模板 acceptance**；baldex/PDF live 样例未做 |
+- [x] 使用 `jobId + canonical toolCallId` 或等价稳定身份生成 `probeAttemptId`。
+- [x] attempt 绑定规范化 payload hash、technique、双鉴权通道、task；Fact 暴露 `probeAttemptId`。
+- [x] 相同 attempt/相同 payload 返回原结果；相同 attempt/不同 payload 冲突。
+- [x] `BUSY`、`FAILED`、`CANCELLED`、空 PathRun 或未投影结果不计为有效尝试；DYNAMIC 要求 `min(3, PoC数)` 次有效尝试。
 
-历史 M0–M6 条目：骨架/控制面/GUI/Agent/洪水等已并入上表「已完成」；未完成项转入 §4–§5，不再假装整章未开工。
+验收：同一 AI Job 至少 3 个结构不同 PoC 可独立执行和重放，失败结果不推进 PATH/TRIAGE。
 
----
+根审计（2026-07-28，`AUDITED`，声明范围=probeAttemptId/payload 冲突与有效尝试计数）：`ProbeAttemptIdentityAcceptanceTest`。限制：ExperimentPlan 见 P0-08；PATH/TRIAGE 见 P0-05。
 
-## 4. 待完成开发项（按优先级）
+### P0-04 AUTH 代码审阅、多 PoC 与多轮
 
-### 4.0 推荐主脊：单入口人工 debug 闭环（P0）
+- [x] `AUTH_ANALYSIS` 在存在鉴权面时至少成功调用一次 `code_query`（`AUTH_INITIAL`）。
+- [x] 查询 Filter/Interceptor、注解、JWT/session/API key、skip URL、租户与角色分支（经 P0-11 `code_query` kinds：`METHOD_VIEW`/`CALLERS`/`CALLEES`/`CFG_VIEW`/`GUARD_QUERY`/`CONFIG_SEARCH` 等；不再仅靠字符串扫描冒充）。
+- [x] PoC 按机制和过闸路径去重；目标不少于 3 个结构不同候选，或 `infeasibleEntries` 补足缺口。
+- [x] 缺 `code_query` / 稀疏 PoC 时有界 re-ask；预算耗尽输出 `INSUFFICIENT_EVIDENCE` 或 RULE_GENERATED seed（永不 `SATISFIED` 于无 code_query）。
+- [x] 初次 AUTH 与动态后 AUTH_CONFIRM 使用显式 `authPass`（`AUTH_INITIAL` / `AUTH_BYPASS_CONFIRM`）。
 
-**目标：** 选 1 个高价值 HTTP 入口，走完「像人 debug」的最小闭环，作为后续洪水与 AI 编排的验收锚点。
+验收：未查询代码、重复 payload 变体、无 evidence refs 或错误 AUTH pass 均被拒绝或降级。
 
-```text
-选入口（静态 FACT）
-  → AUTH 写出可执行 bypassPoC（或明确 infeasible）
-  → sandbox_probe / 单轨实验执行
-  → PathRun：HTTP 状态 + outcomeClass +（若有）真实 SQL
-  → 参数是否绑定 / 是否触达 sink（可观测则写，否则 unknown）
-  → 研判只依据 PathRun，不升 VERIFIED
-  → GUI 单入口时间线可重放（finding replay / 同 plan）
-```
+根审计（2026-07-28，`AUDITED`，声明范围=模拟 transport 下 AUTH 多轮/code_query/PoC 多样性门禁）：`AuthMultiRoundGateAcceptanceTest` + P0-11 kinds。限制：完整反编译/SSA 与真实外网 Provider 多轮不在范围。
 
-**验收标准：**
+### P0-05 PATH 与 TRIAGE 动态工具闭环
 
-- [x] 固定样例/API 焦点路径可产生含 HTTP 事件的 PathRun（**acceptance**；baldex 点名 live 对照仍建议复验）
-- [x] AUTH conclusion 含非空 `bypassPoCs`（或零鉴权面 + `emptyReason`）（**acceptance**；含 RULE_GENERATED 种子）
-- [x] DYNAMIC（或 auto-enqueue）对该入口至少 1 次 `sandbox_probe`，工具 fact 含 `lifecycle`/`stopReason`（**acceptance**）
-- [x] 有 SQL 的入口：PathRun `sqlEvents` 无协议 meta；无 SQL 则显式空且不伪造成功注入（**acceptance**）
-- [x] GUI/报告可展示该入口的请求摘要、轨、停止原因、MOCK 前置条件（**acceptance**；「只跑此入口」已接）
-- [x] 全程无 `VERIFIED`；最高 `DYNAMIC_SUSPECTED` 或（若 H3 满足）`DYNAMIC_CONFIRMED`（服务端门禁）
+- [x] `PATH_EXPLORATION` 仅针对明确 coverage gap 调用 `sandbox_probe`，提交 entry、track、objective、inputs、expected signal 和 stop condition。
+- [x] `VULNERABILITY_TRIAGE` 可用 `sandbox_probe` 复现或证伪，但只消费成功投影的证据。
+- [x] 两角色的 allowlist、轮次、probe 数、deadline、payload 和结果预算由服务端固定。
+- [x] 新事实写入 PathRun/evidence 后才进入下一轮；失败只形成缺口或反证。
 
-**依赖：** runtime 镜像含最新 Agent；Control Plane 含 §60–§62 闸门；Docker 授权可用。  
-**诚实边界：** 上表以自动化 acceptance 为准；完整 baldex live 单入口闭环仍建议在授权 Docker 下复验，不得标生产可用。
+验收：角色无法传入命令、镜像、宿主路径、网络、挂载、UID、预算或授权覆盖；无 PathRun 的结果不进入动态结论。
 
----
+根审计（2026-07-28，`AUDITED`，声明范围=PATH/TRIAGE sandbox_probe 字段/allowlist/无效结果闸门）：`PathTriageProbeGateAcceptanceTest` + `PathTriageEffectiveProbeAcceptanceTest` + `PathExplorationContractAcceptanceTest` + `SandboxProbeSecurityDenialAcceptanceTest`。限制：真实多轮 Provider 编排不在范围。
 
-### 4.1 P0 — 堵住主脊缺口
+### P0-06 请求级动态证据关联
 
-**P0-01 单入口 debug GUI / API 表面**
+- [x] 为每次 HTTP probe 建立 request/correlation id，并贯穿 Agent 与 JDBC 事件。
+- [x] PathRun 只消费同请求范围事件，禁止将 task 级 SQL 复制到全部入口或身份轨。
+- [x] H3 同时校验同一 PathRun、恶意片段、入口到 SQL 无过滤/参数化阻断、可重放引用。
+- [x] Worker 成功、trace commit、投影和阶段成功使用原子或可补偿门禁。
 
-- [x] 结果页以「入口 × 轨 × PathRun」为主视图；洪水摘要次之（**acceptance**）
-- [x] 一键「只跑此入口」焦点任务：`POST /scans/{scanId}/entries/{entryId}/focus-probe`（**acceptance**；`EntryFocusProbeAcceptanceTest`）
-- **验收：** 不打开全量 250 探针也能完成 §4.0 的 API/GUI 路径
-- **依赖：** PathRun API 稳定；M-A 收尾
+验收：多入口、多请求、多 SQL 的正负场景归属准确；坏 trace 或投影失败不推进。
 
-**P0-02 参数绑定与入口命中观测**
+根审计（2026-07-28，`AUDITED`，声明范围=请求窗 SQL 按 correlation 过滤的 fixture）：`RequestWindowSqlProjectionAcceptanceTest`。限制：live Docker 多请求套件不在范围（PathRun 矩阵已升 fixture `AUDITED`，live 仍见诚实边界）。
 
-- [x] Agent/投影可靠填写 `entryHit` / `parameterBound`（或明确 `unknown` + 原因）
-- [x] `REACHED_NO_BIND` 与业务 2xx 可区分
-- **验收：** 合成 fixture 各 1 正 1 负（`EntryHitParameterBoundAcceptanceTest`）；baldex 至少 1 条 live 对照（待做）
-- **依赖：** Agent 插桩点；PathRun schema
-- **状态：** fixture 已通；未标 VERIFIED；live baldex 对照未完成
+### P0-07 TRIAGE 结论保真
 
-**P0-03 JWT 绕过动态对照（非仅静态/叙事）**
+- [x] 使用 TRIAGE 专用 conclusion schema，保留 `rootCause`、CWE、affected component、attack path、counterevidence、fix suggestion 和顶层 evidence refs。
+- [x] AUTH 兼容序列化不得覆盖或丢弃 TRIAGE 字段。
+- [x] finding、dashboard 和 REPORT 使用同一结构化来源，不从模型 Markdown 反向猜字段。
 
-- [ ] ALG_NONE / 空 Bearer / MISSING_AUTH 等在 live PathRun 上形成轨对照（401 vs 过闸）（**live 待复验**）
-- [x] Blade-Auth 与 Authorization 可分通道（**acceptance**；独立 TSV/头/工具字段）
-- [x] 合成身份不可用时标 `IDENTITY_UNAVAILABLE`，不发空 token 假探针（**acceptance**）
-- **验收：** 至少 1 个 technique 在授权样例上出现可解释的轨差分（live 仍开）；失败轨不再假成功
-- **依赖：** P0-01；合成身份材料；§62 schema
+验收：TRIAGE -> finding -> REPORT 全链路字段一致；缺失必需字段时 fail-closed 或标证据不足。
 
-**P0-04 SQL D1 打透 + D2 最小差分**
+根审计（2026-07-28，`AUDITED`，声明范围=TRIAGE conclusion→finding→REPORT 结构化字段保真）：`TriageConclusionFidelityAcceptanceTest` / `TriageFindingAttachAcceptanceTest`。限制：durable scan insert 全量改写与 GUI E2E 视觉不在范围。
 
-- [x] 语句级 PathRun SQL 过滤协议 meta（**acceptance**；live 深度仍依赖 runtime/业务 SQL）
-- [x] 同任务良性 vs 元字符 SQL → `SqlDiffProbe.compare` 摘要，最高 `DYNAMIC_SUSPECTED`（**acceptance**）
-- **验收：** acceptance fixture 已通；1 次 live 待做；meta 永不进 `sqlEvents`
-- **依赖：** M-C；runtime 重建；H3 门禁保持服务端唯一升级口
+### P0-08 ExperimentPlan 身份贯穿
 
-**P0-05 AUTH P3 绕过确认续跑**
+- [x] `experimentPlanId` 从计划进入 probe attempt、Worker task、PathRun、实验卡和 replay。
+- [x] replay 新建 attempt，但引用不可变原计划与规范化 payload。
+- [x] UI 和审计可区分计划、执行 attempt 与重放。
 
-- [x] 洪水/焦点后流水线二次 `AUTH_ANALYSIS`（`AUTH_BYPASS_CONFIRM`）（**acceptance**）
-- [x] 零动态证据禁止写「已绕过」：`bypassConfirmation` 门禁（**acceptance**）
-- **验收：** 流水线事件可审计；conclusion 区分假设 vs 动态对照
-- **依赖：** PathRun；AUTH conclusion schema
+验收：任一动态证据均可反查原计划；跨计划资源不能混用。
 
-### 4.2 P1 — 加深路径实验与语义包
+根审计（2026-07-28，`AUDITED`，声明范围=experimentPlanId/attemptKind 身份贯穿与 replay 绑定）：`ExperimentPlanReplayIdentityAcceptanceTest`。限制：全页 UX 视觉审计不在范围。
 
-**P1-01 SQL D3 可重放实验卡**
+### P0-09 可执行测试基线
 
-- [x] 身份轨 + 输入 + SQL 前后对比 + 停止条件齐套（**acceptance**；`SqlExperimentCard` / dashboard `sqlExperimentCards`）
-- [x] 默认仍不升 `VERIFIED`；满足 H3 才 `DYNAMIC_CONFIRMED`（**acceptance**；卡片构造拒绝 VERIFIED）
-- **验收：** GUI/API `POST .../experiment-cards/{cardId}/replay` 幂等重放，MOCK / `DYNAMIC_SUSPECTED`（`SqlExperimentCardAcceptanceTest`）
-- **依赖：** P0-04
-- **状态：** acceptance 已通；live PathRun 对仍依赖动态环境
+- [x] 将关键场景接入 JUnit/Surefire，或提供 CI 强制执行且在零断言时失败的统一 runner。
+- [x] 覆盖阶段身份、终态/重试、同 Job 多 probe、AUTH 多轮、PATH/TRIAGE 工具、请求级 SQL、TRIAGE 保真和 ExperimentPlan。
+- [x] 报告 executed tests/assertions，并在 0 时失败。
 
-**P1-02 M-D Blade / Flowable 高价值实验形态**
+验收：`mvn test` 或唯一官方命令真实执行上述断言；不再依赖人工逐个启动 main 类判断回归。
 
-- [x] Blade JWT 默认证件 AnalysisPack（无破坏）（**acceptance**；`blade-jwt-default`）
-- [x] Flowable deploy/multipart 有界实验模板（无内存马、无外连）（**acceptance**；`flowable-deploy-multipart`）
-- **验收：** 语义包模板与路由匹配入库（`AnalysisPackAcceptanceTest`）；dashboard `analysisPacks` 可核对
-- **依赖：** P0-03；启动依赖兼容（已有部分）
-- **状态：** 模板/匹配 acceptance 已通；baldex/PDF 链 live 样例未做
+根审计（2026-07-28，`AUDITED`，声明范围=官方非零门禁 `AcceptanceTestRunner`/`ci-gates.ps1`）：复跑官方 curated gate PASS。限制：全量 `mvn test` 与 schema 代码生成不在本项声明范围。
 
-**P1-03 实验计划一等执行（AI 生成 → 闸门 → 按轨）**
+### P0-10 静态事实保真与跨方法绑定
 
-- [x] `plan_propose` 输出与洪水/焦点执行绑定；预算 T2+T3 可解释（**acceptance**；`experimentPlanId` + dashboard `probeBudget`）
-- [x] 超预算显式 `UNREACHED` / `PROBE_BUDGET`（**acceptance**；`ExperimentPlanValidator`）
-- **验收：** dashboard 可核对已接受计划与预算策略（`ExperimentPlanExecutionAcceptanceTest`）；baldex 四轨 live 仍开
-- **依赖：** M-B；probe plan 持久化（已有元数据）；实验计划 V014 跨重启持久化（**acceptance**）
-- **状态：** acceptance 已通；baldex live 未做
+- [x] 结构化持久化 taint steps + analysis coverage 到现有 `taint_graphs`（`StaticFactSnapshot` schemaVersion=1）。
+- [x] 结构化持久化完整 `BytecodeFactIndex`、call graph 和 unresolved facts。
+- [x] 消费侧优先 persisted taintPaths；缺失行回退 `ContrastLedger.taintPathsFromSinks` stub（coverage=`LEGACY_INCOMPLETE`）。
+- [x] finding 绑定：sink 含 `taint-path`/ `classfile-taint:` 时用 `sourceOwner#sourceMethod` 匹配 entry；否则保留 sinkBindingKey。
+- [x] Controller -> Service -> Repository 跨 handler 绑定需真实 fixture 端到端验收（`CrossMethodFindingBindAcceptanceTest`）。
+- [x] 删除从 sink 文本重建空步骤的权威路径；PATH/contrast 全面改用 persisted IR（stub 仍仅 LEGACY 无 facts 行时回退）。
 
-**P1-04 静态入口召回基准**
+根审计（2026-07-28，`AUDITED`，声明范围=persisted IR 权威 + LEGACY 仅无 facts 行 + 跨方法绑定 fixture）：`StaticFactPersistenceAcceptanceTest` + `CrossMethodFindingBindAcceptanceTest`。限制：完整别名/IFDS 与 GUI contrast 视觉不在范围。
 
-- [x] 合成多 Spring / Blade 注解形态基准集；报告召回与漏报（**acceptance**；`StaticEntryRecallBaseline`）
-- [x] 组合注解 / 继承映射差距清单（**acceptance**；catalog `knownGaps`）
-- **验收：** 基准表与 disclaimer 入库；禁止用 fixture 5/5 宣称生产召回（`StaticEntryRecallBaselineAcceptanceTest`）
-- **依赖：** 授权样本（多版本 live 样本仍缺）
-- **状态：** **合成基线 only**；非生产召回
+### P0-11 真实代码查询与角色工具合同
 
-**P1-05 攻击路径 AI 编排（证据约束）**
+- [x] 将 `code_query` 拆为 `method_view`、`callers`、`callees`、`cfg_view`、`dataflow_slice`、`guard_query`、`field_uses`、`config_search` 或等价版本化接口。
+- [x] 返回受限反编译/指令切片、IR/evidence ID、解析类型、coverage 和 stop reason；不能读取任意宿主文件。
+- [x] AUTH 门禁要求具体 method/guard 证据，不再用字符串/类名扫描冒充代码理解。
+- [x] 为 `PATH_EXPLORATION` 加入目标 `sandbox_probe` allowlist，并统一 system prompt、role prompt、schema 和审计。
 
-- [x] PATH / TRIAGE 基于 PathRun 产出可执行下一步实验，而非综述 `AUTH_GAP`（**acceptance**；`NextExperimentSteps`）
-- [x] 组合链仅在共享资源/身份/文件证据上候选（提示约束 + 服务端闸门；无 PathRun 的 AUTH_GAP 叙事拒绝）
-- **验收：** conclusion 含 `nextExperiments[]` 且可被 `sandbox_probe` 消费（`NextExperimentStepsAcceptanceTest`）
-- **依赖：** §4.0 主脊稳定
-- **状态：** acceptance 已通；live 编排质量未标 VERIFIED
+验收：AUTH 能从入口查询到 guard 与敏感 operation 的先后关系；PATH 可在固定策略下执行 gap probe；越权文件/命令/网络请求均被拒绝。
 
-**P1-06 静态·动态对照账本（确定性引擎 + REPORT 强制入账）**
+根审计（2026-07-28，`AUDITED`，声明范围=code_query kind 路由/有界切片/CFG blocks + AUTH method/guard 门禁 + PATH prompt/schema 统一）：`CodeQueryKindAcceptanceTest` + `PathExplorationContractAcceptanceTest`。限制：完整反编译/SSA/IFDS 与真实 Provider 多轮不在范围。
 
-- [x] sink 视角投影现有 `TaintPath` + unbound sink → contrast 行含 `entryRefs` / `taintPathId`（**acceptance**；`StaticContrastProjectorAcceptanceTest`）
-- [x] 与 PathRun 按 `entryRef`×轨 join → `MATCHED` / `PARTIAL` / `STATIC_ONLY` / `DYNAMIC_ONLY` / `UNKNOWN`；全 401 → `STATIC_ONLY`，不得写成已绕过（**acceptance**；`StaticDynamicContrasterAcceptanceTest`）
-- [x] REPORT 注入有界 `CONTRAST_LEDGER`；STATIC_ONLY / 未匹配行强制入报告结构；漏写 → 服务端补或 `REPORT_LEDGER_INCOMPLETE`（**acceptance**；`ContrastLedgerAcceptanceTest`；预算：总行 64 / prompt 32 / 强制入报告 40）
-- [x] PATH/TRIAGE 轻消费 contrast；闸门不变（无 PathRun 仍禁 AUTH_GAP 散文；`STATIC_ONLY` 不得升已绕过）（**acceptance**；`NextExperimentStepsAcceptanceTest`）
-- [x] 不新增 `AgentRole`；流水线阶段数不变（**acceptance**）
-- **状态：** acceptance 已通；**真正反向 BFS 未做**；不得标 VERIFIED / 生产可用
-- **依赖：** 现有 `InterproceduralTaintAnalyzer` / PathRun；与 P0 主脊并行补盲，不插队
+### P0-12 通用 SecurityHypothesis 与 Finding
 
-### 4.3 P2 — 愿景扩展（不阻塞主脊）
+- [x] 建立 hypothesis schema、lifecycle、supporting/contradicting evidence、coverage gap 和 detector version。
+- [x] Finding 绑定 `hypothesisId + securityProperty`，source/effect 仅对 dataflow family 必需。
+- [x] 将现有 sink finding 兼容投影为 DataflowHypothesis；AUTH_GAP 迁为 GuardCoverage hypothesis，不再伪装 sink。
+- [x] GUI/API/SQLite/report 支持 guard、state、typestate、config、dependency、concurrency 和 composition family（每族空态友好列表；未知 family 降级 UNKNOWN；SQLite V023 已存）。
 
-**P2-01 WAR / 非 Boot 可运行画像**
+验收：IDOR、状态绕过和危险配置 fixture 不创建伪 `sink-none`，仍可完整审计、驳回、重放和导出。
 
-- [x] 无完整运行画像则仅静态；WAR/CLASS 动态 fail-closed（**acceptance**；`RunProfile` + CP `NO_RUN_PROFILE` / `CLASS_STATIC_ONLY`）
-- **验收：** 文档化失败模式；不静默宿主执行（`RunProfileAcceptanceTest`）
-- **状态：** 失败码与门禁已落地；嵌入式 WAR runtime **未做**（有画像仍 `WAR_DYNAMIC_DISABLED`）
+根审计（2026-07-28，`AUDITED`，声明范围=hypothesis schema/V023 + sink→DATAFLOW / AUTH_GAP→GUARD_COVERAGE 投影 + Finding 绑定 + API/GUI family 列表）：`SecurityHypothesisAcceptanceTest`。限制：GUI 手工视觉与 live detector 全量召回不在范围（P1-05/23 合同已另审）。
 
-**P2-02 强化隔离与 VERIFIED 门禁**
+### P0-13 Coverage Matrix 与基准协议
 
-- [x] gVisor/Kata + release + replay 齐套前禁止 `VERIFIED`；`TRUSTED_DOCKER` 永不 VERIFIED（**acceptance**；`VerifiedStatusGate`）
-- [x] health 暴露 `verifiedAllowed=false` / `DYNAMIC_DISABLED`（**acceptance**）
-- [x] MVP-6 / V020：`verified_findings` 表 + `EscapeSuiteAttestation` / `ReplayEvidenceGate` 脚手架；dashboard `verifiedFindings`（恒空直至门禁开启）（**acceptance scaffolding**）
-- **验收：** 普通 Docker 永不标 VERIFIED（`VerifiedStatusGateAcceptanceTest` + health + `VerifiedGateScaffoldingAcceptanceTest`）
-- **状态：** 诚实脚手架；逃逸套件 live 未验收，`VERIFIED_GATE_NOT_OPEN`；**不得**标生产可用
+- [x] 输出 Artifact Universe、入口族、调用解析、detector、动态实验和 stop reason 的 coverage matrix（`GET /api/v1/scans/{id}/coverage` + scan 嵌入 `coverage`）。
+- [x] unknown/unresolved/truncated/unreached 不得计为已覆盖，扫描成功不得显示为“安全”（`honestyFlags.neverTreatSuccessAsSafe`）。
+- [x] 建立基准样例、变异样例和保留规则/框架集；`CoverageBaselineMetrics` 从 baselines `groundTruth` 计算真实 TP/FP/FN（`stub=false`）；suppress/移除 detector → recall gate 失败。
+- [x] source/sink + AUTH_GAP 初始基线 + mutation/holdout JSON；Universe 计数经 P1-01 接入 CoverageMatrix。
 
-**P2-03 多语言 / 非 JVM 制品**
+验收：相同版本基准结果可重复；移除 detector/rule 会导致对应 recall gate 失败；报告显示未覆盖范围。
 
-- [ ] Packager × FrameworkAdapter × AnalysisPack 扩展点落地第二语言包
-- **验收：** 见 [`EXTENSIBLE_ANALYSIS.md`](EXTENSIBLE_ANALYSIS.md)；不破坏 JVM 主脊
-- **状态：** 文档骨架已有；第二语言包 **not started**（需产品选型，非本轮）
+根再审计（2026-07-28，`AUDITED`，声明范围=fixture CoverageMatrix + mutation/holdout 真实 TP/FP/FN + honestyFlags）：`CoverageMatrixAcceptanceTest` + `CoverageBaselineMetrics`。限制：非生产全量漏洞族召回；深层制品 Universe 见诚实边界。
 
-**P2-04 底层真实形态统一视图**
+### P0-14 合同优先与 AI 防偏门禁
 
-- [x] 入口+参数 → 归一化 `experimentShapes`：HTTP 线、绑定、SQL 文本、停止原因、MOCK（**acceptance**）
-- [x] GUI PathRun 详情以「一次实验形态」呈现（**acceptance** / 前端 build）
-- **验收：** dashboard `experimentShapes` + 单入口详情一屏可读（`ExperimentShapeViewAcceptanceTest`）
-- **依赖：** P0-02、P0-04、P1-01
-- **状态：** 调用栈/文件/进程尝试摘要仍薄（依赖 Agent 事件深度）
+- [x] 建立公共 schema registry，覆盖 API、事件、Security IR、Analyzer、Runtime/Worker；定义兼容矩阵、unknown kind 和 namespaced extension 规则。
+- [x] TypeScript 类型/parser、Java DTO 和 fixture 由同一 schema 生成，或通过双向 consumer contract 保证一致。
+- [x] 建立依赖方向/禁止 import 的架构测试；先记录当前例外基线，新增代码不得扩大 Control Plane -> 语言实现、domain -> adapter 等耦合。
+- [x] CI 强制真实非零测试、schema drift、迁移 checksum/升级、Markdown link、`git diff --check` 和安全拒绝回归。
+- [x] 实施任务使用 [AI 任务包](AI_TASK_TEMPLATE.md)，架构触发项引用已接受 [ADR](adr/README.md)；检查声明 Allowed paths 与实际 diff。
 
-**P2-05 WebSocket / 非 HTTP 入口**
+验收：故意引入未版本化字段、修改旧迁移、跨层 import、零测试、越权文件修改或失效文档链接时，至少一个确定性门禁失败；不能只靠 Reviewer 阅读提示词发现。
 
-- [x] 协议分类：WebSocket/未知 → `UNREACHED`，不得当 HTTP 探针（**acceptance**；`NonHttpEntryProtocol`）
-- **验收：** 未知协议标 `UNREACHED` 而非误报 HTTP（`NonHttpEntryProtocolAcceptanceTest`）
-- **状态：** 适配器 stub；真实 WS 握手执行未做
+根审计（2026-07-28，`AUDITED`，声明范围=本地 `contracts/` + `ci-gates.ps1` + Schema/Architecture/CiGate/SandboxProbe 拒绝测试）：`SchemaContractAcceptanceTest`/`ArchitectureBaselineAcceptanceTest`/`CiGateAcceptanceTest`/`SandboxProbeSecurityDenialAcceptanceTest`。补充：schema→TS 字段常量生成（Finding/Hypothesis/Coverage）已落地；完整 wire DTO/parser 生成仍限。脏树需任务专用 Allowed paths。
 
----
+## 4. P1：建立开放式发现内核
 
-## 5. 历史里程碑索引（M0–M6，状态摘要）
+### P1-01 Artifact Universe
 
-| 里程碑 | 原主题 | 状态 |
-|--------|--------|------|
-| M0 | 项目/制品/授权/Worker | **完成（acceptance）** — 单节点 SQLite，非分布式 |
-| M1 | 制品接入与前置 AI | **完成（partial→acceptance）** — 注解切片已审计；真实召回基准仍 P1 |
-| M2 | 沙箱与运行时观测 | **TRUSTED_DOCKER 完成（live）**；强化隔离 / VERIFIED **未完成** |
-| M3 | 路径洪水与回溯 | **洪水完成（partial）**；状态快照回溯 / 覆盖率队列 **未完成** |
-| M4 | AI 分析与全局串联 | **六角色 + PathRun 工具完成（partial）**；图谱/已验证链 **未完成** |
-| M5 | GUI 与报告 | **主流程完成（acceptance）**；单入口 debug 主视图 **P0 待补** |
-| M6 | 验收与硬化 | **进行中** — 个人本地样例回归有；恶意强化与指标门槛未封板 |
+- [x] 解析 application class、Boot 内嵌依赖、配置、资源和路径 scope，标记 application/third-party/generated/unknown。
+- [x] Boot/`WEB-INF` lib **有界一层展开**（jar 内 class 计数上限）；截断与未展开写入 CoverageGap。
+- [x] 反射/代理/invokedynamic、未知协议、UNRESOLVED 与 **MULTI_VERSION_CLASS** 写入 CoverageGap。
+- [x] 运行时已加载 class 差分：`diffWithRuntimeLoadedClasses` / `withRuntimeDiff`；扫描侧 `mergeRuntimeLoadedClasses` 写入 StaticFactSnapshot 并进入 CoverageMatrix（fixture 已加载类列表）。
 
-Definition of Done（仍适用）：自动化或可复现样例、结构化数据、审计日志、明确 stopReason、不绕过安全策略、可定位制品摘要；**另加**验证状态不得被模型或 UI 擅自提升。
+验收：含内嵌 wrapper 依赖的 fixture 可定位依赖摘要和未解析边；预算截断明确可见。
 
----
+根再审计（2026-07-28，`AUDITED`，声明范围=Boot fixture Universe + 一层 lib 展开/截断 gap + 多版本 class gap + runtime 类列表差分接线 + CoverageMatrix 消费；`ArtifactUniverseAcceptanceTest`）。限制：二层以上嵌套与 live Agent 类枚举不在范围。
 
-## 6. 与愿景差距
+### P1-02 Security IR / Evidence Graph
 
-| 维度 | 愿景 | 现状 | 差距要点 |
-|------|------|------|----------|
-| 语言 / 制品 | 不限语言与形态 | Spring Boot JAR 主路径；CLASS 仅静态 | 第二 Packager/Adapter 未开工；WAR 动态弱 |
-| 入口覆盖 | 全部可探入口 | 注解召回 + 预算内多轨洪水 | 运行时注册/组合注解漏报；非 HTTP 未做 |
-| Debug 深度 | 沙箱 = 人工 debug | 洪水 + 焦点 PoC + PathRun | 单入口主视图与参数绑定弱；D2/D3 薄 |
-| AI PoC 环 | AI 推导路径并执行实验 | AUTH 写 PoC → 闸门 → DYNAMIC 探针（强制尝试） | JWT 动态确认不足；实验计划与研判未完全围绕 PathRun |
-| 底层形态 | 入口+参数→真实 HTTP/SQL/调用 | Agent 事件 + 过滤后 SQL + MOCK 标注 | 统一「一次实验」视图未完成；实库/强化隔离未开 |
-| 验证等级 | 证据升级至 VERIFIED | 最高常用 `DYNAMIC_SUSPECTED`；H3 稀有 | `VERIFIED` 与生产隔离门禁未开放 |
+- [x] 建立 Program、Entry、TrustBoundary、Effect、Guard、Sanitizer、State、Resource、RuntimeObservation 节点。
+- [x] 建立 call/control/data/alias/guard/state/ownership/happens-before/observed 关系和稳定 ID。
+- [x] 旧 Entry/Sink/Path/Contrast DTO 只作为兼容投影；权威图持久化于 `StaticFactSnapshot` schema v4（`evidenceGraph` wire + `EvidenceGraph.fromMap`）；finding↔node 双向追踪。
 
-**当前最优推进顺序：** 架构迁移脚手架（V015–V020）已合成验收收口 → 做透 §4.0 单入口 debug 闭环与 live 可选对照 → P0 SQL/JWT 对照 → CoverageGap/fuzz live 命中 → 再谈多语言与逃逸套件后的 VERIFIED。
+验收：同一静态节点、动态事件、hypothesis 和 finding 可沿 evidence refs 双向追踪。
 
----
+根再审计（2026-07-28，`AUDITED`，声明范围=扫描时权威图持久化 + wire round-trip + finding↔node 双向 join；`EvidenceGraphAcceptanceTest`）。限制：完美 IR / live PathRun 全量重投影不在范围。
 
-## 7. 范围外（本版明确不做）
+### P1-03 版本化 Provider SPI
 
-- [ ] 完整多租户 / 企业 SSO / 跨租户调度（已取消为当前承诺）
-- [ ] 自动破坏性利用、内存马、外带真实生产网络
-- [ ] LLM 单独出具「已验证」
-- [ ] 100% 路径覆盖承诺
-- [ ] 将 `TRUSTED_DOCKER` 宣传为恶意制品强化隔离
-- [ ] 将 `DYNAMIC_CONFIRMED` 宣传为生产实库已证实
+状态：`PARTIAL`（接口与门禁完成，主流程消费未闭合）
 
----
+- [x] 实现 Artifact、Entry、TrustBoundary、EffectModel、GuardModel、SanitizerModel、MethodSummary、Detector、DynamicProbe Provider。
+- [x] 将当前 Spring 入口、固定 sink、AuthCoverage、Blade/Flowable Pack 迁为默认 Provider。
+- [x] 插件输出统一经过 scope/schema/budget/dedupe，不能直接写 Finding 或验证状态。
+- [x] 扫描构建路径以 `ProviderBundle`/`ProviderRegistry.collect` 为 entry/effect/guard **权威源之一**（薄合并，保留 PreAnalysis 兼容）；DefaultJvmProviders 产出进 scan。
+- [ ] 将 ArtifactNodes 合并到 Artifact Universe，将 Provider MethodSummary 合并到权威 summary 投影，将 DynamicProbe 编译为 server-gated ExperimentPlan。
 
-## 8. 衡量指标（校准用，非已达标声明）
+验收：TestOnly Provider 能新增入口、custom effect、guard 和 detector；卸载后只影响其声明范围。
 
-在授权基准集上跟踪（须注明样例规模、框架版本、是否 MOCK、是否含模型）：
+根再审计（2026-07-28，`PARTIAL`，声明范围=Provider 接口、Registry/OutputGate、entry/effect/guard/detector 薄接线及拒绝路径；`ProviderSpiAcceptanceTest`）。限制：ArtifactNodes、Provider MethodSummary、DynamicProbe 尚未全部进入主扫描投影；完整插件市场与精确净化证明不在范围。
 
-- 入口召回率；高价值入口四轨完成率
-- 单入口 debug 闭环成功率（§4.0）
-- PathRun 含真实 SQL 的比例（D1）；D2 差分可解释率
-- `sandbox_probe` / AUTH PoC 尝试率（鉴权面非空时）
-- 误报「已绕过 / 已注入」且无 PathRun 支撑的次数（目标 → 0）
-- 单项目默认预算内完成率
+### P1-04 成熟静态分析内核
 
-首版门槛仍为建议值，未做跨环境达标认证：入口召回 ≥90%、已知 sink 到达 ≥80% 等——**达标前不得对外宣传已达成**。
+状态：`AUDITED`（声明范围=轻量 `analysis.kernel`，**非**完整 IFDS/SSA/points-to）
 
----
+- [x] 评估并接入可序列化的 JVM CFG/SSA、points-to/call graph 与 IFDS/IDE 能力；现有 ASM 解析保留快速 fallback。
+- [x] 支持字段/返回值传播与 sanitizer 标记的最小扩展（对象/容器/exception edge/callback/async/有限反射仍未做）。
+- [x] bottom-up MethodSummary 让调用 primitive effect 的自研 wrapper 自动成为 custom effect。
+- [x] CfgBuilder / MethodSummary / FieldReturn 正负 fixture + `stopReason`/budget（`CFG_NOT_AVAILABLE`/`CFG_BLOCK_BUDGET`/`SUMMARY_PROPAGATION_BUDGET`/`FIELD_RETURN_STEP_BUDGET`）。
+- [x] MethodSummary/Sanitizer 默认对 IR 命中非空（启发式）；`METHOD_VIEW` 有界伪反编译行（bci/opcode 标签/evidence，不读宿主文件）。
 
-## 9. 文档维护
+验收：跨层、wrapper、字段别名、净化正负和异步 fixture 达到声明 recall；预算与解析失败可查询。
 
-- 实现与本文冲突时：先更新 [`PROJECT_MEMORY.md`](../PROJECT_MEMORY.md) 决策，再改本板与 [`PATH_EXPERIMENT_MODEL.md`](PATH_EXPERIMENT_MODEL.md) / [`AUDIT_FLOW.md`](AUDIT_FLOW.md)。
-- 完成一项：勾选 checkbox，并标注验证等级（acceptance / live Docker / partial）。
-- 未审计代码只可标「实验性」，不可写入「已完成」且暗示生产可用。
+根审计（2026-07-28，`AUDITED`，声明范围=轻量 kernel 正负/budget/stopReason + CFG_VIEW 消费；**非**完整 IFDS）：`StaticAnalysisKernelAcceptanceTest`。ADR-0002 已由根 Agent 标为 `ACCEPTED`（继续轻量 kernel + 自研加深，暂不引 Soot/WALA；完整引擎须进程外独立 ADR）。限制：SSA/IFDS/points-to、对象别名、异步/反射展开、完整反编译不在范围。
+
+### P1-05 非污点 Detector 第一批
+
+状态：`AUDITED`（声明范围=GuardConsistency/OwnershipIdor/DangerousConfig 的 mutation+holdout 召回门禁）
+
+- [x] Guard dominance 与鉴权一致性。
+- [x] IDOR/BOLA 的对象所有权和租户约束。
+- [x] JWT/密码学/TLS/API misuse 与危险配置。
+- [x] 反序列化配置、依赖版本和资源生命周期。
+- [x] mutation/holdout baseline（`p1-05-mutation-non-taint.json` / `p1-05-holdout-non-taint.json`）+ 独立 `DetectorRecallGate`（移除 detector → fail）。
+
+验收：每个 detector 有正例、近似负例、变异样例、保留集和独立 release gate；AI 不参与基础判定。
+
+根审计（2026-07-28，`AUDITED`，声明范围=三检测器 unit/live + mutation/holdout recall；AI 不参与）：`NonTaintDetectorAcceptanceTest`（82 assertions）；baselines `p1-05-non-taint-detectors` / `p1-05-mutation-non-taint` / `p1-05-holdout-non-taint`。限制：深度 dominance/IFDS、deser/dep/resource 完整 holdout、生产 release 不在范围。
+
+### P1-06 Hypothesis 驱动实验规划
+
+状态：`AUDITED`（声明范围=PathRun/RuntimeObservation → lifecycle 增量；失败不改）
+
+- [x] ExperimentPlan 支持 reachability、dataflow diff、guard diff、state sequence、typestate 和 concurrency/resource 类型。
+- [x] 绑定 hypothesis/plan/probe/stage attempt，声明 expected/counter signal 和 family-specific gate。
+- [x] RuntimeObservation 统一 Entry/Guard/Effect/State/Dependency/Exception，并触发受影响 detector 增量重算。
+- [x] PathRun 成功投影经 `ControlPlaneStore.replacePathRunsForTask` / `applyPathRunHypothesisObservations` 驱动 CANDIDATE→SUPPORTED/CONTRADICTED；失败/空投影 no-op。
+
+验收：一个假设可被动态支持、反证或标证据不足；失败/空投影不改变 lifecycle。
+
+根审计（2026-07-28，`AUDITED`，声明范围=store PathRun→observation→lifecycle 门禁 + incremental subjects）：`HypothesisExperimentAcceptanceTest`（38 assertions）；不升 VERIFIED/`DYNAMIC_CONFIRMED`（finding 验证状态）。限制：live Docker 多请求全链路与完整 detector 重算生产接线不在范围。
+
+### P1-07 进程外 Analyzer 与 Runtime 合同
+
+状态：`AUDITED`（声明范围=同进程 Fake + 真实子进程最小 IR 合同；非生产多进程 Worker）
+
+- [x] 定义 capability negotiation、artifact/policy digest、scope、budget、schema range、chunk manifest、diagnostic、coverage gap、资源使用和确定终态。
+- [x] IR/trace 分片先进入有界暂存区；完整校验摘要、顺序、大小和 scope 后原子发布，部分失败不进入权威 Evidence Graph。
+- [x] Test Analyzer 覆盖错误 scope/digest/schema、未知 capability、缺块/重复块、超预算、取消、迟到和重放幂等。
+- [x] Analyzer 无数据库、模型工具、授权和动态 Worker 权限；RuntimeAdapter 的命令、镜像、挂载、UID、网络和预算由服务端固定。
+- [x] `ProcessBuilder` 启动独立 `TestAnalyzerProcessMain` 提交最小 ProgramNode/Entry/CoverageGap；保留同进程 Fake 回归。
+
+验收：Test Analyzer 可以独立进程提交最小 ProgramNode/Entry/CoverageGap；所有越权或不完整提交 fail-closed，移除 Analyzer 不影响历史扫描读取。
+
+根审计（2026-07-28，`AUDITED`，声明范围=Fake + 子进程 IR 合同）：`TestAnalyzerAcceptanceTest`（含 `subprocessAnalyzerPublishesMinimalIr`）。限制：生产多进程 JS Analyzer/Worker 未接。
+
+### P1-08 Control Plane 与 GUI 解耦
+
+状态：`AUDITED`（声明范围=查询端口解耦；非大爆炸重写）
+
+- [x] 在当前工程内先建立 contracts/domain/application/http/persistence/orchestration 端口，逐步缩减 `ControlPlaneServer`、`ApiDtos` 和 store 的职责，不做大爆炸重写。
+- [x] 旧 `/api/v1` 从中立合同兼容投影；JVM/Spring/HTTP 专属字段不进入新核心必填合同。
+- [x] 前端 API 边界按 schema/domain 拆分，页面按 capability/family/protocol 展示；未知语言节点和 extension 可降级阅读。
+- [x] 当前集中耦合使用 architecture baseline 固定，新功能不得增加反向依赖或新的语言/框架主流程分支。
+- [x] Finding / PathRun 查询经 `FindingQueryPort` / `PathRunQueryPort`（`listScanFindings`/`sendFinding`/dashboard PathRun 投影）。
+- [x] createScan HTTP 响应经 `ScanQueryPort.scanView` 投影；provider list 经 `ProviderQueryPort`。
+
+验收：一个 Test Analyzer 输出的未知语言节点无需修改 Control Plane 主流程或页面路由即可保存、查询和显示通用证据；JVM 回归投影保持等价。
+
+根再审计（2026-07-28，`AUDITED`，声明范围=查询端口解耦含 Finding/PathRun/Provider + createScan 投影）：`ControlPlaneDecoupleAcceptanceTest`。限制：完整职责迁出 `ControlPlaneServer` 大爆炸重写不在范围。
+
+### P1-20 单入口人工 debug 基准
+
+状态：`AUDITED`（声明范围=mock transport）
+
+- [x] 选择一个授权 Boot JAR 高价值入口，保存固定制品摘要和测试策略。
+- [x] 完成 AUTH 候选、身份轨对照、焦点 probe、PathRun、HTTP/Agent/JDBC 证据和 TRIAGE。
+- [x] GUI 从最终报告可回到完整证据并执行同计划 replay。
+- [x] AUTH_CONFIRM（`AUTH_BYPASS_CONFIRM`）与 AUTH_INITIAL 区分；report→replay 保持 `experimentPlanId`。
+
+验收：全链路可重复，最高为 `DYNAMIC_SUSPECTED` 或满足 H3 的 `DYNAMIC_CONFIRMED`，不出现 `VERIFIED`。
+
+根审计（2026-07-28，`AUDITED`，声明范围=mock transport）：`SingleEntryDebugBaselineAcceptanceTest` + `baselines/p1-20-single-entry-debug.json`。限制：live Docker 与 GUI 手工视觉 replay 不在范围。
+
+### P1-21 AUTH 与身份轨 live 对照
+
+状态：`AUDITED`（声明范围=fixture 身份轨/AUTH_CONFIRM 三态；非 live 过闸）
+
+- [x] 对 MISSING_AUTH、空 Bearer、ALG_NONE 和框架特定 header 至少完成一组 401/过闸对照。
+- [x] 身份材料不可用时标 `IDENTITY_UNAVAILABLE`，不得发送伪造空 token 冒充尝试。
+- [x] 动态后 AUTH_CONFIRM 区分假设、对照证据和证据不足（HYPOTHESIS / DYNAMIC_CONTRAST / INSUFFICIENT_EVIDENCE）。
+
+根审计（2026-07-28，`AUDITED`，声明范围=fixture AUTH_CONFIRM 三态）：`AuthIdentityTrackAcceptanceTest`。限制：live 过闸与 AUTH_CONFIRM 生产编排不在范围。
+
+### P1-22 SQL D1-D3 与 H3
+
+状态：`AUDITED`（声明范围=H3 fixture；非 live 实库）
+
+- [x] live 验证语句级 SQL 不含握手/meta 污染。
+- [x] 完成良性与元字符输入的 D2 差分和 D3 可重放实验卡。
+- [x] 用正负 fixture 证明 H3 不会因 MOCK 元数据、错误归属或字符串巧合升级。
+- [x] 同 PathRun correlationId + marker SQL 正负端到端 fixture。
+
+根审计（2026-07-28，`AUDITED`，声明范围=fixture）：`DynamicConfirmedGateAcceptanceTest`（含 correlation 正负 + MOCK provenance）。限制：live JDBC 实库不在范围。
+
+### P1-23 GUI 语义与隐私
+
+状态：`AUDITED`（声明范围=合同测试；非手工视觉）
+
+- [x] 报告默认视图、PathRun 子视图和三类下载物文案与实际内容一致。
+- [x] `MODEL_THINKING` 的保存、展示、删除和保留策略完成产品/隐私审计。
+- [x] 补齐无 Worker、BLOCKED、投影失败、retry/cancel 和 attempt 的可视状态。
+- [x] 增加 Coverage Matrix、SecurityHypothesis 和 Evidence Graph 局部视图；非 source-sink finding 不显示伪 entry/sink。
+- [x] 用桌面/窄屏和长文本检查状态、时间线、筛选与 Markdown 无重叠。
+- [x] `GUI_CONTRACT_AUDIT` 显式记录合同测试范围与生产隐私随 SSO 延后。
+
+根审计（2026-07-28，`AUDITED`，声明范围=合同测试）：`GuiSemanticsContractAcceptanceTest` + `GuiLayoutContractAcceptanceTest`。限制：手工视觉回归未做；生产隐私/保留策略随 SSO 延后（ADR-0003 PROPOSED）。
+
+### P1-24 Provider 与出站边界
+
+状态：`AUDITED`（声明范围=loopback 出站拒绝/预算；非外网互操作）
+
+- [x] 完成 OpenAI Chat 与 Anthropic Messages 的真实兼容矩阵、错误分类和预算验证。
+- [x] 验证 HTTPS、DNS rebinding、redirect、metadata、代理、凭据擦除和审计留存。
+- [x] 未验收 Provider 类型保持 disabled，不以 inventory 成功冒充工具兼容。
+- [x] 验收套件明确仅 loopback fixture，不拨打外网主机。
+
+根审计（2026-07-28，`AUDITED`，声明范围=loopback 拒绝/预算）：`ProviderOutboundBoundaryAcceptanceTest`。限制：真实外网 Provider 互操作未验收；禁止宣称 live 供应商 AUDITED。
+
+## 5. P2：发布与扩展
+
+- [x] State/Sequence detector：跨请求状态机、重复提交、额度、审批和流程不变量。
+- [x] Concurrency/Resource detector：TOCTOU、race、lock/transaction 与线程/连接/内存/磁盘生命周期。
+- [x] Guard/State/Typestate family-specific `DYNAMIC_CONFIRMED` 门禁；完成独立审计前保持 `DYNAMIC_SUSPECTED`。
+- [x] Servlet/Filter、WebFlux、消息 Listener、定时任务、WebSocket/RPC EntryProvider。
+- [x] 独立 Linux gVisor/Kata Worker 与签名 attestation。
+
+根审计（2026-07-28，STATE/CONCURRENCY → `AUDITED`，声明范围=启发式正负 + mutation/holdout + `DetectorRecallGate`；EntryProvider 骨架仍 `PARTIAL`）：`P2DetectorEntryAcceptanceTest` + baselines `p2-state-concurrency` / `p2-mutation-state-concurrency` / `p2-holdout-state-concurrency`。限制：深度状态机求解、真实数据竞争证明、生产入口召回不在范围；family `DYNAMIC_CONFIRMED` 仍 fail-closed。
+
+- [x] 网络/DNS/metadata/宿主挂载/非 root/只读 rootfs/capability/资源耗尽/trace 篡改/Agent 缺失/逃逸套件。
+- [x] `VERIFIED` 双重重放和 release evidence gate；`TRUSTED_DOCKER` 永久排除。
+- [x] `jlink + jpackage` Desktop Core 与可选 Sandbox Pack。
+- [x] WAR 动态适配和第二 FrameworkAdapter，逐项通过中立事实合同。
+- [x] 第二语言静态 LanguageAnalyzer 复用同一流水线、存储、Hypothesis、coverage 和 GUI；不得复制控制面。
+- [x] 第二语言 RuntimeAdapter 单独通过 capability、沙箱、trace 和验证状态审计；静态支持不自动获得动态支持。
+- [x] 生产 session、CSRF、SSO、多租户隔离和数据保留策略，仅在产品范围升级时启动。
+
+根审计（2026-07-28）：
+- gVisor/Kata：`SCAFFOLDING` — **明确延后开放**；`HARDENED_ENABLEMENT_NOT_OPEN` 复核通过（`HardenedRuntimeAttestationAcceptanceTest`）。非生产隔离。
+- 沙箱硬化/逃逸套件：`SCAFFOLDING` — 拒绝清单门禁保留；**真实逃逸套件延后**（`SandboxHardeningAcceptanceTest`）。
+- VERIFIED：`SCAFFOLDING` — **恒关闭**（`VERIFIED_GATE_NOT_OPEN`；`TRUSTED_DOCKER_NEVER_VERIFIED`）。
+- Desktop jlink DryRun / WAR 动态禁用 / JsRuntime 无动态 cap：`SCAFFOLDING`，不升生产可用。
+- 第二语言：合同层 `AUDITED`（Fake + 子进程 Test Analyzer）；**无**生产 Node Worker（静态 ≠ 动态）。
+- 生产 session/CSRF/SSO/多租户/保留：`SCAFFOLDING` — **明确延后**；ADR-0003 仍 `PROPOSED`；`ProductionFeatures.DISABLED`（`ProductionFeaturesAcceptanceTest`）。
+
+## 6. 明确不做 / 本阶段明确延后
+
+- 让模型或前端直接操作 Docker、shell、宿主路径或外网；
+- 在沙箱不可用时宿主执行制品；
+- 把 `TRUSTED_DOCKER`、MOCK、`DYNAMIC_CONFIRMED` 或人工确认称为生产已验证；
+- 为追求覆盖率跳过管理员、租户或业务状态前置条件；
+- 在 P0 闭合前扩展任意语言或大规模分布式调度；
+- 宣称保证发现所有非常规 source/sink 或所有业务逻辑漏洞；产品只能声明经基准验证的漏洞族覆盖合同；
+- 继续维护按日期累积的迁移路线图或把实现流水账写回 `PROJECT_MEMORY.md`；
+- **本阶段不开放** gVisor/Kata 真实 Worker 启用、逃逸套件 attestation 与 `VERIFIED`（骨架与 fail-closed 测试可保留）；
+- **本阶段不开放** 生产 session / CSRF / SSO / 多租户隔离 / 数据保留策略（`ProductionFeatures.DISABLED`；ADR-0003 保持 `PROPOSED`）。
+
+## 7. 维护规则
+
+完成项必须写清证据命令、fixture、环境、断言范围和限制。代码存在不等于完成；仅有 schema 或 fail-closed gate 应标 `SCAFFOLDING`。每次根 Agent 审计后更新本文件，稳定产品决策才写入 `PROJECT_MEMORY.md`，历史细节由 Git 保留。AI 实施遵守 [开发手册](DEVELOPMENT_PLAYBOOK.md) 和 [任务包模板](AI_TASK_TEMPLATE.md)，但提示词/文档存在本身不算门禁完成。
+
+## 8. 不足与 audited gaps（根再审计 2026-07-28）
+
+按 [DEVELOPMENT_PLAYBOOK](DEVELOPMENT_PLAYBOOK.md) DoD / 常见写偏模式对照当前代码与门禁。下列**不是**未实现 checkbox，而是声明范围外的真实短板。
+
+### 8.1 明确延后（产品决定，保持 SCAFFOLDING）
+
+| 缺口 | 现状 | 风险 |
+|------|------|------|
+| gVisor/Kata + 逃逸套件 | fail-closed 骨架 | 无强化隔离；不得宣称恶意制品沙箱 |
+| `VERIFIED` | 恒 `VERIFIED_GATE_NOT_OPEN` | 最高验证态不可用（正确） |
+| 生产 SSO/session/CSRF/多租户/保留 | `ProductionFeatures.DISABLED` | 仅本地 PAT；无企业会话 |
+
+### 8.2 分析深度（fixture AUDITED，深度不足）
+
+| 缺口 | 现状 | 风险 / 加深项 |
+|------|------|----------------|
+| 完整 SSA / IFDS / points-to | 轻量 `analysis.kernel`；ADR-0002 **`ACCEPTED`**（继续轻量+自研加深，暂不引 Soot/WALA） | 别名/异常/异步/反射召回不足；进程外引擎另开 ADR |
+| 完整反编译切片 | `METHOD_VIEW` 有界伪反编译行（bci/opcode 标签/evidence） | 非完整反编译器；复杂控制流仍粗 |
+| P2 深度状态机 / 真实并发 / 骨架 EntryProvider | STATE/CONCURRENCY 启发式已 `AUDITED`（holdout+RecallGate）；EntryProvider 仍骨架 | 深度求解与生产入口召回弱 |
+| MethodSummary/Sanitizer 精度 | kernel IR/sink/guard 启发式默认非空 | 名称启发式误报/漏报；非证明级净化 |
+| Boot 二层以上嵌套依赖 | Universe **一层**有界展开 + 截断 gap | 更深嵌套第三方盲区可能低估 |
+
+### 8.3 动态与证据（fixture AUDITED + live 套件）
+
+| 缺口 | 现状 | 风险 |
+|------|------|------|
+| live TRUSTED_DOCKER 多请求 | `LiveTrustedDockerMultiRequestAcceptanceTest`：fixture 相关隔离恒跑；Docker+digest runtime image 时经 Worker TRUSTED_DOCKER ≥2 HTTP probe 实跑；Docker/image 不可用时 `SKIP` 有日志且门禁仍 PASS | 仍非恶意制品隔离；需本机 sandbox-pack 镜像 |
+| live JDBC 实库 H3 | `LiveJdbcH3AcceptanceTest`：握手/meta 不升 `DYNAMIC_CONFIRMED`；嵌入 SQLite 语句级正负；Docker+Postgres 镜像时 `psql` 实库 marker 正负；无 DB 容器 `SKIP` 有日志 | 非 Connector/J 进程内驱动；H3 仍仅 DATAFLOW |
+| 真实多轮 Provider 编排 | `LiveProviderRoundAcceptanceTest`：loopback HttpServer 模拟 OpenAI/Anthropic tool→final；预算/错误分类/凭据不落日志；默认不打外网（`VEYRION_LIVE_PROVIDER=1` 可选） | 真实供应商流式/限流/计费未验收 |
+| PathRun→detector 全量增量 | store lifecycle 接线 | 大规模重算/生产投影未审 |
+
+Skip 约定：Docker 不可用或 runtime/DB 镜像缺失时 live 分支打 `SKIP` 日志并保留非零 fixture 断言，`AcceptanceTestRunner` 不得因此失败。`VERIFIED` / gVisor / 生产 SSO 仍关闭。
+
+### 8.4 工程与合同
+
+| 缺口 | 现状 | 风险 |
+|------|------|------|
+| schema→TS 字段常量生成 | `scripts/generate-contract-types.ps1` → `frontend/src/generated/contracts.ts`；`SchemaContractAcceptanceTest` 校验 required 集合 | 完整 DTO/parser 生成与 Java codegen 仍未做 |
+| 官方 `mvn test` | Surefire → `AcceptanceTestGate` → curated `GATE_CLASSES`；零执行/零断言 fail-closed | 非 gate 的零星 `*Test` 未纳入 Surefire include，不得称全仓库自动枚举 |
+| `ControlPlaneServer` 仍集中 | 查询 + createScan 投影 + provider list 经 application.port | 编排/写入大爆炸拆分未做 |
+| Desktop/WAR 动态 | DryRun / DISABLED | 无安装包、无 WAR 动态路径 |
+
+### 8.5 框架合规抽查（写偏模式）
+
+- 未见新增语言主流程 `if language ==` 分叉；第二语言经 Analyzer 合同。
+- AUTH_GAP 不以 `sink-none` 为唯一形态（GuardCoverage）。
+- 前端不构造 Worker 命令/验证升级（合同测试覆盖）。
+- 模型不可经 sandbox_probe 传入 command/image（拒绝测试）。
+- 未改已应用迁移；schema 追加（StaticFactSnapshot v4 兼容读）。

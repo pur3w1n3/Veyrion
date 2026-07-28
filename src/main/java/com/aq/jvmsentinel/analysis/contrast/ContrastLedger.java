@@ -3,6 +3,7 @@ package com.aq.jvmsentinel.analysis.contrast;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.model.BytecodeFactIndex;
 import com.aq.jvmsentinel.model.ContrastStatus;
+import com.aq.jvmsentinel.model.Sink;
 import com.aq.jvmsentinel.model.StaticContrastRow;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -54,6 +55,12 @@ public final class ContrastLedger {
         }
     }
 
+    /**
+     * LEGACY convenience: builds ledger via {@link #taintPathsFromSinks}.
+     * Production PATH/contrast paths with a static-facts row must pass
+     * {@link com.aq.jvmsentinel.control.StaticFactSnapshot#resolveContrastTaintPaths}
+     * (or {@code resolveTaintPaths}) into the 5-arg overload instead.
+     */
     public static Ledger build(
             List<ApiDtos.EntryDto> entries,
             List<ApiDtos.SinkDto> sinks,
@@ -70,7 +77,28 @@ public final class ContrastLedger {
         return build(entries, sinks, evidence, pathRuns, paths, snapshotId, roundIndex);
     }
 
-    /** Stub paths from sink symbols so coverage join can mark DYNAMIC_REACHED. */
+    public static Ledger build(
+            List<ApiDtos.EntryDto> entries,
+            List<ApiDtos.SinkDto> sinks,
+            Map<String, ApiDtos.EvidenceDto> evidence,
+            List<ApiDtos.PathRunDto> pathRuns,
+            List<BytecodeFactIndex.TaintPath> taintPaths) {
+        int roundIndex = roundIndexFromPathRuns(pathRuns);
+        String snapshotId = "contrast-round-" + roundIndex + "-"
+                + Integer.toHexString(Objects.hash(
+                entries == null ? 0 : entries.size(),
+                sinks == null ? 0 : sinks.size(),
+                pathRuns == null ? 0 : pathRuns.size(),
+                roundIndex));
+        return build(entries, sinks, evidence, pathRuns, taintPaths, snapshotId, roundIndex);
+    }
+
+    /**
+     * LEGACY-only empty-step stubs from sink symbols ({@code tp-sink-*} when no taint-path token).
+     * Authoritative PATH/contrast must use persisted IR via
+     * {@link com.aq.jvmsentinel.control.StaticFactSnapshot#resolveContrastTaintPaths};
+     * this method is only the no-facts-row fallback (coverage={@code LEGACY_INCOMPLETE}).
+     */
     public static List<BytecodeFactIndex.TaintPath> taintPathsFromSinks(List<ApiDtos.SinkDto> sinks) {
         if (sinks == null || sinks.isEmpty()) return List.of();
         List<BytecodeFactIndex.TaintPath> paths = new ArrayList<>();
@@ -87,6 +115,16 @@ public final class ContrastLedger {
             if (paths.size() >= 256) break;
         }
         return List.copyOf(paths);
+    }
+
+    private static boolean hasPersistedTaintSteps(List<BytecodeFactIndex.TaintPath> taintPaths) {
+        if (taintPaths == null || taintPaths.isEmpty()) return false;
+        for (BytecodeFactIndex.TaintPath path : taintPaths) {
+            if (path != null && path.steps() != null && !path.steps().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static int roundIndexFromPathRuns(List<ApiDtos.PathRunDto> pathRuns) {
@@ -106,7 +144,7 @@ public final class ContrastLedger {
         if (source == null) return "";
         int at = source.indexOf("taint-path=");
         if (at < 0) return "";
-        String id = source.substring(at + "taint-path=".length()).split("[,\\s]", 2)[0].trim();
+        String id = source.substring(at + "taint-path=".length()).split("[,\\s;]", 2)[0].trim();
         return id;
     }
 
@@ -138,8 +176,22 @@ public final class ContrastLedger {
             throw new IllegalArgumentException("snapshotId cannot be blank");
         }
         if (roundIndex < 0) throw new IllegalArgumentException("roundIndex must not be negative");
-        StaticContrastProjector.Projection projection = new StaticContrastProjector()
-                .projectFromScan(entries, sinks, evidence);
+        StaticContrastProjector projector = new StaticContrastProjector();
+        StaticContrastProjector.Projection projection;
+        if (hasPersistedTaintSteps(taintPaths)) {
+            List<Sink> modelSinks = new ArrayList<>();
+            if (sinks != null) {
+                for (ApiDtos.SinkDto sink : sinks) {
+                    modelSinks.add(new Sink(
+                            sink.id(), sink.category(), sink.symbol(), sink.source(),
+                            sink.confidence(), sink.evidenceRefs(),
+                            com.aq.jvmsentinel.model.VerificationStatus.STATIC_INFERRED));
+                }
+            }
+            projection = projector.projectFromTaint(taintPaths, modelSinks, entries, evidence);
+        } else {
+            projection = projector.projectFromScan(entries, sinks, evidence);
+        }
         List<TaintPathCoverageJoiner.StatusUpgrade> upgrades =
                 new TaintPathCoverageJoiner().join(taintPaths, pathRuns);
         StaticDynamicContraster.Result joined = new StaticDynamicContraster()

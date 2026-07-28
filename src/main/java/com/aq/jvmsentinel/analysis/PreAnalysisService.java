@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.analysis;
 
+import com.aq.jvmsentinel.analysis.spi.ProviderRegistry;
 import com.aq.jvmsentinel.model.*;
 
 import java.util.ArrayList;
@@ -28,6 +29,8 @@ public final class PreAnalysisService {
     private static final int MAX_DISPLAY_VALUE = 256;
 
     public PreAnalysisResult analyze(PreAnalysisInput input) {
+        // P1-03: ensure versioned default providers are installed (thin SPI; discovery stays here).
+        ProviderRegistry.ensureDefaults();
         List<Evidence> evidence = new ArrayList<>();
         List<Entrypoint> entries = new ArrayList<>();
         List<DependencyAccess> dependencies = new ArrayList<>();

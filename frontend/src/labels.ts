@@ -132,12 +132,29 @@ export const jobStatusLabel = (status: string | undefined) => {
   }
 }
 
+/** Prefer errorCode-aware labels for BLOCKED / no-Worker / projection failures (P1-23). */
+export const pipelineStatusLabel = (status: string | undefined, errorCode?: string | undefined) => {
+  const code = (errorCode ?? '').toUpperCase()
+  if (code === 'WORKER_UNAVAILABLE' || code === 'NO_WORKER') {
+    return '无 Worker / Worker 不可用'
+  }
+  if (code === 'PROJECTION_FAILED' || code === 'TRACE_PROJECTION_FAILED') {
+    return '证据投影失败'
+  }
+  if (status === 'BLOCKED') return '已阻断'
+  return jobStatusLabel(status)
+}
+
 export const stopReasonLabel = (reason: string | undefined) => {
   switch (reason) {
     case 'LEASE_EXPIRED':
       return '租约过期已回收'
     case 'WORKER_FAILURE':
       return 'Worker 失败'
+    case 'WORKER_UNAVAILABLE':
+      return '无 Worker / Worker 不可用'
+    case 'PROJECTION_FAILED':
+      return '证据投影失败'
     case 'USER_CANCELLED':
       return '已取消'
     case 'COMPLETED':

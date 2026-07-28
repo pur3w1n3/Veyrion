@@ -1,0 +1,20 @@
+# Example Allowed paths file for AI task packs (P0-14).
+# Used by scripts/ci-gates.ps1 when Allowed paths mode is enabled (default).
+# One glob per line. Lines starting with # are ignored.
+#
+# Matching rules (same as ci-gates.ps1):
+# - pattern ending with /** matches that directory prefix (prefix includes trailing /)
+# - otherwise exact path or prefix match after trimming trailing *
+#
+# Opt out locally with: -SkipAllowedPaths
+# Override with: -AllowedPathsFile <path>
+#
+# This example is intentionally broad for documentation / local dry-runs.
+# Real task packs should list only the paths declared in AI_TASK_TEMPLATE Allowed paths.
+
+docs/**
+contracts/**
+frontend/src/**
+scripts/**
+src/test/**
+src/test/resources/baselines/**

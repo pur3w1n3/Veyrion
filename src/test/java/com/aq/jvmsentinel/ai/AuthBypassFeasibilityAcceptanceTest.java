@@ -1,4 +1,5 @@
 package com.aq.jvmsentinel.ai;
+import com.aq.jvmsentinel.AcceptanceAssertions;
 
 import com.aq.jvmsentinel.ai.tool.AiToolRegistry;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts;
@@ -239,8 +240,9 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         };
         try (AiJobOrchestrator orchestrator = new AiJobOrchestrator(store, dynamicTransport, Clock.systemUTC(),
                 (projectId, artifactDigest, scanId) -> List.of(),
-                (scanId, scope, principalId, jobId, entrypointRef, candidateInputs, maxRequests,
-                        techniqueId, authorizationHeader, bladeAuthHeader) -> java.util.Optional.empty(),
+                (scanId, scope, principalId, jobId, toolCallId, entrypointRef, candidateInputs, maxRequests,
+                        techniqueId, authorizationHeader, bladeAuthHeader, experimentPlanId)
+                        -> java.util.Optional.empty(),
                 (projectId, artifactDigest, scanId) -> List.of())) {
             var dyn = store.createAiJob("project-poc", AgentRole.DYNAMIC_VERIFICATION,
                     "scan-poc", AiOutputLanguage.ZH_CN, true, "local-admin", Instant.now().toString());
@@ -309,11 +311,44 @@ public final class AuthBypassFeasibilityAcceptanceTest {
                 new java.util.concurrent.atomic.AtomicInteger();
         java.util.concurrent.atomic.AtomicBoolean sawRepair =
                 new java.util.concurrent.atomic.AtomicBoolean();
+        AtomicInteger codeQueryCalls = new AtomicInteger();
         ChatTransport transport = (provider, credential, request, limits) -> {
             int n = calls.incrementAndGet();
             String requestText = request.toString();
             if (requestText.contains(AuthBypassFeasibility.ENFORCEMENT_REQUIRED)) {
                 sawRepair.set(true);
+            }
+            // Satisfy AUTH_CODE_QUERY_REQUIRED once, then keep omitting bypassPoCs so seed path runs.
+            if (requestText.contains("\"code_query\"") && codeQueryCalls.get() == 0
+                    && (requestText.contains(AuthBypassFeasibility.CODE_QUERY_REQUIRED)
+                    || n == 1)) {
+                codeQueryCalls.incrementAndGet();
+                try {
+                    ObjectNode args = JSON.createObjectNode();
+                    args.put("query", "jwt filter interceptor skip-url");
+                    args.put("limit", 10);
+                    ObjectNode function = JSON.createObjectNode();
+                    function.put("name", "code_query");
+                    function.put("arguments", JSON.writeValueAsString(args));
+                    ObjectNode call = JSON.createObjectNode();
+                    call.put("id", "cq-1");
+                    call.put("type", "function");
+                    call.set("function", function);
+                    ObjectNode message = JSON.createObjectNode();
+                    message.put("role", "assistant");
+                    message.putNull("content");
+                    message.putArray("tool_calls").add(call);
+                    ObjectNode choice = JSON.createObjectNode();
+                    choice.put("finish_reason", "tool_calls");
+                    choice.set("message", message);
+                    ObjectNode rootNode = JSON.createObjectNode();
+                    rootNode.putArray("choices").add(choice);
+                    return new ProviderChatTransport.Response(200,
+                            JSON.writeValueAsString(rootNode).getBytes(StandardCharsets.UTF_8),
+                            "surface-cq-" + n, 1);
+                } catch (Exception encodeFailure) {
+                    throw new IllegalStateException(encodeFailure);
+                }
             }
             // Always omit structured bypassPoCs so server must re-ask then seed.
             String body = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
@@ -438,15 +473,55 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         String authFinal = """
                 ```json
                 {"bypassPoCs":[{"entryRef":"entry:entry-dyn","techniqueId":"ALG_NONE","track":"BYPASS_CANDIDATE",
-                "rationale":"alg-none","confidence":0.5,
-                "authorizationHeader":"eyJhbGciOiJub25lIn0.eyJyb2xlIjoiYWRtaW4ifQ."}]}
+                "rationale":"alg-none","confidence":0.5,"evidenceRefs":["code:jwt-filter"],
+                "authorizationHeader":"eyJhbGciOiJub25lIn0.eyJyb2xlIjoiYWRtaW4ifQ."}],
+                "infeasibleEntries":[
+                  {"entryRef":"entry:entry-dyn","reason":"session cookie path not exposed","evidenceRef":"code:session"},
+                  {"entryRef":"entry:entry-dyn","reason":"API key header unused on route","evidenceRef":"code:apikey"}
+                ]}
                 ```
                 """;
-        String authResponseBody = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
-                + "\"content\":" + JSON.writeValueAsString(authFinal) + "}}]}";
-        ChatTransport authTransport = (provider, credential, request, limits) ->
-                new ProviderChatTransport.Response(200,
+        AtomicInteger authCalls = new AtomicInteger();
+        ChatTransport authTransport = (provider, credential, request, limits) -> {
+            int n = authCalls.incrementAndGet();
+            String text = request.toString();
+            try {
+                if (text.contains("\"code_query\"") && n == 1) {
+                    ObjectNode args = JSON.createObjectNode();
+                    args.put("query", "jwt filter");
+                    args.put("limit", 8);
+                    ObjectNode function = JSON.createObjectNode();
+                    function.put("name", "code_query");
+                    function.put("arguments", JSON.writeValueAsString(args));
+                    ObjectNode call = JSON.createObjectNode();
+                    call.put("id", "auth-cq-1");
+                    call.put("type", "function");
+                    call.set("function", function);
+                    ObjectNode message = JSON.createObjectNode();
+                    message.put("role", "assistant");
+                    message.putNull("content");
+                    message.putArray("tool_calls").add(call);
+                    ObjectNode choice = JSON.createObjectNode();
+                    choice.put("finish_reason", "tool_calls");
+                    choice.set("message", message);
+                    ObjectNode rootNode = JSON.createObjectNode();
+                    rootNode.putArray("choices").add(choice);
+                    return new ProviderChatTransport.Response(200,
+                            JSON.writeValueAsString(rootNode).getBytes(StandardCharsets.UTF_8),
+                            "auth-dyn-cq", 1);
+                }
+            } catch (Exception encodeFailure) {
+                throw new IllegalStateException(encodeFailure);
+            }
+            try {
+                String authResponseBody = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
+                        + "\"content\":" + JSON.writeValueAsString(authFinal) + "}}]}";
+                return new ProviderChatTransport.Response(200,
                         authResponseBody.getBytes(StandardCharsets.UTF_8), "auth-dyn", 1);
+            } catch (Exception encodeFailure) {
+                throw new IllegalStateException(encodeFailure);
+            }
+        };
         try (AiJobOrchestrator orchestrator = new AiJobOrchestrator(store, authTransport, Clock.systemUTC())) {
             var authJob = store.createAiJob("project-dyn-probe", AgentRole.AUTH_ANALYSIS,
                     "scan-dyn", AiOutputLanguage.ZH_CN, true, "local-admin", Instant.now().toString());
@@ -507,8 +582,8 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         String dynJobId;
         try (AiJobOrchestrator orchestrator = new AiJobOrchestrator(store, dynTransport, Clock.systemUTC(),
                 (projectId, artifactDigest, scanId) -> List.of(),
-                (scanId, scope, principalId, jobId, entrypointRef, candidateInputs, maxRequests,
-                        techniqueId, authorizationHeader, bladeAuthHeader) -> {
+                (scanId, scope, principalId, jobId, toolCallId, entrypointRef, candidateInputs, maxRequests,
+                        techniqueId, authorizationHeader, bladeAuthHeader, experimentPlanId) -> {
                     executorProbes.incrementAndGet();
                     ObjectNode fact = JSON.createObjectNode();
                     fact.put("schemaVersion", 1);
@@ -517,8 +592,10 @@ public final class AuthBypassFeasibilityAcceptanceTest {
                     fact.put("entrypointRef", entrypointRef);
                     fact.put("httpStatus", 401);
                     fact.put("outcomeClass", "AUTH_CHALLENGE");
+                    fact.put("pathRunCount", 1);
+                    fact.put("probeAttemptId", "patt-test-" + toolCallId);
                     return Optional.of(new ToolDataSource.FactRecord(scope,
-                            "sandbox-probe:test:" + jobId, fact));
+                            "sandbox-probe:attempt:test:" + toolCallId, fact));
                 },
                 (projectId, artifactDigest, scanId) -> List.of())) {
             var dyn = store.createAiJob("project-dyn-probe", AgentRole.DYNAMIC_VERIFICATION,
@@ -587,14 +664,50 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         String authFinal = """
                 ```json
                 {"bypassPoCs":[{"entryRef":"entry:entry-auto","techniqueId":"MISSING_AUTH","track":"UNAUTH",
-                "rationale":"probe without auth","confidence":0.4}]}
+                "rationale":"probe without auth","confidence":0.4,"evidenceRefs":["code:auth-filter"]}],
+                "infeasibleEntries":[
+                  {"entryRef":"entry:entry-auto","reason":"no JWT alg-none path","evidenceRef":"code:jwt"},
+                  {"entryRef":"entry:entry-auto","reason":"tenant branch unreachable","evidenceRef":"code:tenant"}
+                ]}
                 ```
                 """;
-        String authResponseBody = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
-                + "\"content\":" + JSON.writeValueAsString(authFinal) + "}}]}";
-        ChatTransport authTransport = (provider, credential, request, limits) ->
-                new ProviderChatTransport.Response(200,
+        AtomicInteger authAutoCalls = new AtomicInteger();
+        ChatTransport authTransport = (provider, credential, request, limits) -> {
+            int n = authAutoCalls.incrementAndGet();
+            String text = request.toString();
+            try {
+                if (text.contains("\"code_query\"") && n == 1) {
+                    ObjectNode args = JSON.createObjectNode();
+                    args.put("query", "auth filter");
+                    args.put("limit", 8);
+                    ObjectNode function = JSON.createObjectNode();
+                    function.put("name", "code_query");
+                    function.put("arguments", JSON.writeValueAsString(args));
+                    ObjectNode call = JSON.createObjectNode();
+                    call.put("id", "auth-auto-cq");
+                    call.put("type", "function");
+                    call.set("function", function);
+                    ObjectNode message = JSON.createObjectNode();
+                    message.put("role", "assistant");
+                    message.putNull("content");
+                    message.putArray("tool_calls").add(call);
+                    ObjectNode choice = JSON.createObjectNode();
+                    choice.put("finish_reason", "tool_calls");
+                    choice.set("message", message);
+                    ObjectNode rootNode = JSON.createObjectNode();
+                    rootNode.putArray("choices").add(choice);
+                    return new ProviderChatTransport.Response(200,
+                            JSON.writeValueAsString(rootNode).getBytes(StandardCharsets.UTF_8),
+                            "auth-auto-cq", 1);
+                }
+                String authResponseBody = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
+                        + "\"content\":" + JSON.writeValueAsString(authFinal) + "}}]}";
+                return new ProviderChatTransport.Response(200,
                         authResponseBody.getBytes(StandardCharsets.UTF_8), "auth-auto", 1);
+            } catch (Exception encodeFailure) {
+                throw new IllegalStateException(encodeFailure);
+            }
+        };
         try (AiJobOrchestrator orchestrator = new AiJobOrchestrator(store, authTransport, Clock.systemUTC())) {
             var authJob = store.createAiJob("project-dyn-auto", AgentRole.AUTH_ANALYSIS,
                     "scan-auto", AiOutputLanguage.ZH_CN, true, "local-admin", Instant.now().toString());
@@ -615,10 +728,10 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         };
         try (AiJobOrchestrator orchestrator = new AiJobOrchestrator(store, dynTransport, Clock.systemUTC(),
                 (projectId, artifactDigest, scanId) -> List.of(),
-                (scanId, scope, principalId, jobId, entrypointRef, candidateInputs, maxRequests,
-                        techniqueId, authorizationHeader, bladeAuthHeader) -> {
-                    // Auto-enqueue uses synthetic job ids (:dyn-poc-N); model never probes.
-                    if (jobId != null && jobId.contains(":dyn-poc-")) {
+                (scanId, scope, principalId, jobId, toolCallId, entrypointRef, candidateInputs, maxRequests,
+                        techniqueId, authorizationHeader, bladeAuthHeader, experimentPlanId) -> {
+                    // Auto-enqueue uses synthetic toolCallId dyn-poc-N under the real AI job id.
+                    if (toolCallId != null && toolCallId.startsWith("dyn-poc-")) {
                         autoEnqueues.incrementAndGet();
                     }
                     ObjectNode fact = JSON.createObjectNode();
@@ -626,8 +739,10 @@ public final class AuthBypassFeasibilityAcceptanceTest {
                     fact.put("state", "COMPLETED");
                     fact.put("lifecycle", "COMPLETED");
                     fact.put("entrypointRef", entrypointRef);
+                    fact.put("pathRunCount", 1);
+                    fact.put("probeAttemptId", "patt-auto-" + toolCallId);
                     return Optional.of(new ToolDataSource.FactRecord(scope,
-                            "sandbox-probe:auto:" + jobId, fact));
+                            "sandbox-probe:attempt:auto:" + toolCallId, fact));
                 },
                 (projectId, artifactDigest, scanId) -> List.of())) {
             var dyn = store.createAiJob("project-dyn-auto", AgentRole.DYNAMIC_VERIFICATION,
@@ -719,5 +834,6 @@ public final class AuthBypassFeasibilityAcceptanceTest {
 
     private static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
+        AcceptanceAssertions.record();
     }
 }

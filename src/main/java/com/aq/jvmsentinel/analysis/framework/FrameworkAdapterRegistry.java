@@ -14,12 +14,16 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  * Registry of {@link FrameworkAdapter} implementations.
  * {@link SpringMvcAdapter} is the default always-match baseline; optional adapters
- * (e.g. {@link SpringBladeAdapter}) contribute the same SPI signals when they match.
- * Test-only adapters may be injected.
+ * ({@link SpringBladeAdapter}, {@link ServletFrameworkAdapter}, {@link WarFrameworkAdapter})
+ * contribute the same SPI signals when they match. Test-only adapters may be injected.
  */
 public final class FrameworkAdapterRegistry {
     private static final CopyOnWriteArrayList<FrameworkAdapter> ADAPTERS = new CopyOnWriteArrayList<>(
-            List.of(new SpringMvcAdapter(), new SpringBladeAdapter()));
+            List.of(
+                    new SpringMvcAdapter(),
+                    new SpringBladeAdapter(),
+                    new ServletFrameworkAdapter(),
+                    new WarFrameworkAdapter()));
 
     private FrameworkAdapterRegistry() {
     }

@@ -1,6 +1,7 @@
 package com.aq.jvmsentinel.worker;
 
 import com.aq.jvmsentinel.policy.NetworkMode;
+import com.aq.jvmsentinel.control.JsonCodec;
 import com.aq.jvmsentinel.sandbox.CommandRequest;
 import com.aq.jvmsentinel.sandbox.CommandResult;
 import com.aq.jvmsentinel.sandbox.ReadOnlyArtifactMount;
@@ -9,6 +10,7 @@ import com.aq.jvmsentinel.sandbox.SandboxRequest;
 import com.aq.jvmsentinel.sandbox.SandboxRuntimeClient;
 import com.aq.jvmsentinel.verification.SandboxReleaseGate;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -22,8 +24,10 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
@@ -47,6 +51,7 @@ public final class ExternalArtifactTaskExecutor {
     static final String TRACE_DIRECTORY = "/tmp/veyrion-trace";
     static final String TRACE_FILE = TRACE_DIRECTORY + "/agent-events.jsonl";
     static final String PROBE_TRACE_FILE = TRACE_DIRECTORY + "/probe-events.jsonl";
+    static final String PROBE_STATUS_FILE = TRACE_DIRECTORY + "/probe-status.txt";
     /** Trusted Docker runs as container-default root so JARs may bind privileged ports (e.g. 80). */
     static final int SANDBOX_UID = 0;
     static final int SANDBOX_GID = 0;
@@ -67,6 +72,10 @@ public final class ExternalArtifactTaskExecutor {
      */
     public static final int MAX_PROBE_PLAN_UPLOAD_BYTES =
             MAX_PROBE_PLAN_ENTRIES * MAX_PROBE_PLAN_LINE_BYTES;
+    /** Raw bytes per bounded Base64 download command; encoded output stays below 1 MiB. */
+    static final int TRACE_READ_BLOCK_BYTES = 512 * 1024;
+    private static final long MIN_PROBE_TRACE_RESERVE_BYTES = 64L * 1024;
+    private static final long PROBE_TRACE_BYTES_PER_ENTRY = 2_048L;
 
     private static final long MAX_WALL_SECONDS = 3_600;
     private static final long MAX_CPU_MILLIS = 3_600_000;
@@ -146,7 +155,7 @@ public final class ExternalArtifactTaskExecutor {
 
             pulse(request.scope(), lease, heartbeatExtension, "准备 Agent 轨迹目录");
             CommandResult prepareTrace = sandbox.command(sandboxId, new CommandRequest(
-                    "umask 077 && rm -f " + TRACE_FILE + " " + PROBE_TRACE_FILE
+                    "umask 077 && rm -f " + TRACE_FILE + " " + PROBE_TRACE_FILE + " " + PROBE_STATUS_FILE
                             + " " + TRACE_DIRECTORY + "/progress.txt",
                     WORKING_DIRECTORY,
                     Duration.ofSeconds(10), SANDBOX_UID, SANDBOX_GID));
@@ -182,30 +191,24 @@ public final class ExternalArtifactTaskExecutor {
                     request.scope(), lease, heartbeatExtension, activeSandboxId, runFuture);
             if (run.exitCode() != 0) {
                 CommandResult applicationLog = sandbox.command(sandboxId, new CommandRequest(
-                        "tail -c 2048 " + TRACE_DIRECTORY + "/application.log 2>/dev/null || true",
+                        "tail -c 4096 " + TRACE_DIRECTORY + "/application.log 2>/dev/null; "
+                                + "printf '%s\\n' 'probe diagnostics:'; tail -c 512 "
+                                + PROBE_STATUS_FILE + " 2>/dev/null || true",
                         WORKING_DIRECTORY, Duration.ofSeconds(10), SANDBOX_UID, SANDBOX_GID));
-                String detail = diagnostic(run.stdout() + "\n" + applicationLog.stdout(),
-                        run.stderr() + "\n" + applicationLog.stderr());
+                String detail = diagnostic(run.stdout(), run.stderr(),
+                        applicationLog.stdout() + "\n" + applicationLog.stderr());
                 throw new ExternalArtifactExecutionException(
                         "EXTERNAL_ARTIFACT_EXIT_NONZERO",
                         exitDiagnostic(run.exitCode(), detail), null);
             }
 
             pulse(request.scope(), lease, heartbeatExtension, "读取 Agent 轨迹");
-            CommandResult traceRead = sandbox.command(sandboxId, new CommandRequest(
-                    "/bin/cat " + TRACE_FILE, WORKING_DIRECTORY, Duration.ofSeconds(10),
-                    SANDBOX_UID, SANDBOX_GID));
-            if (traceRead.exitCode() != 0) {
-                throw new ExternalArtifactExecutionException(
-                        "TRACE_READ_FAILED", "Agent trace could not be read", null);
-            }
-            CommandResult probeRead = sandbox.command(sandboxId, new CommandRequest(
-                    "/bin/cat " + PROBE_TRACE_FILE + " 2>/dev/null || true",
-                    WORKING_DIRECTORY, Duration.ofSeconds(10), SANDBOX_UID, SANDBOX_GID));
-            byte[] probeBytes = probeRead.stdout().getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            byte[] jsonl = mergeProbeEvents(
-                    traceRead.stdout().getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                    probeBytes);
+            byte[] agentBytes = readTraceFile(
+                    sandbox, sandboxId, TRACE_FILE, budget.maxTraceBytes(), true);
+            byte[] probeBytes = readTraceFile(
+                    sandbox, sandboxId, PROBE_TRACE_FILE,
+                    budget.maxTraceBytes() - agentBytes.length, false);
+            byte[] jsonl = mergeProbeEvents(agentBytes, probeBytes);
             if (jsonl.length > budget.maxTraceBytes()) {
                 throw new ExternalArtifactExecutionException(
                         "TRACE_TOO_LARGE", "Agent trace exceeds the task budget", null);
@@ -417,19 +420,114 @@ public final class ExternalArtifactTaskExecutor {
         }
     }
 
+    static long agentTraceBudget(ResourceBudget budget, int probeCount) {
+        Objects.requireNonNull(budget, "budget");
+        long total = Math.min(MAX_TRACE_BYTES, budget.maxTraceBytes());
+        int probes = Math.max(1, Math.min(MAX_PROBE_PLAN_ENTRIES, probeCount));
+        long desiredReserve = MIN_PROBE_TRACE_RESERVE_BYTES
+                + probes * PROBE_TRACE_BYTES_PER_ENTRY;
+        long reserve = Math.min(desiredReserve, Math.max(0L, total - 256L));
+        return total - reserve;
+    }
+
+    /**
+     * Reads only fixed trace paths through bounded Base64 blocks. The general command response
+     * ceiling remains unchanged and every block is length-checked before evidence parsing.
+     */
+    static byte[] readTraceFile(SandboxRuntimeClient sandbox, String sandboxId, String path,
+                                long maxBytes, boolean required) {
+        Objects.requireNonNull(sandbox, "sandbox");
+        if (!TRACE_FILE.equals(path) && !PROBE_TRACE_FILE.equals(path)) {
+            throw new SecurityException("trace read path is not allowlisted");
+        }
+        if (maxBytes < 0 || maxBytes > MAX_TRACE_BYTES) {
+            throw new SecurityException("trace read budget is outside limits");
+        }
+        try {
+            String sizeCommand = required
+                    ? "wc -c < " + path
+                    : "if [ -f " + path + " ]; then wc -c < " + path
+                            + "; else printf '0\\n'; fi";
+            CommandResult sizeResult = sandbox.command(sandboxId, new CommandRequest(
+                    sizeCommand, WORKING_DIRECTORY, Duration.ofSeconds(10),
+                    SANDBOX_UID, SANDBOX_GID));
+            String sizeText = sizeResult.stdout().strip();
+            if (sizeResult.exitCode() != 0 || !sizeText.matches("[0-9]{1,10}")) {
+                throw new ExternalArtifactExecutionException(
+                        "TRACE_READ_FAILED", "trace size could not be read", null);
+            }
+            long size = Long.parseLong(sizeText);
+            if (size == 0) {
+                if (required) {
+                    throw new ExternalArtifactExecutionException(
+                            "TRACE_READ_FAILED", "required Agent trace is empty", null);
+                }
+                return new byte[0];
+            }
+            if (size > maxBytes) {
+                throw new ExternalArtifactExecutionException(
+                        "TRACE_TOO_LARGE", "Agent and probe trace exceed the task budget", null);
+            }
+
+            ByteArrayOutputStream output = new ByteArrayOutputStream(Math.toIntExact(size));
+            int blocks = Math.toIntExact((size + TRACE_READ_BLOCK_BYTES - 1)
+                    / TRACE_READ_BLOCK_BYTES);
+            for (int block = 0; block < blocks; block++) {
+                String command = "dd if=" + path + " bs=" + TRACE_READ_BLOCK_BYTES
+                        + " skip=" + block + " count=1 2>/dev/null"
+                        + " | base64 | tr -d '\\r\\n'";
+                CommandResult chunk = sandbox.command(sandboxId, new CommandRequest(
+                        command, WORKING_DIRECTORY, Duration.ofSeconds(15),
+                        SANDBOX_UID, SANDBOX_GID));
+                if (chunk.exitCode() != 0) {
+                    throw new ExternalArtifactExecutionException(
+                            "TRACE_READ_FAILED", "trace block command failed", null);
+                }
+                byte[] decoded;
+                try {
+                    decoded = Base64.getDecoder().decode(chunk.stdout());
+                } catch (IllegalArgumentException malformed) {
+                    throw new ExternalArtifactExecutionException(
+                            "TRACE_READ_FAILED", "trace block is not valid Base64", malformed);
+                }
+                int expected = (int) Math.min(TRACE_READ_BLOCK_BYTES,
+                        size - (long) block * TRACE_READ_BLOCK_BYTES);
+                if (decoded.length != expected) {
+                    throw new ExternalArtifactExecutionException(
+                            "TRACE_READ_FAILED", "trace block length mismatch", null);
+                }
+                output.write(decoded, 0, decoded.length);
+            }
+            byte[] result = output.toByteArray();
+            if (result.length != size) {
+                throw new ExternalArtifactExecutionException(
+                        "TRACE_READ_FAILED", "trace length changed during read", null);
+            }
+            return result;
+        } catch (ExternalArtifactExecutionException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new ExternalArtifactExecutionException(
+                    "TRACE_READ_FAILED", "trace could not be read safely", failure);
+        }
+    }
+
     private static String fixedCommand(ResourceBudget budget, ArtifactRegistration registration) {
-        long maxBytes = Math.min(MAX_TRACE_BYTES, budget.maxTraceBytes());
+        long maxBytes = agentTraceBudget(budget, registration.probePlan().size());
         long maxEvents = Math.max(1, Math.min(100_000, maxBytes / 256));
         long runSeconds = Math.max(1, budget.maxWallClockSeconds() - 15);
-        // Large Blade JARs need ~45–90s cold start; do not consume half the wall on readiness.
-        long startupSeconds = Math.min(runSeconds, Math.max(120, Math.min(180, budget.maxWallClockSeconds() / 6)));
+        // Keep application readiness separate from the full task wall clock. The remaining
+        // budget is for probes and trace collection after HTTP is ready.
+        long startupLimitSeconds = registration.sizeBytes() >= 80L * 1024 * 1024 ? 180
+                : registration.sizeBytes() >= 20L * 1024 * 1024 ? 120 : 90;
+        long startupSeconds = Math.min(runSeconds, startupLimitSeconds);
         String businessProbes = batchProbeStep(registration.probePlan());
         if (businessProbes.isBlank()) {
             businessProbes = batchProbeStep(List.of(
                     new ProbeTarget(registration.probeMethod(), registration.probeRoute())));
         }
         // Do not force server.port/address: the JAR keeps its own listen config.
-        // Readiness uses WaitHttpReady (process LISTEN → HTTP classify) to avoid fragile shell quoting.
+        // Readiness uses WaitHttpReady (process LISTEN -> HTTP classify) to avoid fragile shell quoting.
         boolean mysqlConnector = containsMysqlConnector(registration.path());
         // Quote JDBC URLs for /bin/sh: unquoted '&' in query strings backgrounds the java process
         // and makes later --spring.* flags execute as separate shell commands (exit 70).
@@ -447,6 +545,11 @@ public final class ExternalArtifactTaskExecutor {
                 + " -Dveyrion.coverage.enabled=true"
                 // Keep app temps off the tiny trace tmpfs so probe-events.jsonl can still be written.
                 + " -Djava.io.tmpdir=/tmp"
+                // Quartz AUTO uses hostname; deny-all Docker often cannot resolve it
+                // ("Couldn't get host name" -> "Cannot run without an instance id").
+                // Use a fixed literal id (not AUTO / SYS_PROP).
+                + " -Dorg.quartz.scheduler.instanceName=veyrion-sandbox"
+                + " -Dorg.quartz.scheduler.instanceId=veyrion-sandbox"
                 + " -javaagent:" + AGENT_PATH + "=maxBytes=" + maxBytes + ",maxEvents=" + maxEvents
                 + ",dependencyMock=true,veyrion.coverage.enabled=true"
                 + (registration.classPrefix().isEmpty()
@@ -475,10 +578,19 @@ public final class ExternalArtifactTaskExecutor {
                 + " --spring.redis.timeout=500ms"
                 + " --spring.data.redis.timeout=500ms"
                 + " --management.health.redis.enabled=false"
+                + " --spring.quartz.auto-startup=false"
+                + " --spring.quartz.job-store-type=memory"
+                + " --spring.quartz.overwrite-existing-jobs=false"
+                + " --spring.quartz.properties.org.quartz.scheduler.instanceName=veyrion-sandbox"
+                + " --spring.quartz.properties.org.quartz.scheduler.instanceId=veyrion-sandbox"
+                + " --spring.quartz.properties.org.quartz.jobStore.class="
+                + "org.quartz.simpl.RAMJobStore"
+                + " --spring.quartz.properties.org.quartz.jobStore.isClustered=false"
                 + " > " + TRACE_DIRECTORY + "/application.log 2>&1"
-                + " & APP_PID=$!; elapsed=0; probe_status=1; PROBE_JVM_OK=0; HTTP_PORT="
+                + " & APP_PID=$!; elapsed=0; probe_status=1; probe_jvm_status=not-run; PROBE_JVM_OK=0; HTTP_PORT="
                 + "; rm -f " + TRACE_DIRECTORY + "/http-port.txt " + TRACE_DIRECTORY
-                + "/listen-ports.txt " + PROBE_TRACE_FILE
+                + "/listen-ports.txt " + TRACE_DIRECTORY + "/http-port.stdout "
+                + TRACE_DIRECTORY + "/wait-http-ready.err " + PROBE_TRACE_FILE + " " + PROBE_STATUS_FILE
                 + "; " + writeProgress("等待应用就绪（分析进程 LISTEN 端口）")
                 + "; while kill -0 \"$APP_PID\" 2>/dev/null"
                 + " && [ \"$elapsed\" -lt " + startupSeconds + " ]"
@@ -486,34 +598,24 @@ public final class ExternalArtifactTaskExecutor {
                 + " if java -Xmx64m -XX:MaxMetaspaceSize=64m -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
                 + " -cp " + AGENT_PATH
                 + " com.aq.jvmsentinel.agent.WaitHttpReady \"$APP_PID\" " + TRACE_DIRECTORY
-                + "; then HTTP_PORT=$(cat " + TRACE_DIRECTORY + "/http-port.txt 2>/dev/null | tr -d '\\r\\n');"
+                + " > " + TRACE_DIRECTORY + "/http-port.stdout 2>> " + TRACE_DIRECTORY + "/wait-http-ready.err"
+                + "; then HTTP_PORT=$(cat " + TRACE_DIRECTORY + "/http-port.stdout 2>/dev/null | tr -d '\\r\\n');"
                 + " break; fi"
                 + "; sleep 2; elapsed=$((elapsed+2)); done"
                 + "; if [ -z \"$HTTP_PORT\" ] && [ -f " + TRACE_DIRECTORY + "/http-port.txt ]"
                 + "; then HTTP_PORT=$(cat " + TRACE_DIRECTORY + "/http-port.txt | tr -d '\\r\\n'); fi"
+                + "; case \"$HTTP_PORT\" in ''|*[!0-9]*|3306|6379|5432|27017|11211|9200|5672|61616|9092) HTTP_PORT= ;; esac"
                 + "; if kill -0 \"$APP_PID\" 2>/dev/null && [ -n \"$HTTP_PORT\" ]"
                 + "; then probe_status=0"
                 + "; printf '应用已就绪，HTTP 端口 %s，开始业务入口探测\\n' \"$HTTP_PORT\" > "
                 + TRACE_DIRECTORY + "/progress.txt"
                 + "; " + businessProbes
-                + "; else"
-                + " while kill -0 \"$APP_PID\" 2>/dev/null && [ \"$probe_status\" -ne 0 ]"
-                + " && [ \"$elapsed\" -lt " + runSeconds + " ]"
-                + "; do sleep 3; elapsed=$((elapsed+3))"
-                + "; " + writeProgress("仍在等待应用就绪（分析进程 LISTEN 端口）")
-                + "; if java -Xmx64m -XX:MaxMetaspaceSize=64m -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
-                + " -cp " + AGENT_PATH
-                + " com.aq.jvmsentinel.agent.WaitHttpReady \"$APP_PID\" " + TRACE_DIRECTORY
-                + "; then HTTP_PORT=$(cat " + TRACE_DIRECTORY + "/http-port.txt 2>/dev/null | tr -d '\\r\\n');"
-                + " probe_status=0"
-                + "; printf '应用已就绪，HTTP 端口 %s，开始业务入口探测\\n' \"$HTTP_PORT\" > "
-                + TRACE_DIRECTORY + "/progress.txt"
-                + "; " + businessProbes
-                + "; fi; done; fi"
+                + "; fi"
                 + "; if [ \"$probe_status\" -eq 0 ] && [ \"$PROBE_JVM_OK\" -eq 1 ]; then "
                 + writeProgress("探测完成，停止应用进程")
                 + "; elif [ \"$probe_status\" -eq 0 ]; then "
-                + writeProgress("HTTP 端口已就绪但批量探针未写入事件，停止应用进程")
+                + "printf 'HTTP 端口已就绪但批量探针失败（退出码 %s），停止应用进程\\n' "
+                + "\"$probe_jvm_status\" > " + TRACE_DIRECTORY + "/progress.txt"
                 + "; else " + writeProgress("就绪超时，停止应用进程")
                 + "; fi"
                 + "; if kill -0 \"$APP_PID\" 2>/dev/null; then "
@@ -555,11 +657,17 @@ public final class ExternalArtifactTaskExecutor {
         int count = targets == null ? 0 : targets.size();
         // Bounded heap so the probe can start beside a large Blade app; do not swallow JVM death.
         return writeProgress("开始批量探测 " + count + " 个 HTTP 入口（单 JVM）")
-                + "; java -Xmx64m -XX:MaxMetaspaceSize=64m -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
+                + "; printf 'probe selected http port: %s\\n' \"$HTTP_PORT\" >&2"
+                + "; case \"$HTTP_PORT\" in ''|*[!0-9]*|3306|6379|5432|27017|11211|9200|5672|61616|9092)"
+                + " probe_jvm_status=64;"
+                + " printf 'invalid or dependency HTTP_PORT for probe: %s\\n' \"$HTTP_PORT\" >&2 ;;"
+                + " *) java -Xmx64m -XX:MaxMetaspaceSize=64m -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
+                + " -Dveyrion.loopbackProbe.port=\"$HTTP_PORT\""
                 + " -cp " + AGENT_PATH
-                + " com.aq.jvmsentinel.agent.LoopbackHttpProbe @"
+                + " com.aq.jvmsentinel.agent.LoopbackHttpProbe --batch "
                 + TRACE_DIRECTORY + "/probe-plan.txt \"$HTTP_PORT\""
-                + "; probe_jvm_status=$?"
+                + "; probe_jvm_status=$? ;; esac"
+                + "; printf 'probe_jvm_status=%s\\n' \"$probe_jvm_status\" > " + PROBE_STATUS_FILE
                 + "; if [ \"$probe_jvm_status\" -eq 0 ] || [ \"$probe_jvm_status\" -eq 2 ]"
                 + "; then PROBE_JVM_OK=1; fi";
     }
@@ -722,21 +830,54 @@ public final class ExternalArtifactTaskExecutor {
         return value.length() <= 2048 ? value : value.substring(0, 2048);
     }
 
-    private static String diagnostic(String stdout, String stderr) {
-        String value = ((stderr == null ? "" : stderr) + "\n"
-                + (stdout == null ? "" : stdout))
+    static String diagnostic(String probeStdout, String probeStderr, String applicationLog) {
+        String stderr = cleanDiagnostic(probeStderr);
+        String stdout = cleanDiagnostic(probeStdout);
+        String application = cleanDiagnostic(applicationLog);
+        stderr = compactDiagnostic(stderr, 650, "probe stack");
+        if (stdout.length() > 120) stdout = stdout.substring(stdout.length() - 120);
+        application = compactDiagnostic(application, 650, "application log");
+        String value = "probe stderr:\n" + (stderr.isBlank() ? "(empty)" : stderr)
+                + "\nprobe stdout tail:\n" + (stdout.isBlank() ? "(empty)" : stdout)
+                + "\napplication log tail:\n" + (application.isBlank() ? "(empty)" : application);
+        return value.length() <= 1_600 ? value : value.substring(0, 1_600);
+    }
+
+    private static String cleanDiagnostic(String value) {
+        return (value == null ? "" : value)
                 .replaceAll("[\\p{Cntrl}&&[^\\r\\n\\t]]", "?").strip();
-        return value.length() <= 2048 ? value : value.substring(value.length() - 2048);
+    }
+
+    private static String compactDiagnostic(String value, int limit, String label) {
+        if (value == null || value.length() <= limit) return value == null ? "" : value;
+        int anchor = diagnosticAnchor(value);
+        if (anchor < 0) return value.substring(value.length() - limit);
+        int start = Math.max(0, anchor - 160);
+        int end = Math.min(value.length(), start + limit);
+        String slice = value.substring(start, end);
+        if (start > 0) slice = "...[" + label + " omitted before]...\n" + slice;
+        if (end < value.length()) slice = slice + "\n...[" + label + " omitted after]...";
+        return slice.length() <= limit ? slice : slice.substring(0, limit);
+    }
+
+    private static int diagnosticAnchor(String value) {
+        int best = -1;
+        for (String marker : List.of("Exception in thread", "Caused by", "ERROR", "java.lang.")) {
+            int index = value.indexOf(marker);
+            if (index >= 0 && (best < 0 || index < best)) best = index;
+        }
+        return best;
     }
 
     private static String exitDiagnostic(int exitCode, String detail) {
         String prefix = "external artifact returned exit " + exitCode;
         if (exitCode == 70) {
             prefix += " (loopback HTTP listen never classified as ready; application likely failed to bind"
-                    + " an HTTP port under deny-all — often blocked by unavailable DB/external deps)";
+                    + " an HTTP port under deny-all - often blocked by unavailable DB/external deps)";
         } else if (exitCode == 71) {
-            prefix += " (HTTP port looked ready but LoopbackHttpProbe wrote no usable probe events"
-                    + " — probe JVM may have OOM'd, crashed, or failed to write probe-events.jsonl)";
+            prefix += " (HTTP port was ready but LoopbackHttpProbe failed; probe_jvm_status=3 means"
+                    + " zero writable events, while other nonzero values indicate probe startup, plan,"
+                    + " or runtime failure; the recorded status follows below)";
         }
         if (detail == null || detail.isBlank()) return prefix;
         return prefix + ": " + detail;
@@ -750,12 +891,46 @@ public final class ExternalArtifactTaskExecutor {
         Objects.requireNonNull(registration, "registration");
         Objects.requireNonNull(mergedJsonl, "mergedJsonl");
         if (registration.probePlan() == null || registration.probePlan().isEmpty()) return;
-        if (countHttpEvents(mergedJsonl) > 0) return;
-        throw new ExternalArtifactExecutionException(
-                "EMPTY_PROBE_EVENTS",
-                "loopback HTTP probe produced no HTTP events despite a non-empty probe plan ("
-                        + registration.probePlan().size() + " targets)",
+
+        Set<String> expected = registration.probePlan().stream()
+                .map(target -> probeIdentity(target.method(), target.route(),
+                        target.query().isBlank() ? target.route() : target.route() + "?" + target.query(),
+                        target.track()))
+                .collect(Collectors.toSet());
+        Set<String> observed = new java.util.HashSet<>();
+        int httpEvents = 0;
+        try {
+            for (String line : new String(mergedJsonl, StandardCharsets.UTF_8).split("\n", -1)) {
+                if (line.isBlank()) continue;
+                Map<String, Object> event = JsonCodec.parseObject(line);
+                if (!"HTTP".equals(event.get("eventType"))) continue;
+                httpEvents++;
+                if (!"com.aq.jvmsentinel.agent.LoopbackHttpProbe".equals(event.get("class"))
+                        || !(event.get("detail") instanceof Map<?, ?> detail)) {
+                    continue;
+                }
+                observed.add(probeIdentity(
+                        Objects.toString(detail.get("httpMethod"), ""),
+                        Objects.toString(detail.get("route"), ""),
+                        Objects.toString(detail.get("requestTarget"), ""),
+                        Objects.toString(detail.get("track"), "")));
+            }
+        } catch (RuntimeException malformed) {
+            throw new ExternalArtifactExecutionException(
+                    "MALFORMED_PROBE_EVENTS", "loopback HTTP probe events are not valid JSONL", malformed);
+        }
+        if (observed.containsAll(expected)) return;
+        String code = httpEvents == 0 ? "EMPTY_PROBE_EVENTS" : "PROBE_EVENT_COVERAGE_INCOMPLETE";
+        throw new ExternalArtifactExecutionException(code,
+                "loopback HTTP probe evidence does not cover the submitted plan (expected="
+                        + expected.size() + ", observed=" + observed.size()
+                        + ", httpEvents=" + httpEvents + ")",
                 null);
+    }
+
+    private static String probeIdentity(String method, String route, String requestTarget, String track) {
+        return method.toUpperCase(java.util.Locale.ROOT) + '\u0000' + route + '\u0000'
+                + requestTarget + '\u0000' + track;
     }
 
     static int countHttpEvents(byte[] jsonl) {

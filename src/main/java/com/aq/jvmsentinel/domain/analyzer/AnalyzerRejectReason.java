@@ -1,0 +1,19 @@
+package com.aq.jvmsentinel.domain.analyzer;
+
+/** Fail-closed rejection codes for AnalyzerIngress. */
+public enum AnalyzerRejectReason {
+    SCOPE_MISMATCH,
+    ARTIFACT_DIGEST_MISMATCH,
+    POLICY_DIGEST_MISMATCH,
+    SCHEMA_INCOMPATIBLE,
+    UNKNOWN_CAPABILITY,
+    MISSING_CHUNK,
+    DUPLICATE_CHUNK,
+    BUDGET_EXCEEDED,
+    SESSION_CANCELLED,
+    SESSION_LATE,
+    INVALID_MANIFEST,
+    INVALID_TERMINAL_STATE,
+    PAYLOAD_DIGEST_MISMATCH,
+    IDEMPOTENCY_CONFLICT
+}

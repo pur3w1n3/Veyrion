@@ -179,8 +179,9 @@ public final class ApiDtos {
                              String verificationStatus, String entrypointId, String entry,
                              String sinkId, String sink, String dependency, List<String> dependencyRefs,
                              List<String> evidenceRefs, int evidenceCount, double confidence,
-                             String dependencyMode, Map<String, Object> rootCause) {
-        /** Compatibility constructor when MVP-5 rootCause is absent. */
+                             String dependencyMode, Map<String, Object> rootCause,
+                             String hypothesisId, String securityProperty) {
+        /** Compatibility constructor when MVP-5 rootCause / P0-12 hypothesis fields are absent. */
         public FindingDto(int schemaVersion, String projectId, String artifactDigest,
                           String scanId, String findingId, String title, String severity,
                           String verificationStatus, String entrypointId, String entry,
@@ -189,7 +190,19 @@ public final class ApiDtos {
                           String dependencyMode) {
             this(schemaVersion, projectId, artifactDigest, scanId, findingId, title, severity,
                     verificationStatus, entrypointId, entry, sinkId, sink, dependency, dependencyRefs,
-                    evidenceRefs, evidenceCount, confidence, dependencyMode, null);
+                    evidenceRefs, evidenceCount, confidence, dependencyMode, null, "", "");
+        }
+
+        /** Compatibility constructor when P0-12 hypothesis fields are absent. */
+        public FindingDto(int schemaVersion, String projectId, String artifactDigest,
+                          String scanId, String findingId, String title, String severity,
+                          String verificationStatus, String entrypointId, String entry,
+                          String sinkId, String sink, String dependency, List<String> dependencyRefs,
+                          List<String> evidenceRefs, int evidenceCount, double confidence,
+                          String dependencyMode, Map<String, Object> rootCause) {
+            this(schemaVersion, projectId, artifactDigest, scanId, findingId, title, severity,
+                    verificationStatus, entrypointId, entry, sinkId, sink, dependency, dependencyRefs,
+                    evidenceRefs, evidenceCount, confidence, dependencyMode, rootCause, "", "");
         }
 
         public FindingDto {
@@ -212,12 +225,22 @@ public final class ApiDtos {
             if (evidenceCount < 0) throw new IllegalArgumentException("evidenceCount must not be negative");
             requireConfidence(confidence);
             rootCause = copyRootCause(rootCause);
+            hypothesisId = hypothesisId == null ? "" : hypothesisId;
+            securityProperty = securityProperty == null ? "" : securityProperty;
         }
 
         public FindingDto withRootCause(Map<String, Object> nextRootCause) {
             return new FindingDto(schemaVersion, projectId, artifactDigest, scanId, findingId, title,
                     severity, verificationStatus, entrypointId, entry, sinkId, sink, dependency,
-                    dependencyRefs, evidenceRefs, evidenceCount, confidence, dependencyMode, nextRootCause);
+                    dependencyRefs, evidenceRefs, evidenceCount, confidence, dependencyMode, nextRootCause,
+                    hypothesisId, securityProperty);
+        }
+
+        public FindingDto withHypothesis(String nextHypothesisId, String nextSecurityProperty) {
+            return new FindingDto(schemaVersion, projectId, artifactDigest, scanId, findingId, title,
+                    severity, verificationStatus, entrypointId, entry, sinkId, sink, dependency,
+                    dependencyRefs, evidenceRefs, evidenceCount, confidence, dependencyMode, rootCause,
+                    nextHypothesisId, nextSecurityProperty);
         }
     }
 
@@ -465,6 +488,18 @@ public final class ApiDtos {
         putOptionalText(copy, rootCause, "affectedComponent");
         putOptionalText(copy, rootCause, "cweId");
         putOptionalText(copy, rootCause, "fixSuggestion");
+        Object counterRaw = rootCause.get("counterevidence");
+        if (counterRaw instanceof List<?> counterList) {
+            List<String> counterevidence = new ArrayList<>();
+            for (Object item : counterList) {
+                if (item != null && !String.valueOf(item).isBlank()) {
+                    counterevidence.add(String.valueOf(item));
+                }
+            }
+            if (!counterevidence.isEmpty()) {
+                copy.put("counterevidence", List.copyOf(counterevidence));
+            }
+        }
         return Map.copyOf(copy);
     }
 

@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/contracts/schemas/domain/evidence-graph.v1.json",
+  "title": "EvidenceGraph v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "scanId",
+    "nodes",
+    "edges",
+    "truncated",
+    "maxNodes",
+    "maxEdges",
+    "compatibilityGap"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "minimum": 1 },
+    "scanId": { "type": "string", "minLength": 1 },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Open taxonomy. Known: PROGRAM, ENTRY, TRUST_BOUNDARY, EFFECT, GUARD, SANITIZER, STATE, RESOURCE, RUNTIME_OBSERVATION. Unknown kinds must degrade without elevating verification status."
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "provenanceKind": { "type": "string" },
+          "verificationStatus": { "type": "string" },
+          "extensions": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "fromId", "toId"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "kind": {
+            "type": "string",
+            "description": "Known: CALL, CONTROL, DATA, ALIAS, GUARD, STATE, OWNERSHIP, HAPPENS_BEFORE, OBSERVED."
+          },
+          "fromId": { "type": "string", "minLength": 1 },
+          "toId": { "type": "string", "minLength": 1 },
+          "evidenceRefs": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "provenanceKind": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "truncated": { "type": "boolean" },
+    "maxNodes": { "type": "integer", "minimum": 1 },
+    "maxEdges": { "type": "integer", "minimum": 1 },
+    "nodeCount": { "type": "integer", "minimum": 0 },
+    "edgeCount": { "type": "integer", "minimum": 0 },
+    "stopReason": { "type": "string" },
+    "compatibilityGap": {
+      "type": "object",
+      "required": ["entryDtoCount", "entryNodeCount"],
+      "properties": {
+        "entryDtoCount": { "type": "integer", "minimum": 0 },
+        "entryNodeCount": { "type": "integer", "minimum": 0 },
+        "filteredEntryIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "patternProperties": {
+    "^x-veyrion-": {}
+  }
+}

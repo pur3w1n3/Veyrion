@@ -27,7 +27,7 @@ public final class Main {
         }
         Path artifactPath = Paths.get(args[0]).toAbsolutePath().normalize();
         ScanPolicy policy = new ScanPolicy(args.length == 2, NetworkMode.DENY, DangerousActionMode.DRY_RUN,
-                List.of(), 900, 4L * 1024 * 1024 * 1024, 2L * 1024 * 1024 * 1024);
+                List.of(), 900, 2L * 1024 * 1024 * 1024, 2L * 1024 * 1024 * 1024);
         try {
             PolicyValidator.requireStartAllowed(policy);
         } catch (PolicyViolationException violation) {

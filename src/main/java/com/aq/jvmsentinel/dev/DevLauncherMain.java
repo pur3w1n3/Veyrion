@@ -113,7 +113,7 @@ public final class DevLauncherMain {
     }
 
     static List<String> frontendCommand(Configuration config) {
-        return List.of(config.npmExecutable(), "run", "dev", "--",
+        return List.of(config.nodeExecutable(), config.viteEntrypoint().toString(),
                 "--host", "127.0.0.1",
                 "--port", Integer.toString(config.frontendPort()),
                 "--strictPort");
@@ -146,7 +146,7 @@ public final class DevLauncherMain {
     }
 
     public record Configuration(Path workspace, Path artifactRoot, Path frontendDirectory,
-                                int backendPort, int frontendPort, String npmExecutable,
+                                int backendPort, int frontendPort, String nodeExecutable,
                                 boolean dockerArtifactWorker) {
         public Configuration {
             workspace = realDirectory(workspace, "workspace");
@@ -161,11 +161,19 @@ public final class DevLauncherMain {
                     || backendPort == frontendPort) {
                 throw new IllegalArgumentException("development ports are invalid");
             }
-            Objects.requireNonNull(npmExecutable, "npmExecutable");
-            if (npmExecutable.isBlank() || npmExecutable.length() > 1024
-                    || npmExecutable.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {
-                throw new IllegalArgumentException("npmExecutable is invalid");
+            Objects.requireNonNull(nodeExecutable, "nodeExecutable");
+            if (nodeExecutable.isBlank() || nodeExecutable.length() > 1024
+                    || nodeExecutable.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {
+                throw new IllegalArgumentException("nodeExecutable is invalid");
             }
+            if (!Files.isRegularFile(frontendDirectory.resolve("node_modules/vite/bin/vite.js"))) {
+                throw new IllegalArgumentException("Vite entrypoint is missing");
+            }
+        }
+
+        Path viteEntrypoint() {
+            return frontendDirectory.resolve("node_modules").resolve("vite")
+                    .resolve("bin").resolve("vite.js").normalize();
         }
 
         static Configuration parse(String[] args, Path defaultWorkspace) {
@@ -174,8 +182,8 @@ public final class DevLauncherMain {
             Path artifactRoot = null;
             int backendPort = 8080;
             int frontendPort = 5173;
-            String npm = System.getProperty("os.name", "").toLowerCase().contains("win")
-                    ? "npm.cmd" : "npm";
+            String node = System.getProperty("os.name", "").toLowerCase().contains("win")
+                    ? "node.exe" : "node";
             Map<String, String> values = parseArguments(args);
             if (values.containsKey("workspace")) workspace = Path.of(values.get("workspace"));
             workspace = realDirectory(workspace, "workspace");
@@ -187,17 +195,17 @@ public final class DevLauncherMain {
             if (values.containsKey("frontend-port")) {
                 frontendPort = port(values.get("frontend-port"), "frontend-port");
             }
-            if (values.containsKey("npm")) npm = values.get("npm");
+            if (values.containsKey("node")) node = values.get("node");
             boolean dockerArtifactWorker = values.containsKey("docker-artifact-worker")
                     && booleanValue(values.get("docker-artifact-worker"), "docker-artifact-worker");
             return new Configuration(workspace, artifactRoot, workspace.resolve("frontend"),
-                    backendPort, frontendPort, npm, dockerArtifactWorker);
+                    backendPort, frontendPort, node, dockerArtifactWorker);
         }
 
         private static Map<String, String> parseArguments(String[] args) {
             Map<String, String> result = new LinkedHashMap<>();
             List<String> allowed = List.of(
-                    "workspace", "artifacts", "backend-port", "frontend-port", "npm",
+                    "workspace", "artifacts", "backend-port", "frontend-port", "node",
                     "docker-artifact-worker");
             for (int index = 0; index < args.length; index++) {
                 String argument = args[index];

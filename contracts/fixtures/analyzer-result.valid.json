@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "submissionId": "sub-test-1",
+  "scope": {
+    "projectId": "proj-1",
+    "artifactDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "scanId": "scan-1",
+    "analysisId": "analysis-1"
+  },
+  "artifactDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "policyDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "acceptedCapabilities": ["PROGRAM_IR", "ENTRY_SURFACE", "COVERAGE_GAP"],
+  "chunkManifest": {
+    "chunks": [
+      {
+        "sequence": 0,
+        "kind": "PROGRAM_NODE",
+        "payloadDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "payloadBytes": 42
+      }
+    ],
+    "totalPayloadBytes": 42,
+    "headDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "diagnostics": [
+    {
+      "severity": "INFO",
+      "code": "ANALYSIS_COMPLETE",
+      "message": "minimal test analyzer result"
+    }
+  ],
+  "coverageGaps": [
+    {
+      "id": "gap-1",
+      "kind": "UNRESOLVED_CALL",
+      "detail": "invokevirtual unknown",
+      "stopReason": "BUDGET_OK",
+      "evidenceRef": "ev-gap-1"
+    }
+  ],
+  "resourceUsage": {
+    "chunkCount": 1,
+    "totalPayloadBytes": 42,
+    "wallClockMillis": 12,
+    "nodeCount": 1
+  },
+  "terminalState": "SUCCESS",
+  "stopReason": "COMPLETED",
+  "fingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+}

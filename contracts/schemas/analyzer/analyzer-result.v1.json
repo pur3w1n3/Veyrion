@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/contracts/schemas/analyzer/analyzer-result.v1.json",
+  "title": "Analyzer Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "submissionId",
+    "scope",
+    "artifactDigest",
+    "policyDigest",
+    "acceptedCapabilities",
+    "chunkManifest",
+    "diagnostics",
+    "coverageGaps",
+    "resourceUsage",
+    "terminalState",
+    "stopReason",
+    "fingerprint"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "submissionId": { "type": "string", "minLength": 1 },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "artifactDigest", "scanId", "analysisId"],
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1 },
+        "artifactDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "scanId": { "type": "string", "minLength": 1 },
+        "analysisId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "artifactDigest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "policyDigest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "acceptedCapabilities": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "chunkManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chunks", "totalPayloadBytes", "headDigest"],
+      "properties": {
+        "chunks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sequence", "kind", "payloadDigest", "payloadBytes"],
+            "properties": {
+              "sequence": { "type": "integer", "minimum": 0 },
+              "kind": { "type": "string", "minLength": 1 },
+              "payloadDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "payloadBytes": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "totalPayloadBytes": { "type": "integer", "minimum": 0 },
+        "headDigest": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "code", "message"],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["INFO", "WARN", "ERROR"]
+          },
+          "code": { "type": "string", "minLength": 1 },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "coverageGaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "detail", "stopReason"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string", "minLength": 1 },
+          "detail": { "type": "string" },
+          "stopReason": { "type": "string" },
+          "evidenceRef": { "type": "string" }
+        }
+      }
+    },
+    "resourceUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chunkCount", "totalPayloadBytes", "wallClockMillis", "nodeCount"],
+      "properties": {
+        "chunkCount": { "type": "integer", "minimum": 0 },
+        "totalPayloadBytes": { "type": "integer", "minimum": 0 },
+        "wallClockMillis": { "type": "integer", "minimum": 0 },
+        "nodeCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "terminalState": {
+      "type": "string",
+      "enum": [
+        "SUCCESS",
+        "FAILED",
+        "CANCELLED",
+        "TIMED_OUT",
+        "PROTOCOL_INCOMPATIBLE"
+      ]
+    },
+    "stopReason": { "type": "string" },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Deterministic fingerprint of scope+digests+manifest+terminalState for replay comparison."
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "patternProperties": {
+    "^x-veyrion-": {}
+  }
+}

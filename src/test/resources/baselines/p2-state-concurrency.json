@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "p2-state-concurrency",
+  "kind": "unit",
+  "description": "P2 STATE/CONCURRENCY heuristic detectors — positive fixtures must fire; AI not in base judgment.",
+  "expectedDetectorIds": [
+    "state-sequence",
+    "concurrency-resource"
+  ],
+  "expectedSecurityProperties": [
+    "STATE_TRANSITION_GAP",
+    "REPEAT_SUBMIT_RISK",
+    "QUOTA_FLOW_INVARIANT",
+    "TOCTOU_CHECK_THEN_ACT",
+    "RACE_WINDOW_HEURISTIC",
+    "LOCK_TRANSACTION_GAP"
+  ],
+  "recallGate": {
+    "requiredProperties": [
+      "STATE_TRANSITION_GAP",
+      "REPEAT_SUBMIT_RISK",
+      "TOCTOU_CHECK_THEN_ACT"
+    ],
+    "failWhenDetectorRemoved": [
+      "state-sequence",
+      "concurrency-resource"
+    ]
+  },
+  "honesty": {
+    "aiNotInBaseJudgment": true,
+    "neverTreatSuccessAsSafe": true,
+    "heuristicDepthOnly": true,
+    "notFullStateMachineOrRaceProver": true
+  }
+}

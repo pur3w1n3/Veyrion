@@ -20,10 +20,71 @@ public final class LoopbackHttpProbeAcceptanceTest {
 
     public static void main(String[] args) throws Exception {
         classifyTaxonomyPreserved();
+        siblingPortFileIsValidated();
         slowRetryPrioritizesUnauthAndCaps();
         dualPhaseRecoversSlowAuthChallenge();
         authAndBladeChannelsAreIndependent();
         System.out.println("LoopbackHttpProbeAcceptanceTest: PASS");
+    }
+
+    private static void siblingPortFileIsValidated() throws Exception {
+        Path directory = Files.createTempDirectory("veyrion-probe-port-");
+        Path plan = directory.resolve("probe-plan.txt");
+        Files.writeString(plan, "GET\t/\t\tUNAUTH\n", StandardCharsets.UTF_8);
+        Path portFile = directory.resolve("http-port.txt");
+
+        Files.writeString(portFile, "54321\n", StandardCharsets.US_ASCII);
+        check(LoopbackHttpProbe.readSiblingHttpPort(plan) == 54321,
+                "single-argument batch mode reads the fixed sibling HTTP port");
+
+        Path detachedPlan = Files.createTempDirectory("veyrion-detached-plan-")
+                .resolve("probe-plan.txt");
+        Files.writeString(detachedPlan, "GET\t/\t\tUNAUTH\n", StandardCharsets.UTF_8);
+        String previousTraceDirectory = System.getProperty("veyrion.sandbox.traceDir");
+        try {
+            System.setProperty("veyrion.sandbox.traceDir", directory.toString());
+            check(LoopbackHttpProbe.readConfiguredHttpPort(detachedPlan) == 54321,
+                    "configured trace directory supplies the HTTP port independently of plan parsing");
+        } finally {
+            if (previousTraceDirectory == null) System.clearProperty("veyrion.sandbox.traceDir");
+            else System.setProperty("veyrion.sandbox.traceDir", previousTraceDirectory);
+        }
+
+        String previous = System.getProperty("veyrion.loopbackProbe.port");
+        try {
+            System.setProperty("veyrion.loopbackProbe.port", "23456");
+            check(LoopbackHttpProbe.readConfiguredHttpPort(plan) == 23456,
+                    "fixed JVM property takes precedence over the sibling port file");
+            for (String invalid : List.of("0", "65536", "not-a-port")) {
+                System.setProperty("veyrion.loopbackProbe.port", invalid);
+                try {
+                    LoopbackHttpProbe.readConfiguredHttpPort(plan);
+                    throw new AssertionError("invalid configured HTTP port must be rejected: " + invalid);
+                } catch (IllegalArgumentException expected) {
+                    // Expected fail-closed validation.
+                }
+            }
+        } finally {
+            if (previous == null) System.clearProperty("veyrion.loopbackProbe.port");
+            else System.setProperty("veyrion.loopbackProbe.port", previous);
+        }
+
+        for (String invalid : List.of("", "0", "65536", "not-a-port")) {
+            Files.writeString(portFile, invalid, StandardCharsets.US_ASCII);
+            try {
+                LoopbackHttpProbe.readSiblingHttpPort(plan);
+                throw new AssertionError("invalid sibling HTTP port must be rejected: " + invalid);
+            } catch (IllegalArgumentException expected) {
+                // Expected fail-closed validation.
+            }
+        }
+        Files.deleteIfExists(portFile);
+        try {
+            LoopbackHttpProbe.readSiblingHttpPort(plan);
+            throw new AssertionError("missing sibling HTTP port must be rejected");
+        } catch (IllegalArgumentException expected) {
+            // Expected fail-closed validation.
+        }
     }
 
     /** Authorization-only and Blade-Auth-only plans must not copy into the other channel. */
@@ -164,8 +225,9 @@ public final class LoopbackHttpProbeAcceptanceTest {
         System.setProperty("veyrion.sandbox.traceDir", trace.toString());
         System.setProperty("veyrion.loopbackProbe.threads", "4");
         try {
-            int code = LoopbackHttpProbe.runBatch(plan, port);
-            check(code == 0, "batch must succeed when any HTTP response is observed, code=" + code);
+            LoopbackHttpProbe.main(new String[]{
+                    "--batch", plan.toString(), Integer.toString(port)
+            });
             Path events = trace.resolve("probe-events.jsonl");
             check(Files.isRegularFile(events), "probe-events.jsonl must exist");
             List<String> lines = Files.readAllLines(events, StandardCharsets.UTF_8);

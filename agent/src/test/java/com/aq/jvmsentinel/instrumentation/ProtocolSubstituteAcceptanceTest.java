@@ -10,6 +10,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.DriverManager;
 
 /** Socket-level checks for the deliberately bounded RESP and MySQL protocol subsets. */
 public final class ProtocolSubstituteAcceptanceTest {
@@ -18,6 +20,7 @@ public final class ProtocolSubstituteAcceptanceTest {
     public static void main(String[] args) throws Exception {
         redisResp2And3();
         mysqlClassic();
+        mysqlConnectorReadOnlyCompatibility();
         System.out.println("ProtocolSubstituteAcceptanceTest: PASS");
     }
 
@@ -68,9 +71,17 @@ public final class ProtocolSubstituteAcceptanceTest {
             login.write(0);
             sendPacket(out, 1, login.toByteArray());
             check((readPacket(in).payload()[0] & 0xff) == 0, "MySQL login accepted");
-            sendPacket(out, 0, concat(new byte[]{3}, "SELECT 1".getBytes(StandardCharsets.US_ASCII)));
-            check((readPacket(in).payload()[0] & 0xff) == 1, "COM_QUERY result set");
-            readPacket(in); readPacket(in); readPacket(in); readPacket(in);
+            check(queryScalar(out, in, "SELECT 1").equals("1"), "COM_QUERY scalar result");
+            check(queryScalar(out, in, "SELECT @@session.transaction_read_only").equals("0"),
+                    "Connector/J transaction_read_only scalar");
+            check(queryScalar(out, in, "SELECT@@session.tx_read_only").equals("0"),
+                    "legacy Connector/J tx_read_only scalar");
+            check(queryScalar(out, in, "SELECT @@session.transaction_isolation").equals("REPEATABLE-READ"),
+                    "Connector/J transaction_isolation scalar");
+            check(queryScalar(out, in, "SELECT @@tx_isolation").equals("REPEATABLE-READ"),
+                    "legacy Connector/J tx_isolation scalar");
+            check(queryScalar(out, in, "SELECT @@global.read_only").equals("0"),
+                    "global read_only scalar");
             sendPacket(out, 0, concat(new byte[]{0x16}, "SELECT ?".getBytes(StandardCharsets.US_ASCII)));
             Packet prepared = readPacket(in);
             check((prepared.payload()[0] & 0xff) == 0, "COM_STMT_PREPARE");
@@ -88,6 +99,31 @@ public final class ProtocolSubstituteAcceptanceTest {
             check((readPacket(in).payload()[0] & 0xff) == 0xff, "unknown MySQL command rejected");
             sendPacket(out, 0, new byte[]{1});
         }
+    }
+
+    /** Exercises the exact Connector/J path that Druid invokes while creating a connection. */
+    private static void mysqlConnectorReadOnlyCompatibility() throws Exception {
+        try (LoopbackMysqlStub stub = LoopbackMysqlStub.start(0);
+             Connection connection = DriverManager.getConnection(
+                     "jdbc:mysql://127.0.0.1:" + stub.port()
+                             + "/veyrion?connectTimeout=1000&socketTimeout=1000&useSSL=false",
+                     "root", "")) {
+            check(!connection.isReadOnly(),
+                    "Connector/J Connection.isReadOnly must parse the protocol substitute scalar");
+        }
+    }
+
+    private static String queryScalar(OutputStream out, InputStream in, String sql) throws IOException {
+        sendPacket(out, 0, concat(new byte[]{3}, sql.getBytes(StandardCharsets.US_ASCII)));
+        check((readPacket(in).payload()[0] & 0xff) == 1, "COM_QUERY result set for " + sql);
+        readPacket(in); // column definition
+        readPacket(in); // metadata EOF
+        byte[] row = readPacket(in).payload();
+        check(row.length > 0 && (row[0] & 0xff) < 0xfb, "scalar row for " + sql);
+        int length = row[0] & 0xff;
+        check(row.length == length + 1, "scalar row length for " + sql);
+        readPacket(in); // result EOF
+        return new String(row, 1, length, StandardCharsets.UTF_8);
     }
 
     private static void sendResp(OutputStream out, String... values) throws IOException {

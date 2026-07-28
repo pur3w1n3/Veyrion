@@ -26,8 +26,8 @@ import static com.aq.jvmsentinel.provider.chat.ProviderChatContracts.MAX_JSON_DE
 import static com.aq.jvmsentinel.provider.chat.ProviderChatContracts.MAX_RESPONSE_BYTES;
 import static com.aq.jvmsentinel.provider.chat.ProviderChatContracts.MAX_TOTAL_CALL_BYTES;
 
-final class ChatProtocolSupport {
-    static final ObjectMapper JSON = secureMapper();
+public final class ChatProtocolSupport {
+    public static final ObjectMapper JSON = secureMapper();
 
     private ChatProtocolSupport() { }
 

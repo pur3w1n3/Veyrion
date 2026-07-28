@@ -19,13 +19,17 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Fixed loopback-only HTTP stimulus used inside the deny-all Docker container.
  *
  * <p>Single: {@code method route [port] [query]}.</p>
- * <p>Batch: {@code @planFile port} where each plan line is
+ * <p>Batch: {@code --batch planFile port}; legacy {@code @planFile port} remains accepted.
+ * A fixed {@code @planFile#port} argument keeps the plan and port in one shell token;
+ * {@code @planFile} alone falls back to a fixed property or sibling {@code http-port.txt}.
+ * Each plan line is
  * {@code METHOD\troute[\tquery[\ttrack[\tauthHeader[\tbladeAuthHeader]]]]}.
  * Authorization and Blade-Auth are independent channels — a non-blank
  * {@code authHeader} does not imply {@code Blade-Auth}, and vice versa.</p>
@@ -57,14 +61,32 @@ public final class LoopbackHttpProbe {
     private LoopbackHttpProbe() { }
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 3 && "--batch".equals(args[0])) {
+            int code = runBatch(Path.of(args[1]), Integer.parseInt(args[2]));
+            if (code != 0) System.exit(code);
+            return;
+        }
         if (args.length == 2 && args[0].startsWith("@")) {
             int code = runBatch(Path.of(args[0].substring(1)), Integer.parseInt(args[1]));
             if (code != 0) System.exit(code);
             return;
         }
+        if (args.length == 1 && args[0].startsWith("@")) {
+            String specification = args[0].substring(1);
+            int delimiter = specification.lastIndexOf('#');
+            Path planFile = Path.of(delimiter > 0
+                    ? specification.substring(0, delimiter) : specification);
+            int port = delimiter > 0
+                    ? parseHttpPort(specification.substring(delimiter + 1), "embedded batch port")
+                    : readConfiguredHttpPort(planFile);
+            int code = runBatch(planFile, port);
+            if (code != 0) System.exit(code);
+            return;
+        }
         if (args.length < 2 || args.length > 4) {
             throw new IllegalArgumentException(
-                    "method route [port] [query], or @planFile port, are required");
+                    "method route [port] [query], --batch planFile port, or legacy @planFile port"
+                            + " are required (received " + args.length + " arguments)");
         }
         String method = args[0].toUpperCase(Locale.ROOT);
         String route = args[1];
@@ -75,6 +97,46 @@ public final class LoopbackHttpProbe {
                 FAST_CONNECT_TIMEOUT_MS, FAST_READ_TIMEOUT_MS, 1);
         writeAttemptEvent(attempt);
         if (attempt.status < 0) System.exit(2);
+    }
+
+    static int readConfiguredHttpPort(Path planFile) throws Exception {
+        String configured = System.getProperty("veyrion.loopbackProbe.port");
+        if (configured != null && !configured.isBlank()) {
+            return parseHttpPort(configured, "veyrion.loopbackProbe.port");
+        }
+        String traceDirectory = System.getProperty("veyrion.sandbox.traceDir");
+        if (traceDirectory != null && !traceDirectory.isBlank()) {
+            return readHttpPortFile(
+                    Path.of(traceDirectory).toAbsolutePath().normalize().resolve("http-port.txt"),
+                    "trace directory http-port.txt");
+        }
+        return readSiblingHttpPort(planFile);
+    }
+
+    static int readSiblingHttpPort(Path planFile) throws Exception {
+        return readHttpPortFile(
+                planFile.toAbsolutePath().normalize().resolveSibling("http-port.txt"),
+                "sibling http-port.txt");
+    }
+
+    private static int readHttpPortFile(Path portFile, String source) throws Exception {
+        if (!Files.isRegularFile(portFile) || Files.isSymbolicLink(portFile)
+                || Files.size(portFile) < 1 || Files.size(portFile) > 16) {
+            throw new IllegalArgumentException(source + " is missing or invalid");
+        }
+        String value = Files.readString(portFile, StandardCharsets.US_ASCII).strip();
+        return parseHttpPort(value, source);
+    }
+
+    private static int parseHttpPort(String value, String source) {
+        if (value == null || !value.matches("[0-9]{1,5}")) {
+            throw new IllegalArgumentException(source + " is not a TCP port");
+        }
+        int port = Integer.parseInt(value);
+        if (port < 1 || port > 65_535) {
+            throw new IllegalArgumentException(source + " is outside the TCP port range");
+        }
+        return port;
     }
 
     /**
@@ -241,11 +303,13 @@ public final class LoopbackHttpProbe {
                 || (authHeader != null && authHeader.length() > 2048)
                 || (bladeAuthHeader != null && bladeAuthHeader.length() > 2048)) {
             return new ProbeAttempt(target, -1, "InvalidTarget",
-                    route == null ? "" : route, connectTimeoutMs, readTimeoutMs);
+                    route == null ? "" : route, connectTimeoutMs, readTimeoutMs, "");
         }
         String requestTarget = target.query.isEmpty() ? target.route : target.route + "?" + target.query;
         byte[] body = Set.of("POST", "PUT", "PATCH").contains(method)
                 ? SYNTHETIC_BODY : new byte[0];
+        String correlationId = "req-" + target.ordinal + "-"
+                + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         int status = -1;
         String error = "";
         try (Socket socket = new Socket()) {
@@ -254,7 +318,7 @@ public final class LoopbackHttpProbe {
             socket.setSoTimeout(readTimeoutMs);
             OutputStream output = socket.getOutputStream();
             String headerBlock = buildRequestHeaders(method, requestTarget, body.length,
-                    target.authHeader, target.bladeAuthHeader);
+                    target.authHeader, target.bladeAuthHeader, correlationId);
             output.write(headerBlock.getBytes(StandardCharsets.US_ASCII));
             output.write(body);
             output.flush();
@@ -279,7 +343,8 @@ public final class LoopbackHttpProbe {
             error = failure.getClass().getSimpleName();
             status = -1;
         }
-        return new ProbeAttempt(target, status, error, requestTarget, connectTimeoutMs, readTimeoutMs);
+        return new ProbeAttempt(target, status, error, requestTarget, connectTimeoutMs, readTimeoutMs,
+                correlationId);
     }
 
     /**
@@ -288,11 +353,19 @@ public final class LoopbackHttpProbe {
      */
     static String buildRequestHeaders(String method, String requestTarget, int contentLength,
                                       String authHeader, String bladeAuthHeader) {
+        return buildRequestHeaders(method, requestTarget, contentLength, authHeader, bladeAuthHeader, null);
+    }
+
+    static String buildRequestHeaders(String method, String requestTarget, int contentLength,
+                                      String authHeader, String bladeAuthHeader, String correlationId) {
         StringBuilder headers = new StringBuilder();
         headers.append(method).append(' ').append(requestTarget).append(" HTTP/1.1\r\n")
                 .append("Host: 127.0.0.1\r\nConnection: close\r\n")
                 .append("Content-Type: application/json\r\n")
                 .append("Content-Length: ").append(contentLength).append("\r\n");
+        if (correlationId != null && !correlationId.isBlank()) {
+            headers.append("X-Veyrion-Correlation-Id: ").append(correlationId).append("\r\n");
+        }
         if (authHeader != null && !authHeader.isBlank()) {
             headers.append("Authorization: bearer ").append(authHeader).append("\r\n");
         }
@@ -307,13 +380,14 @@ public final class LoopbackHttpProbe {
         String outcome = classifyOutcome(attempt.status, attempt.error);
         String method = attempt.target.method.toUpperCase(Locale.ROOT);
         System.out.println(method + " " + attempt.requestTarget
-                + " → HTTP "
+                + " -> HTTP "
                 + (attempt.status < 0 ? "UNKNOWN" : Integer.toString(attempt.status))
                 + " (" + outcome + ", track=" + attempt.target.track
                 + ", port " + lastBatchPort + ")"
                 + (attempt.error.isEmpty() ? "" : "; " + attempt.error));
         writeProbeEvent(method, attempt.target.route, lastBatchPort, attempt.status,
-                attempt.requestTarget, attempt.error, outcome, attempt.target.track);
+                attempt.requestTarget, attempt.error, outcome, attempt.target.track,
+                attempt.correlationId);
     }
 
     /**
@@ -356,7 +430,7 @@ public final class LoopbackHttpProbe {
 
     private static synchronized void writeProbeEvent(String method, String route, int port, int status,
                                                      String requestTarget, String error, String outcomeClass,
-                                                     String track) {
+                                                     String track, String correlationId) {
         try {
             String dir = System.getProperty("veyrion.sandbox.traceDir");
             if (dir == null || dir.isBlank()) {
@@ -379,6 +453,9 @@ public final class LoopbackHttpProbe {
                     .append("\"error\":\"").append(json(truncate(error == null ? "" : error, 64))).append("\",")
                     .append("\"outcomeClass\":\"").append(json(truncate(outcomeClass, 32))).append("\",")
                     .append("\"track\":\"").append(json(truncate(track == null ? "UNAUTH" : track, 32))).append("\"");
+            if (correlationId != null && !correlationId.isBlank()) {
+                detail.append(",\"correlationId\":\"").append(json(truncate(correlationId, 64))).append("\"");
+            }
             if (entryHit != null) {
                 detail.append(",\"entryHit\":\"").append(entryHit ? "true" : "false").append("\"");
             }
@@ -503,15 +580,22 @@ public final class LoopbackHttpProbe {
         final String requestTarget;
         final int connectTimeoutMs;
         final int readTimeoutMs;
+        final String correlationId;
 
         ProbeAttempt(ProbeTarget target, int status, String error, String requestTarget,
                      int connectTimeoutMs, int readTimeoutMs) {
+            this(target, status, error, requestTarget, connectTimeoutMs, readTimeoutMs, "");
+        }
+
+        ProbeAttempt(ProbeTarget target, int status, String error, String requestTarget,
+                     int connectTimeoutMs, int readTimeoutMs, String correlationId) {
             this.target = target;
             this.status = status;
             this.error = error == null ? "" : error;
             this.requestTarget = requestTarget == null ? "" : requestTarget;
             this.connectTimeoutMs = connectTimeoutMs;
             this.readTimeoutMs = readTimeoutMs;
+            this.correlationId = correlationId == null ? "" : correlationId;
         }
 
         boolean businessTimeout() {

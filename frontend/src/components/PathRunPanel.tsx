@@ -234,8 +234,14 @@ export function PathRunPanel({
           {focusError && <Notice kind="error">{focusError}</Notice>}
           {focusResult && <Notice kind="info">
             {english
-              ? `Focus task ${focusResult.taskId} is ${focusResult.lifecycle}${focusResult.replayed ? ' (replayed)' : ''}.`
-              : `焦点任务 ${focusResult.taskId} 当前为 ${focusResult.lifecycle}${focusResult.replayed ? '（幂等重放）' : ''}。`}
+              ? `Focus task ${focusResult.taskId} is ${focusResult.lifecycle}`
+                + `${focusResult.attemptKind ? ` [${focusResult.attemptKind}]` : ''}`
+                + `${focusResult.experimentPlanId ? ` plan=${focusResult.experimentPlanId}` : ''}`
+                + `${focusResult.replayed ? ' (idempotent replay)' : ''}.`
+              : `焦点任务 ${focusResult.taskId} 当前为 ${focusResult.lifecycle}`
+                + `${focusResult.attemptKind ? ` [${focusResult.attemptKind}]` : ''}`
+                + `${focusResult.experimentPlanId ? ` 计划=${focusResult.experimentPlanId}` : ''}`
+                + `${focusResult.replayed ? '（幂等重放）' : ''}。`}
           </Notice>}
         </> : <p className="empty-state">{english ? 'Select a PathRun to inspect.' : '选择 PathRun 查看详情。'}</p>}
       </div>

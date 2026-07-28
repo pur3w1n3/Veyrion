@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "scanId": "scan-evidence-graph-1",
+  "nodes": [
+    {
+      "id": "entry:e1",
+      "kind": "ENTRY",
+      "protocol": "HTTP",
+      "operation": "GET",
+      "address": "/search",
+      "evidenceRefs": ["ev-1"],
+      "provenanceKind": "FACT",
+      "verificationStatus": "STATIC_INFERRED"
+    },
+    {
+      "id": "effect:s1",
+      "kind": "EFFECT",
+      "category": "SQL",
+      "symbol": "Statement.executeQuery",
+      "evidenceRefs": ["ev-1", "ev-2"],
+      "provenanceKind": "FACT",
+      "verificationStatus": "STATIC_INFERRED"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:data:entry:e1->effect:s1",
+      "kind": "DATA",
+      "fromId": "entry:e1",
+      "toId": "effect:s1",
+      "evidenceRefs": ["ev-1"],
+      "provenanceKind": "INFERENCE"
+    }
+  ],
+  "truncated": false,
+  "maxNodes": 2000,
+  "maxEdges": 4000,
+  "nodeCount": 2,
+  "edgeCount": 1,
+  "compatibilityGap": {
+    "entryDtoCount": 2,
+    "entryNodeCount": 1,
+    "filteredEntryIds": ["auth-1"],
+    "notes": ["AUTH EntryDto rows projected as GuardNode, not EntryNode"]
+  }
+}

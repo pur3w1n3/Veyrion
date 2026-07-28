@@ -1,0 +1,9 @@
+# Architecture baseline: known domain.* violations of forbidden imports.
+# Forbidden: com.aq.jvmsentinel.domain.** must not import
+#   com.aq.jvmsentinel.control.persistence.*
+#   com.aq.jvmsentinel.ai.tool.*
+# Format: one repo-relative path per line (forward slashes). Lines starting with # ignored.
+# Empty body means zero exceptions; new violations fail ArchitectureBaselineAcceptanceTest.
+#
+# P1-08 absolute gate (not exception-listed): control / application / adapter / orchestration
+# must not import com.aq.jvmsentinel.analysis.parser.* (see ArchitectureBaselineAcceptanceTest).

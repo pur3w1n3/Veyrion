@@ -1,400 +1,412 @@
 # 溯脉 · Veyrion 技术架构
 
-正式产品名：**溯脉 · Veyrion**（英文：**Veyrion**）。Java 包名、Maven artifactId、内部 service name 和 `/api/v1` 路由继续使用兼容标识；商标和域名尚需检索。
+> 本文定义系统组件、数据、安全、持久化和执行边界，并明确区分当前实现与目标合同。产品需求见 [PRD](PRD.md)，阶段状态机见 [AUDIT_FLOW](AUDIT_FLOW.md)，当前缺口见 [MVP Backlog](MVP_BACKLOG.md)。
 
-## 1. 设计原则
+## 1. 架构原则
 
-1. 代码逻辑优先，外部依赖可替身、可记录、可回放。
-2. 静态分析负责扩大视野，动态分析负责提供事实，AI 负责解释和关联。
-3. 所有探索任务可暂停、可恢复、可重放、可审计。
-4. 任何漏洞结论都必须携带来源、证据和置信度。
-5. 扫描资源、网络和危险操作默认最小权限。
-6. **可扩展分析骨架**：制品形态（Packager）、框架识别（FrameworkAdapter）、风险域（AnalysisPack）正交拆分；JAR 先行，WAR/自研框架按同一中立事实模型增强。详见 [可扩展分析架构](EXTENSIBLE_ANALYSIS.md)。
+1. 静态事实扩大视野，受控动态实验提供观察，AI 只解释、规划和关联。
+2. FACT、运行时观察、MOCK/规则材料和 INFERENCE 分层保存。
+3. 项目、制品、扫描、阶段、probe 和证据都具有不可混用的作用域身份。
+4. 动态能力必须由服务端授权和固定策略控制；任何失败不得回退宿主执行。
+5. 已提交证据追加写，派生视图可重建；重试创建新 attempt，不覆盖历史。
+6. 制品、模型输出和前端输入不能改变工具权限、沙箱、网络或验证状态。
+7. 扩展按 ArtifactPackager、LanguageAnalyzer、FrameworkAdapter、AnalysisPack、RuntimeAdapter 五条正交轴进行。
+8. Control Plane 保持语言无关；新语言解析器和运行时通过版本化进程外合同接入，不复制流水线。
 
-## 2. 逻辑架构
+## 2. 当前系统
 
 ```text
-┌─────────────── GUI / API ───────────────┐
-│ 项目、入口、路径、图谱、报告、策略中心 │
-└──────────────────┬────────────────────┘
-                   │
-┌──────────────────▼────────────────────┐
-│ Control Plane                           │
-│ Project · Policy · Scheduler · Audit   │
-└──────────────┬───────────────┬─────────┘
-               │               │
-     ┌─────────▼────────┐ ┌────▼─────────────┐
-     │ Analysis Plane   │ │ Agent Plane       │
-     │ 反编译/调用图/污点 │ │ 入口/路径/漏洞/中枢 │
-     └─────────┬────────┘ └────┬─────────────┘
-               │               │
-     ┌─────────▼────────────────▼─────────┐
-     │ Exploration Plane                   │
-     │ JVM Instrumentation · Input · State │
-     │ Dependency Virtualization           │
-     └──────────────────┬─────────────────┘
-                        │
-              ┌─────────▼─────────┐
-              │ Isolated Sandbox   │
-              │ Container/VM       │
-              └────────────────────┘
+React/Vite GUI
+    | REST / SSE
+Java 17 Control Plane
+    |-- Artifact Registry / Upload
+    |-- Static Fact Index
+    |-- Audit Pipeline / AI Orchestrator
+    |-- PathRun / Finding / Dashboard Projection
+    |-- SQLite Persistence
+    |
+    +-- Worker Adapter
+          |-- STATIC_ONLY
+          `-- TRUSTED_DOCKER (explicit local debug)
+                 |-- executable Spring Boot JAR
+                 |-- startup JVM Agent
+                 `-- loopback HTTP/JDBC/Redis/MySQL substitutes
 ```
+
+当前为单节点、loopback、本地 SQLite 语义，不是分布式 exactly-once 工作流系统。GUI 与 Control Plane 在开发模式下分别运行于 Vite 和 Java 服务；Java 托管静态前端与 Desktop Core 属于目标打包形态。
+
+当前技术栈适合 JVM 优先的本地 MVP，但实现边界尚未完成多语言解耦：`ControlPlaneServer` 同时承担 transport、编排和大量投影，`ApiDtos`/持久化直接共享 DTO，前端 `api.ts` 集中维护大量手写类型和 parser，公共视图仍包含 JAR、HTTP、sink/taint 假设。这些是迁移基线，不是继续扩展时的推荐结构。
 
 ## 3. 组件职责
 
-### 3.1 Artifact Service
+### 3.1 Artifact Registry
 
-- 接收并校验 JAR/WAR/CLASS。
-- 计算制品哈希，保存版本和依赖清单。
-- 生产模式将制品复制到内容寻址的只读对象存储；M0 本地切片暂存原路径，并在每次分析前执行摘要/大小复核。
-- 提取 MANIFEST、配置、注解、字符串和资源。
-- 生成反编译视图，同时保留原始字节码定位信息。
+- 接收 JAR/WAR/CLASS，校验扩展名、大小、ZIP 结构和 SHA-256。
+- 浏览器上传使用有 TTL 和预算的顺序分块协议，校验块摘要和完整摘要。
+- 完成后原子安装到授权根内的内容寻址目录，扫描只引用受控副本。
+- 上传会话元数据和偏移已进入 SQLite，可在重启后校验恢复；孤立分片按内部命名规则清理。
+- 旧路径登记只保留为本地兼容入口，每次使用前重新校验文件身份和摘要。
 
-### 3.2 Runtime Profiler
+### 3.2 Static Fact Index
 
-- 识别 Java 版本、主类、Web 容器和框架。
-- 监听路由注册、Bean、Filter、Interceptor、WebSocket handler 和消息监听器。
-- 将静态入口与运行时入口合并，生成 `EntryCatalog`。
+- 有界读取 classfile，不加载或初始化被测类。
+- 提取 Spring MVC 映射、参数与鉴权注解、类层次、字段、调用点和敏感 sink。
+- 制品内调用边区分 `DIRECT`、`CHA`、`UNRESOLVED`，保留 owner、descriptor、位置和限制。
+- 入口参数到 sink 的跨方法污点是预算内 `STATIC_INFERRED` 候选，必须记录不完整性和停止原因。
+- 反射、代理、JNI、对象别名、制品外 classpath 和运行时注册不伪装成已解析事实。
 
-### 3.3 Static Analysis Engine
+反编译视图只能由隔离分析 Worker 生成，作为派生阅读材料；它不能替代原始字节码或在 Control Plane 进程内运行不可信反编译器。
 
-- 基于字节码建立类层、方法层和调用层图。
-- 识别 source、transform、sink、权限检查和状态检查。
-- 建立数据库表/字段、文件路径、URL、命令和脚本的静态数据流。
-- 输出候选路径和分支约束，不直接判定为已验证漏洞。
+### 3.3 Audit Pipeline
 
-### 3.4 Pre-analysis AI
+Control Plane 固定编排六角色与确定性动态阶段，模型不能改变顺序。流水线只消费同一 project、artifact 和 scan 的资源；阶段输出通过 schema、证据引用和状态门禁后才能推进。
 
-前置 AI 的输入包括反编译代码、字节码摘要、配置和静态图；输出必须是版本化 JSON：
+目标一致性合同要求每个组合审计有 `pipelineRunId`，每个阶段执行有 `stageAttemptId`、`expectedJobId` 或 `expectedTaskId`。终态回调只有匹配当前 run、stage、attempt 和预期资源，且通过 CAS，才能推进。当前实现尚未完整满足，属于 P0。
 
-```json
-{
-  "entryCatalog": [],
-  "businessFlows": [],
-  "permissionMatrix": [],
-  "dependencyMap": [],
-  "sinkCatalog": [],
-  "explorationPlan": []
-}
-```
+### 3.4 AI Orchestrator
 
-模型推断的字段必须包含 `source` 和 `confidence`，并与静态事实区分。前置 AI 不负责执行任意代码，只能调用只读分析工具。
+- Job 固化项目、扫描、制品、角色、Provider、模型、提示词、语言、格式和预算快照。
+- Provider 工具调用转换为 canonical ToolCall，再经过角色 allowlist、scope、JSON schema、轮次、deadline 和结果预算校验。
+- `code_query`、`facts_search`、`evidence_get`、`plan_propose` 和 `sandbox_probe` 只能访问服务端允许的同作用域资源。
+- AUTH 强制代码查询、多 PoC 与多轮补证；PATH/TRIAGE 的动态 probe 是目标合同，服务端门禁尚需补齐。
+- 模型结论固定为 `INFERENCE`，无权修改网络、挂载、UID、命令、预算、授权或验证等级。
 
-### 3.5 Exploration Orchestrator
+Provider 原始响应、凭据和完整敏感参数不进入审计事件。隐藏 chain-of-thought 不保存；Provider 显式返回的可见 reasoning/thinking 摘录当前可能经截断、脱敏后持久化为 `MODEL_THINKING`，只能作为不可信审计元数据。
 
-负责把入口和候选路径拆成任务，并维护以下状态：
+### 3.5 Worker 与动态执行
 
-- 当前入口、身份、租户和业务状态；
-- 请求和输入生成器；
-- 已满足的分支约束；
-- 覆盖率、污点和敏感操作；
-- 沙箱快照 ID；
-- 停止原因和重试次数。
+后端能力显式分级：
 
-推荐使用持久化工作流引擎或可靠任务队列，使长任务可以恢复。第一版可以用数据库任务表加 Worker，后续再替换为专用工作流系统。
+| 能力 | 用途 | 边界 |
+|------|------|------|
+| `STATIC_ONLY` | 无可用 Worker | 拒绝动态任务 |
+| `TRUSTED_DOCKER` | 受信本地 JAR 调试 | 普通 runc，不处理恶意制品 |
+| `HARDENED_GVISOR` | 目标生产后端 | 需通过完整 release attestation |
+| `HARDENED_KATA` | 目标微虚拟机后端 | 需通过完整 release attestation |
 
-### 3.6 JVM Instrumentation
+`TRUSTED_DOCKER` 只接受 artifact catalog 中的可执行 Spring Boot JAR，执行前复核摘要。runtime image、Agent、命令、挂载、capability、网络和预算由后端固定，浏览器和模型不能提供。它使用断网、只读制品挂载和资源限制，但为兼容受信应用，不等同于非 root、只读 rootfs 的强化沙箱。
 
-通过 Java Agent/字节码插桩采集：
+JVM Agent 观察 Spring/Servlet、JDBC、HTTP client、文件、进程、Socket、DNS 和 JNDI 等事件。Agent 与被测应用同 JVM，不能作为不可篡改边界；Worker 负责 trace 预算、摘要链和提交校验。
 
-- 方法进入、返回和异常；
-- 分支命中和代码覆盖；
-- 参数、返回值和污点标签；
-- 文件、网络、进程、反射和类加载行为；
-- JDBC 调用和 SQL 参数；
-- 当前身份、租户和会话标识。
+依赖替身当前覆盖固定 loopback HTTP、JDBC、Redis RESP2/RESP3 子集和 MySQL Classic 子集。未知命令、畸形帧和预算超限 fail-closed。每个结果记录 `provenance`，替身命中不能证明真实环境影响。
 
-敏感值在采集端脱敏，原始值只在沙箱短期内保留。对高频方法采用采样和动态过滤，避免轨迹爆炸。
+### 3.6 PathRun 与投影
 
-**落地注记（MVP-1 / V016）**：`BranchCoverageInstrumentation` 可产出 `BRANCH_COVERAGE` Agent 事件；`TraceProjectionService` 合并进 `PathRunDto.branchHitMap`；有覆盖观测时可把对应 `TaintPath.dynamicStatus` 升为 `DYNAMIC_REACHED`，并派生 `ContrastLedger.roundIndex` / `snapshotId`（`contrast_ledger_snapshots`）。`CandidateRanker` 向 dashboard 暴露 `rankedSinks`，PRE_ANALYSIS 注入有界 `RANKED_SINK_CATALOG`（最多 20）。合成 fixture 已验收；live JAR 分支覆盖仍可选，不得据此宣称全路径覆盖或 `VERIFIED`。
+PathRun 是动态实验的核心记录，绑定 scan、entry、identity track、probe attempt、请求、结果、Agent/JDBC 观察、依赖模式、状态和停止原因。详细 schema 见 [PATH_EXPERIMENT_MODEL](PATH_EXPERIMENT_MODEL.md)。
 
-## 4. 外部依赖虚拟化
+目标顺序是：Worker 成功终态 -> trace 校验提交 -> 请求级投影 -> PathRun/evidence 可查 -> 阶段成功。当前存在 Worker 先标完成、后投影的缺陷；投影失败仍可能错误推进，必须修复为原子或可补偿门禁。
 
-### 4.1 数据库
+每次 `sandbox_probe` 需要独立 `probeAttemptId`，绑定 canonical tool call、规范化 payload hash、technique、双鉴权通道、计划、task 和 PathRun。`BUSY`、`FAILED`、`CANCELLED` 或未投影结果不是有效尝试。当前 job 级幂等身份不足以可靠支持同 Job 多个不同 PoC。
 
-优先使用 JDBC 代理或驱动层拦截，将查询路由至模拟数据库。模拟数据库需要：
+## 4. 数据与持久化
 
-- 根据 SQL 和 ORM 元数据推断表、字段和关系；
-- 支持空结果、单记录、多记录、边界记录和异常响应模板；
-- 记录读写表、字段、条件和数据血缘；
-- 允许用户导入脱敏快照；
-- 对写操作使用事务回滚或影子数据库。
+SQLite 当前保存：
 
-轨迹中要保留类似以下事实：
+- 项目、制品元数据、扫描、入口、路径、finding、evidence 和 dashboard 派生数据；
+- Provider、加密凭据、角色绑定、AI Job、AI 事件和本地审计；
+- Worker task、租约、checkpoint、trace chunk 与摘要链；
+- 上传会话、REST 幂等绑定、流水线 cursor、probe plan、PathRun 和 ExperimentPlan；
+- 分支覆盖、对照快照、TaintGraph、LedgerDiff、fuzz 策略、root cause 和 VERIFIED 门禁脚手架。
+
+数据库迁移当前注册至 V021。已记录到 `schema_migrations` 的 SQL 文件不可修改；任何 schema 变化只能追加新版本。未知版本、断档或 checksum 漂移拒绝启动。
+
+Provider secret 使用数据库外根密钥和 AES-256-GCM，AAD 绑定 workspace、Provider、credential 与版本；HTTP DTO 不返回明文、密文、nonce 或可逆片段。
+
+当前恢复语义是单节点有界恢复：Worker 任务与 trace 可恢复，进程重启前的 `QUEUED/RUNNING` AI Job 保留为 `FAILED/PROCESS_RESTARTED` 历史，流水线根据 cursor 创建新 Job。它不是多节点队列、分布式租约、exactly-once 或防篡改归档。
+
+### 4.1 作用域与身份
+
+所有 DTO、事件和证据至少绑定适用的 `projectId`、`artifactDigest`、`scanId`、`schemaVersion` 和 evidence refs。动态资源还应绑定 `taskId`、PathRun、attempt 与 policy digest。
+
+当前最大缺口是：
+
+- 流水线回调主要按 scan 关联，缺少完整 run/stage attempt 身份；
+- ExperimentPlan 身份未完全贯穿 task -> PathRun -> replay；
+- HTTP/Agent/JDBC 的请求级关联不足，任务级 SQL 可能污染多个 PathRun；
+- TRIAGE 序列化可能丢失 root cause 和顶层 evidence refs。
+
+### 4.2 事件、幂等与终态
+
+REST 创建类操作使用作用域化 `Idempotency-Key` 和 payload hash；相同键/相同 payload 返回原资源，相同键/不同 payload 返回冲突。幂等记录跨 SQLite 重启保留，但并非所有 mutation 都已覆盖。
+
+SSE 支持 `Last-Event-ID`，只作为增量通知。事件消费者必须校验 schema 与作用域，并在断线、窗口不足或收到终态后通过 GET 获取最终状态。
+
+任务状态必须覆盖成功、失败、取消、阻断、无 Worker、排队超时、证据投影失败和进程重启。没有 Worker 时进入 `DYNAMIC_DISABLED` 或明确失败，不得永久停留 `QUEUED`；`BLOCKED` 不能无限冻结流水线。这些终态合同尚未全部实现。
+
+## 5. 安全边界
+
+- Control Plane 默认只绑定 loopback。本地 bootstrap token、操作员 PAT 和 Worker token 属于不同身份域。
+- 制品、模型文本、代码注释、配置和请求响应均视为提示注入与数据注入来源。
+- AI 工具使用服务端 allowlist 与结构化参数，禁止 shell、任意命令、宿主路径、Docker socket、策略覆盖和直接外网访问。
+- 动态后端不可用或策略不通过时保持静态结果，禁止启动宿主 Java fallback。
+- `TRUSTED_DOCKER` 永不开放 `VERIFIED`。gVisor/Kata 必须通过网络、DNS、metadata、宿主挂载、非 root、只读 rootfs、capability、资源耗尽、trace 篡改、Agent 缺失和逃逸套件 attestation。
+- `DYNAMIC_CONFIRMED` 由服务端 H3 门禁产生，必须保留 MOCK 与合成身份前置条件；它不是生产数据库证明。
+- 浏览器 token 仅适合本地调试；生产 session、CSRF、SSO、多租户隔离和完整 GET 鉴权仍是未来门槛。
+
+## 6. 扩展架构
+
+扩展使用中立事实模型，详细合同见 [EXTENSIBLE_ANALYSIS](EXTENSIBLE_ANALYSIS.md)，长期技术决定见 [ADR-0001](adr/0001-polyglot-control-plane-and-workers.md)：
+
+- ArtifactPackager：如何识别、展开和寻址归档、资源、配置与依赖；
+- LanguageAnalyzer：如何把语法/字节码、符号、调用、控制和数据语义降为 Security IR；
+- FrameworkAdapter：如何组合入口、鉴权、生命周期、Effect、Guard 和 Summary Provider；
+- AnalysisPack：如何定义风险域、detector、假设、实验形状与报告映射；
+- RuntimeAdapter：如何在授权沙箱中启动特定运行时并输出中立 RuntimeObservation。
+
+五者不得互相硬编码。新适配器只能补充事实、摘要、候选或实验形状，不能扩大 Worker 权限或自行升级验证状态。当前只有 JVM/Spring 的进程内基线，第二语言 Analyzer 和通用 RuntimeAdapter 协议尚未实现。
+
+## 7. 交付形态
+
+当前开发形态是 Java Control Plane、React/Vite GUI 和可选本地 Docker Worker。
+
+目标交付分两层：
+
+1. Desktop Core：通过 `jlink + jpackage` 为各平台构建自包含安装包，内置 Java runtime、Control Plane、SQLite 与前端静态资源，只绑定 loopback。
+2. Sandbox Pack：可选独立 Linux Worker，使用 digest-pinned 镜像和版本化协议；未通过健康检查或 attestation 时动态能力关闭。
+
+Tauri、企业私有化拆分、PostgreSQL/对象存储、ClickHouse、专用工作流引擎和多节点 Worker 都是规模触发后的目标架构，不是当前依赖。
+
+## 8. 当前与目标对照
+
+| 领域 | 当前实现 | 目标合同 |
+|------|----------|----------|
+| 制品 | 顶层 JAR/WAR/CLASS 有界静态读取；Boot JAR 动态 | Artifact Universe：内嵌依赖/配置/资源/scope/gap |
+| 语言 | JVM ASM 索引与 Java Agent 事件 | 进程外 LanguageAnalyzer + 中立 IR；独立 RuntimeAdapter |
+| 发现模型 | Spring MVC 参数 + 固定 sink + 有界 TaintPath | Security IR / Evidence Graph + 多类 detector |
+| 扩展 | FrameworkAdapter HINT；AnalysisPack 实验模板 | 版本化 Provider SPI，可注册模型/摘要/detector/probe |
+| 假设/发现 | Finding 强制 entrypoint/sink | SecurityHypothesis；非数据流 finding 不伪造 sink |
+| 持久化 | 单节点 SQLite V021 | 可审计 attempt、完整终态与可迁移存储 |
+| 动态 | `STATIC_ONLY` / `TRUSTED_DOCKER` | 通过 attestation 的 gVisor/Kata |
+| AI | 有界 Provider/工具循环；鉴权字符串/config 查询 | 受限 method/CFG/dataflow/guard 查询；AI 只研判假设 |
+| 证据 | PathRun、对照、finding；静态路径存在 stub 重建 | IR 保真持久化、请求级关联、coverage matrix |
+| VERIFIED | fail-closed 脚手架 | 强化隔离与可重放 release gate |
+| 测试 | main-style acceptance 较多 | `mvn test` 或统一 runner 实际执行非零断言 |
+
+实现历史由 Git 保留。架构文档只维护当前结构、目标合同和仍影响设计的缺口。
+
+## 9. 目标代码审计架构
+
+当前 `entry + sink + taintPath` 保留为兼容投影，但不再作为核心数据模型。目标架构为：
 
 ```text
-入口 /api/a
-  → UploadService.save
-  → table=attachment, fields=(path, owner_id)
-  → write
-  → 依赖模式=mock
+Artifact Universe
+  │ application / nested dependencies / config / resources / generated code
+  ▼
+Security IR / Evidence Graph
+  │ program / call / control / data / alias / guard / state / runtime
+  ├── Dataflow Detectors
+  ├── Guard & Ownership Detectors
+  ├── State & Sequence Detectors
+  ├── Typestate & API Misuse Detectors
+  ├── Configuration & Dependency Detectors
+  └── Concurrency & Resource Detectors
+            │
+            ▼
+      SecurityHypothesis Pool
+            │ server ranking / dedupe / budget / policy
+            ▼
+      Experiment Planner
+            │
+            ▼
+      Sandbox / PathRun / RuntimeObservation
+            │ request + guard + effect + state correlation
+            ▼
+      Evidence Graph delta + affected-detector recompute
+            │
+            └──── support / contradict / refine / stop
 ```
 
-### 4.2 HTTP、缓存和消息服务
+六个 AI 角色位于 Hypothesis 和 Experiment 两侧，负责查询、解释、PoC 与报告，不是事实解析器、基础召回器或状态机。
 
-- HTTP：按主机白名单路由到 Mock Server，支持录制/回放。
-- Redis/缓存：内存实现，记录 key 模式和权限边界。
-- JMS/Kafka：本地代理队列，记录生产者、消费者和消息字段。
-- 时间/随机数：可控时钟和种子，保证重放一致。
-- 文件系统：临时工作区、路径映射和写入审计。
+### 9.1 Artifact Universe
 
-### 4.3 真实连接策略
+Artifact Universe 是一次扫描可见程序世界的版本化清单，至少区分：
 
-真实连接必须显式开启，并同时满足：白名单、只读、脱敏、超时、审计和回滚。连接失败时继续使用替身执行逻辑，但报告必须标记“真实依赖未验证”。
+- application class、Boot `BOOT-INF/lib` 内嵌依赖、WAR library、配置和资源；
+- generated、framework、third-party、JDK 与 unknown scope；
+- 当前已解析、预算未展开、格式不支持和摘要不一致；
+- 运行时加载但静态不存在、静态存在但运行时未加载的差异。
 
-## 5. 路径洪水与回溯算法
+每个未展开依赖、未知协议入口、反射/代理/invokedynamic 点和制品外调用都生成 `CoverageGap`，带 scope、reason、budget 和建议 Provider。扫描完成只表示预算内工作结束，不表示 Universe 完整。
 
-### 5.1 路径模型
+### 9.2 Security IR / Evidence Graph
 
-路径由以下元素组成：
+核心持久化对象：
+
+| 对象 | 作用 |
+|------|------|
+| `ProgramNode` | class、method、field、instruction、config、resource |
+| `EntrySurface` | HTTP、Servlet、Filter、WebFlux、RPC、消息、任务、WebSocket 等入口 |
+| `TrustBoundary` | 参数、Header、Cookie、Session、消息、文件、DB 二次数据、配置和环境 |
+| `SensitiveEffect` | 系统能力或业务副作用，不限于固定 API sink |
+| `Guard` | 鉴权、租户、对象所有权、状态、额度和审批条件 |
+| `Sanitizer/Validator` | 编码、参数化、白名单、规范化和拒绝分支 |
+| `StateTransition` | 业务对象和安全状态的前后关系 |
+| `ResourceLifecycle` | 文件、连接、线程、锁、事务、临时对象和密钥生命周期 |
+| `RuntimeObservation` | Entry、Guard、Effect、State、Dependency、Exception 运行时事件 |
+
+关系至少包含 `CALLS`、`CONTROL_DEPENDS_ON`、`DATA_FLOWS_TO`、`ALIASES`、`GUARDED_BY`、`SANITIZED_BY`、`STATE_BEFORE/AFTER`、`OWNS`、`TENANT_SCOPED_BY`、`HAPPENS_BEFORE` 和 `OBSERVED_AS`。
+
+所有节点/边携带稳定 ID、project/artifact/scan、来源、evidence refs、分析器版本、置信度、coverage 状态与 stop reason。完整 `BytecodeFactIndex`、taint steps、coverage 和 unresolved facts 必须结构化持久化；禁止从 `sink.source` 字符串重建空步骤路径。
+
+### 9.3 SecurityHypothesis
+
+所有检测器输出统一假设，而不是直接创建 Finding：
 
 ```text
-Entrypoint → Input → Transform* → Branch* → State Transition* → Sink/Effect
+hypothesisId
+family / securityProperty / scope
+subjects[] / relations[]
+supportingEvidenceRefs[] / contradictingEvidenceRefs[]
+coverageGaps[]
+confidence / lifecycle
+recommendedExperiments[]
+detectorId / detectorVersion
 ```
 
-每个节点保存快照、覆盖率增量、约束、身份和依赖状态。
+生命周期固定为 `PROPOSED → PLANNED → OBSERVED → SUPPORTED | CONTRADICTED | INSUFFICIENT_EVIDENCE | DISMISSED`。Finding 只从通过 family-specific gate 的假设投影；非数据流假设不要求伪造 source/sink。
 
-### 5.2 任务优先级
+### 9.4 多类检测器
 
-优先探索：
+| 检测器 | 最小分析能力 | 示例 |
+|--------|--------------|------|
+| Dataflow | CFG/SSA、call graph、points-to、IFDS/IDE 或等价摘要 | 注入、SSRF、文件、反序列化 |
+| Guard/Ownership | guard dominance、对象/租户关系、跨入口一致性 | IDOR/BOLA、鉴权顺序、越权 |
+| State/Sequence | 状态转换、跨请求序列、不变量和差分 | 重复提交、额度、审批/流程绕过 |
+| Typestate/API Misuse | API 调用协议、生命周期和配置语义 | JWT/密码学、TLS、序列化、事务 |
+| Configuration/Dependency | 配置 schema、框架安全选项、SBOM/版本证据 | CORS/CSRF、弱配置、已知依赖风险 |
+| Concurrency/Resource | happens-before、锁/事务边界和预算观察 | TOCTOU、竞态、连接/线程/磁盘耗尽 |
+| Composition | 共享身份、对象、文件、状态或依赖关系 | 多入口攻击链 |
 
-1. 静态上可达高危 sink 的路径；
-2. 新增代码覆盖率高的输入；
-3. 能改变业务状态的路径；
-4. 需要特殊权限但尚未执行的路径；
-5. 已发现漏洞的上下游入口。
+已知 sink 表作为 Primitive Effect Provider 保留。系统通过 bottom-up MethodSummary 将 primitive effect、guard、sanitizer 和 state effect 传播到自研 wrapper；运行时观察到未知 effect 时执行反向 slice，并产生待建模 coverage gap。AI 可提出未知 effect 候选，但必须由静态或运行时证据确认其结构。
 
-### 5.3 回溯流程
+当前产品路径遵循 ADR-0002：继续加深自研轻量 `analysis.kernel`（有界 CFG、MethodSummary、field/return/sanitizer 钩子），现有 ASM 解析器作为快速索引与 fail-safe fallback。完整 SSA/points-to/IFDS/IDE 等重型引擎只能作为进程外 LanguageAnalyzer，并须通过独立 ADR、版本化中立合同、预算与召回率基准后接入；不能把重型依赖直接塞入 Control Plane。
+
+### 9.5 版本化 Provider SPI
+
+扩展面拆成正交 Provider：
+
+- `ArtifactProvider`：展开制品、依赖、资源和运行画像；
+- `EntryProvider`：发现并规范化入口；
+- `TrustBoundaryProvider`：定义 source/origin；
+- `EffectModelProvider`：定义 primitive 与业务 effect；
+- `GuardModelProvider`：定义鉴权、所有权、租户和状态 guard；
+- `SanitizerModelProvider`：定义净化、编码、参数化和验证；
+- `MethodSummaryProvider`：提供框架/依赖方法摘要；
+- `DetectorProvider`：注册安全属性检测器；
+- `DynamicProbeProvider`：把假设编译为固定策略实验。
+
+FrameworkAdapter 只负责组合适用于某框架的 Provider，AnalysisPack 负责按风险域组合 detector、summary、probe 和 report mapping。二者都不能改变授权、Worker 能力或验证状态。
+
+### 9.6 真实代码查询
+
+AI 工具需要从现有鉴权字符串扫描拆分为版本化只读接口：
+
+- `method_view`：受限反编译/指令切片与稳定位置；
+- `callers` / `callees`：调用边、解析类型和 coverage；
+- `cfg_view`：基本块、branch、exception edge 和 dominator；
+- `dataflow_slice`：source/effect/field/argument 的前向或反向切片；
+- `guard_query`：影响目标 operation 的 guard、ownership 和 sanitizer；
+- `field_uses` / `config_search`：状态、配置和资源引用。
+
+工具返回 Evidence Graph ID 和限制，不返回未经边界校验的任意文件，也不执行制品。AUTH 必须引用具体方法、guard 和调用关系；字符串/类名扫描仅作为辅助 HINT。
+
+### 9.7 假设驱动动态闭环
+
+Experiment Planner 不只消费已知 taint coverage gap，还支持：
+
+- reachability/branch 实验；
+- 不同身份、租户、对象的 differential guard 实验；
+- 状态前置、跨请求序列、重放与回滚实验；
+- metamorphic input 与 sanitizer 对照；
+- typestate/API protocol 实验；
+- 并发、TOCTOU 和资源预算实验。
+
+每次实验绑定 `hypothesisId + experimentPlanId + probeAttemptId + stageAttemptId`，并记录 expected signal、counter signal、停止条件和 family-specific gate。运行时事件统一投影 Entry、Guard、Effect、State、Dependency、Exception，再以请求/序列/并发 attempt 关联回 Security IR。
+
+### 9.8 覆盖合同
+
+任何扫描都输出 coverage matrix：
+
+- Artifact Universe 展开率、未读取依赖与配置；
+- 入口族召回和动态注册对照；
+- 调用边 DIRECT/CHA/points-to/unresolved 比例；
+- source/effect/guard/sanitizer/method summary 覆盖；
+- 各 detector 的执行、截断、unknown 和 stop reason；
+- 各 hypothesis family 的动态实验成功率和反证率。
+
+发布指标使用基准样例、变异样例和保留规则/框架集测量 recall/precision。不得用“扫描成功”“规则数量”或“AI 给出报告”代替覆盖证据。
+
+## 10. 迁移约束
+
+迁移采用平行投影，不一次替换当前 API：
+
+1. 先保真持久化现有 BytecodeFactIndex 和 runtime correlation，旧 entry/sink/path DTO 从新图投影。
+2. 再引入 SecurityHypothesis 与通用 Finding，旧 sink finding 作为 DataflowHypothesis 兼容映射。
+3. 将 Spring 入口、固定 sink 表和现有 AnalysisPack 迁为默认 Provider，建立等价回归。
+4. 引入新分析器和非污点 detector；每个 detector 独立版本、预算、fixture 和 release gate。
+5. 最后让动态 Planner 按 Evidence Graph gap 闭环，并逐步淘汰字符串重建和特例编排。
+
+具体优先级和验收只在 [MVP Backlog](MVP_BACKLOG.md) 维护。
+
+## 11. 多语言技术路线与模块演进
+
+### 11.1 技术选型结论
+
+| 组件 | 决定 | 原因 |
+|------|------|------|
+| React/TypeScript/Vite GUI | 保留 | UI 只要依赖版本化中立 API，不受分析语言限制 |
+| Java 17 Control Plane | 保留 | 现有授权、编排、证据和 Worker 能力可复用；改写语言不能解决合同耦合 |
+| JDK HttpServer | 当前保留 | 本地 loopback 足够；先抽 transport port，生产 HTTP 需求出现后再选框架 |
+| SQLite | 当前保留 | 适合个人单节点；通过 repository 隔离，达到多用户/HA 触发条件再迁移 |
+| REST/SSE + JSON Schema | 保留为北向合同 | 易调试、已有基础；SSE 只通知，GET 补偿终态 |
+| Analyzer/Runtime 协议 | 目标采用版本化 JSON Schema + JSONL/分块清单 | 先保证中立、摘要、scope、budget 和兼容；实测吞吐不足后再评估 gRPC/Protobuf |
+
+前后端框架不会天然阻止多语言；公共模型和进程边界才决定扩展成本。不得以“未来多语言”为理由提前引入微服务、队列、PostgreSQL 或控制面改写。
+
+### 11.2 目标逻辑模块
 
 ```text
-执行请求
-  → 记录约束/覆盖率/依赖
-  → 约束失败或异常
-  → 定位最近可行快照
-  → 生成满足约束的新输入或身份
-  → 重放并比较覆盖增量
-  → 加入任务队列
+frontend -> public contracts
+http adapter -> application services -> domain/contracts
+persistence adapter -> domain repository ports
+orchestration -> application/domain/contracts
+language analyzers -> Analyzer/Security IR contracts
+runtime workers -> Runtime/Observation contracts
 ```
 
-对于权限、租户和业务状态，不跳过路径，而是建立合成身份或状态，并在结果中写入前置条件，例如“需要管理员角色”“需要同租户对象”“需要先完成订单创建”。
+目标职责：
 
-### 5.4 停止条件
+- `contracts`：API、事件、Security IR、Analyzer、Runtime schema 与兼容规则；
+- `domain`：Evidence、Hypothesis、Coverage、Policy 和状态机；
+- `application`：用例、事务、幂等、授权调用和投影协调；
+- `adapters/http`：REST/SSE、认证入口和 DTO 映射；
+- `adapters/persistence`：repository、迁移和物理存储；
+- `orchestration`：pipeline/job/task/attempt、终态、恢复和预算；
+- `analyzers/*`：某语言语义到 Security IR；
+- `runtimes/*`：某运行时的沙箱启动和观测。
 
-- 单任务墙钟时间；
-- 指令数、CPU、内存和磁盘上限；
-- 状态哈希重复；
-- 分支预算耗尽；
-- 依赖连续失败；
-- 检测到疑似非终止循环。
+迁移先在当前仓库和进程内建立 port，不要求立即拆 Maven 仓库或服务。新功能不得继续把领域逻辑堆入 `ControlPlaneServer`、`ApiDtos`、SQLite adapter 或前端 `api.ts`；但旧逻辑迁移必须有兼容投影和回归，不能大爆炸重写。
 
-停止时必须输出 `stopReason`，而不是静默丢弃路径。
+### 11.3 公共合同中立性
 
-## 6. Agent 协议与中枢图谱
+- Artifact 使用 digest/mediaType/components/scope，不把 JAR/WAR/CLASS 设为永久封闭枚举。
+- ProgramNode 带 `language/kind/symbol/location`；JVM descriptor、TypeScript module 等放 namespaced extension。
+- EntrySurface 使用 protocol/operation/address/inputs/guards；HTTP route 只是一个协议形态。
+- Finding 绑定 hypothesis/securityProperty；只有 dataflow family 才要求 origin/effect path。
+- RuntimeObservation 使用 runtime/eventKind/correlation/subjects；JVM class/method 不是所有语言的必填字段。
+- unknown kind 和 extension 必须可保存、转发和通用降级显示；任意 extension 不能直接控制权限或状态提升。
 
-每个 Agent 通过受控工具工作，工具包括：查询静态图、获取脱敏轨迹、创建输入、启动沙箱、恢复快照、提交验证任务和写入事实图谱。
+### 11.4 Analyzer 接入门禁
 
-统一结果字段：
+进程外 Analyzer 至少声明 analyzer/version、language/mediaType、schema/capability、预算和 deterministic fingerprint。输出通过分块 manifest 绑定 digest、scope、顺序、大小、压缩、diagnostic、coverage gap、资源使用和 stop reason。
 
-- `findingId`
-- `source`
-- `transforms`
-- `sink`
-- `impact`
-- `preconditions`
-- `evidenceRefs`
-- `confidence`
-- `verificationStatus`
+Control Plane 对错误 scope、digest、schema、chunk、预算、迟到回调和部分失败 fail-closed。完整校验前只进入暂存区，不发布到 Evidence Graph。Analyzer 无 Control Plane 数据库、动态 Worker、模型工具、授权或验证状态权限。
 
-中枢图谱使用 PostgreSQL + 图扩展或 Neo4j；高吞吐轨迹和覆盖率可放入 ClickHouse；原始制品和快照放对象存储。第一版可先用 PostgreSQL 表和 JSONB，避免过早引入多套基础设施。
+### 11.5 前端中立性
 
-## 7. 安全边界
+前端按 capability、hypothesis family、security property、entry protocol 和通用 evidence 工作。语言/框架特有信息通过可选 renderer 显示；未知 kind 仍能展示证据和 coverage。API schema、TypeScript 类型、运行时 parser 与 Demo fixture 必须由同一合同生成或经 consumer contract 锁定，不能分别手写并长期漂移。
 
-- 每个项目、任务和 Worker 独立身份。
-- 沙箱默认无外网，系统调用和子进程受限。
-- AI 工具调用采用 allowlist，不允许直接执行任意宿主机命令。
-- 制品、配置、凭据和轨迹加密；日志脱敏。
-- 所有危险测试需策略审批；提供 dry-run 和只读模式。
-- 生产模式支持私有化、离线模型和租户隔离。
+### 11.6 防偏治理
 
-## 8. 推荐实现栈
-
-- GUI：独立 React + TypeScript + Vite 应用；TanStack Query 管理服务端状态，React Flow/Cytoscape 绘制图谱，Monaco 查看代码，ECharts 展示覆盖率。GUI 不直接访问数据库或沙箱。
-- GUI 实时通道：MVP 优先 SSE，双向控制需要时再启用 WebSocket；事件丢失后以幂等查询接口补偿。
-- 桌面形态：后续用 Tauri 2 包装同一套前端，不维护 JavaFX/Swing 分支。
-- Control Plane：Java/Kotlin 或 Go；第一版优先选择团队最熟悉的技术。当前 JVM 分析核心使用 Java 17。
-- JVM 分析：ASM + Soot/WALA 类调用图能力，配合自研框架适配器。
-- AI 服务：独立 Agent Gateway，兼容云端和本地模型。
-- 数据：PostgreSQL、对象存储；轨迹量增大后引入 ClickHouse。
-- 沙箱：OCI 容器起步，企业版提供 Kata/Firecracker 等更强隔离。
-
-GUI 与 Control Plane 之间只交换版本化 DTO。DTO 必须包含项目、制品摘要、扫描、验证状态、依赖模式和证据引用；前端不可根据自然语言模型输出自行生成漏洞结论。
-
-## 9. 运行契约、数据一致性与故障处理
-
-### 9.1 任务和事件契约
-
-Control Plane 与 Worker 之间应使用版本化事件，而不是共享内部对象。至少定义 `ScanCreated`、`TaskLeased`、`TraceCommitted`、`FindingUpdated`、`TaskStopped` 和 `ScanCompleted` 事件；事件包含 `projectId`、`artifactDigest`、`scanId`、`taskId`、`schemaVersion`、幂等键和时间戳。重复投递必须幂等，事实证据采用追加写，禁止原地覆盖历史轨迹。
-
-最小事件信封示例：
-
-```json
-{
-  "eventId": "evt-01",
-  "eventType": "TraceCommitted",
-  "schemaVersion": 1,
-  "projectId": "project-01",
-  "artifactDigest": "sha256:...",
-  "scanId": "scan-01",
-  "taskId": "task-01",
-  "idempotencyKey": "trace-01",
-  "occurredAt": "2026-07-24T04:00:00Z",
-  "payloadRef": "object://evidence/trace-01"
-}
-```
-
-`payloadRef` 指向经过权限校验的对象，而不是把未经脱敏的轨迹直接塞进消息总线；事件消费者必须先验证项目边界、制品摘要和 schema 版本。
-
-### 9.2 事实、推断与模拟结果分层
-
-存储层应分开保存三类数据：
-
-1. `Fact`：字节码、运行时和系统调用直接观测到的事实；
-2. `Inference`：静态分析或模型推断，带来源和置信度；
-3. `Simulation`：替身/回放产生的结果，带依赖模式和有效范围。
-
-图谱查询和报告不能把三者无提示地合并。每条边保留 `evidenceRefs`、`observedAt`、制品摘要、工具版本和模型版本，便于审计和回归比较。
-
-### 9.3 启动失败与降级
-
-闭源制品常缺少配置、许可证或第三方服务。Runtime Profiler 应先生成启动诊断（Java 版本、缺失类、端口、环境变量和依赖连接），再按“替身—录制回放—用户补充—受控真实连接”的顺序降级。无法启动时仍可运行静态建模，但扫描必须标记为 `static_only`，不得生成动态已验证结论。
-
-## 10. 沙箱隔离与多租户基线
-
-> **个人本地版边界（2026-07-26）**：本版不实现完整多租户、企业级 RBAC/SSO 或跨租户调度；数据库中的 project/workspace 字段只用于本地作用域和证据关联，不构成企业租户隔离承诺。真实供应商生产互操作也不在范围内，Provider 仅可作为本地显式授权的受控适配。动态任务只能交给通过策略校验的沙箱；沙箱不可用时必须保持 `DYNAMIC_DISABLED`，不得在宿主机直接运行制品。
-
-- 容器使用只读根文件系统、非特权用户、最小 Linux capabilities、seccomp/AppArmor（或等效策略），并禁用宿主机路径、Docker socket、内核接口和不必要的设备。
-- 出站网络按域名/IP/端口白名单控制，同时防止 DNS rebinding、IPv6 绕过和云元数据地址访问；所有允许的流量写入审计日志。
-- Worker、对象存储和数据库按项目/租户使用独立身份；临时文件、快照和密钥在任务结束或保留期到期后可验证销毁。
-- 沙箱逃逸、资源耗尽和代理绕过测试属于发布前 P0 安全门槛，而不是可延后的性能优化。
-
-## 11. 可观测性与容量规划
-
-系统至少输出任务排队时延、执行时长、轨迹吞吐、快照大小、替身命中率、模型调用耗时/成本、覆盖率增量和 Worker 失败率。按单项目并发任务、单任务最大轨迹大小和对象存储保留期建立容量预算；达到预算时优先压缩/采样并给出 `stopReason`，不能静默丢弃证据。
-
-## 12. AI 治理与提示注入防护
-
-Agent Gateway 对模型、工具和提示模板做版本登记；模型输出必须经过 JSON Schema 校验、权限检查和事实引用校验。代码中的注释、字符串、接口返回内容全部标为“不可信上下文”，不得覆盖系统策略。模型不可用或输出不合规时，系统应回退到静态规则和人工待审队列，而不是阻塞或自动扩大权限。
-
-## 13. OpenSandbox Worker 决策
-
-动态执行后端采用可替换的 OpenSandbox 协议适配器，使用其 `/v1` 生命周期 API 和 execd 执行面。Veyrion 自身持有任务授权、租约、资源预算、证据和验证状态；OpenSandbox 只负责隔离环境生命周期，不能反向扩大扫描策略。
-
-后端能力必须显式分级：
-
-- `STATIC_ONLY`：没有可用 Worker，拒绝动态执行；
-- `TRUSTED_DOCKER`：运维显式启用的本地 Docker runc，只接受后端管理并复核摘要的内部可执行 JAR；不是强化隔离；
-- `HARDENED_GVISOR`：通过 gVisor 运行时自检和安全门槛；
-- `HARDENED_KATA`：通过 Kata/微虚拟机运行时自检和安全门槛。
-
-Windows 可作为 Control Plane 和开发宿主；本地调试可显式启动进程内 `TRUSTED_DOCKER` Worker，生产动态任务应运行在独立 Linux gVisor/Kata Worker。普通 Docker/runc 不能作为恶意闭源制品的安全边界；只有强化运行时完成网络/DNS、宿主路径、非 root、只读根、资源耗尽和逃逸测试后，才允许不受信制品生产执行。任何动态后端失败时都退回静态分析，不得降级为宿主 Java。
-
-**落地注记（MVP-6 / V020）**：`verified_findings` 表、`EscapeSuiteAttestation` 与 `ReplayEvidenceGate` 已接入 `VerifiedStatusGate`，但门禁仍 fail-closed（`VERIFIED_GATE_NOT_OPEN`）。dashboard 暴露 `verifiedFindings`（当前恒为空）。无 gVisor/Kata 逃逸套件端到端 attestation 前，不得将任何 finding 标为 `VERIFIED` 或生产可用；`TRUSTED_DOCKER` 永不开放 `VERIFIED`。
-
-Worker 与 Control Plane 之间只交换版本化合约。每个任务、租约、checkpoint 和 trace chunk 都绑定 `projectId`、`artifactDigest`、`scanId`、`taskId`，运行时轨迹以 SHA-256 前序摘要链追加提交。GUI token、Worker token、OpenSandbox API key 和沙箱内凭据相互隔离；任何来自制品、模型或前端的字段都不能修改运行时能力等级、网络策略或挂载范围。
-
-## 14. 本地首版持久化与管理控制
-
-- Desktop Core 使用 SQLite/plain JDBC 保存项目、制品元数据、扫描结果、Provider、AI 角色绑定、有界 AI job、本地操作员 PAT hash 和脱敏审计。迁移按版本顺序执行并校验历史文件摘要，未知版本、断档或 checksum 漂移均拒绝启动。已写入 `schema_migrations` 的迁移文件视为不可变；后续 schema 变更只能追加新版本，不得改写已应用 SQL 以“修复”本地库。当前已注册至 **V020**（含 V015 `schemaVersion` 护栏、V016 分支覆盖/对照快照、V017 TaintGraph/LedgerDiff、V018 fuzz 策略、V019 root cause、V020 `verified_findings`）；读取端对 experiment plan / path run JSON 要求 `schemaVersion >= 1`。
-- Provider secret 使用数据库外根密钥和 AES-256-GCM；AAD 绑定 workspace、Provider、credential 和版本。HTTP DTO 不包含明文、密文、nonce 或可逆片段。根密钥文件权限在支持的平台尽力收紧，非 loopback/生产形态无法确认权限时必须拒绝启用。
-- 本地 bootstrap token 映射到 `local-admin`，每次进程启动轮换，旧 token 失效；操作员 PAT 与 Worker token 使用不同格式、header、存储和校验器。当前只完成 loopback 单 workspace RBAC，生产 SSO/session 和全部 GET 的身份边界仍待实现。
-- AI Gateway 已支持 OpenAI Chat/Anthropic Messages 非流式请求和单工具调用循环；只有显式授权、固定角色绑定、启用 Provider、后端凭据和完整配置快照一致时才出站。模型输出无权修改工具、网络、沙箱、预算或验证等级，结论固定为 `INFERENCE`。
-
-### 14.1 浏览器制品上传边界
-
-- GUI 只读取用户通过文件选择器明确选择的 JAR/WAR/CLASS，并在本地计算完整 SHA-256；不接收浏览器伪造的宿主路径。
-- Control Plane 以项目作用域创建有 TTL 和总预算的进程内上传会话，只接受顺序 offset、明确 Content-Length、单块不超过 4 MiB 且 `X-Chunk-SHA256` 匹配的字节。
-- 完成时再次核对声明大小和完整摘要，并通过 `ArtifactRegistry` 检查扩展名、文件边界及 JAR/WAR ZIP 结构。通过后只能原子移动到授权根内的内容寻址路径，项目登记和扫描引用该副本。
-- 启动时仅清理匹配内部命名规则的残留 `.part`；已安装内容不受影响。取消和过期会释放会话预算。上传权限属于操作员 `MANAGE_PROJECTS`，Worker 凭据不能进入该域。
-- 旧路径登记暂时保留为本地兼容入口，但 GUI 默认折叠；它不具备浏览器上传语义。上传会话尚未持久化，断线续传只在同一进程生命周期内有效。
-
-## 15. 字节码事实索引
-
-- 在既有有界 classfile reader 上提取类层次、字段、方法、字段读写、调用指令与稳定指令证据，不加载或初始化被测类。
-- `invokestatic`/`invokespecial` 在制品内解析为 `DIRECT`；虚调用和接口调用在制品内按类层次解析为有界 `CHA`，制品外或动态目标标为 `UNRESOLVED`。解析会保留声明 owner、实际候选 owner、调用位置和限制说明。
-- 入口参数通过受限字节码栈/局部变量摘要作为 source，沿制品内调用边传播到敏感 API，形成带 source、transform、call、sink 步骤的 `STATIC_INFERRED` `TaintPath`。调用图边数、污点状态、路径数和方法流完整性均有预算/停止原因；分支合流、对象字段别名、反射、JNI、动态代理、完整 classpath 和运行时注册不被伪装成已解析。
-- **落地注记（MVP-3 / V017）**：`TaintGraphProjector` 可把有界 `TaintPath` 投影为入口子图；`code_query kind=TAINT_GRAPH` 返回 nodes/edges（合成验收至少 3 节点）。`LedgerDiff` 对比两轮 `ContrastLedger`；`DynamicFeedbackApplier` 可在证据可查时升级单条路径动态状态。dashboard 暴露 `ledgerDiff`。真正 sink→source 反向 BFS 仍未做；不得伪装完整别名分析。
-- 反编译只作为未来隔离分析 Worker 的派生阅读视图，不能作为事实源，也不能在 Control Plane 进程内运行。
-
-## 16. 交付与部署形态
-
-默认交付采用两层产物：
-
-1. **Desktop Core**：使用 `jlink + jpackage` 在目标平台分别构建安装包，包含裁剪 Java runtime、Control Plane、SQLite native library 和 React 静态资源。应用只绑定 loopback，并打开系统浏览器。
-2. **Sandbox Pack（可选）**：以 digest-pinned Docker Compose 提供 Linux Worker/OpenSandbox。Desktop Core 通过版本化 Worker 合约连接；健康或 attestation 不通过时动态能力关闭。
-
-该拆分满足无 Docker 的静态开箱使用，也保留强化动态隔离。Compose 只提供部署一致性，不自动成为恶意制品安全边界；本地普通 runc 仅允许操作员信任、由后端管理并复核摘要的内部 JAR。多平台产物必须在对应 OS/架构 CI 构建、签名并生成 SBOM。GraalVM Native Image 待反射、JNI 与插件契约稳定后另行评估。
-
-## 17. 外部 Spring Boot JAR 动态分析首版
-
-外部制品采用“原始事实—派生理解—原始制品重放”的三层结构：
-
-1. classfile/事实索引定位入口、调用点和依赖；
-2. Vineflower/CFR 派生视图与 AI `HarnessPlan` 只用于输入和状态规划，不能编译为替代目标；
-3. harness 只能链接 digest-verified 原始 JAR，最终观察来自强化沙箱中的原始字节码。
-
-`ExternalArtifactTaskExecutor` 只消费内部 task scope 和 artifact catalog。执行前复核文件身份、大小、ZIP signature 和 SHA-256；浏览器请求不携带宿主路径，命令、Agent 路径、runtime image、UID/GID、tmpfs、网络和预算由部署策略固定。本地调试任务可使用部署方显式启用的 `TRUSTED_DOCKER`；面向不受信制品的生产任务必须使用 `HARDENED_GVISOR` 或 `HARDENED_KATA`，并与 P0 release decision 的镜像/capability 一致。
-
-Agent 使用 startup-only Byte Buddy 插桩，不修改 bootstrap class：Spring mapping/Servlet 与 JDBC implementation 采用方法 Advice，JDK HTTP/文件/进程采用应用调用点插桩。事件区分 `RUNTIME_OBSERVED`、`AGENT_INSTRUMENTED`、`APPLICATION_REPORTED`，并回指 caller class、method descriptor、target 与 invocation ordinal。Agent 与目标同 JVM，恶意目标理论上可以干扰或伪造进程内状态，因此 Agent 永远不是安全或不可篡改边界；Worker 负责 trace 预算、摘要链、完整性和双次重放。
-
-替身层提供 loopback 固定 HTTP route、精确 SQL 规则结果、有界 Redis RESP2/RESP3 子集、有界 MySQL Classic 子集、授权 tmpfs 文件和默认拒绝的进程模拟。每个结果绑定项目/制品/扫描/任务、policy digest、sequence、provenance、executed、预算与 stop reason；完整 transcript 有稳定摘要。替身不允许外部转发、宿主路径或任意进程。协议替身只覆盖声明的子集，未知命令、畸形帧和预算超限必须拒绝。
-
-### 17.1 动态状态持久化与恢复
-
-- SQLite V007 保存 `WorkerTaskSpec`、任务生命周期、租约、checkpoint、失败原因、trace chunk、前序摘要和 trace 幂等键；V011 继续保存控制面 request-to-resource 幂等绑定、审计流水线 cursor 和有界 probe plan。写入前仍由内存合约校验 scope、摘要链、资源预算和状态转换。
-- 控制面启动时恢复任务和 trace，已提交 chunk 重新校验链连续性；`LEASED/RUNNING/PAUSED` 任务清除旧租约并以 `CONTROL_PLANE_RESTART_RECOVERY` 回到 `QUEUED`，避免把旧 worker 身份当成仍然有效。完成任务可从持久化 trace 重建动态路径投影。
-- 控制面重启时，持久化 `QUEUED/RUNNING` AI job 会保留为不可变的 `FAILED/PROCESS_RESTARTED` 历史记录，恢复器依据 cursor 创建下一阶段新 job，不改写旧记录或复制已完成阶段。该能力是单节点 SQLite 恢复，不是分布式队列、exactly-once、租约服务或不可变归档；SSE 客户端历史、跨节点调度和防篡改审计仍需后续设计。
-
-不受信制品的生产能力发布前必须具备最近 30 天内、由受信 verifier 验证的完整 P0 证据：网络、DNS、metadata、宿主挂载、Docker socket、非 root、只读根、capability、资源耗尽、trace 篡改、Agent 缺失与沙箱逃逸套件。当前仓库未执行真实 gVisor/Kata 逃逸测试；本地 `TRUSTED_DOCKER` 即使可用，也不能据此标记强化动态能力已通过发布门禁。
-
-## 18. 有界 AI Job 与工具协议
-
-- Provider 类型显式区分 `OPENAI_CHAT` 与 `ANTHROPIC_MESSAGES`，保留旧 `OPENAI_COMPATIBLE` 读取兼容。模型 inventory 仅表示远端发现结果，不证明工具、上下文窗口或 allowlist 能力，也不自动创建角色绑定。
-- AI Job 创建必须显式 `authorized=true`，并固化项目、扫描、制品摘要、角色、Provider、模型、角色绑定版本、Provider kind/base URL/配置版本、`outputLanguage`、`outputFormat=MARKDOWN` 和资源预算。执行前再次比对扫描和配置；发生漂移即 fail-closed。
-- 两类协议先转换为 canonical `ToolCall`。服务端固定注册表再检查角色 allowlist、scope、JSON schema/深度/字节、调用次数、deadline 和结果预算；模型字段不能携带权限、审批、网络、沙箱或租户覆盖。
-- OpenAI 使用 strict function schema、`parallel_tool_calls=false` 和相邻 `role=tool` 结果；Anthropic 使用 `disable_parallel_tool_use=true` 和紧邻 `tool_result`。截断、过滤、拒绝、畸形参数、重复 ID、未知 block 或缺失结果均不执行工具。
-- 生产传输只允许经过 Provider 边界验证的显式 HTTP(S) endpoint，禁止重定向，并限制连接、请求、响应和读取时间。为兼容受信内网网关可使用明文 HTTP，但这会暴露凭据与模型数据，公网部署应强制 HTTPS。凭据只在最短解密作用域内进入 header；响应原始字节在解析后清零。
-- 当前工具只读取同一 project/artifact/scan 的入口、依赖、sink、静态证据和动态安全摘要；动态验证与漏洞研判可调用服务端 `sandbox_probe`，但不能执行制品、访问外部网络、调用 shell 或反编译。持久化只保留状态、停止原因、请求 ID、耗时、轮次、工具决策摘要和脱敏截断的 `INFERENCE`。
-- 真实 Provider 首轮互操作失败定位为 dotted function names 被 Provider 拒绝。代码侧名称固定改为 snake_case：`facts_search`、`evidence_get`、`plan_propose`；Provider 不能借此注册新工具或扩大角色 allowlist。
-- SQLite V005 为单个 AI job 最多追加 128 条顺序事件：Provider 请求/结果仅保留协议、轮次、输出语言、限额、HTTP 状态、耗时、请求 ID、停止原因和工具数等有界元数据；工具参数只保留 shape/field count/encoded bytes，以及白名单化的事实类别、limit、合法证据引用、候选数量和原始敏感字段的存在/字节数，另存工具结果状态、脱敏截断的模型摘要和失败诊断。
-- 事件接口不保存或返回 Provider 原始响应、API Key、完整工具参数、模型隐藏推理或 chain-of-thought。`modelInferenceSummary` 是经过脱敏和 16 KiB 截断的用户可见模型文本，不是推理轨迹，结论仍固定为 `INFERENCE`。
-- 当前仍是本地单节点、进程内执行器，未完成真实供应商互操作、生产 egress/DNS rebinding 防护、流式协议、成本计量或多租户调度；Azure/LOCAL 聊天保持 disabled。
-
-## 19. 静态信号与本地 Provider 兼容边界
-
-## 19.1 固定 AI 审计流水线
-
-控制面固定编排（路径调试型，见 [AUDIT_FLOW.md](AUDIT_FLOW.md) 与 [PATH_EXPERIMENT_MODEL.md](PATH_EXPERIMENT_MODEL.md)）：
-
-`PRE_ANALYSIS → AUTH_ANALYSIS → DYNAMIC_OBSERVATION（按身份轨；非 AI）→ AUTH_ANALYSIS 绕过确认 → DYNAMIC_VERIFICATION → PATH_EXPLORATION → VULNERABILITY_TRIAGE → REPORT_GENERATION`。
-
-鉴权分析产出合成身份策略、轨集合与 AI 实验计划草稿；服务端校验后按轨执行并写入 PathRun（含超时分类与 SQL 事件）。动态验证可调用 `sandbox_probe`；AI 不能改网络/挂载/UID/预算。漏洞研判围绕 PathRun；SQL 满足 H3 门禁时服务端升 `DYNAMIC_CONFIRMED`，模型不能单独升级；`VERIFIED` 仍要求强化沙箱门禁。
-
-角色绑定现在包含 `promptZh` 与 `promptEn`，由 V010 持久化；创建 AI Job 时将对应提示词写入不可变 policy snapshot，执行时按 `outputLanguage` 选择语言。提示词属于不可信任务输入，不能修改工具、网络、沙箱、预算或验证状态。
-
-- 类名包含 `File`、`Path`、`Exec` 等词不是 sink 事实。class-name 规则只对无法解析有效 classfile 元数据的对象降级启用；可正常解析的 Spring Boot loader、框架类和应用类不会仅凭名称生成 sink。
-- 静态发现的 severity 表示排查优先级，不表示漏洞严重度。没有入口绑定的信号固定为 `info`；静态绑定的 file/command 信号最高为 `low`/`medium`，不得显示为 `high/critical`。
-- OpenAI Chat 与 Anthropic Messages 接受显式 HTTP(S)，支持本机及 RFC1918/ULA 内网兼容网关；仍拒绝 userinfo、query、fragment、重定向、链路本地/metadata 和组播目标。该兼容能力不提供传输机密性：非本机 HTTP 的 API Key、模型输入和结果均可能被窃听。
-
-## 20. Windows TRUSTED_DOCKER 开发运行时
-
-Docker Desktop/WSL2 提供 Linux runc，但当前 runtime inventory 没有 runsc；本地运行时因此只声明 `TRUSTED_DOCKER`。`sandbox-pack` 只在 loopback 启动 registry，构建并推送包含固定 JVM Agent 的 digest-pinned runtime image；当前开发 Worker 使用 `LocalDockerTrustedSandboxClient` 直接执行后端管理的内部 JAR：
-
-- public 动态请求 body 只允许 `authorized=true`；Control Plane 从不可变 scan 快照选择入口并从 artifact catalog 解析内容寻址副本，浏览器不能提供镜像、命令、路径、挂载或 capability；
-- 执行前复核文件身份、大小、ZIP signature 和 SHA-256，只挂载一个目标 JAR 到固定 `/opt/veyrion/artifact/application.jar`，且 mount 为只读；
-- 容器固定 `--network none`、专用有界 trace tmpfs、单个只读 artifact mount 和 PID/内存/CPU 限制；个人本地 `TRUSTED_DOCKER` 不强制只读 rootfs、非 root 或 cap-drop，以兼容需要写日志或 root 启动的受信应用；
-- 容器创建后以 `docker inspect` 复核网络、artifact mount、tmpfs 和资源配置，并验证 root 用户与 trace 目录可写。该兼容策略只属于受信开发后端，不得作为恶意制品隔离证据；
-- runtime 内以固定 `java -javaagent:... -jar /opt/veyrion/artifact/application.jar` 启动目标，`java.io.tmpdir` 指向有界 tmpfs，Agent class prefix 由 scan 入口声明类的包名派生，避免框架启动类淹没 trace。若进程存活，Agent helper 从同一容器访问目标 JVM loopback 入口；`--network none` 阻断外部连接，Agent 同时记录 HTTP、Socket、URL、DNS 和 JNDI 尝试，使 JNDI/URLDNS 候选具备“尝试发生且被断网阻断”的动态证据；
-- 动态验证角色可调用 `sandbox_probe`。模型只提交已存在的 `entry:*` 和有界输入提示，服务端从不可变 scan 解析路由、固定 `NetworkPolicy.DENY`、挂载和预算，将 `name=value` 候选裁剪为最多 8 个入口参数请求并生成服务端 probe plan，创建至多一个 job-scoped 动态任务并返回任务/入口证据；流水线在该任务仍运行时不会推进路径探索；模型不能直接获得命令、网络、UID、挂载或预算控制权。V011 将 plan 元数据和 job 绑定持久化，重启后按 hash 校验并恢复原任务，异常则 fail-closed。
-- Worker 仍通过独立 token 的 HTTP contract 拉取任务、租约、提交 trace 和完成任务；任何 Docker 或策略检查失败均 fail-closed，不存在宿主 Java fallback。
-
-该 backend 是显式开发能力，不是 OpenSandbox 故障降级，也不是 gVisor/Kata 强化隔离。它只适用于操作员信任的内部 JAR；恶意或不受信制品的生产执行仍须部署到支持 runsc/Kata 的 Linux Worker 并通过 P0 release gate。本机真实 Docker 回归要求通过 `VEYRION_TEST_ARTIFACT_JAR` 显式提供后端管理的可执行测试 JAR，覆盖 public 排队、断网运行、loopback HTTP、不可变 trace commit 和 dashboard `DYNAMIC_SUSPECTED` 投影。
+后续 AI 实施必须遵守 [开发与 AI 实施手册](DEVELOPMENT_PLAYBOOK.md)、[AI 任务包模板](AI_TASK_TEMPLATE.md) 和路径上的 `AGENTS.md`。框架、数据库、协议、语言运行时、权限或验证门禁变化必须先有 [ADR](adr/README.md)。提示词只是入口；最终依赖 schema compatibility、架构依赖测试、迁移测试、安全拒绝测试、coverage 基准和根 Agent diff 审计。

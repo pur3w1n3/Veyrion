@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "observationId": "obs-1",
+  "kind": "HTTP_PROBE",
+  "scope": {
+    "projectId": "project-demo",
+    "artifactDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "scanId": "scan-1",
+    "taskId": "task-1"
+  },
+  "observedAt": "2026-07-28T02:00:00Z",
+  "evidenceRefs": ["pathrun-1"],
+  "coverageStatus": "OBSERVED",
+  "stopReason": "COMPLETED",
+  "correlationId": "corr-1",
+  "payload": { "status": 200 }
+}

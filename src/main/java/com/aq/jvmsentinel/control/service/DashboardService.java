@@ -4,6 +4,7 @@ import com.aq.jvmsentinel.analysis.CandidateRanker;
 import com.aq.jvmsentinel.analysis.contrast.ContrastLedger;
 import com.aq.jvmsentinel.analysis.contrast.LedgerDiff;
 import com.aq.jvmsentinel.control.ApiDtos;
+import com.aq.jvmsentinel.model.BytecodeFactIndex;
 import com.aq.jvmsentinel.model.StaticContrastRow;
 
 import java.util.ArrayList;
@@ -47,10 +48,11 @@ public final class DashboardService {
 
     public static List<Object> rankedSinkMaps(
             List<ApiDtos.SinkDto> sinks,
+            List<BytecodeFactIndex.TaintPath> taintPaths,
             List<ApiDtos.EntryDto> entries,
             List<StaticContrastRow> rows) {
         List<CandidateRanker.RankedSinkView> ranked = CandidateRanker.rank(
-                sinks, ContrastLedger.taintPathsFromSinks(sinks), entries, rows);
+                sinks, taintPaths, entries, rows);
         List<Object> rankedMaps = new ArrayList<>();
         for (CandidateRanker.RankedSinkView view : ranked) {
             if (rankedMaps.size() >= 20) break;

@@ -7,11 +7,13 @@ import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolResult;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolStatus;
 import com.aq.jvmsentinel.ai.AuthBypassFeasibility;
 import com.aq.jvmsentinel.analysis.fuzz.FuzzStrategyRegistry;
+import com.aq.jvmsentinel.domain.experiment.ExperimentPlanKind;
 import com.aq.jvmsentinel.model.AuthBypassCandidate;
 import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.aq.jvmsentinel.model.IdentityTrack;
 import com.aq.jvmsentinel.provider.AgentRole;
 import com.aq.jvmsentinel.worker.ExperimentPlanValidator;
+import com.aq.jvmsentinel.worker.HypothesisExperimentPlanValidator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -115,6 +117,8 @@ public final class AiToolRegistry {
             return CanonicalToolContracts.error(call, ToolStatus.NOT_FOUND, exception.code);
         } catch (ScopeException exception) {
             return CanonicalToolContracts.error(call, ToolStatus.DENIED, "DATA_SOURCE_SCOPE_MISMATCH");
+        } catch (SecurityException exception) {
+            return CanonicalToolContracts.error(call, ToolStatus.DENIED, "DATA_SOURCE_SECURITY_DENIED");
         } catch (IllegalArgumentException exception) {
             String code = argumentErrorCode(exception);
             if (EntryRefResolver.CODE_NOT_FOUND.equals(code)) {
@@ -201,15 +205,21 @@ public final class AiToolRegistry {
     }
 
     private RegisteredTool codeQuery() {
-        ToolSchema schema = new ToolSchema(
-                Map.of("query", Field.string(1024), "limit", Field.integer(1, 50)),
-                Set.of());
+        Map<String, Field> fields = new LinkedHashMap<>();
+        fields.put("kind", Field.string(64));
+        fields.put("query", Field.string(1024));
+        fields.put("limit", Field.integer(1, 50));
+        ToolSchema schema = new ToolSchema(Map.copyOf(fields), Set.of());
         ToolDefinition definition = new ToolDefinition("code_query",
-                "Bounded read-only auth/config/code query over the registered artifact. "
-                        + "Use for AUTH_ANALYSIS to harvest JWT sign-key candidates (secretCandidates with "
-                        + "provenance FACT/RULE_GENERATED), skip-url patterns, @PreAuth/TokenFilter signals, "
-                        + "and auth-related classes (JwtUtil/TokenFilter/SecureUtil and adapter path hints). "
-                        + "Returns FACT observations only; raw secrets stay redacted; "
+                "Bounded read-only code/auth/config query over persisted static facts and the "
+                        + "registered artifact. Optional kind selects a versioned projection: "
+                        + "METHOD_VIEW, CALLERS, CALLEES, CFG_VIEW, DATAFLOW_SLICE, GUARD_QUERY, "
+                        + "FIELD_USES, CONFIG_SEARCH, AUTH (legacy string/config harvest), "
+                        + "TAINT_GRAPH (legacy alias of DATAFLOW_SLICE). "
+                        + "Blank kind defaults to AUTH/CONFIG_SEARCH harvest. "
+                        + "AUTH_ANALYSIS should prefer METHOD_VIEW / GUARD_QUERY when IR methods exist. "
+                        + "Returns FACT observations only (verificationStatus STATIC_INFERRED) with "
+                        + "coverageStatus/stopReason when incomplete; raw secrets stay redacted; "
                         + "never executes bytecode, opens network, or upgrades verificationStatus. "
                         + "Propose DEFAULT_SECRET_HS256 only when jwtSecretMaterialFound/mintable=true; "
                         + "otherwise prefer MISSING_AUTH / EMPTY_BEARER / ALG_NONE. "
@@ -217,9 +227,12 @@ public final class AiToolRegistry {
                         + "not harvested FACT.",
                 schema.jsonSchema(), OverflowPolicy.TRUNCATE);
         return new RegisteredTool(definition, schema, (call, context) -> {
+            String kind = call.arguments().has("kind")
+                    ? call.arguments().get("kind").asText("").trim() : "";
             String query = call.arguments().has("query") ? call.arguments().get("query").asText() : "";
             int limit = call.arguments().has("limit") ? call.arguments().get("limit").asInt() : 20;
-            List<ToolDataSource.FactRecord> records = source.queryCode(context.scope(), query, limit);
+            List<ToolDataSource.FactRecord> records =
+                    source.queryCode(context.scope(), kind, query, limit);
             if (records == null || records.size() > Math.max(1, Math.min(50, limit))) {
                 throw new IllegalStateException("invalid code_query result");
             }
@@ -375,29 +388,36 @@ public final class AiToolRegistry {
                 schema.jsonSchema(), OverflowPolicy.TRUNCATE);
         return new RegisteredTool(definition, schema, (call, context) -> {
             String sinkId = call.arguments().get("sinkId").asText();
-            String category = call.arguments().has("sinkCategory")
+            String requestedCategory = call.arguments().has("sinkCategory")
                     ? call.arguments().get("sinkCategory").asText("") : "";
-            if (category == null || category.isBlank()) {
-                try {
-                    List<ToolDataSource.FactRecord> sinks = source.searchFacts(
-                            context.scope(), "SINK", sinkId, 8);
-                    for (ToolDataSource.FactRecord record : sinks) {
-                        requireScope(context, record);
-                        if (record.value() != null && record.value().has("category")) {
-                            category = record.value().get("category").asText("");
-                            break;
-                        }
-                    }
-                } catch (Exception ignored) {
-                    category = "";
+            ToolDataSource.FactRecord matchedSink = null;
+            for (ToolDataSource.FactRecord record : source.searchFacts(
+                    context.scope(), "SINK", sinkId, 8)) {
+                requireScope(context, record);
+                boolean exactReference = ("sink:" + sinkId).equals(record.reference());
+                boolean exactValue = record.value().has("id")
+                        && sinkId.equals(record.value().get("id").asText(""));
+                if (exactReference || exactValue) {
+                    matchedSink = record;
+                    break;
                 }
             }
+            if (matchedSink == null) {
+                throw new MissingException("SINK_NOT_FOUND");
+            }
+            String factCategory = matchedSink.value().has("category")
+                    ? matchedSink.value().get("category").asText("") : "";
+            if (!requestedCategory.isBlank() && !factCategory.isBlank()
+                    && !requestedCategory.equalsIgnoreCase(factCategory)) {
+                throw new IllegalArgumentException("SINK_CATEGORY_MISMATCH");
+            }
+            String category = requestedCategory.isBlank() ? factCategory : requestedCategory;
             FuzzStrategyRegistry.FuzzStrategy strategy = FuzzStrategyRegistry.forSink(category);
             ObjectNode node = JSON.createObjectNode();
             node.put("sinkId", sinkId);
             node.put("sinkCategory", strategy.sinkCategory());
             node.put("verificationStatus", "STATIC_INFERRED");
-            node.put("classification", "FACT");
+            node.put("classification", "RULE_GENERATED");
             ArrayNode templates = node.putArray("probeTemplates");
             for (FuzzStrategyRegistry.ProbeTemplate template : strategy.probeTemplates()) {
                 ObjectNode row = templates.addObject();
@@ -405,32 +425,49 @@ public final class AiToolRegistry {
                 row.put("inputHint", template.inputHint());
                 row.put("expectedSignal", template.expectedSignal());
             }
-            return List.of(new ToolOutput(OutputKind.FACT,
+            return List.of(new ToolOutput(OutputKind.INFERENCE,
                     "fuzz-strategy:" + sinkId, node));
         });
     }
 
     private RegisteredTool sandboxProbe() {
-        ToolSchema schema = new ToolSchema(Map.of(
-                "entrypointRef", Field.string(1024),
-                "candidateInputs", Field.stringArray(16, 1024),
-                "maxRequests", Field.integer(1, 8),
-                "techniqueId", Field.string(64),
-                "authorizationHeader", Field.string(2048),
-                "secondaryAuthorizationHeader", Field.string(2048),
-                "bladeAuthHeader", Field.string(2048)), Set.of("entrypointRef"));
+        Map<String, Field> probeFields = new LinkedHashMap<>();
+        probeFields.put("entrypointRef", Field.string(1024));
+        probeFields.put("candidateInputs", Field.stringArray(16, 1024));
+        probeFields.put("maxRequests", Field.integer(1, 8));
+        probeFields.put("techniqueId", Field.string(64));
+        probeFields.put("track", Field.string(64));
+        probeFields.put("objective", Field.string(1024));
+        probeFields.put("expectedSignal", Field.string(512));
+        probeFields.put("stopCondition", Field.string(256));
+        probeFields.put("coverageGapRef", Field.string(256));
+        probeFields.put("experimentPlanId", Field.string(256));
+        probeFields.put("hypothesisId", Field.string(256));
+        probeFields.put("planKind", Field.string(64));
+        probeFields.put("authorizationHeader", Field.string(2048));
+        probeFields.put("secondaryAuthorizationHeader", Field.string(2048));
+        probeFields.put("bladeAuthHeader", Field.string(2048));
+        ToolSchema schema = new ToolSchema(Map.copyOf(probeFields), Set.of("entrypointRef"));
         ToolDefinition definition = new ToolDefinition("sandbox_probe",
                 "Request a bounded server-owned loopback probe for an existing entrypoint. "
                         + "entrypointRef must resolve to a scan entry: prefer entry:<scanEntryId> "
                         + "(for example entry:entry-ann-1); bare scanEntryId and unambiguous "
                         + "entry:METHOD:route aliases from PathRun facts are accepted; raw paths are rejected. "
+                        + "PATH_EXPLORATION may probe only an explicit coverage gap: must supply track, "
+                        + "objective, and coverageGapRef when gaps exist (coverageGapRef must match a "
+                        + "server gap id). expectedSignal and stopCondition are server-gated labels only. "
+                        + "Optional experimentPlanId is a server-gated label. "
+                        + "Optional hypothesisId and planKind bind the probe to a SecurityHypothesis "
+                        + "experiment (REACHABILITY/DATAFLOW_DIFF/GUARD_DIFF/STATE_SEQUENCE/"
+                        + "TYPESTATE_API/CONCURRENCY_RESOURCE); they cannot elevate verification status. "
                         + "Optional authorizationHeader and secondaryAuthorizationHeader "
                         + "(deprecated wire alias: bladeAuthHeader) are independent auth channels "
                         + "(length/charset gated); omit them or pass \"\" for MISSING_AUTH / unauthenticated "
                         + "probes — never invent a fake Bearer, and never assume one channel copies to the other. "
                         + "Optional techniqueId labels the PoC or selects a server fallback synthesizer when no header "
-                        + "is supplied. The model cannot choose command, network, mount, UID, or budget. "
-                        + "Probe outcomes are facts with state/lifecycle/stopReason/failureCode.",
+                        + "is supplied. The model cannot choose command, image, mount, network, UID, or budget. "
+                        + "Probe outcomes are facts with state/lifecycle/stopReason/failureCode; only "
+                        + "COMPLETED+pathRunCount>0 counts as an effective attempt.",
                 schema.jsonSchema(), OverflowPolicy.DENY);
         return new RegisteredTool(definition, schema, (call, context) -> {
             String reference = call.arguments().get("entrypointRef").asText();
@@ -448,6 +485,48 @@ public final class AiToolRegistry {
             if (!techniqueId.isEmpty() && !techniqueId.matches("[A-Za-z][A-Za-z0-9_]{1,63}")) {
                 throw new IllegalArgumentException("techniqueId is invalid");
             }
+            String track = call.arguments().has("track")
+                    ? call.arguments().get("track").asText("").trim() : "";
+            String objective = call.arguments().has("objective")
+                    ? call.arguments().get("objective").asText("").trim() : "";
+            String coverageGapRef = call.arguments().has("coverageGapRef")
+                    ? call.arguments().get("coverageGapRef").asText("").trim() : "";
+            if (coverageGapRef.startsWith("gap:")) {
+                coverageGapRef = coverageGapRef.substring(4);
+            }
+            String experimentPlanId = call.arguments().has("experimentPlanId")
+                    ? call.arguments().get("experimentPlanId").asText("").trim() : "";
+            String hypothesisId = call.arguments().has("hypothesisId")
+                    ? call.arguments().get("hypothesisId").asText("").trim() : "";
+            String planKindRaw = call.arguments().has("planKind")
+                    ? call.arguments().get("planKind").asText("").trim() : "";
+            ExperimentPlanKind planKind = null;
+            if (!planKindRaw.isEmpty()) {
+                planKind = HypothesisExperimentPlanValidator.requirePlanKind(planKindRaw);
+            }
+            if ((!hypothesisId.isEmpty() && planKind == null)
+                    || (hypothesisId.isEmpty() && planKind != null)) {
+                throw new IllegalArgumentException("HYPOTHESIS_PLAN_FIELDS_REQUIRED");
+            }
+            source.validateHypothesisBinding(
+                    context.scope(), hypothesisId,
+                    planKind == null ? "" : planKind.name(),
+                    experimentPlanId, canonicalRef);
+            if (context.role() == AgentRole.PATH_EXPLORATION) {
+                if (track.isBlank() || objective.isBlank()) {
+                    throw new IllegalArgumentException("PATH_PROBE_FIELDS_REQUIRED");
+                }
+                List<String> gaps = source.coverageGapIds(context.scope());
+                if (!gaps.isEmpty()) {
+                    if (coverageGapRef.isBlank() || !gaps.contains(coverageGapRef)) {
+                        throw new IllegalArgumentException("COVERAGE_GAP_REQUIRED");
+                    }
+                }
+            }
+            if (context.role() == AgentRole.VULNERABILITY_TRIAGE
+                    && (track.isBlank() || objective.isBlank())) {
+                throw new IllegalArgumentException("TRIAGE_PROBE_FIELDS_REQUIRED");
+            }
             String authorizationHeader = call.arguments().has("authorizationHeader")
                     ? call.arguments().get("authorizationHeader").asText("") : "";
             if (!authorizationHeader.isEmpty()) {
@@ -461,22 +540,46 @@ public final class AiToolRegistry {
             }
             try {
                 ToolDataSource.FactRecord result = source.requestSandboxProbe(
-                        context.scope(), context.principalId(), context.jobId(), canonicalRef,
-                        inputs, maxRequests,
+                        context.scope(), context.principalId(), context.jobId(), call.callId(),
+                        canonicalRef, inputs, maxRequests,
                         techniqueId.isEmpty() ? null : techniqueId.toUpperCase(Locale.ROOT),
                         authorizationHeader.isEmpty() ? null : authorizationHeader,
-                        bladeAuthHeader.isEmpty() ? null : bladeAuthHeader)
+                        bladeAuthHeader.isEmpty() ? null : bladeAuthHeader,
+                        experimentPlanId.isEmpty() ? null : experimentPlanId)
                         .orElseThrow(() -> new MissingException("SANDBOX_PROBE_UNAVAILABLE"));
                 requireScope(context, result);
-                return List.of(new ToolOutput(OutputKind.FACT, result.reference(), result.value()));
-            } catch (MissingException | IllegalArgumentException | ScopeException exception) {
+                JsonNode enriched = attachHypothesisPlanFields(
+                        result.value(), hypothesisId, planKind, experimentPlanId);
+                return List.of(new ToolOutput(OutputKind.FACT, result.reference(), enriched));
+            } catch (MissingException | IllegalArgumentException | ScopeException | SecurityException exception) {
                 throw exception;
             } catch (Exception exception) {
                 ObjectNode fact = probeFailureFact(canonicalRef, context.jobId(), exception);
+                attachHypothesisPlanFields(fact, hypothesisId, planKind, experimentPlanId);
                 return List.of(new ToolOutput(OutputKind.FACT,
-                        "sandbox-probe:failed:" + context.jobId(), fact));
+                        "sandbox-probe:failed:" + context.jobId() + ":" + call.callId(), fact));
             }
         });
+    }
+
+    private static JsonNode attachHypothesisPlanFields(JsonNode value,
+                                                       String hypothesisId,
+                                                       ExperimentPlanKind planKind,
+                                                       String experimentPlanId) {
+        if (!(value instanceof ObjectNode node)) {
+            return value;
+        }
+        if (hypothesisId != null && !hypothesisId.isBlank()) {
+            node.put("hypothesisId", hypothesisId);
+        }
+        if (planKind != null) {
+            node.put("planKind", planKind.name());
+        }
+        if (experimentPlanId != null && !experimentPlanId.isBlank()
+                && !node.has("experimentPlanId")) {
+            node.put("experimentPlanId", experimentPlanId);
+        }
+        return node;
     }
 
     private ToolDataSource.FactRecord requireExistingEntry(ToolExecutionContext.Scope scope, String reference)

@@ -1,6 +1,17 @@
 package com.aq.jvmsentinel.control;
 
+import com.aq.jvmsentinel.analysis.experiment.DefaultExperimentPlanFactory;
+import com.aq.jvmsentinel.analysis.experiment.RuntimeObservationProjector;
+import com.aq.jvmsentinel.ai.tool.EntryRefResolver;
 import com.aq.jvmsentinel.artifact.ArtifactUploadService;
+import com.aq.jvmsentinel.control.StaticFactSnapshot;
+import com.aq.jvmsentinel.domain.experiment.ExperimentPlanKind;
+import com.aq.jvmsentinel.domain.experiment.HypothesisExperimentGate;
+import com.aq.jvmsentinel.domain.experiment.HypothesisExperimentPlan;
+import com.aq.jvmsentinel.domain.experiment.RuntimeObservation;
+import com.aq.jvmsentinel.domain.hypothesis.HypothesisLifecycle;
+import com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis;
+import com.aq.jvmsentinel.domain.ir.ProgramNode;
 import com.aq.jvmsentinel.event.VersionedEvent;
 import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
 import com.aq.jvmsentinel.model.ArtifactDescriptor;
@@ -10,6 +21,7 @@ import com.aq.jvmsentinel.provider.ProviderContracts;
 import com.aq.jvmsentinel.security.ProviderSecretCipher;
 import com.aq.jvmsentinel.security.RootKeyStore;
 import com.aq.jvmsentinel.security.auth.OperatorRole;
+import com.aq.jvmsentinel.worker.HypothesisExperimentPlanValidator;
 import com.aq.jvmsentinel.worker.InMemoryTraceStore;
 import com.aq.jvmsentinel.worker.TaskSnapshot;
 import com.aq.jvmsentinel.worker.TraceChunk;
@@ -31,6 +43,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
@@ -54,6 +68,22 @@ public class ControlPlaneStore {
     private final Map<String, ApiDtos.FindingDto> findings = new ConcurrentHashMap<>();
     private final Map<String, ApiDtos.EvidenceDto> evidence = new ConcurrentHashMap<>();
     private final Map<String, ApiDtos.AttackChainDto> chains = new ConcurrentHashMap<>();
+    private final Map<String, StaticFactSnapshot> staticFacts = new ConcurrentHashMap<>();
+    private final Map<String, List<SecurityHypothesis>> hypothesesByScan = new ConcurrentHashMap<>();
+    private final Map<String, SecurityHypothesis> hypothesesById = new ConcurrentHashMap<>();
+    /** Scoped index permits identical hypothesis ids in different scans without cross-linking. */
+    private final Map<String, SecurityHypothesis> hypothesesByScopedId = new ConcurrentHashMap<>();
+    /**
+     * P1-08: process-local LanguageAnalyzer / Test Analyzer ProgramNode overlays.
+     * Not elevated to FACT authority beyond producer provenance on each node.
+     */
+    private final Map<String, List<ProgramNode>> analyzerProgramNodesByScan = new ConcurrentHashMap<>();
+    /** P1-06: hypothesis-bound experiment plans (process-local; experimentPlanId identity preserved). */
+    private final Map<String, List<HypothesisExperimentPlan>> hypothesisPlansByScan = new ConcurrentHashMap<>();
+    private final Map<String, HypothesisExperimentPlan> hypothesisPlansById = new ConcurrentHashMap<>();
+    /** experimentPlanId / pathRunId → probe binding for hypothesisId+planKind. */
+    private final Map<String, ProbeHypothesisBinding> probeHypothesisBindings = new ConcurrentHashMap<>();
+    private final List<ObservationKindRef> pendingIncrementalSubjects = new ArrayList<>();
     private final SQLiteControlPlanePersistence persistence;
     private final SecretKey rootKey;
     private final ProviderSecretCipher providerCipher;
@@ -105,6 +135,20 @@ public class ControlPlaneStore {
         if (persistence != null) persistence.savePipelineRun(run);
     }
 
+    /**
+     * Persistent CAS for pipeline cursor advancement. In-memory stores always accept the
+     * write so unit tests without SQLite still exercise coordinator identity matching.
+     */
+    public boolean compareAndAdvancePipelineRun(
+            SQLiteControlPlanePersistence.PipelineRunData expected,
+            SQLiteControlPlanePersistence.PipelineRunData next) {
+        if (persistence == null) {
+            persistPipelineRun(next);
+            return true;
+        }
+        return persistence.compareAndAdvancePipelineRun(expected, next);
+    }
+
     public List<SQLiteControlPlanePersistence.ProbePlanData> loadProbePlans() {
         return persistence == null ? List.of() : persistence.loadProbePlans();
     }
@@ -138,6 +182,84 @@ public class ControlPlaneStore {
         if (persistence != null) {
             persistence.replacePathRunsForTask(projectId, artifactDigest, scanId, taskId, pathRuns, createdAt);
         }
+        // P1-06: successful PathRun projections may advance hypothesis lifecycle; failures are no-ops.
+        applyPathRunHypothesisObservations(pathRuns);
+    }
+
+    /**
+     * Projects persisted PathRuns into RuntimeObservation and applies the hypothesis lifecycle gate.
+     * Failed / empty projections never change lifecycle. Successful matches may move
+     * {@code CANDIDATE → SUPPORTED|CONTRADICTED} only. Never elevates finding verification status.
+     */
+    public synchronized List<HypothesisExperimentGate.Decision> applyPathRunHypothesisObservations(
+            List<ApiDtos.PathRunDto> pathRuns) {
+        if (pathRuns == null || pathRuns.isEmpty()) {
+            return List.of();
+        }
+        List<HypothesisExperimentGate.Decision> decisions = new ArrayList<>();
+        for (ApiDtos.PathRunDto run : pathRuns) {
+            if (run == null) continue;
+            String planId = run.experimentPlanId();
+            if (planId == null || planId.isBlank()) {
+                continue;
+            }
+            ProbeHypothesisBinding binding = probeHypothesisBinding(planId);
+            HypothesisExperimentPlan plan = hypothesisExperimentPlan(planId);
+            if (plan == null || !run.scanId().equals(plan.scanId())
+                    || !EntryRefResolver.resolve(requireScan(run.scanId()).dto().entries(), run.entrypointRef()).resolved()) {
+                continue;
+            }
+            String hypothesisId = binding != null
+                    ? binding.hypothesisId()
+                    : (plan != null ? plan.hypothesisId() : "");
+            ExperimentPlanKind planKind = binding != null
+                    ? binding.planKind()
+                    : (plan != null ? plan.planKind() : null);
+            if (hypothesisId.isBlank() || planKind == null) {
+                continue;
+            }
+            RuntimeObservation observation = projectPathRunObservation(run, hypothesisId, planKind);
+            decisions.add(applyHypothesisObservation(planId, observation));
+        }
+        return List.copyOf(decisions);
+    }
+
+    private static RuntimeObservation projectPathRunObservation(ApiDtos.PathRunDto run,
+                                                                String hypothesisId,
+                                                                ExperimentPlanKind planKind) {
+        if (!isSuccessfulPathRunProjection(run)) {
+            String reason = run.stopReason() == null || run.stopReason().isBlank()
+                    ? "FAILED" : run.stopReason();
+            return RuntimeObservationProjector.emptyOrFailed(hypothesisId, planKind, reason);
+        }
+        boolean effectHit = run.sqlEvents() != null && !run.sqlEvents().isEmpty();
+        return RuntimeObservationProjector.fromPathRunProjection(
+                run.pathRunId(),
+                hypothesisId,
+                planKind,
+                run.outcomeClass(),
+                run.entryHit(),
+                effectHit,
+                null,
+                run.evidenceRefs(),
+                true);
+    }
+
+    private static boolean isSuccessfulPathRunProjection(ApiDtos.PathRunDto run) {
+        if (run.pathRunId() == null || run.pathRunId().isBlank()) {
+            return false;
+        }
+        if (run.evidenceRefs() == null || run.evidenceRefs().isEmpty()) {
+            return false;
+        }
+        String status = run.verificationStatus() == null
+                ? "" : run.verificationStatus().trim().toUpperCase(java.util.Locale.ROOT);
+        if ("FAILED".equals(status) || "BUSY".equals(status) || "CANCELLED".equals(status)
+                || ApiDtos.UNREACHED.equals(status)) {
+            return false;
+        }
+        String stop = run.stopReason() == null ? "" : run.stopReason().trim().toUpperCase(java.util.Locale.ROOT);
+        return !"FAILED".equals(stop) && !"PROJECTION_FAILED".equals(stop) && !"EMPTY".equals(stop);
     }
 
     public SQLiteControlPlanePersistence.WorkerState loadWorkerState() {
@@ -441,13 +563,18 @@ public class ControlPlaneStore {
             String stagesJson, String providerRequestId, long elapsedMillis, int rounds,
             String toolSummaryJson, String conclusionJson, String actorId, String action, String now) {
         requirePersistentManagement();
+        // Cancel wins at the store boundary: never resurrect CANCELLED into another status.
+        SQLiteControlPlanePersistence.AiJobData latest = requireAiJob(existing.aiJobId());
+        if ("CANCELLED".equals(latest.status()) && !"CANCELLED".equals(status)) {
+            return latest;
+        }
         SQLiteControlPlanePersistence.AiJobData updated = new SQLiteControlPlanePersistence.AiJobData(
-                existing.aiJobId(), existing.workspaceId(), existing.projectId(), existing.scanId(),
-                existing.artifactDigest(), existing.role(), existing.providerId(), existing.model(),
-                existing.policySnapshotJson(), existing.authorized(), status, stopReason, stagesJson,
+                latest.aiJobId(), latest.workspaceId(), latest.projectId(), latest.scanId(),
+                latest.artifactDigest(), latest.role(), latest.providerId(), latest.model(),
+                latest.policySnapshotJson(), latest.authorized(), status, stopReason, stagesJson,
                 providerRequestId, Math.max(0, elapsedMillis), Math.max(0, rounds),
                 toolSummaryJson == null ? "[]" : toolSummaryJson, conclusionJson,
-                existing.createdAt(), now);
+                latest.createdAt(), now);
         persistence.saveAiJob(updated, actorId, action);
         return updated;
     }
@@ -652,6 +779,319 @@ public class ControlPlaneStore {
         for (ApiDtos.AttackChainDto item : record.chains()) chains.putIfAbsent(item.chainId(), item);
     }
 
+    public synchronized void saveStaticFacts(String scanId, StaticFactSnapshot snapshot, String actorId) {
+        Objects.requireNonNull(scanId, "scanId");
+        Objects.requireNonNull(snapshot, "snapshot");
+        requireScan(scanId);
+        if (persistence != null) {
+            persistence.insertTaintGraph(scanId, snapshot.toJson(), Instant.now().toString(), actorId);
+        }
+        staticFacts.put(scanId, snapshot);
+    }
+
+    public synchronized void saveHypotheses(String scanId, List<SecurityHypothesis> hypotheses, String actorId) {
+        Objects.requireNonNull(scanId, "scanId");
+        Objects.requireNonNull(hypotheses, "hypotheses");
+        requireScan(scanId);
+        List<SecurityHypothesis> copy = List.copyOf(hypotheses);
+        Set<String> incomingIds = new java.util.HashSet<>();
+        for (SecurityHypothesis item : copy) {
+            if (item == null || !scanId.equals(item.scanId())) {
+                throw new IllegalArgumentException("hypothesis scanId does not match target scan");
+            }
+            if (!incomingIds.add(item.hypothesisId())) {
+                throw new IllegalArgumentException("duplicate hypothesis id");
+            }
+        }
+        if (persistence != null) {
+            persistence.insertHypotheses(scanId, copy, actorId);
+        }
+        List<SecurityHypothesis> prior = hypothesesByScan.put(scanId, copy);
+        if (prior != null) {
+            for (SecurityHypothesis item : prior) {
+                hypothesesByScopedId.remove(scopedHypothesisKey(scanId, item.hypothesisId()), item);
+            }
+        }
+        for (SecurityHypothesis item : copy) {
+            hypothesesByScopedId.put(scopedHypothesisKey(scanId, item.hypothesisId()), item);
+        }
+        rebuildGlobalHypothesisIndex();
+    }
+
+    public List<SecurityHypothesis> hypotheses(String scanId) {
+        if (scanId == null || scanId.isBlank()) return List.of();
+        List<SecurityHypothesis> cached = hypothesesByScan.get(scanId);
+        return cached == null ? List.of() : cached;
+    }
+
+    /** P1-08: bounded supplemental ProgramNode merge; direct adapters never grant FACT authority. */
+    public synchronized void saveAnalyzerProgramNodes(String scanId, List<ProgramNode> nodes) {
+        Objects.requireNonNull(scanId, "scanId");
+        requireScan(scanId);
+        if (nodes == null || nodes.isEmpty()) return;
+        if (nodes.size() > 10_000) {
+            throw new IllegalArgumentException("analyzer ProgramNode batch exceeds limit");
+        }
+        Map<String, ProgramNode> merged = new LinkedHashMap<>();
+        for (ProgramNode existing : analyzerProgramNodes(scanId)) {
+            merged.put(existing.id(), existing);
+        }
+        for (ProgramNode node : nodes) {
+            if (node == null || node.id() == null || node.id().isBlank()) continue;
+            if (node.id().length() > 1024 || node.symbol().length() > 8192
+                    || node.location().length() > 8192 || node.evidenceRefs().size() > 256
+                    || node.extensions().size() > 64) {
+                throw new IllegalArgumentException("analyzer ProgramNode exceeds field limits");
+            }
+            ProgramNode clamped = new ProgramNode(
+                    node.id(), node.elementKind(), node.language(), node.symbol(), node.location(),
+                    node.evidenceRefs(), "INFERENCE", node.extensions());
+            merged.putIfAbsent(clamped.id(), clamped);
+            if (merged.size() > 10_000) {
+                throw new IllegalArgumentException("analyzer ProgramNode scan limit exceeded");
+            }
+        }
+        analyzerProgramNodesByScan.put(scanId, List.copyOf(merged.values()));
+    }
+
+    public List<ProgramNode> analyzerProgramNodes(String scanId) {
+        if (scanId == null || scanId.isBlank()) return List.of();
+        List<ProgramNode> cached = analyzerProgramNodesByScan.get(scanId);
+        return cached == null ? List.of() : cached;
+    }
+
+    public SecurityHypothesis hypothesis(String hypothesisId) {
+        if (hypothesisId == null || hypothesisId.isBlank()) return null;
+        SecurityHypothesis result = hypothesesById.get(hypothesisId);
+        if (result == null) return null;
+        return scan(result.scanId()) == null ? null : result;
+    }
+
+    /** Resolve a hypothesis only within its owning scan; never uses a global id. */
+    public SecurityHypothesis hypothesis(String scanId, String hypothesisId) {
+        if (scanId == null || scanId.isBlank() || hypothesisId == null || hypothesisId.isBlank()) return null;
+        SecurityHypothesis result = hypothesesByScopedId.get(scopedHypothesisKey(scanId, hypothesisId));
+        return result == null || scan(result.scanId()) == null ? null : result;
+    }
+
+    /**
+     * Generates and stores server-owned default ExperimentPlan candidates for all hypotheses
+     * on a scan (P1-06). Does not consult the model.
+     */
+    public synchronized List<HypothesisExperimentPlan> generateDefaultHypothesisExperimentPlans(
+            String scanId) {
+        requireScan(scanId);
+        List<HypothesisExperimentPlan> generated =
+                DefaultExperimentPlanFactory.fromHypotheses(hypotheses(scanId));
+        return saveHypothesisExperimentPlans(scanId, generated);
+    }
+
+    public synchronized List<HypothesisExperimentPlan> saveHypothesisExperimentPlans(
+            String scanId, List<HypothesisExperimentPlan> plans) {
+        Objects.requireNonNull(scanId, "scanId");
+        ScanRecord scan = requireScan(scanId);
+        List<HypothesisExperimentPlan> copy = List.copyOf(plans == null ? List.of() : plans);
+        Set<String> incomingIds = new java.util.HashSet<>();
+        for (HypothesisExperimentPlan plan : copy) {
+            if (plan == null || !scanId.equals(plan.scanId())) {
+                throw new IllegalArgumentException("hypothesis experiment plan scanId mismatch");
+            }
+            HypothesisExperimentPlanValidator.validate(plan, 8);
+            SecurityHypothesis hypothesis = hypothesis(scanId, plan.hypothesisId());
+            if (hypothesis == null || !scanId.equals(hypothesis.scanId())) {
+                throw new IllegalArgumentException("hypothesis experiment plan hypothesis scope mismatch");
+            }
+            if (!plan.entrypointRef().isBlank()
+                    && !EntryRefResolver.resolve(scan.dto().entries(), plan.entrypointRef()).resolved()) {
+                throw new IllegalArgumentException("hypothesis experiment plan entrypoint scope mismatch");
+            }
+            if (!incomingIds.add(plan.experimentPlanId())) {
+                throw new IllegalArgumentException("duplicate hypothesis experiment plan id");
+            }
+            HypothesisExperimentPlan existing = hypothesisPlansById.get(plan.experimentPlanId());
+            if (existing != null && !scanId.equals(existing.scanId())) {
+                throw new IllegalArgumentException("hypothesis experiment plan id belongs to another scan");
+            }
+        }
+
+        List<HypothesisExperimentPlan> prior = hypothesisPlansByScan.getOrDefault(scanId, List.of());
+        for (HypothesisExperimentPlan plan : prior) {
+            hypothesisPlansById.remove(plan.experimentPlanId(), plan);
+            probeHypothesisBindings.remove(plan.experimentPlanId());
+        }
+        hypothesisPlansByScan.put(scanId, copy);
+        for (HypothesisExperimentPlan plan : copy) {
+            hypothesisPlansById.put(plan.experimentPlanId(), plan);
+            bindProbeHypothesis(plan.experimentPlanId(), plan.hypothesisId(), plan.planKind(),
+                    plan.stageAttemptId(), plan.probeAttemptId());
+        }
+        return copy;
+    }
+    public List<HypothesisExperimentPlan> hypothesisExperimentPlans(String scanId) {
+        if (scanId == null || scanId.isBlank()) return List.of();
+        List<HypothesisExperimentPlan> cached = hypothesisPlansByScan.get(scanId);
+        return cached == null ? List.of() : cached;
+    }
+
+    public HypothesisExperimentPlan hypothesisExperimentPlan(String experimentPlanId) {
+        if (experimentPlanId == null || experimentPlanId.isBlank()) return null;
+        return hypothesisPlansById.get(experimentPlanId);
+    }
+
+    /**
+     * Binds sandbox_probe / PathRun identity to hypothesisId+planKind without mutating P0-08
+     * experimentPlanId semantics.
+     */
+    public void bindProbeHypothesis(String bindingKey,
+                                    String hypothesisId,
+                                    ExperimentPlanKind planKind,
+                                    String stageAttemptId,
+                                    String probeAttemptId) {
+        if (bindingKey == null || bindingKey.isBlank()
+                || hypothesisId == null || hypothesisId.isBlank()
+                || planKind == null) {
+            return;
+        }
+        probeHypothesisBindings.put(bindingKey.trim(), new ProbeHypothesisBinding(
+                bindingKey.trim(),
+                hypothesisId.trim(),
+                planKind,
+                stageAttemptId == null ? "" : stageAttemptId.trim(),
+                probeAttemptId == null ? "" : probeAttemptId.trim()));
+    }
+
+    public ProbeHypothesisBinding probeHypothesisBinding(String bindingKey) {
+        if (bindingKey == null || bindingKey.isBlank()) return null;
+        return probeHypothesisBindings.get(bindingKey.trim());
+    }
+
+    /**
+     * Applies a runtime observation to hypothesis lifecycle. Failed/empty projections are
+     * explicit no-ops. Successful matches may move CANDIDATE → SUPPORTED|CONTRADICTED only.
+     */
+    public synchronized HypothesisExperimentGate.Decision applyHypothesisObservation(
+            String experimentPlanId,
+            RuntimeObservation observation) {
+        Objects.requireNonNull(observation, "observation");
+        HypothesisExperimentPlan plan = resolveHypothesisPlan(experimentPlanId, observation);
+        if (plan == null) {
+            return new HypothesisExperimentGate.Decision(
+                    HypothesisExperimentGate.Verdict.NO_CHANGE,
+                    HypothesisLifecycle.CANDIDATE,
+                    "PLAN_NOT_FOUND");
+        }
+        SecurityHypothesis current = hypothesis(plan.scanId(), plan.hypothesisId());
+        if (current == null) {
+            return new HypothesisExperimentGate.Decision(
+                    HypothesisExperimentGate.Verdict.NO_CHANGE,
+                    HypothesisLifecycle.CANDIDATE,
+                    "HYPOTHESIS_NOT_FOUND");
+        }
+        if (!observation.successfulProjection() || observation.isEmptyOrFailed()) {
+            // Fail / empty never mutates lifecycle, even if signal strings look supportive.
+            return new HypothesisExperimentGate.Decision(
+                    HypothesisExperimentGate.Verdict.NO_CHANGE,
+                    current.lifecycle(),
+                    "EMPTY_OR_FAILED_PROJECTION");
+        }
+        HypothesisExperimentGate.Decision decision =
+                HypothesisExperimentGate.evaluate(current.lifecycle(), plan, observation);
+        if (decision.changed()) {
+            replaceHypothesisLifecycle(current, decision.nextLifecycle());
+            queueIncrementalSubjects(observation);
+        }
+        return decision;
+    }
+
+    private HypothesisExperimentPlan resolveHypothesisPlan(String experimentPlanId,
+                                                           RuntimeObservation observation) {
+        HypothesisExperimentPlan plan = hypothesisExperimentPlan(experimentPlanId);
+        if (plan != null) {
+            return plan;
+        }
+        String hypothesisId = observation.hypothesisId();
+        if (hypothesisId == null || hypothesisId.isBlank()) {
+            return null;
+        }
+        String scanId = findScanIdForHypothesis(hypothesisId);
+        if (scanId.isBlank()) {
+            return null;
+        }
+        return hypothesisExperimentPlans(scanId).stream()
+                .filter(item -> item.hypothesisId().equals(hypothesisId)
+                        && (observation.planKind() == null || item.planKind() == observation.planKind()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /** Explicit failed/empty path: lifecycle unchanged by contract. */
+    public synchronized HypothesisLifecycle recordFailedHypothesisProjection(String hypothesisId) {
+        SecurityHypothesis current = hypothesis(hypothesisId);
+        if (current == null) {
+            return HypothesisLifecycle.CANDIDATE;
+        }
+        return current.lifecycle();
+    }
+
+    public synchronized List<ObservationKindRef> drainPendingIncrementalSubjects() {
+        List<ObservationKindRef> drained = List.copyOf(pendingIncrementalSubjects);
+        pendingIncrementalSubjects.clear();
+        return drained;
+    }
+
+    private void queueIncrementalSubjects(RuntimeObservation observation) {
+        for (var kind : observation.incrementalSubjects()) {
+            pendingIncrementalSubjects.add(new ObservationKindRef(
+                    observation.hypothesisId(), kind.name()));
+        }
+        while (pendingIncrementalSubjects.size() > 256) {
+            pendingIncrementalSubjects.remove(0);
+        }
+    }
+
+    private void replaceHypothesisLifecycle(SecurityHypothesis current, HypothesisLifecycle next) {
+        if (current.lifecycle() != HypothesisLifecycle.CANDIDATE) {
+            return;
+        }
+        if (next != HypothesisLifecycle.SUPPORTED && next != HypothesisLifecycle.CONTRADICTED) {
+            return;
+        }
+        SecurityHypothesis updated = new SecurityHypothesis(
+                current.schemaVersion(),
+                current.hypothesisId(),
+                current.scanId(),
+                current.securityProperty(),
+                current.family(),
+                next,
+                current.detectorVersion(),
+                current.supportingEvidenceRefs(),
+                current.contradictingEvidenceRefs(),
+                current.coverageGapRefs(),
+                current.source(),
+                current.effect()
+        );
+        List<SecurityHypothesis> existing = new ArrayList<>(hypotheses(current.scanId()));
+        for (int i = 0; i < existing.size(); i++) {
+            if (existing.get(i).hypothesisId().equals(current.hypothesisId())) {
+                existing.set(i, updated);
+                break;
+            }
+        }
+        // Actor must be a real operators row for SQLite audit FK (local bootstrap admin).
+        saveHypotheses(current.scanId(), existing, "local-admin");
+    }
+
+    private String findScanIdForHypothesis(String hypothesisId) {
+        SecurityHypothesis hypothesis = hypothesesById.get(hypothesisId);
+        return hypothesis == null ? "" : hypothesis.scanId();
+    }
+
+    public Optional<StaticFactSnapshot> staticFacts(String scanId) {
+        if (scanId == null || scanId.isBlank()) return Optional.empty();
+        StaticFactSnapshot cached = staticFacts.get(scanId);
+        return cached == null ? Optional.empty() : Optional.of(cached);
+    }
+
     public List<ScanRecord> scansForProject(String projectId) {
         requireProject(projectId);
         return scans.values().stream()
@@ -707,6 +1147,79 @@ public class ControlPlaneStore {
         return result == null || project(result.projectId()) == null ? null : result;
     }
 
+    /**
+     * Attaches or replaces a TRIAGE-sourced finding on an existing scan (P0-07).
+     * In-memory snapshot is authoritative for dashboard/REPORT in the same process;
+     * does not rewrite the durable scan insert payload.
+     */
+    public synchronized ApiDtos.FindingDto attachTriageFinding(String scanId, ApiDtos.FindingDto finding) {
+        Objects.requireNonNull(finding, "finding");
+        ScanRecord prior = requireScan(scanId);
+        if (!prior.dto().scanId().equals(finding.scanId())
+                || !prior.dto().projectId().equals(finding.projectId())
+                || !prior.dto().artifactDigest().equals(finding.artifactDigest())) {
+            throw new IllegalArgumentException("finding scope does not match scan");
+        }
+        if (findings.size() >= MAX_FINDINGS && !findings.containsKey(finding.findingId())) {
+            throw new StoreLimitException("finding limit reached");
+        }
+        ApiDtos.FindingDto priorFinding = findings.get(finding.findingId());
+        if (priorFinding == null) {
+            for (ApiDtos.FindingDto item : prior.findings()) {
+                if (item.findingId().equals(finding.findingId())) {
+                    priorFinding = item;
+                    break;
+                }
+            }
+        }
+        ApiDtos.FindingDto attached = finding;
+        if (priorFinding != null) {
+            String hypothesisId = finding.hypothesisId() == null || finding.hypothesisId().isBlank()
+                    ? priorFinding.hypothesisId() : finding.hypothesisId();
+            String securityProperty = finding.securityProperty() == null || finding.securityProperty().isBlank()
+                    ? priorFinding.securityProperty() : finding.securityProperty();
+            if ((hypothesisId != null && !hypothesisId.isBlank())
+                    || (securityProperty != null && !securityProperty.isBlank())) {
+                attached = finding.withHypothesis(hypothesisId, securityProperty);
+            }
+        }
+        List<ApiDtos.FindingDto> nextFindings = new ArrayList<>();
+        boolean replaced = false;
+        for (ApiDtos.FindingDto item : prior.findings()) {
+            if (item.findingId().equals(attached.findingId())) {
+                nextFindings.add(attached);
+                replaced = true;
+            } else {
+                nextFindings.add(item);
+            }
+        }
+        if (!replaced) {
+            nextFindings.add(attached);
+        }
+        List<ApiDtos.FindingDto> scanFindings = new ArrayList<>(prior.dto().findings());
+        boolean dtoReplaced = false;
+        for (int i = 0; i < scanFindings.size(); i++) {
+            if (scanFindings.get(i).findingId().equals(attached.findingId())) {
+                scanFindings.set(i, attached);
+                dtoReplaced = true;
+                break;
+            }
+        }
+        if (!dtoReplaced) {
+            scanFindings.add(attached);
+        }
+        ApiDtos.ScanDto dto = prior.dto();
+        ApiDtos.ScanDto updated = new ApiDtos.ScanDto(
+                dto.schemaVersion(), dto.projectId(), dto.artifactDigest(), dto.scanId(),
+                dto.status(), dto.verificationStatus(), dto.dependencyMode(),
+                dto.createdAt(), dto.completedAt(), dto.evidenceRefs(),
+                dto.entries(), dto.dependencies(), dto.sinks(), List.copyOf(scanFindings), dto.paths());
+        ScanRecord next = new ScanRecord(updated, prior.evidence(), List.copyOf(nextFindings), prior.chains());
+        scans.put(scanId, next);
+        findings.put(attached.findingId(), attached);
+        return attached;
+    }
+
     public ApiDtos.EvidenceDto evidence(String evidenceId) {
         ApiDtos.EvidenceDto result = evidenceId == null ? null : evidence.get(evidenceId);
         return result == null || project(result.projectId()) == null ? null : result;
@@ -743,6 +1256,61 @@ public class ControlPlaneStore {
             for (ApiDtos.EvidenceDto item : record.evidence().values()) evidence.put(item.evidenceId(), item);
             for (ApiDtos.FindingDto item : record.findings()) findings.put(item.findingId(), item);
             for (ApiDtos.AttackChainDto item : record.chains()) chains.put(item.chainId(), item);
+        }
+        for (Map.Entry<String, StaticFactSnapshot> item : snapshot.staticFacts().entrySet()) {
+            staticFacts.put(item.getKey(), item.getValue());
+        }
+        if (snapshot.hypotheses() != null) {
+            for (Map.Entry<String, List<SecurityHypothesis>> item : snapshot.hypotheses().entrySet()) {
+                List<SecurityHypothesis> list = List.copyOf(item.getValue() == null ? List.of() : item.getValue());
+                hypothesesByScan.put(item.getKey(), list);
+                for (SecurityHypothesis hypothesis : list) {
+                    hypothesesByScopedId.put(scopedHypothesisKey(item.getKey(), hypothesis.hypothesisId()), hypothesis);
+                }
+            }
+        }
+        rebuildGlobalHypothesisIndex();
+    }
+
+    private static String scopedHypothesisKey(String scanId, String hypothesisId) {
+        return scanId + "\u0000" + hypothesisId;
+    }
+
+    private void rebuildGlobalHypothesisIndex() {
+        hypothesesById.clear();
+        Set<String> ambiguous = new java.util.HashSet<>();
+        for (SecurityHypothesis hypothesis : hypothesesByScopedId.values()) {
+            String id = hypothesis.hypothesisId();
+            if (ambiguous.contains(id)) continue;
+            SecurityHypothesis prior = hypothesesById.putIfAbsent(id, hypothesis);
+            if (prior != null && !prior.scanId().equals(hypothesis.scanId())) {
+                hypothesesById.remove(id, prior);
+                ambiguous.add(id);
+            }
+        }
+    }
+    /** PathRun / probe binding that carries hypothesisId+planKind alongside experimentPlanId. */
+    public record ProbeHypothesisBinding(
+            String bindingKey,
+            String hypothesisId,
+            ExperimentPlanKind planKind,
+            String stageAttemptId,
+            String probeAttemptId
+    ) {
+        public ProbeHypothesisBinding {
+            Objects.requireNonNull(bindingKey, "bindingKey");
+            Objects.requireNonNull(hypothesisId, "hypothesisId");
+            Objects.requireNonNull(planKind, "planKind");
+            stageAttemptId = stageAttemptId == null ? "" : stageAttemptId;
+            probeAttemptId = probeAttemptId == null ? "" : probeAttemptId;
+        }
+    }
+
+    /** Minimal incremental recompute hint after a successful observation. */
+    public record ObservationKindRef(String hypothesisId, String observationKind) {
+        public ObservationKindRef {
+            hypothesisId = hypothesisId == null ? "" : hypothesisId;
+            observationKind = observationKind == null ? "" : observationKind;
         }
     }
 

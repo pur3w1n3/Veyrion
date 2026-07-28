@@ -263,7 +263,7 @@ public final class ControlPlanePersistenceAcceptanceTest {
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + upgradeDatabase);
              var statement = connection.createStatement();
              var rows = statement.executeQuery("SELECT count(*) FROM schema_migrations")) {
-            check(rows.next() && rows.getInt(1) == 21, "V001 database upgrades through ordered V021");
+            check(rows.next() && rows.getInt(1) == 24, "V001 database upgrades through ordered V024");
         }
         expect(IllegalArgumentException.class,
                 () -> ControlPlaneStore.sqlite(root.getParent().resolve("outside.db"), root),
@@ -280,9 +280,54 @@ public final class ControlPlanePersistenceAcceptanceTest {
         check(planPersistence.loadProbePlans().equals(List.of(plan)),
                 "V011 probe plan metadata survives persistence reconstruction");
 
+        pipelineRunIdentityCasRoundTrip();
+
         rootCauseColumnRoundTripAndHttpWire();
 
         System.out.println("ControlPlanePersistenceAcceptanceTest: PASS");
+    }
+
+    /** V022 pipeline identity columns and CAS reject stale/duplicate advances. */
+    private static void pipelineRunIdentityCasRoundTrip() throws Exception {
+        Path root = Files.createTempDirectory("veyrion-v022-pipeline");
+        Path database = root.resolve("pipeline.db");
+        SQLiteControlPlanePersistence persistence = new SQLiteControlPlanePersistence(database, root);
+        String digest = "a".repeat(64);
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + database);
+             var statement = connection.createStatement()) {
+            statement.executeUpdate("INSERT INTO projects(project_id,name,status,created_at,updated_at) "
+                    + "VALUES('project-pipe','pipe','ACTIVE','t0','t0')");
+            statement.executeUpdate("INSERT INTO artifacts(project_id,artifact_digest,artifact_id,artifact_type,"
+                    + "normalized_path,size_bytes,static_only,registered_at) "
+                    + "VALUES('project-pipe','" + digest + "','artifact-pipe','CLASS','/tmp/x',1,1,'t0')");
+            statement.executeUpdate("INSERT INTO scans(scan_id,project_id,artifact_digest,payload_json,created_at) "
+                    + "VALUES('scan-pipe','project-pipe','" + digest + "','{}','t0')");
+        }
+        var armed = new SQLiteControlPlanePersistence.PipelineRunData(
+                "scan-pipe", "project-pipe", "operator-pipe", "ZH_CN", true, "PRE_ANALYSIS", "t1",
+                "prun-1", "sattempt-1", "job-1", null, null);
+        persistence.savePipelineRun(armed);
+        check(persistence.loadPipelineRuns().equals(List.of(armed)),
+                "V022 pipeline identity fields survive persistence reconstruction");
+
+        var advanced = new SQLiteControlPlanePersistence.PipelineRunData(
+                "scan-pipe", "project-pipe", "operator-pipe", "ZH_CN", true, "AUTH_ANALYSIS", "t2",
+                "prun-1", "sattempt-2", "job-2", null, null);
+        check(persistence.compareAndAdvancePipelineRun(armed, advanced),
+                "matching pipeline CAS advances exactly once");
+        check(persistence.loadPipelineRuns().equals(List.of(advanced)),
+                "CAS write is visible to subsequent loads");
+        check(!persistence.compareAndAdvancePipelineRun(armed, advanced),
+                "stale/duplicate pipeline CAS is rejected");
+        check(persistence.loadPipelineRuns().equals(List.of(advanced)),
+                "rejected CAS keeps the current cursor");
+
+        var legacy = new SQLiteControlPlanePersistence.PipelineRunData(
+                "scan-pipe", "project-pipe", "operator-pipe", "ZH_CN", true, "AUTH_ANALYSIS", "t3");
+        persistence.savePipelineRun(legacy);
+        check(!legacy.hasStageIdentity(), "legacy armed row lacks stage identity");
+        check(persistence.loadPipelineRuns().get(0).pipelineRunId() == null,
+                "legacy overwrite clears identity columns for fail-closed recovery");
     }
 
     /** V019 root_cause_json loads into FindingDto and findingMap emits rootCause. */
@@ -406,6 +451,7 @@ public final class ControlPlanePersistenceAcceptanceTest {
         try {
             action.run();
         } catch (Throwable expected) {
+            AcceptanceAssertions.record();
             return;
         }
         throw new AssertionError("expected failure: " + message);
@@ -413,6 +459,7 @@ public final class ControlPlanePersistenceAcceptanceTest {
 
     private static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
+        AcceptanceAssertions.record();
     }
 
     @FunctionalInterface

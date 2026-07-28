@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "projectId": "project-demo",
+  "artifactDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "scanId": "scan-1",
+  "findingId": "finding-1",
+  "title": "bad status",
+  "severity": "high",
+  "verificationStatus": "TOTALLY_MADE_UP",
+  "entrypointId": "entry-1",
+  "entry": "GET /api/items",
+  "sinkId": "sink-1",
+  "sink": "Statement.execute",
+  "dependency": "none",
+  "dependencyMode": "NONE",
+  "evidenceCount": 0,
+  "confidence": 0.1
+}
