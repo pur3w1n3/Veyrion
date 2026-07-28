@@ -370,6 +370,9 @@ export type DashboardSnapshot = {
   verifiedFindings?: VerifiedFindingDto[]
   contrastSnapshotId?: string
   contrastRoundIndex?: number
+  /** Server-provided dynamic PathRun counts when present; UI must not upgrade verification. */
+  dynamicSupportedPathRuns?: number
+  dynamicFailedPathRuns?: number
 }
 
 export type ExperimentShapeDto = {

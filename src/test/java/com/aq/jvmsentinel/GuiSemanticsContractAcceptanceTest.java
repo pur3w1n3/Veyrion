@@ -55,13 +55,20 @@ public final class GuiSemanticsContractAcceptanceTest {
 
     private static void resultsViewsIncludeCoverageHypothesisEvidence(String semantics, String results) {
         for (String view : List.of(
-                "'coverage'", "'hypotheses'", "'evidenceGraph'", "'pathRuns'", "'report'")) {
+                "'coverage'", "'hypotheses'", "'evidenceGraph'", "'pathRuns'", "'report'",
+                "'entryExploration'", "'diagnostics'", "'downloads'", "'findings'")) {
             check(semantics.contains(view), "RESULTS_VIEW_IDS includes " + view);
         }
         check(results.contains("RESULTS_VIEW_IDS"), "ResultsPage imports RESULTS_VIEW_IDS");
         check(results.contains("activeView === 'coverage'"), "Coverage Matrix view entry");
         check(results.contains("activeView === 'hypotheses'"), "SecurityHypothesis view entry");
         check(results.contains("activeView === 'evidenceGraph'"), "Evidence Graph view entry");
+        check(results.contains("activeView === 'diagnostics'")
+                        || results.contains("DynamicDiagnosticsView"),
+                "Dynamic Diagnostics view entry");
+        check(results.contains("activeView === 'entryExploration'")
+                        || results.contains("EntryParameterExplorerView"),
+                "Entry Parameter Exploration view entry");
         check(results.contains("getScanCoverage") && results.contains("getEvidenceGraph"),
                 "Coverage/Evidence Graph fetched via API boundary");
     }

@@ -42,13 +42,15 @@ export function PathRunPanel({
   entries = [],
   scanId,
   english,
-  onFocusEntry
+  onFocusEntry,
+  onSelectRun
 }: {
   pathRuns: PathRunDto[]
   entries?: EntryDto[]
   scanId?: string
   english: boolean
   onFocusEntry?: (entryId: string) => Promise<FocusEntryProbeDto | void>
+  onSelectRun?: (run: PathRunDto) => void
 }) {
   const [track, setTrack] = useState<'ALL' | string>('ALL')
   const [outcome, setOutcome] = useState<'ALL' | string>('ALL')
@@ -167,7 +169,10 @@ export function PathRunPanel({
             type="button"
             key={run.pathRunId}
             className={`finding-card finding-card-button ${run.pathRunId === selected?.pathRunId ? 'selected' : ''}`}
-            onClick={() => setSelectedId(run.pathRunId)}
+            onClick={() => {
+              setSelectedId(run.pathRunId)
+              onSelectRun?.(run)
+            }}
           >
             <div className="severity severity-medium">{run.track}</div>
             <div>

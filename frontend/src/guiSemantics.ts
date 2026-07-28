@@ -40,14 +40,17 @@ export const DOWNLOAD_ARTIFACTS = {
 /** Results sub-views from GUI_DESIGN §2 / §4 — not interchangeable with downloads. */
 export const RESULTS_VIEW_IDS = [
   'report',
-  'pathRuns',
-  'coverage',
-  'hypotheses',
-  'evidenceGraph',
-  'contrast',
   'findings',
-  'verified',
-  'experiments'
+  'entryExploration',
+  'pathRuns',
+  'evidenceGraph',
+  'coverage',
+  'diagnostics',
+  'experiments',
+  'downloads',
+  'hypotheses',
+  'contrast',
+  'verified'
 ] as const
 
 export type ResultsViewId = (typeof RESULTS_VIEW_IDS)[number]
@@ -59,23 +62,23 @@ export const RESULTS_VIEW_META: Record<ResultsViewId, { zh: string; en: string; 
     blurbZh: 'REPORT_GENERATION 最终报告正文（非发现 HTML / 非仪表盘 JSON）',
     blurbEn: 'REPORT_GENERATION markdown body (not findings HTML / not dashboard JSON)'
   },
+  findings: {
+    zh: '发现',
+    en: 'Findings',
+    blurbZh: '静态优先排序；PathRun 失败不进入发现列表',
+    blurbEn: 'Static-first sort; PathRun failures are not findings'
+  },
+  entryExploration: {
+    zh: '入口参数探索',
+    en: 'Entry exploration',
+    blurbZh: '入口 × 0-n 参数矩阵与实验 readiness',
+    blurbEn: 'Entry × 0-n parameter matrix and experiment readiness'
+  },
   pathRuns: {
     zh: 'PathRun 会话',
     en: 'PathRun sessions',
     blurbZh: '入口 × 身份轨 × probe attempt 会话证据',
     blurbEn: 'Entry × identity-track × probe attempt sessions'
-  },
-  coverage: {
-    zh: 'Coverage Matrix',
-    en: 'Coverage Matrix',
-    blurbZh: '覆盖矩阵与未解析缺口；成功≠安全',
-    blurbEn: 'Coverage matrix and unresolved gaps; success ≠ safe'
-  },
-  hypotheses: {
-    zh: '安全假设',
-    en: 'Security hypotheses',
-    blurbZh: '按 family / securityProperty 的假设池',
-    blurbEn: 'Hypothesis pool by family / securityProperty'
   },
   evidenceGraph: {
     zh: 'Evidence Graph',
@@ -83,29 +86,47 @@ export const RESULTS_VIEW_META: Record<ResultsViewId, { zh: string; en: string; 
     blurbZh: '局部证据图；未知 kind 可降级',
     blurbEn: 'Local evidence graph; unknown kinds degrade safely'
   },
+  coverage: {
+    zh: 'Coverage Matrix',
+    en: 'Coverage Matrix',
+    blurbZh: '覆盖矩阵与未解析缺口；成功≠安全',
+    blurbEn: 'Coverage matrix and unresolved gaps; success ≠ safe'
+  },
+  diagnostics: {
+    zh: '动态诊断',
+    en: 'Dynamic diagnostics',
+    blurbZh: '启动失败、UNREACHED、UNKNOWN/-1 与 MOCK 依赖说明',
+    blurbEn: 'Startup failures, UNREACHED, UNKNOWN/-1 and MOCK dependency notes'
+  },
+  experiments: {
+    zh: '实验与重放',
+    en: 'Experiments & replay',
+    blurbZh: 'SQL D3 实验卡与已接受计划',
+    blurbEn: 'SQL D3 cards and accepted plans'
+  },
+  downloads: {
+    zh: '下载',
+    en: 'Downloads',
+    blurbZh: 'Markdown / HTML / JSON 三种不等价制品',
+    blurbEn: 'Three distinct artifacts: Markdown, HTML, JSON'
+  },
+  hypotheses: {
+    zh: '安全假设',
+    en: 'Security hypotheses',
+    blurbZh: '按 family / securityProperty 的假设池',
+    blurbEn: 'Hypothesis pool by family / securityProperty'
+  },
   contrast: {
     zh: 'Sink 与对照账本',
     en: 'Sinks & ledger',
     blurbZh: '候选 Sink 排序与对照差分',
     blurbEn: 'Ranked sinks and contrast ledger diff'
   },
-  findings: {
-    zh: '发现与攻击链',
-    en: 'Findings & chain',
-    blurbZh: '次级发现、入口覆盖与攻击链',
-    blurbEn: 'Secondary findings, entries, attack chain'
-  },
   verified: {
     zh: '已验证',
     en: 'Verified',
     blurbZh: 'VerifiedStatusGate 门禁结果（当前应为空）',
     blurbEn: 'VerifiedStatusGate rows (currently empty)'
-  },
-  experiments: {
-    zh: '实验计划',
-    en: 'Experiments',
-    blurbZh: 'SQL D3 实验卡与已接受计划',
-    blurbEn: 'SQL D3 cards and accepted plans'
   }
 }
 
