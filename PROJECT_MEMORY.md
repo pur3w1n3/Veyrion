@@ -123,6 +123,8 @@ AI 只能查询受控代码切片和 Evidence Graph、提出结构化假设与�
 
 数据库迁移已注册至 **V024**。已应用迁移文件不可改写，schema 变化只能追加新迁移。
 
+2026-07-29 实战复核：当前代码审计的产品可用性不能按 fixture gate 乐观外推。静态 sink/effect 与字节码事实仍是 MVP 最可靠的主召回层；动态沙箱、PathRun 驱动研判、非污点 detector 和 AI 多轮闭环在真实 JAR 上仍为 `PARTIAL`。动态失败、`UNKNOWN/-1/MOCK` 和空投影不得进入疑似漏洞主列表。后续 MVP 开发按 [MVP_BACKLOG.md](docs/MVP_BACKLOG.md) P0-15 到 P0-20 优先补实战召回基线、静态优先排序、动态启动诊断、实验计划编译、RuntimeObservation 对齐和报告降噪。
+
 ## 5. 当前风险与审计基线
 
 2026-07-28 根复核：官方 `AcceptanceTestRunner` curated gate 已通过；执行数、断言数和跳过项以每次运行日志为准，不在全局记忆复制。P0/P1 只在各 Backlog 条目的声明范围内标为 `AUDITED`；[ADR-0002](docs/adr/0002-jvm-static-analysis-kernel.md) 已 `ACCEPTED`（轻量 kernel + 自研加深）。gVisor/Kata、`VERIFIED`、生产 SSO 仍为 `SCAFFOLDING`。唯一实现状态来源见 [MVP_BACKLOG.md](docs/MVP_BACKLOG.md)。
@@ -141,7 +143,8 @@ AI 只能查询受控代码切片和 Evidence Graph、提出结构化假设与�
 
 1. 手工验收 GUI/API 主路径（本机 `Start-Veyrion.ps1 -WithDockerRuntime`）。
 2. 按 §8 继续加深召回与工程拆分；不开放 gVisor/SSO/`VERIFIED`。
-3. 仅在产品范围升级且新 ADR 接受后，再启动强化沙箱、进程外重型引擎或生产会话栈。
+3. 在动态沙箱完成实战启动诊断、可执行实验计划和 PathRun→hypothesis 闭环前，不把动态作为主发现引擎；动态只用于补证、证伪和复现。
+4. 仅在产品范围升级且新 ADR 接受后，再启动强化沙箱、进程外重型引擎或生产会话栈。
 
 ## 7. 文档职责
 
@@ -181,3 +184,4 @@ AI 只能查询受控代码切片和 Evidence Graph、提出结构化假设与�
 - **2026-07-27**：确立 ContrastLedger 不新增第七角色、适配器泛化、`VERIFIED` fail-closed；要求 AUTH 查代码与多 PoC，PATH/TRIAGE 可在服务端闸门下做定向动态验证。
 - **2026-07-27**：代码审计核心调整为 Security IR / Evidence Graph 与多检测器假设闭环；source/sink 不再是唯一漏洞模型，六角色降为受控研判层，覆盖能力必须可量化且显式暴露 unknown。
 - **2026-07-27**：保留 Java Control Plane 与 React GUI；多语言采用进程外 LanguageAnalyzer、独立 RuntimeAdapter 和中立合同，配套作用域 Agent 指令、任务包、ADR 与确定性 CI/架构门禁防止 AI 实施偏离。
+- **2026-07-29**：实战召回复核后，MVP 路线调整为静态事实和 sink/effect 主召回、动态沙箱补证/证伪；动态路径和 AI 研判在 P0-15 到 P0-20 闭合前不得宣称基本可用。

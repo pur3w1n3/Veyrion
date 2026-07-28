@@ -37,6 +37,8 @@ Java 17 Control Plane
 
 当前技术栈适合 JVM 优先的本地 MVP，但实现边界尚未完成多语言解耦：`ControlPlaneServer` 同时承担 transport、编排和大量投影，`ApiDtos`/持久化直接共享 DTO，前端 `api.ts` 集中维护大量手写类型和 parser，公共视图仍包含 JAR、HTTP、sink/taint 假设。这些是迁移基线，不是继续扩展时的推荐结构。
 
+2026-07-29 实战复核后，MVP 的发现主线调整为：**静态事实和 sink/effect 召回优先，动态沙箱用于证伪、复现和补证**。现有动态能力能证明服务端权限边界和部分 loopback fixture，但不能稳定启动真实业务路径，也不能作为主要漏洞发现引擎。架构文档中的动态闭环均为目标合同；实现状态以 [MVP Backlog](MVP_BACKLOG.md) §0.4、P0-15 到 P0-20 为准。
+
 ## 3. 组件职责
 
 ### 3.1 Artifact Registry
@@ -90,13 +92,21 @@ JVM Agent 观察 Spring/Servlet、JDBC、HTTP client、文件、进程、Socket�
 
 依赖替身当前覆盖固定 loopback HTTP、JDBC、Redis RESP2/RESP3 子集和 MySQL Classic 子集。未知命令、畸形帧和预算超限 fail-closed。每个结果记录 `provenance`，替身命中不能证明真实环境影响。
 
+当前动态薄弱点：
+
+- 启动成功不等于业务路径可达；依赖替身只能降低启动阻力，不能补齐真实表结构、数据、租户、流程状态或第三方服务语义。
+- 端口发现必须排除 3306/6379/5432 等依赖监听端口，只有真实 HTTP 服务端口可进入 loopback probe。
+- 目标动态模型是“任意入口 × 0-n 参数组合 → 下游 guard/effect/state/dependency 观测 → 反推漏洞假设”。通用 GET/空 payload 只有在绑定 entry signature、空参数理由和观测目标时才是合法探索；盲目洪水不足以发现需要 body、session、CSRF、业务状态或多请求序列的漏洞。
+- 动态失败、UNKNOWN、空 PathRun、`httpStatus=-1` 和 MOCK 前置条件不得提升为漏洞疑似；它们应生成启动诊断或 coverage gap。
+- 成功启动的断网容器应在有界 TTL 内保留给 PATH/TRIAGE 复用，直到漏洞研判发包确认完成、取消或预算耗尽。
+
 ### 3.6 PathRun 与投影
 
 PathRun 是动态实验的核心记录，绑定 scan、entry、identity track、probe attempt、请求、结果、Agent/JDBC 观察、依赖模式、状态和停止原因。详细 schema 见 [PATH_EXPERIMENT_MODEL](PATH_EXPERIMENT_MODEL.md)。
 
-目标顺序是：Worker 成功终态 -> trace 校验提交 -> 请求级投影 -> PathRun/evidence 可查 -> 阶段成功。当前存在 Worker 先标完成、后投影的缺陷；投影失败仍可能错误推进，必须修复为原子或可补偿门禁。
+目标顺序是：应用启动诊断 -> 入口参数空间与实验计划编译 -> Worker 执行 -> trace 校验提交 -> 请求级投影 -> PathRun/evidence 可查 -> hypothesis/detector 有界重算 -> 阶段成功。动态结果可以从下游 effect/guard/state 反推新假设，也可以增强、反证或解释静态假设；不能因为动态不可达而删除静态高危候选。
 
-每次 `sandbox_probe` 需要独立 `probeAttemptId`，绑定 canonical tool call、规范化 payload hash、technique、双鉴权通道、计划、task 和 PathRun。`BUSY`、`FAILED`、`CANCELLED` 或未投影结果不是有效尝试。当前 job 级幂等身份不足以可靠支持同 Job 多个不同 PoC。
+每次 `sandbox_probe` 需要独立 `probeAttemptId`，绑定 canonical tool call、规范化 payload hash、technique、双鉴权通道、计划、task 和 PathRun。`BUSY`、`FAILED`、`CANCELLED`、`UNKNOWN`、空投影或未投影结果不是有效尝试。`DYNAMIC_SUSPECTED` 只能来自真实观察到入口、guard/effect/state 或结构差分的 PathRun。
 
 ## 4. 数据与持久化
 
@@ -108,7 +118,7 @@ SQLite 当前保存：
 - 上传会话、REST 幂等绑定、流水线 cursor、probe plan、PathRun 和 ExperimentPlan；
 - 分支覆盖、对照快照、TaintGraph、LedgerDiff、fuzz 策略、root cause 和 VERIFIED 门禁脚手架。
 
-数据库迁移当前注册至 V021。已记录到 `schema_migrations` 的 SQL 文件不可修改；任何 schema 变化只能追加新版本。未知版本、断档或 checksum 漂移拒绝启动。
+数据库迁移当前注册至 V024。已记录到 `schema_migrations` 的 SQL 文件不可修改；任何 schema 变化只能追加新版本。未知版本、断档或 checksum 漂移拒绝启动。
 
 Provider secret 使用数据库外根密钥和 AES-256-GCM，AAD 绑定 workspace、Provider、credential 与版本；HTTP DTO 不返回明文、密文、nonce 或可逆片段。
 
@@ -176,9 +186,9 @@ Tauri、企业私有化拆分、PostgreSQL/对象存储、ClickHouse、专用工
 | 扩展 | FrameworkAdapter HINT；AnalysisPack 实验模板 | 版本化 Provider SPI，可注册模型/摘要/detector/probe |
 | 假设/发现 | Finding 强制 entrypoint/sink | SecurityHypothesis；非数据流 finding 不伪造 sink |
 | 持久化 | 单节点 SQLite V021 | 可审计 attempt、完整终态与可迁移存储 |
-| 动态 | `STATIC_ONLY` / `TRUSTED_DOCKER` | 通过 attestation 的 gVisor/Kata |
-| AI | 有界 Provider/工具循环；鉴权字符串/config 查询 | 受限 method/CFG/dataflow/guard 查询；AI 只研判假设 |
-| 证据 | PathRun、对照、finding；静态路径存在 stub 重建 | IR 保真持久化、请求级关联、coverage matrix |
+| 动态 | `STATIC_ONLY` / `TRUSTED_DOCKER`；fixture 与少量 live 通过 | 先成为可靠补证/证伪工具，再评估强化沙箱 |
+| AI | 有界 Provider/工具循环；可查询部分代码和证据 | 受限 method/CFG/dataflow/guard 查询；AI 只研判假设，不承担基础召回 |
+| 证据 | PathRun、对照、finding；动态实战仍噪声高 | IR 保真持久化、请求级关联、coverage matrix、实战召回基线 |
 | VERIFIED | fail-closed 脚手架 | 强化隔离与可重放 release gate |
 | 测试 | main-style acceptance 较多 | `mvn test` 或统一 runner 实际执行非零断言 |
 
@@ -205,7 +215,7 @@ Security IR / Evidence Graph
       SecurityHypothesis Pool
             │ server ranking / dedupe / budget / policy
             ▼
-      Experiment Planner
+      Entry/Parameter Explorer + Experiment Planner
             │
             ▼
       Sandbox / PathRun / RuntimeObservation

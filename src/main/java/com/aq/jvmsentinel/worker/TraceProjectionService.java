@@ -186,7 +186,7 @@ public final class TraceProjectionService {
             if ("HTTP".equals(event.eventType())) {
                 rememberSpringParameterBound(event.detail(), route, httpMethod, springBoundRouteKeys);
             }
-            if ("HTTP".equals(event.eventType()) && !route.isBlank()) {
+            if (isProbeHttpEvent(event) && !route.isBlank()) {
                 String routeKey = (httpMethod.isBlank() ? "GET" : httpMethod) + " " + route;
                 routeSteps.computeIfAbsent(routeKey, ignored -> new ArrayList<>()).add(step);
                 routeRefs.computeIfAbsent(routeKey, ignored -> new ArrayList<>()).add(evidenceId);
@@ -280,12 +280,13 @@ public final class TraceProjectionService {
         PathOutcomeClass outcome = sqlCopy.isEmpty()
                 ? PathOutcomeClass.UNKNOWN
                 : PathOutcomeClass.DEPENDENCY_MOCK_GAP;
+        String verificationStatus = verificationStatusFor(outcome, -1);
         PathRun provisional = new PathRun(
                 "pathrun-" + snapshot.scope().taskId() + "-task",
                 snapshot.scope().scanId(), entryRef, IdentityTrack.UNAUTH, "attempt-task",
                 experimentPlanIdForTask(snapshot.scope().taskId()),
                 "GET", "application/json", summary, outcome, -1, null, null,
-                sqlCopy, stop, VerificationStatus.DYNAMIC_SUSPECTED.name(),
+                sqlCopy, stop, verificationStatus,
                 List.copyOf(evidenceRefs), ApiDtos.MOCK, "no credentials");
         PathRun gated = DynamicConfirmedGate.apply(provisional, SqlDiffProbe.META_MARKER);
         return toPathRunDto(applyD2Differential(gated));
@@ -344,12 +345,44 @@ public final class TraceProjectionService {
                 "application/json",
                 requestSummary,
                 outcome, status, entryHit, parameterBound,
-                sqlCopy, stopReason, VerificationStatus.DYNAMIC_SUSPECTED.name(),
+                sqlCopy, stopReason, verificationStatusFor(outcome, status),
                 List.of(evidenceId), ApiDtos.MOCK,
                 track == IdentityTrack.UNAUTH ? "no credentials" : "synthetic identity");
         String marker = detail.getOrDefault("sqlProbeMarker", SqlDiffProbe.META_MARKER);
         PathRun gated = DynamicConfirmedGate.apply(provisional, marker);
         return toPathRunDto(applyD2Differential(gated));
+    }
+
+    private static boolean isProbeHttpEvent(AgentJsonlTraceConverter.AgentEvent event) {
+        if (event == null || !"HTTP".equals(event.eventType())) return false;
+        Map<String, String> detail = event.detail();
+        String captureMode = detail.getOrDefault("captureMode", "");
+        if ("LOOPBACK_HTTP_PROBE".equals(captureMode)) return true;
+        if (!captureMode.isBlank()) return false;
+        if ("com.aq.jvmsentinel.agent.LoopbackHttpProbe".equals(event.className())
+                && "main".equals(event.method())) {
+            return true;
+        }
+        String status = detail.getOrDefault("status", "");
+        String requestTarget = detail.getOrDefault("requestTarget", "");
+        String port = detail.getOrDefault("port", "");
+        return !status.isBlank() && !requestTarget.isBlank() && port.matches("[0-9]{1,5}");
+    }
+
+    static String verificationStatusFor(PathOutcomeClass outcome, int httpStatus) {
+        if (outcome == null) return ApiDtos.UNREACHED;
+        if (httpStatus < 0) {
+            return switch (outcome) {
+                case COLD_START, BUSINESS_TIMEOUT, TRANSPORT_ERROR, PROBE_BUDGET,
+                        IDENTITY_UNAVAILABLE, UNKNOWN -> ApiDtos.UNREACHED;
+                default -> VerificationStatus.DYNAMIC_SUSPECTED.name();
+            };
+        }
+        return switch (outcome) {
+            case COLD_START, BUSINESS_TIMEOUT, TRANSPORT_ERROR, PROBE_BUDGET,
+                    IDENTITY_UNAVAILABLE, UNKNOWN -> ApiDtos.UNREACHED;
+            default -> VerificationStatus.DYNAMIC_SUSPECTED.name();
+        };
     }
 
     /**

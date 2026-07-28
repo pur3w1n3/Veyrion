@@ -55,7 +55,7 @@ public record PathRun(
         requestSummary = Objects.requireNonNullElse(requestSummary, "");
         sqlEvents = List.copyOf(sqlEvents == null ? List.of() : sqlEvents);
         stopReason = Objects.requireNonNullElse(stopReason, "UNKNOWN");
-        verificationStatus = Objects.requireNonNullElse(verificationStatus, "DYNAMIC_SUSPECTED");
+        verificationStatus = Objects.requireNonNullElse(verificationStatus, "UNREACHED");
         evidenceRefs = List.copyOf(evidenceRefs == null ? List.of() : evidenceRefs);
         identityProvenance = Objects.requireNonNullElse(identityProvenance, "MOCK");
         identityPrecondition = Objects.requireNonNullElse(identityPrecondition, "");

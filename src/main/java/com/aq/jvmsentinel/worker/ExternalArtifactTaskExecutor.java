@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -90,6 +91,7 @@ public final class ExternalArtifactTaskExecutor {
     private final ArtifactCatalog catalog;
     private final RuntimePolicy runtimePolicy;
     private final AgentJsonlTraceConverter converter;
+    private final RetainedSandboxSessions retainedSessions;
     private final String workerId;
 
     public ExternalArtifactTaskExecutor(WorkerControlPlaneClient control, SandboxRuntimeClient sandbox,
@@ -109,6 +111,7 @@ public final class ExternalArtifactTaskExecutor {
         this.catalog = Objects.requireNonNull(catalog, "catalog");
         this.runtimePolicy = Objects.requireNonNull(runtimePolicy, "runtimePolicy");
         this.converter = Objects.requireNonNull(converter, "converter");
+        this.retainedSessions = new RetainedSandboxSessions(Duration.ofMinutes(20));
         this.workerId = requireId(workerId, "workerId");
     }
 
@@ -142,8 +145,16 @@ public final class ExternalArtifactTaskExecutor {
             requireStableDescriptor(descriptor, started);
             pulse(request.scope(), lease, heartbeatExtension, "复核制品摘要");
 
-            // This is deliberately after the lease/start transition and immediately before sandbox creation.
+            // This is deliberately after the lease/start transition and immediately before sandbox use.
             recheckDigest(registration);
+            retainedSessions.releaseExpired(sandbox);
+            RetainedSandboxSession retained = retainedSessions.get(request.scope(), registration.sha256());
+            if (retained != null) {
+                pulse(request.scope(), lease, heartbeatExtension,
+                        "复用断网沙箱会话并执行研判探针");
+                return executeRetainedProbe(request, descriptor, registration, lease,
+                        heartbeatExtension, retained);
+            }
             pulse(request.scope(), lease, heartbeatExtension, "创建断网沙箱容器");
             ReadOnlyArtifactMount mount = new ReadOnlyArtifactMount(
                     registration.path(), ARTIFACT_PATH, registration.sha256(), registration.sizeBytes());
@@ -220,8 +231,10 @@ public final class ExternalArtifactTaskExecutor {
             for (TraceChunk chunk : chunks) {
                 control.commitTrace(request.scope(), lease.leaseId(), workerId, chunk);
             }
-            pulse(request.scope(), lease, heartbeatExtension, "销毁沙箱并完成任务");
-            sandbox.delete(sandboxId);
+            int httpPort = readSandboxHttpPort(sandboxId);
+            pulse(request.scope(), lease, heartbeatExtension,
+                    "保留断网沙箱会话供 PATH/TRIAGE 复用");
+            retainedSessions.retain(request.scope(), registration.sha256(), sandboxId, httpPort, sandbox);
             sandboxId = null;
             WorkerControlPlaneClient.TaskDescriptor completed =
                     control.complete(request.scope(), lease.leaseId(), workerId);
@@ -259,6 +272,91 @@ public final class ExternalArtifactTaskExecutor {
         }
     }
 
+    private ExecutionResult executeRetainedProbe(ExecutionRequest request,
+                                                 WorkerControlPlaneClient.TaskDescriptor descriptor,
+                                                 ArtifactRegistration registration,
+                                                 WorkerLease lease,
+                                                 Duration heartbeatExtension,
+                                                 RetainedSandboxSession session) {
+        ResourceBudget budget = descriptor.resourceBudget();
+        try {
+            pulse(request.scope(), lease, heartbeatExtension,
+                    "清理上次探针输出并上传本轮计划（复用沙箱）");
+            CommandResult prepareProbe = sandbox.command(session.sandboxId(), new CommandRequest(
+                    "rm -f " + PROBE_TRACE_FILE + " " + PROBE_STATUS_FILE
+                            + "; printf '%s\\n' '复用已启动应用，准备本轮探针' > "
+                            + TRACE_DIRECTORY + "/progress.txt",
+                    WORKING_DIRECTORY, Duration.ofSeconds(10), SANDBOX_UID, SANDBOX_GID));
+            if (prepareProbe.exitCode() != 0) {
+                retainedSessions.release(session, sandbox);
+                throw new ExternalArtifactExecutionException(
+                        "RETAINED_SANDBOX_PREPARE_FAILED",
+                        "retained sandbox could not prepare a probe", null);
+            }
+            Path probePlanHost = writeHostProbePlan(registration.probePlan());
+            try {
+                sandbox.uploadFile(session.sandboxId(), probePlanHost, TRACE_DIRECTORY + "/probe-plan.txt");
+            } finally {
+                try {
+                    Files.deleteIfExists(probePlanHost);
+                } catch (IOException ignored) {
+                    // Best-effort cleanup of the host-side plan file.
+                }
+            }
+            pulse(request.scope(), lease, heartbeatExtension,
+                    "在保留沙箱内执行本轮 loopback 探针");
+            String command = "HTTP_PORT=" + session.httpPort()
+                    + "; probe_jvm_status=not-run; PROBE_JVM_OK=0; "
+                    + batchProbeStep(registration.probePlan())
+                    + "; if [ \"$PROBE_JVM_OK\" -ne 1 ]; then exit 71; else exit 0; fi";
+            CommandResult run = sandbox.command(session.sandboxId(), new CommandRequest(
+                    command, WORKING_DIRECTORY, commandTimeout(budget), SANDBOX_UID, SANDBOX_GID));
+            if (run.exitCode() != 0) {
+                retainedSessions.release(session, sandbox);
+                throw new ExternalArtifactExecutionException(
+                        "RETAINED_SANDBOX_PROBE_FAILED",
+                        exitDiagnostic(run.exitCode(), diagnostic(run.stdout(), run.stderr(), "")), null);
+            }
+            pulse(request.scope(), lease, heartbeatExtension, "读取复用沙箱探针轨迹");
+            byte[] probeBytes = readTraceFile(
+                    sandbox, session.sandboxId(), PROBE_TRACE_FILE, budget.maxTraceBytes(), true);
+            requireHttpProbeEvidence(registration, probeBytes);
+            List<TraceChunk> chunks = converter.convert(probeBytes, request.scope(), budget);
+            pulse(request.scope(), lease, heartbeatExtension,
+                    "提交复用沙箱轨迹（" + chunks.size() + " 段）");
+            for (TraceChunk chunk : chunks) {
+                control.commitTrace(request.scope(), lease.leaseId(), workerId, chunk);
+            }
+            retainedSessions.touch(session);
+            WorkerControlPlaneClient.TaskDescriptor completed =
+                    control.complete(request.scope(), lease.leaseId(), workerId);
+            validateDescriptor(completed, request.scope(), TaskLifecycle.COMPLETED);
+            requireStableDescriptor(descriptor, completed);
+            return new ExecutionResult(request.scope(), registration.sha256(), chunks.size(),
+                    chunks.get(chunks.size() - 1).digest(), TaskLifecycle.COMPLETED);
+        } catch (RuntimeException failure) {
+            throw failure;
+        }
+    }
+
+    private int readSandboxHttpPort(String sandboxId) {
+        CommandResult result = sandbox.command(sandboxId, new CommandRequest(
+                "cat " + TRACE_DIRECTORY + "/http-port.txt 2>/dev/null | tr -d '\\r\\n'",
+                WORKING_DIRECTORY, Duration.ofSeconds(5), SANDBOX_UID, SANDBOX_GID));
+        if (result.exitCode() != 0 || result.stdout() == null
+                || !result.stdout().strip().matches("[0-9]{1,5}")) {
+            throw new ExternalArtifactExecutionException(
+                    "HTTP_PORT_NOT_RETAINABLE",
+                    "completed sandbox did not expose a reusable HTTP port", null);
+        }
+        int port = Integer.parseInt(result.stdout().strip());
+        if (port < 1 || port > 65_535) {
+            throw new ExternalArtifactExecutionException(
+                    "HTTP_PORT_NOT_RETAINABLE",
+                    "completed sandbox HTTP port is outside TCP range", null);
+        }
+        return port;
+    }
     private void pulse(TaskScope scope, WorkerLease lease, Duration extension, String progressDetail) {
         WorkerLease renewed = control.heartbeat(scope, lease.leaseId(), workerId, extension, progressDetail);
         requireLease(renewed, scope, lease.capability());
@@ -612,7 +710,9 @@ public final class ExternalArtifactTaskExecutor {
                 + "; " + businessProbes
                 + "; fi"
                 + "; if [ \"$probe_status\" -eq 0 ] && [ \"$PROBE_JVM_OK\" -eq 1 ]; then "
-                + writeProgress("探测完成，停止应用进程")
+                + "printf '%s\\n' \"$HTTP_PORT\" > " + TRACE_DIRECTORY + "/http-port.txt"
+                + "; " + writeProgress("探测完成，保留应用进程供 PATH/TRIAGE 复用")
+                + "; exit 0"
                 + "; elif [ \"$probe_status\" -eq 0 ]; then "
                 + "printf 'HTTP 端口已就绪但批量探针失败（退出码 %s），停止应用进程\\n' "
                 + "\"$probe_jvm_status\" > " + TRACE_DIRECTORY + "/progress.txt"
@@ -950,6 +1050,105 @@ public final class ExternalArtifactTaskExecutor {
         return value;
     }
 
+    private record SessionKey(String projectId, String artifactDigest, String scanId) {
+        private static SessionKey from(TaskScope scope) {
+            return new SessionKey(scope.projectId(), scope.artifactDigest(), scope.scanId());
+        }
+    }
+
+    private record RetainedSandboxSession(SessionKey key, String sha256, String sandboxId,
+                                          int httpPort, long expiresAtNanos) { }
+
+    private static final class RetainedSandboxSessions {
+        private static final int MAX_RETAINED_SESSIONS = 8;
+        private final Duration ttl;
+        private final Map<SessionKey, RetainedSandboxSession> sessions = new ConcurrentHashMap<>();
+
+        private RetainedSandboxSessions(Duration ttl) {
+            this.ttl = Objects.requireNonNull(ttl, "ttl");
+        }
+
+        RetainedSandboxSession get(TaskScope scope, String sha256) {
+            SessionKey key = SessionKey.from(scope);
+            RetainedSandboxSession session = sessions.get(key);
+            if (session == null || !session.sha256().equals(sha256)
+                    || session.expiresAtNanos() < System.nanoTime()) {
+                return null;
+            }
+            return session;
+        }
+
+        void retain(TaskScope scope, String sha256, String sandboxId, int httpPort,
+                    SandboxRuntimeClient sandbox) {
+            SessionKey key = SessionKey.from(scope);
+            RetainedSandboxSession prior = sessions.put(key,
+                    new RetainedSandboxSession(key, sha256, sandboxId, httpPort, deadlineNanos()));
+            if (prior != null && !prior.sandboxId().equals(sandboxId)) {
+                deleteQuietly(sandbox, prior.sandboxId());
+            }
+            if (sessions.size() > MAX_RETAINED_SESSIONS) {
+                RetainedSandboxSession oldest = sessions.values().stream()
+                        .min(java.util.Comparator.comparingLong(RetainedSandboxSession::expiresAtNanos))
+                        .orElse(null);
+                if (oldest != null && sessions.remove(oldest.key(), oldest)
+                        && !oldest.sandboxId().equals(sandboxId)) {
+                    deleteQuietly(sandbox, oldest.sandboxId());
+                }
+            }
+        }
+
+        void touch(RetainedSandboxSession session) {
+            if (session == null) return;
+            sessions.computeIfPresent(session.key(), (ignored, existing) ->
+                    existing.sandboxId().equals(session.sandboxId())
+                            ? new RetainedSandboxSession(existing.key(), existing.sha256(),
+                            existing.sandboxId(), existing.httpPort(), deadlineNanos())
+                            : existing);
+        }
+
+        void release(RetainedSandboxSession session, SandboxRuntimeClient sandbox) {
+            if (session == null) return;
+            if (sessions.remove(session.key(), session)) {
+                deleteQuietly(sandbox, session.sandboxId());
+            }
+        }
+
+        void releaseExpired(SandboxRuntimeClient sandbox) {
+            long now = System.nanoTime();
+            for (RetainedSandboxSession session : List.copyOf(sessions.values())) {
+                if (session.expiresAtNanos() < now && sessions.remove(session.key(), session)) {
+                    deleteQuietly(sandbox, session.sandboxId());
+                }
+            }
+        }
+
+        void releaseAll(SandboxRuntimeClient sandbox) {
+            for (RetainedSandboxSession session : List.copyOf(sessions.values())) {
+                if (sessions.remove(session.key(), session)) {
+                    deleteQuietly(sandbox, session.sandboxId());
+                }
+            }
+        }
+
+        private static void deleteQuietly(SandboxRuntimeClient sandbox, String sandboxId) {
+            try {
+                sandbox.delete(sandboxId);
+            } catch (RuntimeException ignored) {
+                // Best-effort cleanup; the sandbox backend may also own process-exit cleanup.
+            }
+        }
+
+        private long deadlineNanos() {
+            long now = System.nanoTime();
+            long ttlNanos = ttl.toNanos();
+            if (ttlNanos <= 0 || Long.MAX_VALUE - now < ttlNanos) return Long.MAX_VALUE;
+            return now + ttlNanos;
+        }
+    }
+
+    public void closeRetainedSessions() {
+        retainedSessions.releaseAll(sandbox);
+    }
     @FunctionalInterface
     public interface ArtifactCatalog {
         ArtifactRegistration require(TaskScope scope);

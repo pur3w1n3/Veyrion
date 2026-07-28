@@ -24,6 +24,7 @@ public final class EntryHitParameterBoundAcceptanceTest {
         projectionPositive200();
         projectionNegative404();
         projectionTimeoutUnknown();
+        projectionInternalHttpDoesNotCreatePathRuns();
         projectionSpringBoundEvidence();
         System.out.println("EntryHitParameterBoundAcceptanceTest: PASS");
     }
@@ -51,6 +52,15 @@ public final class EntryHitParameterBoundAcceptanceTest {
         check(Boolean.FALSE.equals(TraceProjectionService.resolveParameterBound(
                         Map.of("parameterBound", "false"), 200, "GET /x", Set.of("GET /x"))),
                 "explicit parameterBound=false wins over Spring set");
+        check(ApiDtos.UNREACHED.equals(TraceProjectionService.verificationStatusFor(
+                        PathOutcomeClass.UNKNOWN, -1)),
+                "unknown transport result is UNREACHED");
+        check(ApiDtos.UNREACHED.equals(TraceProjectionService.verificationStatusFor(
+                        PathOutcomeClass.BUSINESS_TIMEOUT, -1)),
+                "business timeout is UNREACHED");
+        check(ApiDtos.DYNAMIC_SUSPECTED.equals(TraceProjectionService.verificationStatusFor(
+                        PathOutcomeClass.HTTP_OBSERVED, 302)),
+                "HTTP observation may be dynamic suspected");
     }
 
     private static void projectionPositive200() throws Exception {
@@ -88,6 +98,23 @@ public final class EntryHitParameterBoundAcceptanceTest {
         check(run.parameterBound() == null, "timeout → parameterBound unknown/null");
         check(PathOutcomeClass.BUSINESS_TIMEOUT.name().equals(run.outcomeClass()),
                 "timeout outcome preserved");
+        check(ApiDtos.UNREACHED.equals(run.verificationStatus()),
+                "timeout PathRun remains UNREACHED");
+    }
+
+    private static void projectionInternalHttpDoesNotCreatePathRuns() throws Exception {
+        String jsonl = agentStarted()
+                + internalHttp(1, "org.springframework.web.filter.OncePerRequestFilter",
+                "doFilter", "SERVLET_FILTER", "GET", "/")
+                + internalHttp(2, "sample.ApiController", "index",
+                "SPRING_MAPPING_ANNOTATION", "GET", "/")
+                + httpProbe(3, "GET", "/", "/", "302", "", "HTTP_OBSERVED", "true", null);
+        List<ApiDtos.PathRunDto> runs = projectAll("scan-internal-http", "task-internal-http", jsonl);
+        check(runs.size() == 1, "internal HTTP instrumentation does not create PathRun flood");
+        ApiDtos.PathRunDto run = runs.get(0);
+        check(run.httpStatus() == 302, "only loopback probe response becomes PathRun");
+        check(ApiDtos.DYNAMIC_SUSPECTED.equals(run.verificationStatus()),
+                "observed HTTP response may be dynamic suspected");
     }
 
     private static void projectionSpringBoundEvidence() throws Exception {
@@ -117,6 +144,16 @@ public final class EntryHitParameterBoundAcceptanceTest {
                 + "\"provenanceKind\":\"RUNTIME_OBSERVED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
                 + "\"class\":\"\",\"method\":\"premain\",\"timestamp\":\"2026-07-27T00:00:00Z\","
                 + "\"thread\":\"main\",\"detail\":{\"mode\":\"test\"}}\n";
+    }
+
+    private static String internalHttp(int sequence, String className, String methodName,
+                                       String captureMode, String httpMethod, String route) {
+        return "{\"schemaVersion\":1,\"sequence\":" + sequence + ",\"eventType\":\"HTTP\","
+                + "\"provenanceKind\":\"AGENT_INSTRUMENTED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                + "\"class\":\"" + className + "\",\"method\":\"" + methodName + "\","
+                + "\"timestamp\":\"2026-07-27T00:00:01Z\",\"thread\":\"http-1\","
+                + "\"detail\":{\"captureMode\":\"" + captureMode + "\","
+                + "\"httpMethod\":\"" + httpMethod + "\",\"route\":\"" + route + "\"}}\n";
     }
 
     private static String httpProbe(int sequence, String method, String route, String target, String status,

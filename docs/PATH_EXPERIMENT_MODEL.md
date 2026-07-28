@@ -13,6 +13,8 @@
 
 AI 负责编排实验与写笔记，不能改变沙箱权限、网络策略、挂载或单独升级验证状态。
 
+实战复核后的 MVP 约束：静态 sink/effect、guard 和 SecurityHypothesis 是当前主召回来源；PathRun 是从入口向下游代码路径、guard、effect、state 和依赖副作用反推漏洞假设的动态材料，不是“只要发包就能发现漏洞”的替代引擎。动态沙箱在未完成 [MVP_BACKLOG.md](MVP_BACKLOG.md) P0-15 到 P0-20 前，只能作为有界实验工具使用。
+
 ## 2. 验证状态全集
 
 | 状态 | 含义 |
@@ -24,6 +26,8 @@ AI 负责编排实验与写笔记，不能改变沙箱权限、网络策略、�
 | `UNREACHED` | 预算、身份不可用、冷启动失败等原因未完成实验 |
 
 模型输出不能单独升级上述任一状态。
+
+`DYNAMIC_SUSPECTED` 的最低门槛是：一次成功投影的 PathRun 观察到入口、guard/effect/state、依赖副作用或结构差分之一。`httpStatus=-1`、`outcomeClass=UNKNOWN`、空 PathRun、启动失败、探针 JVM 失败、依赖端口误判和仅有 MOCK 前置条件都不能单独产生 `DYNAMIC_SUSPECTED`。
 
 ## 3. 身份轨（Identity Track）
 
@@ -106,9 +110,9 @@ PathRun 是一次动态执行事实，不等同于 source-sink path。每次运�
 每入口 × 轨建议字段：
 
 - `method`、`contentType`
-- 必填参数名与有界取值提示
+- 0-n 个参数名、来源、类型、默认值、边界值与有界取值提示；无参数入口必须显式记录 empty-input rationale
 - `authRequired` / 建议轨
-- 成功判据：HTTP（如 2xx）+ JSON 字段路径，和/或 Agent 事件类型
+- 成功判据：HTTP（如 2xx）+ JSON 字段路径，和/或 Entry/Guard/Effect/State/Dependency Agent 事件类型
 - 预算内最大尝试次数
 
 鉴权绕过可行性（`bypassPoCs` / `bypassCandidates`）额外字段：
@@ -132,18 +136,20 @@ PathRun 是一次动态执行事实，不等同于 source-sink path。每次运�
 
 探针计划跨重启时必须保持 technique、双鉴权通道、候选输入、停止条件和 hash 语义一致；若敏感材料无法安全恢复，应显式失败并要求重新授权，不得降级成另一套通用探针。
 
+实验计划可以来自静态 hypothesis、AUTH PoC、Provider DynamicProbe、entry signature、参数绑定信息、配置/DTO 推断或人工 replay。目标形态是“任意入口 × 0-n 参数组合 → 下游 guard/effect/state/dependency 观测 → 反推漏洞假设”。0 参数入口、空 query、空 body 都是合法参数空间；问题在于不能把没有 entry 绑定、参数来源、身份轨、观测目标和停止条件的盲目洪水直接升级为漏洞研判实验。
+
 ### 6.2 实验类型
 
 | 类型 | 典型输入 | expected / counter signal |
 |------|----------|---------------------------|
-| `REACHABILITY` | entry、track、参数 | entry/branch/effect hit 或未达原因 |
+| `REACHABILITY` | entry、track、0-n 参数 | entry/branch/effect hit 或未达原因 |
 | `DATAFLOW_DIFF` | 良性/变异输入 | effect 结构差异、sanitizer/parameterization |
 | `GUARD_DIFF` | 身份、租户、对象组合 | guard decision 与相同 effect 的差异 |
 | `STATE_SEQUENCE` | 多请求前置与顺序 | state transition、不变量或重复提交 |
 | `TYPESTATE_API` | 调用协议/配置变化 | misuse condition 或安全拒绝 |
 | `CONCURRENCY_RESOURCE` | 并发度、时序、预算 | race、TOCTOU、lock/resource outcome |
 
-ExperimentPlan 必须包含 `hypothesisId`、`experimentPlanId`、实验类型、entry/sequence、track、inputs、expected signal、counter signal、stop condition 和预算。AI 只能提议这些字段；服务端按 detector/provider schema 编译为具体 probe。
+ExperimentPlan 必须包含 `hypothesisId`（探索型可为空但必须有 coverage gap 或 entry reason）、`experimentPlanId`、实验类型、entry/sequence、track、0-n inputs、input provenance、expected signal、counter signal、stop condition 和预算。AI 只能提议这些字段；服务端按 detector/provider schema 编译为具体 probe。
 
 ## 7. SQL 观测 D1–D3 与 DYNAMIC_CONFIRMED
 
@@ -164,7 +170,7 @@ ExperimentPlan 必须包含 `hypothesisId`、`experimentPlanId`、实验类型�
 
 目标架构允许未来为 Guard/Ownership、State/Sequence、Typestate 等 family 增加独立 `DYNAMIC_CONFIRMED` 门禁，但每个门禁必须有确定性 schema、正负测试和可重放证据。在完成独立审计前，非 SQL family 最高为 `DYNAMIC_SUSPECTED`。
 
-**当前实现警告：** 代码审计确认现有 JDBC/PathRun 投影存在任务级 SQL 复制风险，尚未可靠建立单请求输入与 SQL 副作用关联；当前 H3 实现也弱于上述四项门禁。完成请求级 correlation、JDBC evidenceRefs 绑定及负向门禁测试前，不得把现有 H3 命中宣称为符合本节目标契约。
+**当前实现警告：** fixture 已覆盖请求窗 SQL 归属和 H3 正负门禁，但实战动态能力仍弱。历史扫描 `scan-7b619e8a65064fa9` 曾出现大量 `DYNAMIC_SUSPECTED / httpStatus=-1 / UNKNOWN / MOCK` PathRun，说明启动诊断、探针计划、运行时观测和 triage 排序曾将失败动态污染为疑似结果。完成实战召回基线、动态启动诊断、hypothesis 实验编译和 RuntimeObservation 对齐前，不得把动态结果宣传为稳定漏洞发现能力。
 
 ## 8. 与流水线的关系
 

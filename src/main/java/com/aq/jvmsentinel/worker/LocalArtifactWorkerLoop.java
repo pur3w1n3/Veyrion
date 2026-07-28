@@ -104,6 +104,7 @@ public final class LocalArtifactWorkerLoop implements AutoCloseable {
                 Thread.currentThread().interrupt();
             }
         }
+        executor.closeRetainedSessions();
         sandbox.close();
     }
 }

@@ -170,6 +170,54 @@ Control Plane 可以调用 Analyzer/Runtime port，但 domain 不得反向依赖
 - SSE 只触发刷新，GET 是最终状态事实源。
 - 前端不能推导或提升验证状态，不能产生 Worker 命令、网络策略或工具 allowlist。
 
+### 4.3 最终报告前端重构手册
+
+当前 `frontend/src/components/ResultsPage.tsx` 已具备 report、finding、PathRun、coverage、hypothesis、evidence graph、SQL card 和 replay 等能力，但职责集中、布局混杂。后续实施必须先按 `GUI_DESIGN.md` §4 重排信息架构，再逐步移动组件；不得在视觉重构中改变 API 语义、验证状态或沙箱策略。
+
+目标组件边界：
+
+| 组件 | 职责 | 数据来源 | 禁止项 |
+|------|------|----------|--------|
+| `ResultsShell` | scan 上下文、子导航、摘要条、主内容和检查器布局 | `DashboardSnapshot` + 子页查询结果 | 不计算验证升级，不直接发 replay |
+| `ScanContextBand` | project/artifact/scan/policy/dependency/stage/stop reason | dashboard GET | 不缓存跨 scan selection |
+| `EvidenceSummaryStrip` | 静态发现、动态支持、动态失败、coverage gap、高危 sink 计数 | 服务端字段或有明确 provenance 的聚合 | 不把失败动态计为疑似漏洞 |
+| `ResultsSubnav` | report/findings/entry/pathRuns/graph/coverage/diagnostics/replay/downloads 子页导航 | 路由或本地 view state | 不隐藏 0 计数能力页 |
+| `EvidenceInspector` | 当前 selection 的 evidence refs、provenance、scope、stop reason 和跳转 | 子页 selection | 不修改服务端状态 |
+| `FinalReportView` | Markdown 报告、结构化 fallback、下载入口和动态可靠性摘要 | report job events + dashboard | 不执行 HTML，不把模型推断渲染为 FACT |
+| `FindingsView` | finding 列表、筛选、排序、详情和 replay 请求入口 | dashboard findings + hypothesis | 不伪造 source/sink，不本地升状态 |
+| `EntryParameterExplorerView` | 任意入口、0-n 参数矩阵、实验 readiness 和下游观测 | entries + hypotheses + plans + coverage | 不生成 Worker 命令或预算 |
+| `PathRunsView` | PathRun 聚合、虚拟列表、request window 和投影状态 | PathRun API | 不把 `UNKNOWN/-1` 变成 `DYNAMIC_SUSPECTED` |
+| `EvidenceGraphView` | 局部图谱和静态-动态对照 | evidence graph API | 不渲染全图，不丢未知 kind |
+| `CoverageGapsView` | Artifact/entry/effect/guard/detector/dynamic/AI 覆盖 | coverage API | 不把扫描成功写成安全 |
+| `DynamicDiagnosticsView` | sandbox lifecycle、端口发现、启动和 probe 失败诊断 | worker/task/path diagnostic API | 不进入 finding 主列表 |
+| `ExperimentReplayView` | ExperimentPlan、attempt timeline、replay 请求和结果 | plan/path/replay API | 不改变 plan，不承诺 VERIFIED |
+| `DownloadsView` | Markdown/HTML/JSON 导出说明和按钮 | dashboard + report job | 不宣称三种导出等价 |
+
+拆分顺序：
+
+1. 提取只读展示组件和共享 UI primitive：`StatusPill`、`ProvenanceBadge`、`EvidenceRefs`、`FilterBar`、`EmptyState`、`StopReasonBlock`、`MetricStrip`。
+2. 提取 `ResultsShell`，保持现有 `activeView` 行为和 API 调用不变，先让页面结构稳定。
+3. 将最终报告、findings、PathRun、coverage、hypothesis/graph、replay 分别迁入独立 view；每一步都保持旧测试通过。
+4. 增加 `EntryParameterExplorerView` 和 `DynamicDiagnosticsView` 所需的只读合同；若后端字段不足，先显示已知事实和明确 gap，不在前端猜测。
+5. 将下载逻辑集中到 `DownloadsView`，文件名和内容类型继续使用既有合同。
+6. 最后做 CSS 清理、窄屏和长文本检查；视觉调整不得夹带 API、worker 或状态机改动。
+
+布局与样式约束：
+
+- 结果页是工作台，不做 landing/hero；信息密度以审计人员连续阅读为目标。
+- 不使用嵌套卡片；页面区块用全宽 band 或约束宽度布局，卡片只用于重复列表项、详情面板或 modal。
+- 固定尺寸元素使用稳定宽高、grid track、min/max 和溢出策略；长 entry、SQL、路径、模型错误和 stack trace 必须换行或裁剪后可展开。
+- 状态不能只靠颜色表达；每个状态同时有文字、图标或标签。
+- 未知 language、entry protocol、node kind、extension 和 verification status 必须降级展示，不得让整页崩溃。
+
+前端任务验收：
+
+- `npm run build` 必须通过；涉及 schema/parser 时补正常、缺失、malformed、unknown kind 和旧版本用例。
+- 至少检查 report、findings、entry exploration、PathRuns、coverage、diagnostics 的 loading、empty、error、partial/unknown 和窄屏。
+- Demo 与真实 API 失败严格分离；真实 API 失败不能回退演示成功。
+- `DYNAMIC_SUSPECTED`、`DYNAMIC_CONFIRMED`、`VERIFIED`、`UNREACHED`、`MOCK`、`INFERENCE`、`FACT` 的语义必须与服务端一致。
+- 对 `scan-7b619e8a65064fa9` 类失败数据，界面应突出动态失败诊断和静态候选，不出现上千条无效动态疑似主列表。
+
 ## 5. 变更分类与决策门禁
 
 ### 5.1 普通实现变更
@@ -278,4 +326,3 @@ AI 遇到以下情况不得猜测后继续写：
 - 实现状态和验收证据只更新 MVP_BACKLOG；稳定决策摘要才进入 PROJECT_MEMORY。
 - 架构取舍写 ADR；AI 的一次任务输入不写入长期文档。
 - 本手册只维护通用开发规则。任何具体任务的允许文件和验收条件写在任务包中。
-

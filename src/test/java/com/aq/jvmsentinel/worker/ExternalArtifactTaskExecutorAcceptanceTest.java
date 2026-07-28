@@ -89,7 +89,19 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     && result.executedDigest().equals(digest)
                     && result.traceChunks() == 1, "successful execution");
             mock.assertSecureCreateAndCommand(digest);
-            check(mock.deleted == 1, "successful sandbox cleanup");
+            check(mock.deleted == 0, "successful sandbox is retained for PATH/TRIAGE probes");
+
+            int createsAfterInitialProbe = mock.creates;
+            ExternalArtifactTaskExecutor.ExecutionResult followup =
+                    executor.execute(new ExternalArtifactTaskExecutor.ExecutionRequest(
+                            scope(digest, "task-followup")));
+            check(followup.lifecycle() == TaskLifecycle.COMPLETED
+                            && followup.traceChunks() == 1
+                            && mock.creates == createsAfterInitialProbe,
+                    "follow-up probe reuses retained sandbox");
+            mock.assertRetainedProbeReused();
+            executor.closeRetainedSessions();
+            check(mock.deleted == 1, "retained sandbox cleanup");
 
             ExternalArtifactTaskExecutor trusted = executor(
                     mock, scope(digest, "task-trusted-local"), registration);
@@ -238,7 +250,10 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                         ? ExternalArtifactTaskExecutor.RuntimePolicy.trustedLocalDocker(IMAGE)
                         : new ExternalArtifactTaskExecutor.RuntimePolicy(IMAGE, releaseDecision());
         return new ExternalArtifactTaskExecutor(control, sandbox, requested -> {
-            check(requested.equals(scope), "catalog scope");
+            check(requested.projectId().equals(scope.projectId())
+                            && requested.artifactDigest().equals(scope.artifactDigest())
+                            && requested.scanId().equals(scope.scanId()),
+                    "catalog scope");
             return registration;
         }, policy, "worker-1");
     }
@@ -301,8 +316,14 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         if (command.startsWith("wc -c < " + ExternalArtifactTaskExecutor.TRACE_FILE)) {
             return Integer.toString(MockServices.agentJsonl().getBytes(StandardCharsets.UTF_8).length);
         }
+        if (command.startsWith("wc -c < " + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)) {
+            return Integer.toString(MockServices.probeJsonl().getBytes(StandardCharsets.UTF_8).length);
+        }
         if (command.startsWith("if [ -f " + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)) {
             return Integer.toString(MockServices.probeJsonl().getBytes(StandardCharsets.UTF_8).length);
+        }
+        if (command.startsWith("cat " + ExternalArtifactTaskExecutor.TRACE_DIRECTORY + "/http-port.txt")) {
+            return "8080\n";
         }
         if (command.startsWith("dd if=" + ExternalArtifactTaskExecutor.TRACE_FILE)) {
             source = MockServices.agentJsonl().getBytes(StandardCharsets.UTF_8);
@@ -426,6 +447,7 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         private final String artifactDigest;
         private Map<String, Object> lastCreate;
         private Map<String, Object> lastCommand;
+        private final List<String> commands = new ArrayList<>();
         private boolean failCommand;
         private int creates;
         private int deleted;
@@ -463,6 +485,7 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
             } else if (path.equals("/proxy/sandboxes/sandbox-1/port/44772/command")) {
                 Map<String, Object> command = JsonCodec.parseObject(body);
                 String commandText = (String) command.get("command");
+                commands.add(commandText);
                 boolean artifactRun = commandText.contains(" -jar ")
                         || commandText.contains("/opt/veyrion/artifact/application.jar");
                 if (artifactRun) lastCommand = command;
@@ -640,12 +663,31 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     && !command.contains("while kill -0 \"$APP_PID\" 2>/dev/null && [ \"$probe_status\" -ne 0 ]")
                     && command.contains("exit 70")
                     && command.contains("exit 71")
+                    && command.contains("保留应用进程供 PATH/TRIAGE 复用")
+                    && !command.contains("探测完成，停止应用进程")
                     && command.contains("kill -TERM \"$APP_PID\"")
                     && command.contains("kill -KILL \"$APP_PID\""),
                     "fixed command with process listen-port discovery");
             check(((Number) lastCommand.get("uid")).intValue() == 0
                     && ((Number) lastCommand.get("gid")).intValue() == 0
                     && !lastCommand.containsKey("envs"), "container-root command without environment");
+        }
+
+        void assertRetainedProbeReused() {
+            check(commands.stream().anyMatch(command ->
+                            command.startsWith("rm -f " + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)
+                                    && command.contains("复用已启动应用，准备本轮探针")),
+                    "retained probe prepares trace files in existing sandbox");
+            check(commands.stream().anyMatch(command ->
+                            command.contains("com.aq.jvmsentinel.agent.LoopbackHttpProbe --batch "
+                                    + ExternalArtifactTaskExecutor.TRACE_DIRECTORY
+                                    + "/probe-plan.txt \"$HTTP_PORT\"")
+                                    && command.contains("HTTP_PORT=8080")
+                                    && !command.contains(" -jar ")),
+                    "retained probe runs loopback batch without restarting the artifact");
+            check(commands.stream().filter(command ->
+                            command.contains("/opt/veyrion/artifact/application.jar")).count() == 1,
+                    "artifact jar is started only once for retained probe sequence");
         }
 
         private String currentDigest() {

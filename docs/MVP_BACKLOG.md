@@ -1,6 +1,6 @@
 # 溯脉 · Veyrion MVP Backlog
 
-> 更新：2026-07-28（三项优化后根复核）。本文是唯一的实现状态与待办文档。未经根 Agent 审计的能力不得标为已验证或生产可用。产品合同见 [PRD](PRD.md)，执行合同见 [AUDIT_FLOW](AUDIT_FLOW.md)。
+> 更新：2026-07-29（实战召回复核）。本文是唯一的实现状态与待办文档。未经根 Agent 审计的能力不得标为已验证或生产可用。产品合同见 [PRD](PRD.md)，执行合同见 [AUDIT_FLOW](AUDIT_FLOW.md)。
 
 ## 0. 根 Agent 审计
 
@@ -35,6 +35,17 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 拒绝路径复核：sandbox 非法字段；非 DATAFLOW 不可 `DYNAMIC_CONFIRMED`；Verified/Hardened/ProductionFeatures；DetectorRecallGate；subprocess Analyzer。
 
+### 0.4 实战召回复核（2026-07-29）
+
+| 项 | 内容 |
+|----|------|
+| 触发 | 授权制品扫描 `scan-7b619e8a65064fa9` 暴露动态路径和真实漏洞发现能力严重不足 |
+| 观察 | 历史数据出现 `2036` 条 PathRun，其中 `1935` 条为 `DYNAMIC_SUSPECTED / httpStatus=-1 / outcomeClass=UNKNOWN / identityProvenance=MOCK`；最大来源任务 `task-dynamic-3c5ac1abe4994477` 产生 `1838` 条无效动态疑似 |
+| 结论 | 现有 `AUDITED` 多数只代表 fixture 合同和安全拒绝路径通过，不代表真实 JAR 漏洞召回可用；当前 MVP 的最低可靠能力仍是静态入口、调用边、sink 与部分 Security IR |
+| 根因 | 动态洪水没有按 entry signature、0-n 参数空间、身份轨和下游 effect/guard/state 观测组织，导致通用 HTTP 探测替代了真实路径探索；依赖替身只让应用尽量启动，不能补齐业务状态、鉴权上下文和数据种子；PathRun/RuntimeObservation 与 detector 重算闭环薄；AI 阶段更多在解释失败结果，没有获得足够代码语义和可执行实验计划 |
+| 状态调整 | 动态执行、PathRun 驱动 triage、Provider DynamicProbe 主流程、非污点 detector 的实战召回统一按 `PARTIAL` 看待；不得再用 gate PASS 描述为“基本可用漏洞挖掘” |
+| 产品取舍 | MVP 先回到“静态事实可靠召回 + 动态用于证伪/复现/补证”的路线。动态沙箱在完成 P0-15 到 P0-20 前，不作为主发现引擎，也不应覆盖静态 sink 结果排序 |
+
 ## 1. 状态图例
 
 | 状态 | 含义 |
@@ -43,6 +54,8 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 | `PARTIAL` | 主体存在，但存在未闭合路径、未复验环境或证据不足 |
 | `SCAFFOLDING` | schema/API/门禁骨架存在，能力未开放 |
 | `NOT STARTED` | 尚无可审计实现 |
+
+`AUDITED` 只说明声明范围内的合同、fixture 或安全拒绝路径已通过；不能自动外推为真实项目召回率、动态可用性或漏洞确认能力。涉及“能否挖到漏洞”的判断必须同时给出基准样例、保留集、实战扫描对照和失败样本统计。
 
 `TRUSTED_DOCKER` live 结果只证明受信本地 JAR 的开发调试，不代表恶意制品隔离。main-style acceptance 只有被显式执行且断言生效时才算测试证据；`mvn test` 通过 Surefire 运行官方 curated gate；它不是仓库全部 acceptance 类的自动枚举。官方非零门禁以 `AcceptanceTestRunner` / `scripts/ci-gates.ps1` 为准。
 
@@ -56,19 +69,19 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 | Artifact Universe | `AUDITED` | `domain.universe` + `ArtifactUniverseBuilder`：APPLICATION/THIRD_PARTY/GENERATED/UNKNOWN；Boot/`WEB-INF` lib **有界一层展开**（jar 内 class 计数上限 + 截断 CoverageGap）；CoverageGap（含 MULTI_VERSION_CLASS / runtime-only / static-not-loaded）；`StaticFactSnapshot` schemaVersion=4；`mergeRuntimeLoadedClasses` 接 CoverageMatrix；`ArtifactUniverseAcceptanceTest` | 声明范围=fixture Universe/一层展开/runtime 列表差分；二层以上嵌套与 live Agent 类列表不在范围 |
 | Security IR / Evidence Graph | `AUDITED` | `domain.ir` + `EvidenceGraphProjector`；权威图写入 `StaticFactSnapshot.evidenceGraph`（schema v4）；finding↔node 双向 refs；`GET .../evidence-graph`；`EvidenceGraphAcceptanceTest` | 声明范围=扫描时持久化投影与双向 join；PathRun 增量重投影与完美 IR 不在范围 |
 | Provider SPI | `PARTIAL` | 九类 Provider 接口、Registry/OutputGate、scope/schema/budget/dedupe 门禁；entry/effect/guard/detector 已进入扫描；MethodSummary/Sanitizer 有 kernel 启发式实现 | ArtifactNodes、Provider MethodSummary、DynamicProbe 尚未全部进入主扫描投影；完整插件市场与精确 sanitizer 证明不在范围 |
-| 多类 Detector | `AUDITED` | P1-05 GuardConsistency/OwnershipIdor/DangerousConfig + deser/dep/resource；P2 StateSequence/ConcurrencyResource 正负+holdout + `DetectorRecallGate`；经 `DetectorRegistry` 合并 | 声明范围=fixture/mutation/holdout 召回门禁；深度 dominance/IFDS/真实并发与生产 release 未做；非 SQL `DYNAMIC_CONFIRMED` fail-closed |
-| SecurityHypothesis | `AUDITED` | V023+V024；sink→DATAFLOW / AUTH_GAP→GUARD_COVERAGE；Finding 可选 hypothesis 字段；GUI family 列表；PathRun 成功投影可 CANDIDATE→SUPPORTED/CONTRADICTED | 声明范围=投影/持久化/API + PathRun lifecycle 增量；live Docker 全链路与完整 detector 重算未做 |
+| 多类 Detector | `PARTIAL` | P1-05 GuardConsistency/OwnershipIdor/DangerousConfig + deser/dep/resource；P2 StateSequence/ConcurrencyResource 正负+holdout + `DetectorRecallGate`；经 `DetectorRegistry` 合并 | fixture/mutation/holdout 通过，但实战召回未达标；深度 dominance/IFDS/真实并发与生产 release 未做；非 SQL `DYNAMIC_CONFIRMED` fail-closed |
+| SecurityHypothesis | `PARTIAL` | V023+V024；sink→DATAFLOW / AUTH_GAP→GUARD_COVERAGE；Finding 可选 hypothesis 字段；GUI family 列表；PathRun 成功投影可 CANDIDATE→SUPPORTED/CONTRADICTED | schema/投影存在，但 hypothesis 排序、实验规划、受影响 detector 重算和实战闭环不足；live Docker 全链路未成为可靠 triage 输入 |
 | 多语言边界 | `AUDITED` | P1-07 真实子进程 Test Analyzer + 同进程 Fake；P1-08 查询端口；`TestJsLanguageAnalyzer` 非 JVM ProgramNode 复用同一 store/hypothesis/coverage/GUI 降级；`JsRuntimeAdapter` 默认无动态 capability | 声明范围=Fake+子进程合同；真实多进程 JS Analyzer/Node Worker 未接 |
 | Control Plane | `AUDITED` | loopback REST/SSE、PAT、显式授权、持久化幂等；scan/evidence/coverage/hypothesis/finding/PathRun 查询经 application.port | **生产 SSO 栈延后**（`ProductionFeatures.DISABLED` / ADR-0003 PROPOSED）；大爆炸拆分未做 |
 | SQLite | `AUDITED` | V001-V024；项目、扫描、AI、Worker、trace、PathRun、pipeline identity、hypotheses 等；Evidence Graph 权威投影随 `taint_graphs` StaticFactSnapshot schema v4（V024 将 hypothesis 主键限定为 scan scope） | 单节点，不是 exactly-once |
 | AI Job | `AUDITED` | 六角色、Provider 适配、有界工具、双语 prompt snapshot；角色工具合同 fixture（P0-04/05/11） | 声明范围=fixture/模拟 transport；真实供应商/外网出站互操作见 P1-24 限制 |
-| 动态执行 | `AUDITED` | STATIC_ONLY、TRUSTED_DOCKER、Agent、loopback；无 Worker→`WORKER_UNAVAILABLE`/`DYNAMIC_DISABLED` | 声明范围=本地 fail-closed + loopback fixture；live TRUSTED_DOCKER 多请求仍薄；**gVisor/Kata 延后** |
-| 依赖替身 | `AUDITED` | HTTP/JDBC/Redis/MySQL 有界子集；MOCK provenance 标注测试（H3/PathRun） | MOCK 不证明生产依赖；live 替身互操作未审 |
-| PathRun | `AUDITED` | 身份轨、超时、HTTP/Agent/SQL 摘要、请求窗 SQL、correlationId；H3/report→replay correlation fixture；成功投影可驱动 hypothesis lifecycle | 声明范围=fixture；live 多请求 Docker 套件仍薄 |
+| 动态执行 | `PARTIAL` | STATIC_ONLY、TRUSTED_DOCKER、Agent、loopback；无 Worker→`WORKER_UNAVAILABLE`/`DYNAMIC_DISABLED`；断网容器可保留给后续 probe | 安全边界和 fixture 通过，但真实 JAR 启动、业务状态、端口识别、依赖替身和多轮发包仍弱；动态不能替代静态召回；**gVisor/Kata 延后** |
+| 依赖替身 | `PARTIAL` | HTTP/JDBC/Redis/MySQL 有界子集；MOCK provenance 标注测试（H3/PathRun） | 替身主要帮助启动，不等于业务依赖可用；缺表/缺数据/协议细节会导致路径不可达或假阴性 |
+| PathRun | `PARTIAL` | 身份轨、超时、HTTP/Agent/SQL 摘要、请求窗 SQL、correlationId；H3/report→replay correlation fixture；成功投影可驱动 hypothesis lifecycle | fixture 通过，但实战存在无效 PathRun 洪水历史；仍需请求级 guard/effect/state 观测、失败分类和 detector 增量闭环 |
 | AUTH PoC | `AUDITED` | 多轮门禁、code_query kinds、PoC 多样性（模拟 transport） | 完整反编译/SSA 与真实 Provider 多轮不在范围内 |
 | 代码查询 | `AUDITED` | kind 路由 + instructionSlice/basicBlocks + PATH prompt/schema 统一 | 非完整反编译/SSA/IFDS；LEGACY 无 IR fail-closed |
-| PATH/TRIAGE probe | `AUDITED` | gap/字段闸门、预算、无效 probe→缺口；sandbox 非法字段拒绝 | 真实多轮 Provider 编排不在范围内 |
-| GUI | `AUDITED` | 工作区/报告/Coverage/Hypothesis/Evidence；semantics/layout 合同测试 | 声明范围=合同测试非手工视觉；生产隐私/保留随 SSO 延后 |
+| PATH/TRIAGE probe | `PARTIAL` | gap/字段闸门、预算、无效 probe→缺口；sandbox 非法字段拒绝 | 工具安全合同通过，但缺少从 hypothesis 编译可执行实验、真实业务 payload 和多轮本地发包确认；不能作为当前主发现能力 |
+| GUI | `PARTIAL` | 工作区/报告/Coverage/Hypothesis/Evidence；semantics/layout 合同测试 | 合同语义可审，但最终报告结果页功能堆叠、视觉层级和动态失败降噪不足；生产隐私/保留随 SSO 延后 |
 | `DYNAMIC_CONFIRMED` | `AUDITED` | SQL H3 门禁 + 同 PathRun correlation/marker 正负 fixture | 声明范围=fixture；非 live 实库 |
 | `VERIFIED` | `SCAFFOLDING` | 双重重放+release 仍 `VERIFIED_GATE_NOT_OPEN` | **根审计：明确延后开放**；TRUSTED_DOCKER 永久排除 |
 | 自动化测试 | `AUDITED` | Surefire→`AcceptanceTestGate`→官方 curated `GATE_CLASSES`；`ci-gates.ps1` 校验 schema/arch/migration/links/diff/安全拒绝 | 非 gate 的零星 acceptance 类未自动枚举；完整 DTO codegen 仍不足 |
@@ -228,6 +241,72 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 根审计（2026-07-28，`AUDITED`，声明范围=本地 `contracts/` + `ci-gates.ps1` + Schema/Architecture/CiGate/SandboxProbe 拒绝测试）：`SchemaContractAcceptanceTest`/`ArchitectureBaselineAcceptanceTest`/`CiGateAcceptanceTest`/`SandboxProbeSecurityDenialAcceptanceTest`。补充：schema→TS 字段常量生成（Finding/Hypothesis/Coverage）已落地；完整 wire DTO/parser 生成仍限。脏树需任务专用 Allowed paths。
 
+### P0-15 实战召回基线与回归集
+
+状态：`NOT STARTED`
+
+- [ ] 建立授权实战样本集，至少包含 3 个真实 Boot JAR / 1 个 Blade 或 Flowable 类应用 / 1 个多鉴权路径应用；每个样本记录 digest、启动 profile、预期入口、已知 sink、已知业务漏洞和不可公开说明。
+- [ ] 对每个样本分别记录静态 sink 基线、SecurityHypothesis 基线、动态 PathRun 基线和最终 finding，计算 TP/FP/FN、动态成功率、无效 PathRun 比例、入口覆盖率和漏洞族覆盖。
+- [ ] 将 `scan-7b619e8a65064fa9` 这类历史失败归档为 regression case：`httpStatus=-1/outcomeClass=UNKNOWN` 不得产生 `DYNAMIC_SUSPECTED`，无效 PathRun 洪水必须作为失败指标。
+- [ ] 新增 release gate：任一实战样本静态 sink 召回低于当前基线、动态无效率超过阈值、或报告漏掉已知高危漏洞时，MVP 不得标“基本可用”。
+
+验收：同一版本重复运行样本集结果稳定；报告明确列出漏报、误报、动态失败和 coverage gap。无实战 ground truth 的样本只能用于探索，不能计入召回率。
+
+### P0-16 静态优先的漏洞召回主线
+
+状态：`PARTIAL`
+
+- [ ] 把静态 sink / primitive effect / wrapper MethodSummary 作为 MVP 主召回入口，先保证路径可解释、证据可引用和 coverage gap 可见。
+- [ ] 为 SQL、命令执行、文件、SSRF、反序列化、模板/表达式、JWT/鉴权配置各建立最小正例、近似负例、变异和实战保留集。
+- [ ] 让非污点 detector 输出进入统一排序，但不得压低明确静态 sink 命中的高置信 finding；动态失败只能降低动态置信度，不能删除静态候选。
+- [ ] 增强 `code_query` 对 source/effect/guard/sanitizer 的可读切片，保证 AI 能解释为什么命中、为什么不命中和缺少什么证据。
+
+验收：在实战样本上，静态 finding 至少达到人工确认的最低召回基线；报告可以从 finding 回溯到入口、调用边、sink/effect、guard/sanitizer 和 unresolved gap。
+
+### P0-17 动态沙箱启动与就绪诊断
+
+状态：`PARTIAL`
+
+- [ ] 启动前从配置、manifest、Spring Boot 参数和日志中推断候选 Web 端口，并在容器内验证真实 HTTP 服务端口；3306/6379/5432 等依赖端口不得被当成应用端口。
+- [ ] 对启动失败建立结构化分类：JVM 崩溃、主类缺失、端口未监听、依赖替身缺口、数据库初始化阻塞、鉴权/配置缺失、内存/磁盘预算不足、探针 JVM 失败。
+- [ ] 动态任务失败时保留应用日志尾部、端口列表、probe status、启动参数摘要和 stop reason；前端和 AI 只能引用这些诊断，不得把失败写成疑似漏洞。
+- [ ] 成功启动的断网容器按 scan/artifact 保留给 PATH/TRIAGE 发包确认，直到漏洞研判完成、TTL 到期、用户取消或预算耗尽。
+
+验收：实战样本中动态启动失败可以被归因到明确类别；依赖端口不会生成成功 PathRun；失败路径产生 `UNREACHED` 或 gap，不产生 `DYNAMIC_SUSPECTED`。
+
+### P0-18 入口参数空间到可执行路径实验
+
+状态：`NOT STARTED`
+
+- [ ] 将 Provider `DynamicProbe`、SecurityHypothesis recommended experiments、AUTH PoC、entry signature、参数绑定信息和 DTO/config 推断统一编译为服务端固定的 `ExperimentPlan`，包含 entry、method、0-n query/body/header 参数、input provenance、identity track、前置状态、expected/counter signal 和停止条件。
+- [ ] 任意入口均可进入探索；0 参数、空 body、空 query 是合法输入形态，但必须记录 empty-input rationale，并尝试观测其下游 Entry/Guard/Effect/State/Dependency，而不是只统计 HTTP 状态。
+- [ ] 对 dataflow、guard/ownership、state sequence、typestate/config 分别定义最小实验编译器和失败降级规则；运行时观测到未知下游 effect 时反向生成或修订 hypothesis。
+- [ ] PATH/TRIAGE 多轮 probe 必须复用同一保留沙箱或明确说明为何必须重启；每轮结果回写 PathRun、RuntimeObservation 和 hypothesis lifecycle。
+
+验收：至少一个 SQL dataflow、一个鉴权/IDOR、一个状态序列样本能从 entry + 0-n 参数空间自动生成可执行实验；可从下游 SQL/guard/state/effect 观测反推或修订漏洞假设，并在失败时产生可解释 counter evidence 或 coverage gap。
+
+### P0-19 运行时观测与 IR 对齐
+
+状态：`PARTIAL`
+
+- [ ] Agent 事件从“HTTP/JDBC 文本日志”升级为可映射到 IR 的 RuntimeObservation：Entry、Guard、Effect、State、Dependency、Exception、Branch。
+- [ ] 每个 HTTP probe 贯穿 correlationId、probeAttemptId、entryRef、identity track 和 experimentPlanId；JDBC/文件/进程/HTTP client/guard 事件必须能按请求或序列窗口归属。
+- [ ] 内部框架事件只作为 evidence/coverage，不直接生成 PathRun；空投影、UNKNOWN、超时和 transport failure 统一进入 `UNREACHED` 或 coverage gap。
+- [ ] PathRun 成功投影后触发受影响 hypothesis/detector 的有界重算；失败投影不推进 lifecycle。
+
+验收：多请求、多 SQL、多身份轨样本中，动态证据不串线、不复制、不因 MOCK 元数据升级；GUI 能展示“观察到什么”和“仍缺什么”。
+
+### P0-20 漏洞研判门禁与报告降噪
+
+状态：`NOT STARTED`
+
+- [ ] Finding 排序采用静态证据优先、动态证据加权、失败动态降权的策略；动态不可达不能掩盖静态高危候选。
+- [ ] `DYNAMIC_SUSPECTED` 只用于实际观察到入口、guard/effect/state 或结构差分的 PathRun；`UNKNOWN/-1/MOCK` 不得出现在疑似漏洞主列表。
+- [ ] TRIAGE 必须输出 `SUPPORTED`、`CONTRADICTED`、`INSUFFICIENT_EVIDENCE` 或 `UNREACHED`，并引用具体 evidence refs；Markdown 不能反向创造 finding。
+- [ ] 报告首页显示静态发现、动态支持、动态失败、未覆盖区域和建议复跑条件，避免把大量动态失败噪声包装成漏洞。
+
+验收：对 `scan-7b619e8a65064fa9` 类失败样本，报告应突出静态 sink 和动态不可达原因，而不是输出上千条动态疑似；真实可达漏洞必须能看到静态证据、实验计划、PathRun 和 triage 结论链。
+
 ## 4. P1：建立开放式发现内核
 
 ### P1-01 Artifact Universe
@@ -265,9 +344,9 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 根再审计（2026-07-28，`PARTIAL`，声明范围=Provider 接口、Registry/OutputGate、entry/effect/guard/detector 薄接线及拒绝路径；`ProviderSpiAcceptanceTest`）。限制：ArtifactNodes、Provider MethodSummary、DynamicProbe 尚未全部进入主扫描投影；完整插件市场与精确净化证明不在范围。
 
-### P1-04 成熟静态分析内核
+### P1-04 静态分析内核加深
 
-状态：`AUDITED`（声明范围=轻量 `analysis.kernel`，**非**完整 IFDS/SSA/points-to）
+状态：`PARTIAL`（轻量 `analysis.kernel` fixture 可审；实战召回仍不足，**非**完整 IFDS/SSA/points-to）
 
 - [x] 评估并接入可序列化的 JVM CFG/SSA、points-to/call graph 与 IFDS/IDE 能力；现有 ASM 解析保留快速 fallback。
 - [x] 支持字段/返回值传播与 sanitizer 标记的最小扩展（对象/容器/exception edge/callback/async/有限反射仍未做）。
@@ -277,11 +356,11 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 验收：跨层、wrapper、字段别名、净化正负和异步 fixture 达到声明 recall；预算与解析失败可查询。
 
-根审计（2026-07-28，`AUDITED`，声明范围=轻量 kernel 正负/budget/stopReason + CFG_VIEW 消费；**非**完整 IFDS）：`StaticAnalysisKernelAcceptanceTest`。ADR-0002 已由根 Agent 标为 `ACCEPTED`（继续轻量 kernel + 自研加深，暂不引 Soot/WALA；完整引擎须进程外独立 ADR）。限制：SSA/IFDS/points-to、对象别名、异步/反射展开、完整反编译不在范围。
+根审计（2026-07-28，fixture `AUDITED`，声明范围=轻量 kernel 正负/budget/stopReason + CFG_VIEW 消费；**非**完整 IFDS）：`StaticAnalysisKernelAcceptanceTest`。实战复核（2026-07-29）：当前静态 sink 仍是最可靠的最低可用召回层，但复杂 wrapper、别名、异步、反射和框架扩展漏报明显；P0-16 前不得宣称静态内核成熟。ADR-0002 已由根 Agent 标为 `ACCEPTED`（继续轻量 kernel + 自研加深，暂不引 Soot/WALA；完整引擎须进程外独立 ADR）。
 
 ### P1-05 非污点 Detector 第一批
 
-状态：`AUDITED`（声明范围=GuardConsistency/OwnershipIdor/DangerousConfig 的 mutation+holdout 召回门禁）
+状态：`PARTIAL`（fixture/mutation/holdout 可审；实战排序、覆盖和动态闭环不足）
 
 - [x] Guard dominance 与鉴权一致性。
 - [x] IDOR/BOLA 的对象所有权和租户约束。
@@ -291,11 +370,11 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 验收：每个 detector 有正例、近似负例、变异样例、保留集和独立 release gate；AI 不参与基础判定。
 
-根审计（2026-07-28，`AUDITED`，声明范围=三检测器 unit/live + mutation/holdout recall；AI 不参与）：`NonTaintDetectorAcceptanceTest`（82 assertions）；baselines `p1-05-non-taint-detectors` / `p1-05-mutation-non-taint` / `p1-05-holdout-non-taint`。限制：深度 dominance/IFDS、deser/dep/resource 完整 holdout、生产 release 不在范围。
+根审计（2026-07-28，fixture `AUDITED`，声明范围=三检测器 unit/live + mutation/holdout recall；AI 不参与）：`NonTaintDetectorAcceptanceTest`（82 assertions）；baselines `p1-05-non-taint-detectors` / `p1-05-mutation-non-taint` / `p1-05-holdout-non-taint`。实战复核（2026-07-29）：非污点 detector 的输出没有稳定压中真实业务漏洞，且与动态实验闭环薄；需按 P0-15/P0-18/P0-20 重新建立实战召回和排序门禁。
 
 ### P1-06 Hypothesis 驱动实验规划
 
-状态：`AUDITED`（声明范围=PathRun/RuntimeObservation → lifecycle 增量；失败不改）
+状态：`PARTIAL`（PathRun/RuntimeObservation lifecycle fixture 可审；真实实验规划与增量重算未闭合）
 
 - [x] ExperimentPlan 支持 reachability、dataflow diff、guard diff、state sequence、typestate 和 concurrency/resource 类型。
 - [x] 绑定 hypothesis/plan/probe/stage attempt，声明 expected/counter signal 和 family-specific gate。
@@ -304,7 +383,7 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 验收：一个假设可被动态支持、反证或标证据不足；失败/空投影不改变 lifecycle。
 
-根审计（2026-07-28，`AUDITED`，声明范围=store PathRun→observation→lifecycle 门禁 + incremental subjects）：`HypothesisExperimentAcceptanceTest`（38 assertions）；不升 VERIFIED/`DYNAMIC_CONFIRMED`（finding 验证状态）。限制：live Docker 多请求全链路与完整 detector 重算生产接线不在范围。
+根审计（2026-07-28，fixture `AUDITED`，声明范围=store PathRun→observation→lifecycle 门禁 + incremental subjects）：`HypothesisExperimentAcceptanceTest`（38 assertions）；不升 VERIFIED/`DYNAMIC_CONFIRMED`（finding 验证状态）。实战复核（2026-07-29）：当前更多是“有 PathRun 后更新 lifecycle”，不是“从 hypothesis 自动规划并证明漏洞”；动态不可达和空投影不得推进 triage。
 
 ### P1-07 进程外 Analyzer 与 Runtime 合同
 
@@ -380,7 +459,7 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 - [x] 用桌面/窄屏和长文本检查状态、时间线、筛选与 Markdown 无重叠。
 - [x] `GUI_CONTRACT_AUDIT` 显式记录合同测试范围与生产隐私随 SSO 延后。
 
-根审计（2026-07-28，`AUDITED`，声明范围=合同测试）：`GuiSemanticsContractAcceptanceTest` + `GuiLayoutContractAcceptanceTest`。限制：手工视觉回归未做；生产隐私/保留策略随 SSO 延后（ADR-0003 PROPOSED）。
+根审计（2026-07-28，`AUDITED`，声明范围=合同测试）：`GuiSemanticsContractAcceptanceTest` + `GuiLayoutContractAcceptanceTest`。限制：手工视觉回归未做；生产隐私/保留策略随 SSO 延后（ADR-0003 PROPOSED）。2026-07-29 补充：该项只证明语义合同，不代表当前最终报告页面的信息架构和视觉质量达标；重设计见 P1-25。
 
 ### P1-24 Provider 与出站边界
 
@@ -392,6 +471,20 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 - [x] 验收套件明确仅 loopback fixture，不拨打外网主机。
 
 根审计（2026-07-28，`AUDITED`，声明范围=loopback 拒绝/预算）：`ProviderOutboundBoundaryAcceptanceTest`。限制：真实外网 Provider 互操作未验收；禁止宣称 live 供应商 AUDITED。
+
+### P1-25 最终报告结果工作台重设计
+
+状态：`NOT STARTED`
+
+- [ ] 按 `GUI_DESIGN.md` §4 将最终报告菜单重构为结果工作台：`ResultsShell`、scan 上下文带、证据摘要条、子导航、主内容区和 EvidenceInspector。
+- [ ] 将当前 `ResultsPage.tsx` 中的 report、findings、entry exploration、PathRuns、evidence graph、coverage、dynamic diagnostics、experiments/replay/downloads 拆为独立 view，保留同一 `/api/v1` 合同。
+- [ ] 新增 Entry Parameter Exploration 子页，展示任意入口、0-n 参数矩阵、实验 readiness、下游 Entry/Guard/Effect/State/Dependency 观测和 coverage gap。
+- [ ] 新增 Dynamic Diagnostics 子页，把启动失败、端口误判、探针失败、`UNKNOWN/-1`、空 trace、未投影和 MOCK 依赖从漏洞主列表中分离。
+- [ ] Findings 默认排序静态高置信和动态支持优先，动态失败降噪；`UNKNOWN/-1/MOCK` 不得作为主列表 `DYNAMIC_SUSPECTED`。
+- [ ] 下载页明确区分最终报告 Markdown、发现摘要 HTML 和扫描快照 JSON；所有导出保留 verification status、MOCK 和 evidence refs。
+- [ ] 完成窄屏、长文本、loading、empty、error、partial/unknown、未知 extension 和真实 API 失败不回退 Demo 的视觉/合同检查。
+
+验收：当前功能不丢失，`npm run build` 通过；结果页可从任一 finding、PathRun、entry、coverage gap 或诊断跳转到 evidence refs；对 `scan-7b619e8a65064fa9` 类失败数据，页面突出动态失败原因和静态候选，不再把大量失败 PathRun 包装成漏洞。
 
 ## 5. P2：发布与扩展
 
@@ -438,6 +531,19 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 ## 8. 不足与 audited gaps（根再审计 2026-07-28）
 
 按 [DEVELOPMENT_PLAYBOOK](DEVELOPMENT_PLAYBOOK.md) DoD / 常见写偏模式对照当前代码与门禁。下列**不是**未实现 checkbox，而是声明范围外的真实短板。
+
+2026-07-29 实战召回复核补充：当前代码审计漏报严重，主要不是“AI 提示词不够强”，而是确定性事实、动态实验和评估基线没有闭成产品级发现系统。后续优化优先级按下表执行。
+
+| 根因 | 当前表现 | 直接后果 | 对应任务 |
+|------|----------|----------|----------|
+| 缺少实战 ground truth | fixture gate 通过，但真实授权 JAR 漏报无法量化 | 无法判断改动是提升还是换噪声 | P0-15 |
+| 静态内核深度不足 | 轻量 call graph / summary / sanitizer 能过正例，但复杂 wrapper、别名、异步、反射不稳 | 静态 sink 以外的真实漏洞召回弱 | P0-16、P1-04 |
+| 动态入口实验过于通用 | 未围绕 entry signature、0-n 参数空间、身份轨和下游 effect/guard/state 观测组织；盲目空 GET / 洪水 probe 多 | 大量路径不可达，动态结果不如静态 sink 实在 | P0-18 |
+| 沙箱启动诊断弱 | 依赖端口、启动失败、探针 JVM 失败、依赖替身缺口容易混成 UNKNOWN | `httpStatus=-1` 噪声污染 triage | P0-17 |
+| 依赖替身不是业务环境 | JDBC/Redis/MySQL 替身只能帮助启动，缺表、缺数据和协议细节不能还原业务流 | 动态假阴性高，MOCK 证据不能证明真实影响 | P0-17、P0-18 |
+| RuntimeObservation 与 IR 对齐薄 | Agent 事件不能稳定映射 Entry/Guard/Effect/State | PathRun 难以支持或反证 hypothesis | P0-19 |
+| AI 研判吃不到足够事实 | code_query 和 evidence graph 切片有限，PATH/TRIAGE 工具结果多为失败 | AI 只能解释失败，不能可靠发现漏洞 | P0-16、P0-18、P0-20 |
+| 报告排序没有惩罚动态失败 | 动态不可达可能和疑似结果混在一起 | 用户看到大量噪声，真正静态 sink 反而被稀释 | P0-20 |
 
 ### 8.1 明确延后（产品决定，保持 SCAFFOLDING）
 
