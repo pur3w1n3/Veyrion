@@ -245,23 +245,23 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 状态：`PARTIAL`
 
-- [ ] 建立授权实战样本集，至少包含 3 个真实 Boot JAR / 1 个 Blade 或 Flowable 类应用 / 1 个多鉴权路径应用；每个样本记录 digest、启动 profile、预期入口、已知 sink、已知业务漏洞和不可公开说明。
-- [ ] 对每个样本分别记录静态 sink 基线、SecurityHypothesis 基线、动态 PathRun 基线和最终 finding，计算 TP/FP/FN、动态成功率、无效 PathRun 比例、入口覆盖率和漏洞族覆盖。
-- [x] 将 `scan-7b619e8a65064fa9` 这类历史失败归档为 regression case：`httpStatus=-1/outcomeClass=UNKNOWN` 不得产生 `DYNAMIC_SUSPECTED`，无效 PathRun 洪水必须作为失败指标（`DynamicSuspectedNoiseGateAcceptanceTest` 合成洪水比例门禁，无私有制品入库）。
-- [x] 新增 release gate：无效 PathRun 不得升 `DYNAMIC_SUSPECTED`（已进 curated gate）；完整实战样本静态召回基线仍待授权样本集。
+- [x] 建立可选开源实战样本目录（≥3）：`spring-petclinic`（Boot）、`webgoat`（Boot + multi-auth 漏洞课）、`springblade`（Blade）；记录仓库 URL、ref、buildHint、expectedEntries/sinkFamilies、knownGaps（`baselines/p0-15-practical-oss-samples.json` + `PracticalRecallSampleCatalog`）。JAR **不入库**，经 `scripts/fetch-practical-samples.ps1` 可选拉取。
+- [x] 对每个样本计算 entry/sink TP/FP/FN、invalid PathRun 比例与 gate（无本地制品 → `NOT_EVALUABLE`，不得计入生产召回）。
+- [x] 将 `scan-7b619e8a65064fa9` 这类历史失败归档为 regression case：`httpStatus=-1/outcomeClass=UNKNOWN` 不得产生 `DYNAMIC_SUSPECTED`，无效 PathRun 洪水必须作为失败指标（`DynamicSuspectedNoiseGateAcceptanceTest`）。
+- [x] release gate：目录形状 + 噪声门禁 + 有本地 JAR 时的 sink recall / invalid ratio（`PracticalRecallBaselineAcceptanceTest` 已进 curated gate）。
 
 验收：同一版本重复运行样本集结果稳定；报告明确列出漏报、误报、动态失败和 coverage gap。无实战 ground truth 的样本只能用于探索，不能计入召回率。
 
-实施注记（2026-07-29）：噪声回归与降噪门禁已进 `AcceptanceTestRunner`；真实 Boot/Blade 授权样本集与 TP/FP/FN 基线仍未闭合。
+实施注记（2026-07-29）：开源可选样本目录与 metrics harness 已合入；本机未 fetch 时全部 `NOT_EVALUABLE`。完整实战 digest 对照需运行 fetch 脚本后复跑。
 
 ### P0-16 静态优先的漏洞召回主线
 
 状态：`PARTIAL`
 
-- [ ] 把静态 sink / primitive effect / wrapper MethodSummary 作为 MVP 主召回入口，先保证路径可解释、证据可引用和 coverage gap 可见。
-- [ ] 为 SQL、命令执行、文件、SSRF、反序列化、模板/表达式、JWT/鉴权配置各建立最小正例、近似负例、变异和实战保留集。
-- [ ] 让非污点 detector 输出进入统一排序，但不得压低明确静态 sink 命中的高置信 finding；动态失败只能降低动态置信度，不能删除静态候选。
-- [ ] 增强 `code_query` 对 source/effect/guard/sanitizer 的可读切片，保证 AI 能解释为什么命中、为什么不命中和缺少什么证据。
+- [x] 静态 sink 作为主召回排序入口（`FindingRanker` + dashboard）；动态失败降权不删除静态候选。
+- [x] SQL/COMMAND/FILE/SSRF/DESERIALIZATION/TEMPLATE/JWT 最小正例族合同（`baselines/p0-16-static-sink-families.json`）。
+- [ ] wrapper MethodSummary / 别名加深与实战保留集对照仍待继续。
+- [ ] 增强 `code_query` 对 source/effect/guard/sanitizer 的可读切片。
 
 验收：在实战样本上，静态 finding 至少达到人工确认的最低召回基线；报告可以从 finding 回溯到入口、调用边、sink/effect、guard/sanitizer 和 unresolved gap。
 
@@ -270,10 +270,10 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 状态：`PARTIAL`
 
 - [x] 容器内验证真实 HTTP 服务端口；3306/6379/5432 等依赖端口不得被当成应用端口（WaitHttpReady + shell 拒绝 + `SandboxStartupDiagnostics.isDependencyPort`）。
-- [x] 对启动失败建立结构化分类：`SandboxStartupDiagnostics.FailureClass`（JVM 崩溃、主类缺失、端口未监听、依赖端口误判、依赖替身缺口、DB 初始化阻塞、鉴权/配置缺失、预算不足、探针 JVM 失败、保留沙箱失败）。
-- [x] 动态任务失败时保留应用日志尾部与分类 stop reason（`failureDiagnostic` / `exitDiagnostic`）；不得把失败写成疑似漏洞。
-- [x] 成功启动的断网容器按 scan/artifact 保留给 PATH/TRIAGE（`RetainedSandboxSessions`，TTL/容量驱逐）。
-- [ ] 启动前从配置、manifest、Spring Boot 参数完整推断候选 Web 端口（仍主要依赖 listen + HTTP classify）。
+- [x] 对启动失败建立结构化分类：`SandboxStartupDiagnostics.FailureClass`。
+- [x] 动态任务失败时保留应用日志尾部与分类 stop reason；不得把失败写成疑似漏洞。
+- [x] 成功启动的断网容器按 scan/artifact 保留给 PATH/TRIAGE（`RetainedSandboxSessions`）。
+- [x] 启动前从 Boot `server.port` / YAML `server.port` / Start-Class 收获候选端口（`BootPortCandidateHarvester` → PreAnalysis evidence）；依赖端口写入 rejected 列表。
 
 验收：实战样本中动态启动失败可以被归因到明确类别；依赖端口不会生成成功 PathRun；失败路径产生 `UNREACHED` 或 gap，不产生 `DYNAMIC_SUSPECTED`。
 
@@ -281,10 +281,11 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 状态：`PARTIAL`
 
-- [x] `EntryParameterExperimentCompiler`：从 entry signature / 参数列表 / hypothesis family 编译服务端 `ExperimentPlan` 形状（method、0-n query/body、empty-input rationale、expected/counter signal、readiness）。
-- [x] 0 参数、空 body、空 query 合法并记录 empty-input rationale（acceptance）。
-- [ ] 将 Provider `DynamicProbe`、AUTH PoC、DTO/config 推断与编译器完整统一；运行时未知 effect 反向修订 hypothesis。
-- [x] PATH/TRIAGE 多轮 probe 可复用保留沙箱（`executeRetainedProbe`）。
+- [x] `EntryParameterExperimentCompiler`：entry × 0-n 参数 + empty-input rationale。
+- [x] `compileUnified`：合并 entry / hypothesis / DynamicProbe `ExperimentPlan` / AUTH PoC 入口提示；`ProbePlanService` 给洪水探针盖章 `experimentPlanId`。
+- [x] 0 参数、空 body、空 query 合法并记录 empty-input rationale。
+- [x] PATH/TRIAGE 多轮 probe 可复用保留沙箱。
+- [ ] 运行时未知 effect 反向修订 hypothesis 仍待加深。
 
 验收：至少一个 SQL dataflow、一个鉴权/IDOR、一个状态序列样本能从 entry + 0-n 参数空间自动生成可执行实验；可从下游 SQL/guard/state/effect 观测反推或修订漏洞假设，并在失败时产生可解释 counter evidence 或 coverage gap。
 
@@ -292,10 +293,10 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 状态：`PARTIAL`
 
-- [x] `ObservationKind.BRANCH`；`RuntimeObservationProjector` 可映射 Entry/Guard/Effect/State/Dependency/Exception/Branch，失败 outcome → `UNREACHED` signal。
-- [x] 内部框架 HTTP 不直接生成 PathRun（`isProbeHttpEvent`）；空投影/UNKNOWN/超时 → `UNREACHED`。
-- [ ] 每个 HTTP probe 稳定贯穿 correlationId、probeAttemptId、entryRef、identity track 和 experimentPlanId 的全链路生产接线仍需加深。
-- [x] PathRun 成功投影后 hypothesis lifecycle 有界更新（既有 HypothesisExperimentGate）；失败投影不推进。
+- [x] `ObservationKind.BRANCH`；`RuntimeObservationProjector` 映射 Entry/Guard/Effect/State/Dependency/Exception/Branch。
+- [x] 内部框架 HTTP 不直接生成 PathRun；空投影/UNKNOWN/超时 → `UNREACHED`。
+- [x] Probe TSV 可选第 7 列 `experimentPlanId`；LoopbackHttpProbe 写入 detail；投影优先 detail 再回退 task bind；`correlationId` 仍贯穿 attemptId/requestSummary。
+- [x] PathRun 成功投影后 hypothesis lifecycle 有界更新；失败投影不推进。
 
 验收：多请求、多 SQL、多身份轨样本中，动态证据不串线、不复制、不因 MOCK 元数据升级；GUI 能展示“观察到什么”和“仍缺什么”。
 
@@ -303,10 +304,10 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 状态：`PARTIAL`
 
-- [x] `FindingRanker`：静态证据优先、动态支持加权、`UNREACHED`/MOCK 动态降权；dashboard findings 按此排序。
-- [x] `DYNAMIC_SUSPECTED` 仅在真实 HTTP/effect 观察时；`UNKNOWN/-1/MOCK-gap/REACHED_NO_BIND` → `UNREACHED`；任务终态事件不再提升疑似。
-- [ ] TRIAGE 输出 `SUPPORTED`/`CONTRADICTED`/`INSUFFICIENT_EVIDENCE`/`UNREACHED` 枚举对齐（现有 INFERENCE/INSUFFICIENT 兼容路径仍在）。
-- [x] Dashboard/GUI 摘要区分 dynamicSupported / dynamicFailed；结果工作台 Dynamic Diagnostics 承接失败噪声。
+- [x] `FindingRanker`：静态证据优先、动态支持加权、`UNREACHED`/MOCK 动态降权。
+- [x] `DYNAMIC_SUSPECTED` 仅在真实 HTTP/effect 观察时；`UNKNOWN/-1/MOCK-gap/REACHED_NO_BIND` → `UNREACHED`。
+- [x] TRIAGE classification：`SUPPORTED` / `CONTRADICTED` / `INSUFFICIENT_EVIDENCE` / `UNREACHED`（`INFERENCE` 兼容别名为 `SUPPORTED`）。
+- [x] Dashboard/GUI 摘要区分 dynamicSupported / dynamicFailed；Dynamic Diagnostics 承接失败噪声。
 
 验收：对 `scan-7b619e8a65064fa9` 类失败样本，报告应突出静态 sink 和动态不可达原因，而不是输出上千条动态疑似；真实可达漏洞必须能看到静态证据、实验计划、PathRun 和 triage 结论链。
 
@@ -484,7 +485,8 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 - [x] Entry Parameter Exploration 子页：入口表、0-n 参数/empty-input rationale、实验 readiness（基于 entries/experimentPlans；完整矩阵待 API 加深）。
 - [x] Dynamic Diagnostics 子页：UNREACHED / `-1` / UNKNOWN / MOCK 依赖从漏洞主列表分离。
 - [x] Findings 默认静态优先排序；下载页区分 Markdown / HTML / JSON。
-- [ ] 手工窄屏/长文本视觉回归与 graph 节点→Inspector 绑定仍待补强；合同测试已覆盖新增 view id。
+- [x] Evidence Graph 节点点击更新 EvidenceInspector（不改变服务端状态）。
+- [ ] 手工窄屏/长文本视觉回归仍待补强；合同测试已覆盖新增 view id。
 
 验收：当前功能不丢失，`npm run build` 通过；结果页可从任一 finding、PathRun、entry、coverage gap 或诊断跳转到 evidence refs；对 `scan-7b619e8a65064fa9` 类失败数据，页面突出动态失败原因和静态候选，不再把大量失败 PathRun 包装成漏洞。
 

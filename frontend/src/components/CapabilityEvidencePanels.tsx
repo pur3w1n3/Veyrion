@@ -216,13 +216,15 @@ export function EvidenceGraphPanel({
   loading,
   error,
   english,
-  language
+  language,
+  onSelectNode
 }: {
   graph?: EvidenceGraphDto
   loading: boolean
   error?: string
   english: boolean
   language: OutputLanguage
+  onSelectNode?: (node: EvidenceGraphNodeDto) => void
 }) {
   void language
   const nodes = graph?.nodes ?? []
@@ -249,7 +251,18 @@ export function EvidenceGraphPanel({
           </p>
           <div className="card-list">
             {nodes.slice(0, 80).map((node) => (
-              <EvidenceGraphNodeCard key={node.id} node={node} english={english} />
+              onSelectNode ? (
+                <button
+                  type="button"
+                  className="results-row"
+                  key={node.id}
+                  onClick={() => onSelectNode(node)}
+                >
+                  <EvidenceGraphNodeCard node={node} english={english} />
+                </button>
+              ) : (
+                <EvidenceGraphNodeCard key={node.id} node={node} english={english} />
+              )
             ))}
             {nodes.length === 0 && (
               <p className="empty-state">

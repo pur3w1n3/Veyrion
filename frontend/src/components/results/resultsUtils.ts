@@ -4,6 +4,7 @@ import {
   type CoverageMatrixDto,
   type DashboardSnapshot,
   type Entry,
+  type EvidenceGraphNodeDto,
   type Finding,
   type HypothesisFamily,
   type PathRunDto,
@@ -113,4 +114,5 @@ export type EvidenceSelection =
   | { kind: 'pathRun'; pathRun: PathRunDto }
   | { kind: 'hypothesis'; hypothesis: SecurityHypothesisDto }
   | { kind: 'entry'; entry: Entry }
+  | { kind: 'graphNode'; node: EvidenceGraphNodeDto }
   | null

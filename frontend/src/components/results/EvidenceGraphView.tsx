@@ -1,4 +1,4 @@
-import type { CoverageMatrixDto, EvidenceGraphDto, OutputLanguage } from '../../api'
+import type { CoverageMatrixDto, EvidenceGraphDto, EvidenceGraphNodeDto, OutputLanguage } from '../../api'
 import { CoverageMatrixPanel, EvidenceGraphPanel } from '../CapabilityEvidencePanels'
 
 export function EvidenceGraphView({
@@ -6,17 +6,26 @@ export function EvidenceGraphView({
   loading,
   error,
   english,
-  language
+  language,
+  onSelectNode
 }: {
   graph?: EvidenceGraphDto
   loading: boolean
   error?: string
   english: boolean
   language: OutputLanguage
+  onSelectNode?: (node: EvidenceGraphNodeDto) => void
 }) {
   return (
     <div className="results-view results-view--graph">
-      <EvidenceGraphPanel graph={graph} loading={loading} error={error} english={english} language={language} />
+      <EvidenceGraphPanel
+        graph={graph}
+        loading={loading}
+        error={error}
+        english={english}
+        language={language}
+        onSelectNode={onSelectNode}
+      />
     </div>
   )
 }

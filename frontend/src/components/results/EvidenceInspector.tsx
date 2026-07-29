@@ -77,6 +77,20 @@ export function EvidenceInspector({
           </dl>
         </>
       )}
+      {selection.kind === 'graphNode' && (
+        <>
+          <p className="eyebrow">{english ? 'GRAPH NODE' : '图谱节点'}</p>
+          <h3 className="evidence-inspector__title veyrion-long-text">{selection.node.symbol || selection.node.id}</h3>
+          <dl className="evidence-inspector__dl">
+            <div><dt>{english ? 'Kind' : '类型'}</dt><dd>{selection.node.kind}{selection.node.kindRaw && selection.node.kindRaw !== selection.node.kind ? ` · raw=${selection.node.kindRaw}` : ''}</dd></div>
+            <div><dt>{english ? 'Language' : '语言'}</dt><dd>{selection.node.language || '—'}</dd></div>
+            <div><dt>{english ? 'Location' : '位置'}</dt><dd className="veyrion-long-text">{selection.node.location || '—'}</dd></div>
+            <div><dt>{english ? 'Provenance' : '来源'}</dt><dd>{selection.node.provenanceKind}</dd></div>
+            <div><dt>{english ? 'Evidence refs' : '证据引用'}</dt><dd>{selection.node.evidenceRefs.length}</dd></div>
+            <div><dt>ID</dt><dd className="veyrion-long-text">{selection.node.id}</dd></div>
+          </dl>
+        </>
+      )}
     </aside>
   )
 }

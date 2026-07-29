@@ -301,6 +301,10 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
     setSelection({ kind: 'hypothesis', hypothesis })
   }
 
+  const handleSelectGraphNode = (node: import('../api').EvidenceGraphNodeDto) => {
+    setSelection({ kind: 'graphNode', node })
+  }
+
   return <>
     <PageHeader eyebrow={snapshot?.scanId ?? (english ? 'NO SCAN' : '尚无扫描')} title={english ? 'Audit results' : '审计结果'}>
       {english
@@ -393,6 +397,7 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
           error={evidenceGraphError}
           english={english}
           language={language}
+          onSelectNode={handleSelectGraphNode}
         />
       )}
 
