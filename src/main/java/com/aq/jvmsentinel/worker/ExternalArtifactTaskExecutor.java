@@ -618,6 +618,8 @@ public final class ExternalArtifactTaskExecutor {
         long maxBytes = agentTraceBudget(budget, registration.probePlan().size());
         long maxEvents = Math.max(1, Math.min(100_000, maxBytes / 256));
         long runSeconds = Math.max(1, budget.maxWallClockSeconds() - 15);
+        String worldPackMode = registration.worldPackDependencyMode();
+        boolean mockDependencies = !"OBSERVE_FAIL".equalsIgnoreCase(worldPackMode);
         // Keep application readiness separate from the full task wall clock. The remaining
         // budget is for probes and trace collection after HTTP is ready.
         long startupLimitSeconds = registration.sizeBytes() >= 80L * 1024 * 1024 ? 180
@@ -643,7 +645,9 @@ public final class ExternalArtifactTaskExecutor {
                 + "; java"
                 + " -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
                 + " -Dveyrion.sandbox.traceDir.authorized=true"
-                + " -Dveyrion.sandbox.dependencyMock=true"
+                + " -Dveyrion.sandbox.docker=true"
+                + " -Dveyrion.worldPack.dependencyMode=" + worldPackMode
+                + " -Dveyrion.sandbox.dependencyMock=" + mockDependencies
                 + " -Dveyrion.coverage.enabled=true"
                 // Keep app temps off the tiny trace tmpfs so probe-events.jsonl can still be written.
                 + " -Djava.io.tmpdir=/tmp"
@@ -653,13 +657,17 @@ public final class ExternalArtifactTaskExecutor {
                 + " -Dorg.quartz.scheduler.instanceName=veyrion-sandbox"
                 + " -Dorg.quartz.scheduler.instanceId=veyrion-sandbox"
                 + " -javaagent:" + AGENT_PATH + "=maxBytes=" + maxBytes + ",maxEvents=" + maxEvents
-                + ",dependencyMock=true,veyrion.coverage.enabled=true"
+                + ",dependencyMock=" + mockDependencies
+                + "," + "veyrion.worldPack.dependencyMode"
+                + "=" + worldPackMode
+                + ",veyrion.coverage.enabled=true"
                 + (registration.classPrefix().isEmpty()
                 ? "" : ",classPrefix=" + registration.classPrefix())
                 + " -jar " + ARTIFACT_PATH
                 // Fail-open pools + protocol mock URL so deny-all jars can bind loopback for probes.
                 + " --spring.main.lazy-initialization=true"
-                + " --spring.datasource.url=" + datasource
+                + (mockDependencies
+                ? " --spring.datasource.url=" + datasource
                 + driver
                 + " --spring.datasource.hikari.initialization-fail-timeout=-1"
                 + " --spring.datasource.hikari.connection-timeout=1000"
@@ -670,16 +678,17 @@ public final class ExternalArtifactTaskExecutor {
                 + " --spring.datasource.druid.connection-error-retry-attempts=0"
                 + " --spring.datasource.druid.break-after-acquire-failure=true"
                 + " --spring.datasource.druid.test-while-idle=false"
-                + " --spring.flyway.enabled=false"
-                + " --spring.liquibase.enabled=false"
-                + " --spring.sql.init.mode=never"
-                + " --spring.jpa.hibernate.ddl-auto=none"
-                + " --spring.data.redis.repositories.enabled=false"
                 + " --spring.redis.host=127.0.0.1"
                 + " --spring.redis.port=6379"
                 + " --spring.redis.timeout=500ms"
                 + " --spring.data.redis.timeout=500ms"
                 + " --management.health.redis.enabled=false"
+                : "")
+                + " --spring.flyway.enabled=false"
+                + " --spring.liquibase.enabled=false"
+                + " --spring.sql.init.mode=never"
+                + " --spring.jpa.hibernate.ddl-auto=none"
+                + " --spring.data.redis.repositories.enabled=false"
                 + " --spring.quartz.auto-startup=false"
                 + " --spring.quartz.job-store-type=memory"
                 + " --spring.quartz.overwrite-existing-jobs=false"
@@ -1263,18 +1272,19 @@ public final class ExternalArtifactTaskExecutor {
     public record ArtifactRegistration(String projectId, String sha256, Path path, long sizeBytes,
                                        boolean executableSpringBootJar, String probeMethod,
                                        String probeRoute, String classPrefix,
-                                       List<ProbeTarget> probePlan) {
+                                       List<ProbeTarget> probePlan, String worldPackDependencyMode) {
         public ArtifactRegistration(String projectId, String sha256, Path path, long sizeBytes,
                                     boolean executableSpringBootJar) {
             this(projectId, sha256, path, sizeBytes, executableSpringBootJar, "GET", "/", "",
-                    List.of(new ProbeTarget("GET", "/")));
+                    List.of(new ProbeTarget("GET", "/")), "MOCK_CONTINUE");
         }
 
         public ArtifactRegistration(String projectId, String sha256, Path path, long sizeBytes,
                                     boolean executableSpringBootJar, String probeMethod,
                                     String probeRoute) {
             this(projectId, sha256, path, sizeBytes, executableSpringBootJar,
-                    probeMethod, probeRoute, "", List.of(new ProbeTarget(probeMethod, probeRoute)));
+                    probeMethod, probeRoute, "", List.of(new ProbeTarget(probeMethod, probeRoute)),
+                    "MOCK_CONTINUE");
         }
 
         public ArtifactRegistration(String projectId, String sha256, Path path, long sizeBytes,
@@ -1282,7 +1292,15 @@ public final class ExternalArtifactTaskExecutor {
                                     String probeRoute, String classPrefix) {
             this(projectId, sha256, path, sizeBytes, executableSpringBootJar,
                     probeMethod, probeRoute, classPrefix,
-                    List.of(new ProbeTarget(probeMethod, probeRoute)));
+                    List.of(new ProbeTarget(probeMethod, probeRoute)), "MOCK_CONTINUE");
+        }
+
+        public ArtifactRegistration(String projectId, String sha256, Path path, long sizeBytes,
+                                    boolean executableSpringBootJar, String probeMethod,
+                                    String probeRoute, String classPrefix,
+                                    List<ProbeTarget> probePlan) {
+            this(projectId, sha256, path, sizeBytes, executableSpringBootJar,
+                    probeMethod, probeRoute, classPrefix, probePlan, "MOCK_CONTINUE");
         }
 
         public ArtifactRegistration {
@@ -1314,6 +1332,12 @@ public final class ExternalArtifactTaskExecutor {
                     throw new IllegalArgumentException("probe plan exceeds limit");
                 }
                 probePlan = List.copyOf(probePlan);
+            }
+            worldPackDependencyMode = worldPackDependencyMode == null || worldPackDependencyMode.isBlank()
+                    ? "MOCK_CONTINUE" : worldPackDependencyMode.trim().toUpperCase(java.util.Locale.ROOT);
+            if (!worldPackDependencyMode.equals("MOCK_CONTINUE")
+                    && !worldPackDependencyMode.equals("OBSERVE_FAIL")) {
+                throw new IllegalArgumentException("worldPackDependencyMode must be MOCK_CONTINUE or OBSERVE_FAIL");
             }
         }
     }

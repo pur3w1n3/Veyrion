@@ -7,6 +7,7 @@ import com.aq.jvmsentinel.analysis.identity.AuthCodeQueryService;
 import com.aq.jvmsentinel.analysis.kernel.CfgBuilder;
 import com.aq.jvmsentinel.analysis.kernel.CfgGraph;
 import com.aq.jvmsentinel.analysis.experiment.PathDebugWireHelper;
+import com.aq.jvmsentinel.analysis.experiment.PathTraceGapAdvisor;
 import com.aq.jvmsentinel.analysis.experiment.RuntimePostureOrchestrator;
 import com.aq.jvmsentinel.control.JsonCodec;
 import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
@@ -1194,6 +1195,10 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
             row.put("boundTo", step.boundTo());
             row.put("flowedTo", step.flowedTo());
             row.put("effectRef", step.effectRef());
+        }
+        ArrayNode suggestions = node.putArray("nextExperimentSuggestions");
+        for (PathTraceGapAdvisor.Suggestion suggestion : PathTraceGapAdvisor.suggest(trace)) {
+            suggestions.add(JSON.valueToTree(suggestion.toMap()));
         }
         return node;
     }

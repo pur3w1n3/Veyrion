@@ -108,6 +108,15 @@
                             <mainClass>com.aq.jvmsentinel.agent.LoopbackHttpProbeAcceptanceTest</mainClass>
                         </configuration>
                     </execution>
+                    <execution>
+                        <id>path-debug-sensor-acceptance</id>
+                        <phase>test</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>com.aq.jvmsentinel.instrumentation.PathDebugSensorAcceptanceTest</mainClass>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>

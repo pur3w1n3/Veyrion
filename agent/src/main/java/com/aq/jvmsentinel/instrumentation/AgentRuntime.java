@@ -53,11 +53,15 @@ public final class AgentRuntime {
     public static void recordInstrumentedCall(String eventType, String callerClass, String callerMethod,
                                               String targetClass, String targetMethod,
                                               String instructionOrdinal) {
-        recordInstrumented(eventType, callerClass, callerMethod,
-                Map.of("captureMode", "APPLICATION_CALL_SITE",
-                        "targetClass", targetClass,
-                        "targetMethod", targetMethod,
-                        "instructionOrdinal", instructionOrdinal));
+        Map<String, String> detail = new LinkedHashMap<>();
+        detail.put("captureMode", "APPLICATION_CALL_SITE");
+        detail.put("targetClass", targetClass);
+        detail.put("targetMethod", targetMethod);
+        detail.put("instructionOrdinal", instructionOrdinal);
+        if ("PROCESS".equals(eventType) || "FILE".equals(eventType) || "HTTP_CLIENT".equals(eventType)) {
+            detail.putAll(PathDebugDetail.effectTriggered(eventType));
+        }
+        recordInstrumented(eventType, callerClass, callerMethod, detail);
     }
 
     public static void recordTransformedMethod(String eventType, String className, String methodName,

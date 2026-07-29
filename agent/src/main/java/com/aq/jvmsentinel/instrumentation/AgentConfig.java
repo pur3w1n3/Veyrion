@@ -12,6 +12,7 @@ final class AgentConfig {
     static final String TRACE_DIR_PROPERTY = "veyrion.sandbox.traceDir";
     static final String TRACE_DIR_AUTHORIZED_PROPERTY = "veyrion.sandbox.traceDir.authorized";
     static final String COVERAGE_ENABLED_PROPERTY = "veyrion.coverage.enabled";
+    static final String WORLD_PACK_DEPENDENCY_MODE_PROPERTY = "veyrion.worldPack.dependencyMode";
     static final String TRACE_FILE_NAME = "agent-events.jsonl";
 
     private static final Pattern CLASS_PREFIX = Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(?:[./][A-Za-z_$][A-Za-z0-9_$]*)*[./]?");
@@ -54,9 +55,12 @@ final class AgentConfig {
     final List<String> excludedPrefixes;
     final boolean dependencyMock;
     final boolean coverageEnabled;
+    /** OBSERVE_FAIL: JDBC fails after DEPENDENCY_FAILURE; MOCK_CONTINUE: stub continues. */
+    final String worldPackDependencyMode;
 
     private AgentConfig(Path traceFile, long maxBytes, int maxEvents, String classPrefix,
-                        List<String> excludedPrefixes, boolean dependencyMock, boolean coverageEnabled) {
+                        List<String> excludedPrefixes, boolean dependencyMock, boolean coverageEnabled,
+                        String worldPackDependencyMode) {
         this.traceFile = traceFile;
         this.maxBytes = maxBytes;
         this.maxEvents = maxEvents;
@@ -64,6 +68,11 @@ final class AgentConfig {
         this.excludedPrefixes = excludedPrefixes;
         this.dependencyMock = dependencyMock;
         this.coverageEnabled = coverageEnabled;
+        this.worldPackDependencyMode = worldPackDependencyMode;
+    }
+
+    boolean observeFailMode() {
+        return "OBSERVE_FAIL".equalsIgnoreCase(worldPackDependencyMode);
     }
 
     static AgentConfig parse(String arguments) {
@@ -112,13 +121,16 @@ final class AgentConfig {
                 && (!Files.isRegularFile(traceFile, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(traceFile))) {
             throw new IllegalArgumentException("trace output must be a regular non-link file");
         }
-        boolean dependencyMock = "true".equalsIgnoreCase(values.getOrDefault("dependencyMock", "false"))
-                || "true".equalsIgnoreCase(System.getProperty("veyrion.sandbox.dependencyMock", "false"));
+        String worldPackMode = resolveWorldPackDependencyMode(values);
+        boolean observeFail = "OBSERVE_FAIL".equalsIgnoreCase(worldPackMode);
+        boolean dependencyMock = !observeFail
+                && ("true".equalsIgnoreCase(values.getOrDefault("dependencyMock", "false"))
+                || "true".equalsIgnoreCase(System.getProperty("veyrion.sandbox.dependencyMock", "false")));
         boolean coverageEnabled = parseBoolean(values.get(COVERAGE_ENABLED_PROPERTY),
                 COVERAGE_ENABLED_PROPERTY)
                 || parseBoolean(System.getProperty(COVERAGE_ENABLED_PROPERTY), COVERAGE_ENABLED_PROPERTY);
         return new AgentConfig(traceFile, maxBytes, maxEvents, classPrefix, List.copyOf(excludedPrefixes),
-                dependencyMock, coverageEnabled);
+                dependencyMock, coverageEnabled, worldPackMode);
     }
 
     boolean includes(String binaryName) {
@@ -143,7 +155,8 @@ final class AgentConfig {
             String value = entry.substring(separator + 1);
             if (!key.equals("maxBytes") && !key.equals("maxEvents") && !key.equals("classPrefix")
                     && !key.equals("excludePrefixes") && !key.equals("dependencyMock")
-                    && !key.equals(COVERAGE_ENABLED_PROPERTY)) {
+                    && !key.equals(COVERAGE_ENABLED_PROPERTY)
+                    && !key.equals(WORLD_PACK_DEPENDENCY_MODE_PROPERTY)) {
                 throw new IllegalArgumentException("unsupported agent argument: " + key);
             }
             if (values.putIfAbsent(key, value) != null) {
@@ -158,6 +171,19 @@ final class AgentConfig {
         if ("true".equalsIgnoreCase(value)) return true;
         if ("false".equalsIgnoreCase(value)) return false;
         throw new IllegalArgumentException(name + " must be true or false");
+    }
+
+    private static String resolveWorldPackDependencyMode(Map<String, String> values) {
+        String fromArg = values.get(WORLD_PACK_DEPENDENCY_MODE_PROPERTY);
+        if (fromArg == null || fromArg.isBlank()) {
+            fromArg = System.getProperty(WORLD_PACK_DEPENDENCY_MODE_PROPERTY, "MOCK_CONTINUE");
+        }
+        String normalized = fromArg.trim().toUpperCase(java.util.Locale.ROOT);
+        if (!normalized.equals("OBSERVE_FAIL") && !normalized.equals("MOCK_CONTINUE")) {
+            throw new IllegalArgumentException(WORLD_PACK_DEPENDENCY_MODE_PROPERTY
+                    + " must be OBSERVE_FAIL or MOCK_CONTINUE");
+        }
+        return normalized;
     }
 
     private static long parseLong(String value, long defaultValue, long minimum, long maximum, String name) {

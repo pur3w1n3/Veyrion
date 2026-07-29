@@ -110,24 +110,102 @@ public final class PathTraceProjectionBridge {
     private static List<PathTraceProjector.EventSummary> summariesForAgentEvent(
             AgentJsonlTraceConverter.AgentEvent event) {
         Map<String, String> detail = event.detail();
+        String pathDebugKind = detail.getOrDefault("pathDebugKind", "");
         String symbol = event.className().isBlank() ? event.method()
                 : event.className() + "#" + event.method();
-        return switch (event.eventType()) {
-            case "HTTP" -> List.of(new PathTraceProjector.EventSummary(
-                    TraceEventKind.ENTRY_HIT,
-                    detail.getOrDefault("httpMethod", "GET") + " " + detail.getOrDefault("route", "/"),
-                    "entry:" + detail.getOrDefault("route", "/"),
+        if ("METHOD_HOP".equals(pathDebugKind)) {
+            return List.of(new PathTraceProjector.EventSummary(
+                    TraceEventKind.METHOD_HOP,
+                    detail.getOrDefault("captureMode", "METHOD_HOP") + " at " + symbol,
+                    symbol,
                     "",
                     false,
                     List.of()));
+        }
+        if ("GUARD_DECISION".equals(pathDebugKind)) {
+            boolean forced = "true".equalsIgnoreCase(detail.get("forced"));
+            String decision = detail.getOrDefault("guardDecision", "OBSERVED");
+            return List.of(new PathTraceProjector.EventSummary(
+                    TraceEventKind.GUARD_DECISION,
+                    decision + " at " + symbol,
+                    symbol,
+                    forced ? "FORCED_ALLOW" : decision,
+                    forced,
+                    List.of()));
+        }
+        if ("EFFECT_TRIGGERED".equals(pathDebugKind)) {
+            String effectKind = detail.getOrDefault("effectKind", event.eventType());
+            return List.of(new PathTraceProjector.EventSummary(
+                    TraceEventKind.EFFECT_TRIGGERED,
+                    effectKind + " at " + symbol,
+                    symbol,
+                    "EFFECT:" + effectKind,
+                    false,
+                    List.of("EFFECT:" + effectKind)));
+        }
+        if ("DEPENDENCY_FAILURE".equals(pathDebugKind)) {
+            String failureClass = detail.getOrDefault("failureClass", "DEPENDENCY_UNAVAILABLE");
+            return List.of(new PathTraceProjector.EventSummary(
+                    TraceEventKind.DEPENDENCY_FAILURE,
+                    detail.getOrDefault("summary", detail.getOrDefault("sql", "jdbc failure")),
+                    symbol,
+                    failureClass,
+                    false,
+                    List.of()));
+        }
+        if ("DEPENDENCY_CALL".equals(pathDebugKind)) {
+            return List.of(new PathTraceProjector.EventSummary(
+                    TraceEventKind.METHOD_HOP,
+                    "dependency call " + detail.getOrDefault("summary", "jdbc"),
+                    symbol,
+                    "DEPENDENCY_CALL",
+                    false,
+                    List.of()));
+        }
+        return switch (event.eventType()) {
+            case "HTTP" -> {
+                if ("true".equals(detail.get("entryHit"))) {
+                    yield List.of(
+                            new PathTraceProjector.EventSummary(
+                                    TraceEventKind.ENTRY_HIT,
+                                    detail.getOrDefault("httpMethod", "GET") + " "
+                                            + detail.getOrDefault("route", "/"),
+                                    "entry:" + detail.getOrDefault("route", "/"),
+                                    "",
+                                    false,
+                                    List.of()),
+                            new PathTraceProjector.EventSummary(
+                                    TraceEventKind.PARAMETER_BOUND,
+                                    "parameter bound",
+                                    symbol,
+                                    "PARAMETER_BOUND",
+                                    false,
+                                    List.of()),
+                            new PathTraceProjector.EventSummary(
+                                    TraceEventKind.METHOD_HOP,
+                                    "handler " + symbol,
+                                    symbol,
+                                    "",
+                                    false,
+                                    List.of()));
+                }
+                yield List.of(new PathTraceProjector.EventSummary(
+                        TraceEventKind.ENTRY_HIT,
+                        detail.getOrDefault("httpMethod", "GET") + " "
+                                + detail.getOrDefault("route", "/"),
+                        "entry:" + detail.getOrDefault("route", "/"),
+                        "",
+                        false,
+                        List.of()));
+            }
             case "JDBC" -> List.of(new PathTraceProjector.EventSummary(
                     TraceEventKind.DEPENDENCY_FAILURE,
                     detail.getOrDefault("sql", detail.getOrDefault("summary", "jdbc")),
                     symbol,
-                    "DEPENDENCY_UNAVAILABLE",
+                    detail.getOrDefault("failureClass", "DEPENDENCY_UNAVAILABLE"),
                     false,
                     List.of()));
-            case "PROCESS", "FILE" -> List.of(new PathTraceProjector.EventSummary(
+            case "PROCESS", "FILE", "HTTP_CLIENT" -> List.of(new PathTraceProjector.EventSummary(
                     TraceEventKind.EFFECT_TRIGGERED,
                     event.eventType() + " at " + symbol,
                     symbol,

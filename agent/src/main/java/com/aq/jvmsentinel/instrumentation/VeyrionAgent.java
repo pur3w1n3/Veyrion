@@ -46,7 +46,7 @@ public final class VeyrionAgent {
                             "branchCoverage", config.coverageEnabled
                                     ? "REQUEST_SCOPED_BRANCH_SITE_HITS" : "DISABLED",
                             "bootstrapClasses", "UNSUPPORTED_FAIL_EXPLICIT"));
-            DependencyMockBootstrap.install(instrumentation, config.dependencyMock);
+            DependencyMockBootstrap.install(instrumentation, config.dependencyMock, config.worldPackDependencyMode);
             instrumentation.addTransformer(new ObservationTransformer(config), false);
             AutomaticInstrumentation.install(instrumentation, config, writer);
         } catch (RuntimeException | Error failure) {

@@ -88,6 +88,7 @@ public final class PathDebugWireHelper {
         summary.put("tracePlanId", trace.tracePlanId());
         summary.put("legacyIncomplete", trace.legacyIncomplete());
         summary.put("authRequirement", PathTraceProjector.authRequirementFor(trace, -1));
+        summary.put("forcedGuardRefs", trace.posture().forcedGuardRefs());
         return Map.copyOf(summary);
     }
 

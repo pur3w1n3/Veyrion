@@ -158,7 +158,7 @@ public final class PostureExperimentCompiler {
         String worldPackId = posture.postureKind() == RuntimePostureKind.FORCED_REACHABILITY
                 ? worldPacks.mockContinueId()
                 : worldPacks.observeFailId();
-        String planId = "plan:posture:" + entry.id() + ":" + posture.postureKind().name().toLowerCase(Locale.ROOT);
+        String planId = boundedPlanId(entry.id(), posture.postureKind());
         return new CompiledPostureExperiment(
                 planId,
                 tracePlan.tracePlanId(),
@@ -256,6 +256,28 @@ public final class PostureExperimentCompiler {
         var mock = WorldPackPlanner.planMockContinue(scanId);
         var observe = WorldPackPlanner.planObserveFail(scanId, List.of());
         return new WorldPackManifestPair(mock.worldPackId(), observe.worldPackId());
+    }
+
+    /**
+     * ProbeTarget.experimentPlanId must match {@code [A-Za-z0-9_.:/-]{1,128}}.
+     * Entry ids can be long route keys — hash the overflow instead of failing registration.
+     */
+    static String boundedPlanId(String entryId, RuntimePostureKind kind) {
+        String posture = kind == null ? "unauth" : kind.name().toLowerCase(Locale.ROOT);
+        String safeEntry = (entryId == null ? "entry" : entryId.trim())
+                .replaceAll("[^A-Za-z0-9_.:/-]", "_");
+        String prefix = "plan:posture:";
+        String suffix = ":" + posture;
+        int budget = 128 - prefix.length() - suffix.length();
+        if (budget < 8) {
+            budget = 8;
+        }
+        if (safeEntry.length() <= budget) {
+            return prefix + safeEntry + suffix;
+        }
+        String hash = Integer.toHexString(safeEntry.hashCode());
+        int keep = Math.max(4, budget - hash.length() - 1);
+        return prefix + safeEntry.substring(0, keep) + "-" + hash + suffix;
     }
 
     private record WorldPackManifestPair(String mockContinueId, String observeFailId) {

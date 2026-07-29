@@ -15,8 +15,17 @@ public final class DependencyMockBootstrap {
     private DependencyMockBootstrap() {
     }
 
-    public static void install(Instrumentation instrumentation, boolean enabled) {
-        if (!enabled) return;
+    public static void install(Instrumentation instrumentation, boolean dependencyMock,
+                               String worldPackDependencyMode) {
+        if ("OBSERVE_FAIL".equalsIgnoreCase(worldPackDependencyMode)) {
+            AgentRuntime.recordJdbc(DependencyMockBootstrap.class.getName(), "install",
+                    Map.of("captureMode", "DEPENDENCY_MOCK",
+                            "dependencyMode", "OBSERVE_FAIL",
+                            "provenance", "SERVER_FIXED_POLICY",
+                            "outcome", "OBSERVE_FAIL"));
+            return;
+        }
+        if (!dependencyMock) return;
         try {
             JarFile agentJar = agentJarFile();
             if (agentJar != null) {

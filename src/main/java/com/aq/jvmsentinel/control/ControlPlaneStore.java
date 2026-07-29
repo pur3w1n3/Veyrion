@@ -1,6 +1,7 @@
 package com.aq.jvmsentinel.control;
 
 import com.aq.jvmsentinel.analysis.experiment.DefaultExperimentPlanFactory;
+import com.aq.jvmsentinel.analysis.experiment.PathTraceEvidenceGraphDelta;
 import com.aq.jvmsentinel.analysis.experiment.PathTraceObservationBridge;
 import com.aq.jvmsentinel.analysis.experiment.PostureExperimentCompiler;
 import com.aq.jvmsentinel.analysis.experiment.RuntimeObservationProjector;
@@ -13,6 +14,9 @@ import com.aq.jvmsentinel.domain.experiment.HypothesisExperimentPlan;
 import com.aq.jvmsentinel.domain.experiment.RuntimeObservation;
 import com.aq.jvmsentinel.domain.hypothesis.HypothesisLifecycle;
 import com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis;
+import com.aq.jvmsentinel.domain.ir.EvidenceGraph;
+import com.aq.jvmsentinel.domain.ir.EvidenceGraphMerge;
+import com.aq.jvmsentinel.domain.ir.IrNode;
 import com.aq.jvmsentinel.domain.ir.ProgramNode;
 import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
 import com.aq.jvmsentinel.event.VersionedEvent;
@@ -91,6 +95,8 @@ public class ControlPlaneStore {
             new ConcurrentHashMap<>();
     /** pathRunId → latest PathTrace payload for API enrichment. */
     private final Map<String, PathTrace> pathTracesByPathRunId = new ConcurrentHashMap<>();
+    /** Latest PathTrace → Evidence Graph delta wire maps keyed by pathTraceId. */
+    private final Map<String, Map<String, Object>> pathTraceEvidenceDeltas = new ConcurrentHashMap<>();
     private final List<ObservationKindRef> pendingIncrementalSubjects = new ArrayList<>();
     private final SQLiteControlPlanePersistence persistence;
     private final SecretKey rootKey;
@@ -209,7 +215,52 @@ public class ControlPlaneStore {
                     // Malformed trace payloads must not break task completion.
                 }
             }
+            applyPathTraceEvidenceGraphDelta(scanId, traces);
         }
+    }
+
+    private void applyPathTraceEvidenceGraphDelta(
+            String scanId, List<SQLiteControlPlanePersistence.PathTraceData> traces) {
+        if (scanId == null || scanId.isBlank() || traces == null || traces.isEmpty()) {
+            return;
+        }
+        Optional<StaticFactSnapshot> facts = staticFacts(scanId);
+        if (facts.isEmpty() || !facts.get().hasPersistedEvidenceGraph()) {
+            return;
+        }
+        EvidenceGraph base = facts.get().evidenceGraph().orElse(null);
+        if (base == null) {
+            return;
+        }
+        List<IrNode> extras = new ArrayList<>();
+        for (SQLiteControlPlanePersistence.PathTraceData row : traces) {
+            if (row == null || row.payloadJson() == null || row.payloadJson().isBlank()) {
+                continue;
+            }
+            try {
+                PathTrace trace = PathTrace.fromMap(JsonCodec.parseObject(row.payloadJson()));
+                PathTraceEvidenceGraphDelta.Delta delta =
+                        PathTraceEvidenceGraphDelta.fromPathTrace(trace, scanId);
+                extras.addAll(delta.nodes());
+                pathTraceEvidenceDeltas.put(trace.pathTraceId(),
+                        PathTraceEvidenceGraphDelta.toWireMap(delta));
+            } catch (RuntimeException ignored) {
+                // Malformed trace must not break evidence graph merge.
+            }
+        }
+        if (extras.isEmpty()) {
+            return;
+        }
+        EvidenceGraph merged = EvidenceGraphMerge.withExtraNodes(base, extras);
+        staticFacts.put(scanId, facts.get().withEvidenceGraph(merged));
+    }
+
+    public Map<String, Object> pathTraceEvidenceDelta(String pathTraceId) {
+        if (pathTraceId == null || pathTraceId.isBlank()) {
+            return Map.of();
+        }
+        Map<String, Object> delta = pathTraceEvidenceDeltas.get(pathTraceId);
+        return delta == null ? Map.of() : Map.copyOf(delta);
     }
 
     public List<SQLiteControlPlanePersistence.PathTraceData> loadPathTracesForScan(

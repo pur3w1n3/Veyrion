@@ -23,7 +23,9 @@ import java.util.Map;
 import static net.bytebuddy.matcher.ElementMatchers.hasSuperType;
 import static net.bytebuddy.matcher.ElementMatchers.isAbstract;
 import static net.bytebuddy.matcher.ElementMatchers.isAnnotatedWith;
+import static net.bytebuddy.matcher.ElementMatchers.isConstructor;
 import static net.bytebuddy.matcher.ElementMatchers.isInterface;
+import static net.bytebuddy.matcher.ElementMatchers.isStatic;
 import static net.bytebuddy.matcher.ElementMatchers.isMethod;
 import static net.bytebuddy.matcher.ElementMatchers.nameStartsWith;
 import static net.bytebuddy.matcher.ElementMatchers.named;
@@ -190,8 +192,19 @@ public final class AutomaticInstrumentation {
             TypeDescription type) {
         DynamicType.Builder<?> instrumented = builder
                 .visit(new DependencyCallSiteVisitor(type.getName()))
+                .visit(Advice.to(MethodHopAdvice.class).on(
+                        isMethod().and(not(isConstructor())).and(not(isStatic()))
+                                .and(not(isAbstract()))
+                                .and(not(namedOneOf("hashCode", "equals", "toString", "clone")))))
                 .visit(Advice.to(SpringHandlerAdvice.class).on(
                         isMethod().and(isAnnotatedWith(namedOneOf(SPRING_MAPPING_ANNOTATIONS)))
+                                .and(not(isAbstract()))))
+                .visit(Advice.to(MethodSecurityAdvice.class).on(
+                        isMethod().and(isAnnotatedWith(namedOneOf(
+                                "org.springframework.security.access.prepost.PreAuthorize",
+                                "org.springframework.security.access.annotation.Secured",
+                                "jakarta.annotation.security.RolesAllowed",
+                                "javax.annotation.security.RolesAllowed")))
                                 .and(not(isAbstract()))));
         if (hasSuperType(named("java.sql.Statement")).matches(type) && !isInterface().matches(type)) {
             instrumented = instrumented.visit(Advice.to(JdbcAdvice.class).on(
@@ -205,18 +218,30 @@ public final class AutomaticInstrumentation {
         private JdbcAdvice() {
         }
 
-        @Advice.OnMethodEnter(suppress = Throwable.class)
+        @Advice.OnMethodEnter
         public static void enter(@Advice.Origin("#t") String className,
                                  @Advice.Origin("#m") String methodName,
-                                 @Advice.AllArguments Object[] args) {
-            // Helpers must be public: Advice is inlined into foreign classes (incl. proxies).
+                                 @Advice.AllArguments Object[] args) throws java.sql.SQLException {
             String sql = extractSqlArg(args);
             if (sql.isEmpty()) {
                 AgentRuntime.recordTransformedMethod(
                         "JDBC", className, methodName, "IMPLEMENTATION_METHOD");
                 return;
             }
-            AgentRuntime.recordTransformedDetail("JDBC", className, methodName, sqlDetail(sql));
+            if (observeFailMode()) {
+                Map<String, String> failure = PathDebugDetail.merge(sqlDetail(sql),
+                        PathDebugDetail.dependencyFailure("DEPENDENCY_UNAVAILABLE", sql));
+                AgentRuntime.recordTransformedDetail("JDBC", className, methodName, failure);
+                throw new java.sql.SQLException("veyrion OBSERVE_FAIL: dependency unavailable");
+            }
+            Map<String, String> detail = PathDebugDetail.merge(sqlDetail(sql),
+                    PathDebugDetail.dependencyCall(sql));
+            AgentRuntime.recordTransformedDetail("JDBC", className, methodName, detail);
+        }
+
+        public static boolean observeFailMode() {
+            return "OBSERVE_FAIL".equalsIgnoreCase(
+                    System.getProperty(AgentConfig.WORLD_PACK_DEPENDENCY_MODE_PROPERTY, "MOCK_CONTINUE"));
         }
 
         /** Visible to inlined advice bodies running in instrumented/proxy classes. */
@@ -271,8 +296,11 @@ public final class AutomaticInstrumentation {
             HttpRequestView view = HttpRequestView.fromArgs(args);
             AgentRuntime.bindRequestCorrelation(view.correlationId);
             AgentRuntime.beginCoverageRequest();
-            AgentRuntime.recordTransformedDetail("HTTP", className, methodName,
-                    httpDetail("SERVLET_METHOD", view));
+            String posture = FrameworkBoundaryAdapter.resolvePosture(view.runtimePosture);
+            FrameworkBoundaryAdapter.applyCoveragePosture(firstRequest(args), posture);
+            Map<String, String> detail = httpDetail("SERVLET_METHOD", view);
+            detail = PathDebugDetail.merge(detail, PathDebugDetail.methodHop("SERVLET_METHOD"));
+            AgentRuntime.recordTransformedDetail("HTTP", className, methodName, detail);
         }
 
         @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
@@ -293,8 +321,14 @@ public final class AutomaticInstrumentation {
             HttpRequestView view = HttpRequestView.fromArgs(args);
             AgentRuntime.bindRequestCorrelation(view.correlationId);
             AgentRuntime.beginCoverageRequest();
-            AgentRuntime.recordTransformedDetail("HTTP", className, methodName,
-                    httpDetail("SERVLET_FILTER", view));
+            String posture = FrameworkBoundaryAdapter.resolvePosture(view.runtimePosture);
+            FrameworkBoundaryAdapter.applyCoveragePosture(firstRequest(args), posture);
+            boolean forced = FrameworkBoundaryAdapter.forcedReachabilityActive(posture)
+                    && FrameworkBoundaryAdapter.isRecognizedAuthGuard(className, methodName);
+            Map<String, String> detail = httpDetail("SERVLET_FILTER", view);
+            detail = PathDebugDetail.merge(detail,
+                    PathDebugDetail.guardDecision(forced ? "FORCED_ALLOW" : "ENTER", forced));
+            AgentRuntime.recordTransformedDetail("HTTP", className, methodName, detail);
         }
 
         @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
@@ -347,6 +381,7 @@ public final class AutomaticInstrumentation {
             detail = new LinkedHashMap<>(detail);
             detail.put("entryHit", "true");
             detail.put("parameterBound", "true");
+            detail = PathDebugDetail.merge(detail, PathDebugDetail.methodHop("SPRING_MAPPING_ANNOTATION"));
             AgentRuntime.recordTransformedDetail("HTTP", className, methodName, detail);
         }
 
@@ -391,6 +426,47 @@ public final class AutomaticInstrumentation {
         }
     }
 
+    public static final class MethodHopAdvice {
+        private MethodHopAdvice() {
+        }
+
+        @Advice.OnMethodEnter(suppress = Throwable.class)
+        public static void enter(@Advice.Origin("#t") String className,
+                                 @Advice.Origin("#m") String methodName) {
+            AgentRuntime.recordTransformedDetail("HTTP", className, methodName,
+                    PathDebugDetail.methodHop("APPLICATION_METHOD"));
+        }
+    }
+
+    public static final class MethodSecurityAdvice {
+        private MethodSecurityAdvice() {
+        }
+
+        @Advice.OnMethodEnter(suppress = Throwable.class)
+        public static void enter(@Advice.Origin("#t") String className,
+                                 @Advice.Origin("#m") String methodName) {
+            String posture = FrameworkBoundaryAdapter.configuredPosture();
+            boolean forced = FrameworkBoundaryAdapter.forcedReachabilityActive(posture);
+            FrameworkBoundaryAdapter.recordGuardDecision(className, methodName,
+                    forced ? "FORCED_ALLOW" : "CHECK", forced, Map.of("captureMode", "METHOD_SECURITY"));
+        }
+    }
+
+    /** Best-effort first servlet request argument from advice args. */
+    public static Object firstRequest(Object[] args) {
+        if (args == null) return null;
+        for (Object arg : args) {
+            if (arg == null) continue;
+            try {
+                arg.getClass().getMethod("getMethod");
+                return arg;
+            } catch (Throwable ignored) {
+                // not a request
+            }
+        }
+        return null;
+    }
+
     /** Visible to Advice bodies inlined into application / framework classes. */
     public static Map<String, String> httpDetail(String captureMode, HttpRequestView view) {
         Map<String, String> detail = new LinkedHashMap<>();
@@ -417,17 +493,24 @@ public final class AutomaticInstrumentation {
         public final String httpMethod;
         public final String route;
         public final String correlationId;
+        public final String runtimePosture;
 
-        public HttpRequestView(String httpMethod, String route, String correlationId) {
+        public HttpRequestView(String httpMethod, String route, String correlationId, String runtimePosture) {
             this.httpMethod = httpMethod == null ? "" : httpMethod;
             this.route = route == null ? "" : route;
             this.correlationId = correlationId == null ? "" : correlationId;
+            this.runtimePosture = runtimePosture == null ? "" : runtimePosture;
+        }
+
+        public HttpRequestView(String httpMethod, String route, String correlationId) {
+            this(httpMethod, route, correlationId, "");
         }
 
         public static HttpRequestView fromArgs(Object[] args) {
             String httpMethod = "";
             String route = "";
             String correlationId = "";
+            String runtimePosture = "";
             if (args != null) {
                 for (Object arg : args) {
                     if (arg == null) continue;
@@ -439,13 +522,16 @@ public final class AutomaticInstrumentation {
                         if (correlationId.isBlank()) {
                             correlationId = header(arg, "X-Veyrion-Correlation-Id");
                         }
+                        if (runtimePosture.isBlank()) {
+                            runtimePosture = header(arg, FrameworkBoundaryAdapter.POSTURE_HEADER);
+                        }
                         if (!httpMethod.isBlank() || !route.isBlank()) break;
                     } catch (Throwable ignored) {
                         // Not a servlet request argument.
                     }
                 }
             }
-            return new HttpRequestView(httpMethod, route, correlationId);
+            return new HttpRequestView(httpMethod, route, correlationId, runtimePosture);
         }
 
         public static String header(Object request, String name) {

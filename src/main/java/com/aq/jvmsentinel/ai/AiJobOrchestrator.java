@@ -703,16 +703,19 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         的 evidenceRefs 不可空；cweId 优先采用 CWE_MAPPING_HINTS。
                         """;
                 case REPORT_GENERATION -> """
-                        先查询 SCAN、ENTRY、SINK、EVIDENCE、PathRun、STATIC_CONTRAST 与 DYNAMIC_EVIDENCE。
+                        先查询 SCAN、ENTRY、SINK、EVIDENCE、PathRun、PathTrace（facts_search kind=PATH_TRACE）、
+                        STATIC_CONTRAST 与 DYNAMIC_EVIDENCE。按入口引用 PathTrace evidence refs 说明最深路径、
+                        参数流、sink/effect、退出原因与 World/Posture/强达限制，禁止只凭 HTTP 500 或模型文本下结论。
                         输出完整中文 Markdown 报告，至少包含：# 审计报告；## 执行摘要与结论边界；
-                        ## 入口—身份轨—PathRun 矩阵；## 静态·动态对照账本（须覆盖 CONTRAST_LEDGER 中全部
-                        STATIC_ONLY / 未匹配行摘要，不得省略）；## 攻击路径（Attack Path，Mermaid flowchart，至少 3 步）；
-                        ## 迭代对比（Iteration Summary，消费 LEDGER_DIFF_SUMMARY）；## 修复建议（消费
-                        FIX_SUGGESTION_CONTEXT / rootCause.fixSuggestion 与 CWE）；## 多条推测链路；
+                        ## 入口—身份轨—PathRun 矩阵；## 按入口路径调试（三轨 outcome）；## 静态·动态对照账本（须覆盖
+                        CONTRAST_LEDGER 中全部 STATIC_ONLY / 未匹配行摘要，不得省略）；## 攻击路径（Attack Path，
+                        Mermaid flowchart，至少 3 步）；## 迭代对比（Iteration Summary，消费 LEDGER_DIFF_SUMMARY）；
+                        ## 修复建议（消费 FIX_SUGGESTION_CONTEXT / rootCause.fixSuggestion 与 CWE）；## 多条推测链路；
                         ## 组合漏洞可能性；## 动态证据与覆盖；## 发现与风险分级；## 未覆盖区域、限制与下一步验证。
-                        STATIC_ONLY 只能写「静态候选/未动态确认」，不得写成已绕过或已确认。证据不足时明确写
-                        “证据不足”，不得编造 sink、链路或漏洞。严格保留 STATIC_INFERRED、DYNAMIC_SUSPECTED、
-                        DYNAMIC_CONFIRMED、VERIFIED、UNREACHED；不得把 DYNAMIC_CONFIRMED 宣传为生产实库已证实。
+                        STATIC_ONLY 只能写「静态候选/未动态确认」，不得写成已绕过或已确认。FORCED_REACHABILITY /
+                        MOCK / SCAN_AUTH_POSTURE 不得写成匿名利用或 VERIFIED。证据不足时明确写“证据不足”，不得编造
+                        sink、链路或漏洞。严格保留 STATIC_INFERRED、DYNAMIC_SUSPECTED、DYNAMIC_CONFIRMED、VERIFIED、
+                        UNREACHED；不得把 DYNAMIC_CONFIRMED 宣传为生产实库已证实。
                         """;
             };
         }
@@ -747,17 +750,21 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     """;
             case PATH_EXPLORATION -> """
                     Consume PRE_ANALYSIS, AUTH_ANALYSIS, DYNAMIC_VERIFICATION, PathRun (HTTP/Agent/SQL),
-                    CONTRAST_LEDGER / STATIC_CONTRAST, and COVERAGE_GAP_FACTS. Emit a nextExperiment per gap when
-                    possible. Deepen taint structure with code_query kind=TAINT_GRAPH. Model multiple distinct paths
-                    with track, actual requests, responses, data/state transitions, triggers, evidence,
-                    counterevidence, confidence, and stop conditions. Prefer MATCHED/PARTIAL for probeable
-                    nextExperiments; STATIC_ONLY is static-candidate / not dynamically touched — never elevate to
-                    bypassed/confirmed. Never turn an unexecuted candidate into fact. Emit nextExperiments[] with
-                    entryRef, objective, track, optional techniqueId/candidateInputs/pathRunRefs — steps must be
-                    sandbox_probe-consumable, not AUTH_GAP essays. Allowlist includes sandbox_probe: probe only an
-                    explicit coverage gap; required track, objective, and coverageGapRef when gaps exist;
-                    expectedSignal/stopCondition are labels only; never choose command, image, mount, network,
-                    UID, or budget. Consume only server-returned, successfully projected dynamic facts.
+                    PathTrace (facts_search kind=PATH_TRACE), CONTRAST_LEDGER / STATIC_CONTRAST, and
+                    COVERAGE_GAP_FACTS. Prefer PathTrace lastBusinessHop, parameterFlow, effectRefs, and exitReason
+                    when proposing nextExperiments (World Pack refine, parameter expand, posture replay). Emit a
+                    nextExperiment per gap when possible. Deepen taint structure with code_query kind=TAINT_GRAPH.
+                    Model multiple distinct paths with track/posture, actual requests, responses, data/state
+                    transitions, triggers, evidence, counterevidence, confidence, and stop conditions. Prefer
+                    MATCHED/PARTIAL for probeable nextExperiments; STATIC_ONLY is static-candidate / not
+                    dynamically touched — never elevate to bypassed/confirmed. Never turn an unexecuted candidate
+                    into fact. Emit nextExperiments[] with entryRef, objective, track, optional
+                    techniqueId/candidateInputs/pathRunRefs — steps must be sandbox_probe-consumable, not AUTH_GAP
+                    essays. Allowlist includes sandbox_probe: probe only an explicit coverage gap; required track,
+                    objective, and coverageGapRef when gaps exist; expectedSignal/stopCondition are labels only;
+                    never choose command, image, mount, network, UID, budget, or forcedReachability. Consume only
+                    server-returned, successfully projected dynamic facts. FORCED_REACHABILITY /
+                    INSTRUMENTATION_REACHABILITY effects are path materials, not anonymous exploit proof.
                     """;
             case DYNAMIC_VERIFICATION -> """
                     Consume AUTH_BYPASS_FEASIBILITY / bypassPoCs. When that list is non-empty you MUST call
@@ -784,14 +791,18 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     that each carry non-empty evidenceRefs; prefer CWE_MAPPING_HINTS for cweId.
                     """;
             case REPORT_GENERATION -> """
-                    Query SCAN, ENTRY, SINK, EVIDENCE, PathRun, STATIC_CONTRAST, and DYNAMIC_EVIDENCE first.
-                    Produce a complete English Markdown report with: Executive Summary and Evidence Boundary;
-                    Entrypoint-Track-PathRun Matrix; Static-Dynamic Contrast Ledger (must cover every STATIC_ONLY /
+                    Query SCAN, ENTRY, SINK, EVIDENCE, PathRun, PathTrace (facts_search kind=PATH_TRACE),
+                    STATIC_CONTRAST, and DYNAMIC_EVIDENCE first. Per entry cite PathTrace evidence refs for deepest
+                    path, parameterFlow, sink/effect, exitReason, and World/Posture/forced limits — never explain
+                    findings from HTTP 500 or model text alone. Produce a complete English Markdown report with:
+                    Executive Summary and Evidence Boundary; Entrypoint-Track-PathRun Matrix; per-entry Path Debug
+                    (tri-track outcomes); Static-Dynamic Contrast Ledger (must cover every STATIC_ONLY /
                     unmatched CONTRAST_LEDGER row); Attack Path (Mermaid flowchart, >=3 steps); Iteration Summary
                     (consume LEDGER_DIFF_SUMMARY); Remediation / Fix Suggestions (consume FIX_SUGGESTION_CONTEXT /
                     rootCause.fixSuggestion and CWE); Multiple Hypothesized Paths; Combined Vulnerability Possibilities;
                     Dynamic Evidence and Coverage; Findings and Severity; Gaps, Limitations, and Next Validation Steps.
                     STATIC_ONLY may only be described as static-candidate / not dynamically confirmed — never bypassed.
+                    FORCED_REACHABILITY / MOCK / SCAN_AUTH_POSTURE must not be written as anonymous exploit or VERIFIED.
                     Preserve STATIC_INFERRED / DYNAMIC_SUSPECTED / DYNAMIC_CONFIRMED / VERIFIED / UNREACHED.
                     Do not market DYNAMIC_CONFIRMED as production-database proof.
                     """;

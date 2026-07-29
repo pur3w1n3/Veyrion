@@ -338,6 +338,28 @@ export type PathTrace = {
   dynamicExecutionMode?: string
 }
 
+export type PathDebugTrackSummary = {
+  track?: string
+  postureKind?: string
+  postureProvenance?: string
+  exitReason?: string
+  lastBusinessHop?: string
+  effectRefs?: string[]
+  forcedGuardRefs?: string[]
+  worldPackId?: string
+  authRequirement?: string
+  httpStatus?: number
+  verificationStatus?: VerificationStatus
+  legacyIncomplete?: boolean
+  parameterFlow?: PathTraceParameterFlowStep[]
+}
+
+export type PathDebugEntrySummary = {
+  entryId: string
+  route: string
+  tracks: PathDebugTrackSummary[]
+}
+
 export type DashboardSnapshot = {
   schemaVersion?: number
   projectId?: string
@@ -357,6 +379,7 @@ export type DashboardSnapshot = {
   path: PathStep[]
   paths: PathTrace[]
   pathRuns: PathRunDto[]
+  pathDebugSummaries?: PathDebugEntrySummary[]
   sqlExperimentCards?: SqlExperimentCardDto[]
   experimentPlans?: ExperimentPlanDto[]
   experimentShapes?: ExperimentShapeDto[]
@@ -762,6 +785,7 @@ export type PathRunDto = {
   tracePlanId?: string
   pathTraceId?: string
   worldPackId?: string
+  worldPackDependencyMode?: string
   exitReason?: string
   legacyIncomplete?: boolean
   authRequirement?: string
@@ -1597,6 +1621,11 @@ export const parseDashboard = (value: unknown): DashboardSnapshot => {
     path: pathValue.map(parsePath),
     paths: richPaths,
     pathRuns,
+    pathDebugSummaries: value.pathDebugSummaries === undefined
+      ? []
+      : Array.isArray(value.pathDebugSummaries)
+        ? value.pathDebugSummaries.map(parsePathDebugEntrySummary)
+        : (() => { throw new Error('invalid dashboard.pathDebugSummaries') })(),
     sqlExperimentCards: Array.isArray(value.sqlExperimentCards)
       ? value.sqlExperimentCards.map(parseSqlExperimentCard)
       : undefined,
@@ -1727,6 +1756,46 @@ const parseAnalysisPack = (value: unknown): AnalysisPackDto => {
   }
 }
 
+const parsePathDebugTrackSummary = (value: unknown): PathDebugTrackSummary => {
+  if (!isRecord(value)) throw new Error('invalid pathDebug track summary')
+  return {
+    track: optionalText(value.track),
+    postureKind: optionalText(value.postureKind),
+    postureProvenance: optionalText(value.postureProvenance),
+    exitReason: optionalText(value.exitReason),
+    lastBusinessHop: optionalText(value.lastBusinessHop),
+    effectRefs: listOfText(value.effectRefs, 'pathDebug.effectRefs'),
+    forcedGuardRefs: listOfText(value.forcedGuardRefs, 'pathDebug.forcedGuardRefs'),
+    worldPackId: optionalText(value.worldPackId),
+    authRequirement: optionalText(value.authRequirement),
+    httpStatus: typeof value.httpStatus === 'number' ? value.httpStatus : undefined,
+    verificationStatus: value.verificationStatus === undefined
+      ? undefined
+      : statusOf(value.verificationStatus, 'pathDebug.verificationStatus'),
+    legacyIncomplete: value.legacyIncomplete === true,
+    parameterFlow: Array.isArray(value.parameterFlow)
+      ? value.parameterFlow.filter(isRecord).map((step) => ({
+        source: optionalText(step.source),
+        boundTo: optionalText(step.boundTo),
+        flowedTo: optionalText(step.flowedTo),
+        effectRef: optionalText(step.effectRef)
+      }))
+      : undefined
+  }
+}
+
+const parsePathDebugEntrySummary = (value: unknown): PathDebugEntrySummary => {
+  if (!isRecord(value)) throw new Error('invalid pathDebug entry summary')
+  const tracksRaw = value.tracks
+  return {
+    entryId: asText(value.entryId, 'pathDebug.entryId'),
+    route: asText(value.route, 'pathDebug.route'),
+    tracks: Array.isArray(tracksRaw)
+      ? tracksRaw.map(parsePathDebugTrackSummary)
+      : (() => { throw new Error('invalid pathDebug.tracks') })()
+  }
+}
+
 const parsePathRun = (value: unknown): PathRunDto => {
   if (!isRecord(value)) throw new Error('invalid pathRun')
   const sqlRaw = value.sqlEvents
@@ -1777,6 +1846,7 @@ const parsePathRun = (value: unknown): PathRunDto => {
     tracePlanId: strictOptionalText(value.tracePlanId, 'pathRun.tracePlanId'),
     pathTraceId: strictOptionalText(value.pathTraceId, 'pathRun.pathTraceId'),
     worldPackId: strictOptionalText(value.worldPackId, 'pathRun.worldPackId'),
+    worldPackDependencyMode: strictOptionalText(value.worldPackDependencyMode, 'pathRun.worldPackDependencyMode'),
     exitReason: strictOptionalText(value.exitReason, 'pathRun.exitReason'),
     legacyIncomplete: value.legacyIncomplete === true ? true : value.legacyIncomplete === false ? false : undefined,
     authRequirement: strictOptionalText(value.authRequirement, 'pathRun.authRequirement'),

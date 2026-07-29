@@ -208,9 +208,13 @@ export function PathRunPanel({
                   : `${selected.postureKind ?? '—'} · ${selected.exitReason ?? '—'}`}</dd></div>
               {selected.lastBusinessHop && <div><dt>{english ? 'Last hop' : '最后业务 hop'}</dt><dd>{selected.lastBusinessHop}</dd></div>}
               {selected.authRequirement && <div><dt>{english ? 'Auth req.' : '鉴权要求'}</dt><dd>{selected.authRequirement}</dd></div>}
+              {selected.forcedGuardRefs && selected.forcedGuardRefs.length > 0 && <div><dt>{english ? 'Forced guards' : '强达 guard'}</dt><dd>{selected.forcedGuardRefs.join(', ')}</dd></div>}
               {selected.effectRefs && selected.effectRefs.length > 0 && <div><dt>{english ? 'Effects' : 'Effect'}</dt><dd>{selected.effectRefs.join(', ')}</dd></div>}
+              {selected.worldPackId && <div><dt>{english ? 'World Pack' : 'World Pack'}</dt><dd>{selected.worldPackId}</dd></div>}
             </>}
-            <div><dt>{english ? 'Dependency' : '依赖模式'}</dt><dd><span className="inference-badge">MOCK</span></dd></div>
+            <div><dt>{english ? 'Dependency' : '依赖模式'}</dt><dd>
+              <span className="inference-badge">{selected.worldPackDependencyMode ?? 'MOCK_CONTINUE'}</span>
+            </dd></div>
             <div>
               <dt>branchHitMap</dt>
               <dd>

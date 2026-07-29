@@ -49,6 +49,16 @@ public final class RuntimePostureOrchestrator {
         return List.copyOf(postures);
     }
 
+    /**
+     * BYPASS posture is generated only for AUTH PoC candidates or UNAUTH unexpected pass-through.
+     */
+    public static RuntimePosture bypassForCandidate(boolean authPocCandidate, boolean unauthUnexpectedPass) {
+        if (!authPocCandidate && !unauthUnexpectedPass) {
+            throw new SecurityException("BYPASS_REQUIRES_CANDIDATE");
+        }
+        return RuntimePosture.bypass();
+    }
+
     public static RuntimePosture authorizeForcedReachability(
             boolean dockerSandbox,
             boolean hostExecution,

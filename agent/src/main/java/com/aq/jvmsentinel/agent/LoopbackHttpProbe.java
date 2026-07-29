@@ -319,7 +319,8 @@ public final class LoopbackHttpProbe {
             socket.setSoTimeout(readTimeoutMs);
             OutputStream output = socket.getOutputStream();
             String headerBlock = buildRequestHeaders(method, requestTarget, body.length,
-                    target.authHeader, target.bladeAuthHeader, correlationId);
+                    target.authHeader, target.bladeAuthHeader, correlationId,
+                    target.track, target.experimentPlanId);
             output.write(headerBlock.getBytes(StandardCharsets.US_ASCII));
             output.write(body);
             output.flush();
@@ -359,6 +360,13 @@ public final class LoopbackHttpProbe {
 
     static String buildRequestHeaders(String method, String requestTarget, int contentLength,
                                       String authHeader, String bladeAuthHeader, String correlationId) {
+        return buildRequestHeaders(method, requestTarget, contentLength, authHeader, bladeAuthHeader,
+                correlationId, "UNAUTH", "");
+    }
+
+    static String buildRequestHeaders(String method, String requestTarget, int contentLength,
+                                      String authHeader, String bladeAuthHeader, String correlationId,
+                                      String track, String experimentPlanId) {
         StringBuilder headers = new StringBuilder();
         headers.append(method).append(' ').append(requestTarget).append(" HTTP/1.1\r\n")
                 .append("Host: 127.0.0.1\r\nConnection: close\r\n")
@@ -366,6 +374,10 @@ public final class LoopbackHttpProbe {
                 .append("Content-Length: ").append(contentLength).append("\r\n");
         if (correlationId != null && !correlationId.isBlank()) {
             headers.append("X-Veyrion-Correlation-Id: ").append(correlationId).append("\r\n");
+        }
+        String posture = postureHeaderForTrack(track, experimentPlanId);
+        if (!posture.isBlank()) {
+            headers.append("X-Veyrion-Runtime-Posture: ").append(posture).append("\r\n");
         }
         if (authHeader != null && !authHeader.isBlank()) {
             headers.append("Authorization: bearer ").append(authHeader).append("\r\n");
@@ -375,6 +387,21 @@ public final class LoopbackHttpProbe {
         }
         headers.append("\r\n");
         return headers.toString();
+    }
+
+    static String postureHeaderForTrack(String track, String experimentPlanId) {
+        if (experimentPlanId != null && experimentPlanId.toUpperCase(Locale.ROOT).contains("FORCED")) {
+            return "FORCED_REACHABILITY";
+        }
+        if (track == null || track.isBlank()) {
+            return "UNAUTH";
+        }
+        return switch (track.trim().toUpperCase(Locale.ROOT)) {
+            case "UNAUTH" -> "UNAUTH";
+            case "BYPASS_CANDIDATE" -> "BYPASS";
+            case "ADMIN", "USER" -> "COVERAGE_POSTURE";
+            default -> "UNAUTH";
+        };
     }
 
     private static void writeAttemptEvent(ProbeAttempt attempt) {

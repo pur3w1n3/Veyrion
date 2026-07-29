@@ -81,6 +81,69 @@ public final class TracePlanCompiler {
         return List.copyOf(out);
     }
 
+    /**
+     * Compatible projection of legacy sink/taint path strings into expected hops/effects.
+     * Never invents FACT — provenance remains RULE_GENERATED / STATIC_SIGNATURE in TracePlan.
+     */
+    public static TracePlan compileWithLegacySinkPaths(
+            ApiDtos.EntryDto entry,
+            List<String> legacySinkOrTaintPaths,
+            List<String> guardHints,
+            List<String> unresolvedHints) {
+        List<String> hops = new ArrayList<>();
+        List<String> effects = new ArrayList<>();
+        if (legacySinkOrTaintPaths != null) {
+            for (String path : legacySinkOrTaintPaths) {
+                if (path == null || path.isBlank()) {
+                    continue;
+                }
+                String trimmed = path.trim();
+                if (trimmed.contains("->") || trimmed.contains("→")) {
+                    String[] parts = trimmed.split("\\s*(->|→)\\s*");
+                    for (int i = 0; i < parts.length; i++) {
+                        String hop = parts[i].trim();
+                        if (hop.isBlank()) {
+                            continue;
+                        }
+                        if (i == parts.length - 1 && looksLikeEffect(hop)) {
+                            effects.add(normalizeLegacyEffect(hop));
+                        } else {
+                            hops.add(hop);
+                        }
+                    }
+                } else if (looksLikeEffect(trimmed)) {
+                    effects.add(normalizeLegacyEffect(trimmed));
+                } else {
+                    hops.add(trimmed);
+                }
+            }
+        }
+        return compile(entry, hops, effects, guardHints, unresolvedHints);
+    }
+
+    private static boolean looksLikeEffect(String value) {
+        String upper = value.toUpperCase(Locale.ROOT);
+        return upper.contains("SINK") || upper.contains("SQL") || upper.contains("EXEC")
+                || upper.contains("EXPRESSION") || upper.contains("DESERIAL")
+                || upper.contains("JNDI") || upper.contains("FILE_WRITE")
+                || upper.contains("COMMAND") || upper.contains("SCRIPT");
+    }
+
+    private static String normalizeLegacyEffect(String value) {
+        String upper = value.toUpperCase(Locale.ROOT);
+        if (upper.contains("SQL")) return "effect:SQL_EXECUTION:" + value;
+        if (upper.contains("EXPRESSION") || upper.contains("SPEL") || upper.contains("OGNL")) {
+            return "effect:EXPRESSION_EXECUTION:" + value;
+        }
+        if (upper.contains("COMMAND") || upper.contains("RUNTIME.EXEC") || upper.contains("PROCESS")) {
+            return "effect:COMMAND_EXECUTION:" + value;
+        }
+        if (upper.contains("DESERIAL")) return "effect:DESERIALIZATION:" + value;
+        if (upper.contains("JNDI")) return "effect:JNDI_LOOKUP:" + value;
+        if (upper.contains("FILE")) return "effect:FILE_WRITE:" + value;
+        return "effect:LEGACY_SINK:" + value;
+    }
+
     private static List<TracePlan.ParameterSpec> inferParameters(ApiDtos.EntryDto entry, String method) {
         List<TracePlan.ParameterSpec> parameters = new ArrayList<>();
         List<String> declared = entry.parameters();

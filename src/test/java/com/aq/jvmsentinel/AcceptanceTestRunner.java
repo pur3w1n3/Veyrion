@@ -67,6 +67,7 @@ public final class AcceptanceTestRunner {
             "com.aq.jvmsentinel.analysis.experiment.PathRunMapLegacyAcceptanceTest",
             "com.aq.jvmsentinel.ai.PathTraceQueryDenialAcceptanceTest",
             "com.aq.jvmsentinel.analysis.experiment.PathTraceObservationBridgeAcceptanceTest",
+            "com.aq.jvmsentinel.analysis.experiment.PathDebugMinimumAcceptanceTest",
             "com.aq.jvmsentinel.analysis.recall.PracticalRecallBaselineAcceptanceTest",
             "com.aq.jvmsentinel.analysis.BootPortCandidateHarvesterAcceptanceTest",
             "com.aq.jvmsentinel.SingleEntryDebugBaselineAcceptanceTest",

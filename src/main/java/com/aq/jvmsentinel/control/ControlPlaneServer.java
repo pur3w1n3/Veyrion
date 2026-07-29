@@ -57,6 +57,7 @@ import com.aq.jvmsentinel.model.IdentityTrack;
 import com.aq.jvmsentinel.model.RunProfile;
 import com.aq.jvmsentinel.model.SqlExperimentCard;
 import com.aq.jvmsentinel.verification.VerifiedStatusGate;
+import com.aq.jvmsentinel.worker.ExternalArtifactTaskExecutor;
 import com.aq.jvmsentinel.worker.ExperimentPlanValidator;
 import com.aq.jvmsentinel.worker.ExperimentShapeView;
 import com.aq.jvmsentinel.worker.ProbeBudgetExplainer;
@@ -106,7 +107,7 @@ import com.aq.jvmsentinel.control.JsonCodec;
 import com.aq.jvmsentinel.control.service.ProbePlanService;
 import com.aq.jvmsentinel.worker.InMemoryTaskCoordinator;
 import com.aq.jvmsentinel.worker.InMemoryTraceStore;
-import com.aq.jvmsentinel.worker.ExternalArtifactTaskExecutor;
+import com.aq.jvmsentinel.analysis.experiment.WorldPackPlanner;
 import com.aq.jvmsentinel.worker.NetworkPolicy;
 import com.aq.jvmsentinel.worker.ResourceBudget;
 import com.aq.jvmsentinel.worker.TaskLifecycle;
@@ -2195,7 +2196,8 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         ExternalArtifactTaskExecutor.ProbeTarget primaryProbe = ProbePlanService.probeTargetFor(entry);
         return new ExternalArtifactTaskExecutor.ArtifactRegistration(
                 scope.projectId(), scope.artifactDigest(), path, artifact.sizeBytes(), true,
-                primaryProbe.method(), primaryProbe.route(), classPrefix, plan.probes());
+                primaryProbe.method(), primaryProbe.route(), classPrefix, plan.probes(),
+                WorldPackPlanner.planMockContinue(scope.scanId()).dependencyMode().name());
     }
 
     /**
