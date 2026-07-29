@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/schemas/trace-plan-v1.schema.json",
+  "title": "TracePlan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "tracePlanId", "entryRef", "method", "route"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "tracePlanId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "entryRef": { "type": "string", "maxLength": 512 },
+    "method": { "type": "string", "maxLength": 16 },
+    "route": { "type": "string", "maxLength": 1024 },
+    "handler": { "type": "string", "maxLength": 512 },
+    "parameters": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "source": { "type": "string" },
+          "provenance": { "type": "string" },
+          "emptyLegal": { "type": "boolean" },
+          "emptyInputRationale": { "type": "string" }
+        }
+      }
+    },
+    "expectedHops": { "type": "array", "maxItems": 256, "items": { "type": "string" } },
+    "expectedEffectRefs": { "type": "array", "maxItems": 128, "items": { "type": "string" } },
+    "expectedGuardRefs": { "type": "array", "maxItems": 128, "items": { "type": "string" } },
+    "unresolvedPoints": { "type": "array", "maxItems": 128, "items": { "type": "string" } },
+    "emptyInputRationale": { "type": "string", "maxLength": 2048 },
+    "maxHops": { "type": "integer", "minimum": 1, "maximum": 512 },
+    "maxEvents": { "type": "integer", "minimum": 1, "maximum": 4096 },
+    "maxResponseMillis": { "type": "integer", "minimum": 1, "maximum": 120000 },
+    "producer": { "type": "string" }
+  }
+}

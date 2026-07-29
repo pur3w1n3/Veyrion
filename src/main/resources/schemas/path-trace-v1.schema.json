@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/schemas/path-trace-v1.schema.json",
+  "title": "PathTrace v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "pathTraceId", "pathRunId", "exitReason"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "pathTraceId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "pathRunId": { "type": "string", "maxLength": 256 },
+    "probeAttemptId": { "type": "string", "maxLength": 256 },
+    "experimentPlanId": { "type": "string", "maxLength": 256 },
+    "tracePlanId": { "type": "string", "maxLength": 256 },
+    "entryRef": { "type": "string", "maxLength": 512 },
+    "track": { "type": "string", "maxLength": 64 },
+    "posture": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "postureKind": {
+          "type": "string",
+          "enum": ["UNAUTH", "COVERAGE_POSTURE", "FORCED_REACHABILITY", "BYPASS"]
+        },
+        "postureProvenance": { "type": "string" },
+        "forcedGuardRefs": { "type": "array", "maxItems": 64, "items": { "type": "string" } },
+        "dockerOnly": { "type": "boolean" },
+        "identityTrackWire": { "type": "string" }
+      }
+    },
+    "worldPackId": { "type": "string", "maxLength": 256 },
+    "correlationId": { "type": "string", "maxLength": 256 },
+    "requestSeq": { "type": "integer", "minimum": 0 },
+    "events": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sequence", "kind"],
+        "properties": {
+          "sequence": { "type": "integer", "minimum": 0 },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "ENTRY_HIT", "PARAMETER_BOUND", "METHOD_HOP", "GUARD_DECISION",
+              "EFFECT_TRIGGERED", "DEPENDENCY_CALL", "DEPENDENCY_FAILURE",
+              "EXCEPTION_THROWN", "RETURN_EXIT", "TRACE_TRUNCATED"
+            ]
+          },
+          "summary": { "type": "string" },
+          "subjectRef": { "type": "string" },
+          "detailCode": { "type": "string" },
+          "forced": { "type": "boolean" },
+          "attributes": { "type": "object" },
+          "evidenceRef": { "type": "string" }
+        }
+      }
+    },
+    "parameterFlow": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source": { "type": "string" },
+          "boundTo": { "type": "string" },
+          "flowedTo": { "type": "string" },
+          "effectRef": { "type": "string" }
+        }
+      }
+    },
+    "exitReason": { "type": "string" },
+    "lastBusinessHop": { "type": "string" },
+    "effectRefs": { "type": "array", "maxItems": 128, "items": { "type": "string" } },
+    "legacyIncomplete": { "type": "boolean" },
+    "compatibilityMarker": { "type": "string" }
+  }
+}

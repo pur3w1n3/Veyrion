@@ -90,7 +90,8 @@ public final class SQLiteControlPlanePersistence {
             "db/migration/V021__artifact_original_file_name.sql",
             "db/migration/V022__pipeline_run_stage_attempt_identity.sql",
             "db/migration/V023__security_hypotheses.sql",
-            "db/migration/V024__scope_security_hypothesis_ids.sql");
+            "db/migration/V024__scope_security_hypothesis_ids.sql",
+            "db/migration/V025__path_debug_contracts.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veyrion.local/schemas/world-pack-v1.schema.json",
+  "title": "WorldPackManifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "worldPackId", "dependencyMode"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "worldPackId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "profileId": { "type": "string", "maxLength": 128 },
+    "dependencyMode": { "type": "string", "enum": ["OBSERVE_FAIL", "MOCK_CONTINUE"] },
+    "env": { "type": "object", "additionalProperties": { "type": "string" } },
+    "systemProperties": { "type": "object", "additionalProperties": { "type": "string" } },
+    "licenseMaterials": { "type": "array", "maxItems": 64, "items": { "type": "string" } },
+    "fileMaterials": { "type": "array", "maxItems": 128, "items": { "type": "string" } },
+    "schemaSeeds": { "type": "array", "maxItems": 128, "items": { "type": "string" } },
+    "dependencyStubs": { "type": "array", "maxItems": 64, "items": { "type": "string" } },
+    "missingMaterialGaps": { "type": "array", "maxItems": 128, "items": { "type": "string" } },
+    "producer": { "type": "string" }
+  }
+}
