@@ -1,8 +1,8 @@
 # 动态路径调试器重设计：TracePlan + 三轨 Posture + World Pack + Sensor Agent
 
-- Status: `DESIGN BRIEF`（架构重设计文档；不是已实现能力）
+- Status: `ACCEPTED DIRECTION`（架构方向已由 ADR-0004 接受；实现状态以 MVP_BACKLOG P0-21 为准）
 - Date: 2026-07-29
-- Related: [PATH_EXPERIMENT_MODEL.md](PATH_EXPERIMENT_MODEL.md)、[AUDIT_FLOW.md](AUDIT_FLOW.md)、[TECHNICAL_ARCHITECTURE.md](TECHNICAL_ARCHITECTURE.md)、[MVP_BACKLOG.md](MVP_BACKLOG.md) P0-21、[ADR-0004](adr/0004-sandbox-posture-vs-agent-bypass.md)（`PROPOSED`）
+- Related: [PATH_EXPERIMENT_MODEL.md](PATH_EXPERIMENT_MODEL.md)、[AUDIT_FLOW.md](AUDIT_FLOW.md)、[TECHNICAL_ARCHITECTURE.md](TECHNICAL_ARCHITECTURE.md)、[MVP_BACKLOG.md](MVP_BACKLOG.md) P0-21、[ADR-0004](adr/0004-sandbox-posture-vs-agent-bypass.md)（`ACCEPTED`）
 - 实战对照样本：`scan-28ab5e591f4d4b5a`（Blade）、历史噪声样本 `scan-7b619e8a65064fa9`
 
 本文重新定义 Veyrion 动态能力的目标：**不是让所有接口返回成功，也不是继续给 Agent 增加绕过特例；而是在授权 Docker 沙箱内，对每个可识别入口尽最大努力记录最深可达业务路径、参数流、sink/effect 触发和最终阻断原因**。即使最终因数据库、Redis、License、文件或业务状态不可达失败，也要保留失败前真实经过的 Controller、Service、Util、Repository、Guard、Effect 与依赖调用证据，并反馈给 AI 做假设修订、漏洞研判和报告生成。

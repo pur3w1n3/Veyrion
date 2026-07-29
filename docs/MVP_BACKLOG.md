@@ -315,11 +315,13 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 ### P0-21 动态路径调试器（三轨 Posture + World Pack + PathTrace）
 
-状态：`PARTIAL`（合同/编译器/World Pack/Posture/Sensor pathDebugKind/PathTrace 投影/Evidence Graph delta/AI PATH_TRACE 查询与最小验收已闭合；ADR-0004 仍为 PROPOSED；live Docker 全链路与实战样本召回未标 AUDITED）
+状态：`AUDITED`（声明范围=合同/V025/三轨编译/World Pack/Posture 安全拒绝/Sensor pathDebugKind/PathTrace 投影/Evidence Graph delta/AI PATH_TRACE/授权 Boot fixture live 三轨；ADR-0004 `ACCEPTED`；runtime digest `sha256:e2b926582e099bfbf5714995413326942a2be2ec26c3db427ccd63cdd2d1c4dd`）
 
-**目标**：把动态能力从“HTTP 洪水 + Agent 特例绕过”迁移为 Docker 内动态路径调试器。对每个可识别入口尽最大努力记录最深可达业务路径、参数流、sink/effect 触发和最终阻断原因；即使最终因为数据库、License、文件、业务状态或依赖不可达失败，也要保留失败前真实经过的 Controller/Service/Util/Repository/Guard/Effect 证据，并反馈给 AI。
+**权威设计**：[DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](DYNAMIC_SANDBOX_POSTURE_REDESIGN.md)；[ADR-0004](adr/0004-sandbox-posture-vs-agent-bypass.md)（`ACCEPTED`）。
 
-**权威设计**：[DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](DYNAMIC_SANDBOX_POSTURE_REDESIGN.md)；方向提案 [ADR-0004](adr/0004-sandbox-posture-vs-agent-bypass.md)（`PROPOSED`）。实现不得继续扩大 Agent Bypass Zoo。
+根再审计（2026-07-29）：`PathDebugMinimumAcceptanceTest`（41）、`LivePathTracePostureAcceptanceTest`（41，tracks=UNAUTH+ADMIN，pathDebug=true，不升 VERIFIED）、`PathDebugSensorAcceptanceTest`、`AcceptanceTestGate` 全绿。限制：OSS WebGoat/Blade 实战召回、gVisor/Kata、`VERIFIED` 不在声明范围；不得外推为恶意制品隔离或生产可用。
+
+**目标**：把动态能力从“HTTP 洪水 + Agent 特例绕过”迁移为 Docker 内动态路径调试器。对每个可识别入口尽最大努力记录最深可达业务路径、参数流、sink/effect 触发和最终阻断原因；即使最终因为数据库、License、文件、业务状态或依赖不可达失败，也要保留失败前真实经过的 Controller/Service/Util/Repository/Guard/Effect 证据，并反馈给 AI。实现不得继续扩大 Agent Bypass Zoo。
 
 **核心模型**：
 

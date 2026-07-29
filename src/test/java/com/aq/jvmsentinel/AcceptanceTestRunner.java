@@ -77,6 +77,7 @@ public final class AcceptanceTestRunner {
             "com.aq.jvmsentinel.provider.ProviderOutboundBoundaryAcceptanceTest",
             "com.aq.jvmsentinel.provider.LiveProviderRoundAcceptanceTest",
             "com.aq.jvmsentinel.LiveTrustedDockerMultiRequestAcceptanceTest",
+            "com.aq.jvmsentinel.LivePathTracePostureAcceptanceTest",
             "com.aq.jvmsentinel.LiveJdbcH3AcceptanceTest",
             "com.aq.jvmsentinel.domain.runtime.HardenedRuntimeAttestationAcceptanceTest",
             "com.aq.jvmsentinel.sandbox.SandboxHardeningAcceptanceTest",

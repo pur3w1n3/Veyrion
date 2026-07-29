@@ -1,7 +1,8 @@
 # ADR-0004: 动态路径调试器优先于 Agent 逐点绕过
 
-- Status: `PROPOSED`
+- Status: `ACCEPTED`
 - Date: 2026-07-29
+- Accepted: 2026-07-29
 - Owners: root Agent / human architecture owner
 - Related: [DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](../DYNAMIC_SANDBOX_POSTURE_REDESIGN.md)、MVP_BACKLOG P0-21、PATH_EXPERIMENT_MODEL §3、PROJECT_MEMORY §2.1–§2.2
 
@@ -13,8 +14,6 @@
 
 ## Decision
 
-（提案，待架构组 ACCEPTED 后生效）
-
 1. 动态能力重构为 **TracePlan + ExperimentPlan + Runtime Posture + World Pack + Sensor Agent + PathTrace**。
 2. 默认执行三轨：
    - `UNAUTH`：真实撞墙并标注 `authRequirement`。
@@ -25,7 +24,7 @@
 5. `FORCED_REACHABILITY` 只能由服务端固定策略启用，不能绕过 sanitizer、SQL 参数化、文件类型校验、金额/审批/状态机不变量；其结果必须标 `INSTRUMENTATION_REACHABILITY`，不能单独升 `DYNAMIC_CONFIRMED` / `VERIFIED`。
 6. JWT/Blade mint 降为可选 `IdentityMaterial` 来源，不再叙述为覆盖全部鉴权形态的主策略。
 
-细节、As-Is/To-Be 对照与待拍板问题见设计简报，不在本 ADR 重复实现清单。
+细节、As-Is/To-Be 对照见设计简报，不在本 ADR 重复实现清单。
 
 ## Alternatives
 
@@ -34,14 +33,14 @@
 | 继续扩展 Agent Bypass Zoo | 拒绝作为主路线（不可扩展、证据语义混乱） |
 | 仅加强 JWT mint / IdentityProvider SPI | 不足：Filter/License/世界状态仍堵 |
 | 默认所有 if/校验都 return true | 拒绝：会绕过 sanitizer 和业务不变量，产生无意义假阳性 |
-| 默认 Docker-only 强达已识别鉴权/License guard | 接受为提案主路线，但必须独立 provenance 和门禁 |
-| TracePlan + World Pack + Sensor Agent（本决策） | 提案主路线 |
+| 默认 Docker-only 强达已识别鉴权/License guard | 接受，必须独立 provenance 和门禁 |
+| TracePlan + World Pack + Sensor Agent（本决策） | **接受为主路线** |
 
 ## Consequences
 
 - 控制面/沙箱启动需增加 posture、worldPack、tracePlan、pathTrace 和 provenance 字段；GUI/Diagnostics 需展示 Posture/World/Forced gaps。
 - 现有 Quartz、JDBC、Redis、MySQL 等特例需迁移到 World Pack 或 Sensor 语义；禁止继续扩展“弄通型 Agent 特例”。
-- P0-21 文档需从「mint 特权覆盖轨」改写为「三轨路径调试」。
+- P0-21 实现与验收以三轨路径调试为准，不再以“mint 特权覆盖全部鉴权形态”叙述。
 - 最终报告需按入口展示最深可达路径、参数流、sink/effect、退出原因和强达/MOCK 限制。
 
 ## Security
@@ -59,9 +58,21 @@
 
 ## Migration
 
-见设计简报 §6–§8。本 ADR `PROPOSED` 期间不得把 Posture、World Pack、FORCED_REACHABILITY 或 PathTrace 标为已验证生产能力。
+见设计简报 §6–§8 与 MVP_BACKLOG P0-21。后续任务必须按本 ADR 实施，不得再扩大 Agent Bypass Zoo。
 
 ## Validation
 
-- 架构组评审通过后改为 `ACCEPTED`。
-- 验收以改写后的 P0-21 + 至少一个“effect 已触发但 DB 不可达仍完整保留失败前路径”的样本为准，而非文档存在。
+根 Agent 架构评审（2026-07-29）通过并 `ACCEPTED`，证据：
+
+| 决策点 | 证据 |
+|--------|------|
+| TracePlan / PathTrace / WorldPack / RuntimePosture 合同 | V025 + schemas；`PathDebugContractAcceptanceTest` |
+| 三轨默认 + BYPASS 按候选 | `PostureExperimentCompiler` / `RuntimePostureOrchestrator` + acceptance |
+| Sensor Agent（非 Bypass Zoo） | `PathDebugDetail` / `FrameworkBoundaryAdapter` 打入 runtime 镜像；`PathDebugSensorAcceptanceTest` |
+| World Pack OBSERVE_FAIL / MOCK_CONTINUE | `WorldPackPlanner` + agent `veyrion.worldPack.dependencyMode`（`-D`） |
+| Docker-only 强达 / 策略拒绝 | `RuntimePostureOrchestratorAcceptanceTest`、`PathTraceQueryDenialAcceptanceTest` |
+| effect 后 DB 不可达仍保留路径 | `PathDebugMinimumAcceptanceTest` / `PathTraceProjectorAcceptanceTest` |
+| 授权样本三轨 live | `LivePathTracePostureAcceptanceTest`：digest-pinned runtime、tracks=`UNAUTH`+`ADMIN`、pathDebug=true、不升 VERIFIED |
+| 镜像 digest-pin | `sandbox-pack/.runtime/state.json` → `127.0.0.1:5000/veyrion/artifact-runtime@sha256:e2b926582e099bfbf5714995413326942a2be2ec26c3db427ccd63cdd2d1c4dd` |
+
+声明范围外：OSS 实战 JAR（WebGoat/Blade）全链路召回、gVisor/Kata、`VERIFIED` 仍不在本 ADR 验收内。实现状态见 [MVP_BACKLOG.md](../MVP_BACKLOG.md) P0-21。

@@ -27,7 +27,7 @@
 
 需要管理员、租户或前置业务状态的路径，应通过合成身份、状态种子或快照探索，并在结论中保留前置条件。不得把“管理员可达”写成“匿名可利用”。动态要对全部入口做有界业务覆盖（特权轨），同时用未授权轨标注鉴权墙；绕过与利用链在 PATH/TRIAGE 有证据后再组合（见 [PATH_EXPERIMENT_MODEL](docs/PATH_EXPERIMENT_MODEL.md) §3.1–§3.2、Backlog P0-21）。身份材料不可用时记 `IDENTITY_UNAVAILABLE`，不得假装已覆盖。
 
-产品后续方向（**ADR-0004 PROPOSED，未 ACCEPTED**）：动态能力调整为 Docker 内**动态路径调试器**，由 TracePlan 指路、World Pack 提供业务世界、Runtime Posture 默认执行 `UNAUTH` / `COVERAGE_POSTURE` / Docker-only `FORCED_REACHABILITY` / `BYPASS`，Agent 收敛为 Sensor 观测。目标不是保证所有接口完整 2xx，而是即使最终因数据库、License、文件、状态或依赖不可达失败，也能保留失败前真实业务路径、参数流、sink/effect 和退出原因。强达轨默认开启但只能在沙箱内对已识别 auth/role/permission/license/feature guard 生效，必须标 `INSTRUMENTATION_REACHABILITY`，不得单独升 `DYNAMIC_CONFIRMED` / `VERIFIED`。完整简报：[DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](docs/DYNAMIC_SANDBOX_POSTURE_REDESIGN.md)。
+动态主路线（**ADR-0004 ACCEPTED**）：Docker 内**动态路径调试器**，由 TracePlan 指路、World Pack 提供业务世界、Runtime Posture 默认执行 `UNAUTH` / `COVERAGE_POSTURE` / Docker-only `FORCED_REACHABILITY` / `BYPASS`，Agent 收敛为 Sensor 观测。目标不是保证所有接口完整 2xx，而是即使最终因数据库、License、文件、状态或依赖不可达失败，也能保留失败前真实业务路径、参数流、sink/effect 和退出原因。强达轨默认开启但只能在沙箱内对已识别 auth/role/permission/license/feature guard 生效，必须标 `INSTRUMENTATION_REACHABILITY`，不得单独升 `DYNAMIC_CONFIRMED` / `VERIFIED`。完整简报：[DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](docs/DYNAMIC_SANDBOX_POSTURE_REDESIGN.md)；实现状态见 Backlog P0-21。
 
 ### 2.3 证据分层
 
@@ -188,3 +188,4 @@ AI 只能查询受控代码切片和 Evidence Graph、提出结构化假设与�
 - **2026-07-27**：保留 Java Control Plane 与 React GUI；多语言采用进程外 LanguageAnalyzer、独立 RuntimeAdapter 和中立合同，配套作用域 Agent 指令、任务包、ADR 与确定性 CI/架构门禁防止 AI 实施偏离。
 - **2026-07-29**：实战召回复核后，MVP 路线调整为静态事实和 sink/effect 主召回、动态沙箱补证/证伪；动态路径和 AI 研判在 P0-15 到 P0-20 闭合前不得宣称基本可用。
 - **2026-07-29**：动态沙箱目标改为“失败前路径完整记录”的动态路径调试器：TracePlan + World Pack + 三轨 Posture + Docker-only 强达 + Sensor Agent + PathTrace；禁止继续把 Agent Bypass Zoo 当主路线。
+- **2026-07-29**：ADR-0004 `ACCEPTED`；digest-pinned runtime 含 Sensor Agent；授权 Boot fixture 三轨 PathTrace live 验收通过。P0-21 声明范围 `AUDITED`，OSS 实战 JAR 全链路召回仍不在范围内。
