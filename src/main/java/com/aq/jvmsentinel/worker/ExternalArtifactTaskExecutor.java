@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.worker;
 
+import com.aq.jvmsentinel.analysis.experiment.GuardSurfaceCatalog;
 import com.aq.jvmsentinel.policy.NetworkMode;
 import com.aq.jvmsentinel.control.JsonCodec;
 import com.aq.jvmsentinel.sandbox.CommandRequest;
@@ -676,6 +677,7 @@ public final class ExternalArtifactTaskExecutor {
                 : "jdbc:veyrion-mock:mem:veyrion";
         String driver = mysqlConnector ? "" : " --spring.datasource.driver-class-name="
                 + "com.aq.jvmsentinel.instrumentation.mock.VeyrionMockDriver";
+        String forcedGuardTypes = forcedGuardTypeNamesProperty(registration.path());
         return writeProgress("启动应用 JAR（保留制品自身端口；javaagent hook + 协议级依赖替身；容器断网）")
                 + "; java"
                 + " -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
@@ -684,6 +686,9 @@ public final class ExternalArtifactTaskExecutor {
                 + " -Dveyrion.worldPack.dependencyMode=" + worldPackMode
                 + " -Dveyrion.sandbox.dependencyMock=" + mockDependencies
                 + " -Dveyrion.coverage.enabled=true"
+                + (forcedGuardTypes.isEmpty()
+                ? "" : " -Dveyrion.sandbox.forcedGuardTypeNames="
+                + shellSingleQuoted(forcedGuardTypes))
                 // Keep app temps off the tiny trace tmpfs so probe-events.jsonl can still be written.
                 + " -Djava.io.tmpdir=/tmp"
                 // Quartz AUTO uses hostname; deny-all Docker often cannot resolve it
@@ -942,6 +947,15 @@ public final class ExternalArtifactTaskExecutor {
 
     private static String shellSingleQuoted(String value) {
         return "'" + value.replace("'", "'\\''") + "'";
+    }
+
+    /**
+     * Server-owned GuardSurface typeNames for the agent FORCED allowlist.
+     * Empty when the catalog finds nothing — agent then keeps name heuristics.
+     */
+    public static String forcedGuardTypeNamesProperty(Path artifactPath) {
+        return GuardSurfaceCatalog.formatTypeNamesProperty(
+                GuardSurfaceCatalog.typeNames(GuardSurfaceCatalog.harvest(artifactPath)));
     }
 
     private static int timeoutSeconds(ResourceBudget budget) {

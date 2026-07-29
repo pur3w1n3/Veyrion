@@ -1,16 +1,22 @@
 package com.aq.jvmsentinel.control.service;
 
 import com.aq.jvmsentinel.AcceptanceAssertions;
+import com.aq.jvmsentinel.analysis.experiment.PostureExperimentCompiler;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
+import com.aq.jvmsentinel.domain.pathdebug.RuntimePostureKind;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
 
 /** PostureExperimentCompiler plans are used when building flood probe plans. */
 public final class ProbePlanPostureIntegrationAcceptanceTest {
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         AcceptanceAssertions.reset();
         ControlPlaneStore store = new ControlPlaneStore();
         String now = Instant.now().toString();
@@ -38,6 +44,32 @@ public final class ProbePlanPostureIntegrationAcceptanceTest {
                 .noneMatch(probe -> probe.experimentPlanId() != null
                         && probe.experimentPlanId().contains("forced_reachability"));
         check(forcedAbsent, "FORCED_REACHABILITY omitted when dockerSandbox=false");
+
+        Path jar = Files.createTempFile("posture-guard-", ".jar");
+        try {
+            try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(jar))) {
+                jos.putNextEntry(new JarEntry("BOOT-INF/classes/com/example/app/LoginFilter.class"));
+                jos.write(new byte[] {(byte) 0xCA, (byte) 0xFE, (byte) 0xBA, (byte) 0xBE});
+                jos.closeEntry();
+            }
+            ProbePlanService.PostureExpansionResult withGuards = service.expandProbesByPostureDetailed(
+                    scan, List.of(entry), List.of(ProbePlanService.probeTargetFor(entry)),
+                    true, 16, jar);
+            boolean forcedRefs = withGuards.probes().stream().anyMatch(probe -> {
+                if (probe.experimentPlanId() == null
+                        || !probe.experimentPlanId().contains("forced_reachability")) {
+                    return false;
+                }
+                PostureExperimentCompiler.CompiledPostureExperiment compiled =
+                        store.postureExperiment(probe.experimentPlanId());
+                return compiled != null
+                        && compiled.posture().postureKind() == RuntimePostureKind.FORCED_REACHABILITY
+                        && compiled.posture().forcedGuardRefs().contains("GUARD:AUTH:LoginFilter");
+            });
+            check(forcedRefs, "ProbePlanService passes catalog guardHints into FORCED plans");
+        } finally {
+            Files.deleteIfExists(jar);
+        }
         System.out.println("ProbePlanPostureIntegrationAcceptanceTest: PASS ("
                 + AcceptanceAssertions.get() + " assertions)");
     }

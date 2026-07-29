@@ -97,7 +97,8 @@ public final class AutomaticInstrumentation {
         if (hierarchyHttpSurface(type)) return true;
         // Spring Boot fat JARs often hide javax/jakarta.servlet from TypePool, so hasSuperType
         // returns false for DispatcherServlet/Filters even though they are HTTP surfaces.
-        return shapedHttpServlet(type) || shapedHttpFilter(type) || shapedHttpInterceptor(type);
+        return shapedHttpServlet(type) || shapedHttpFilter(type) || shapedHttpInterceptor(type)
+                || shapedAccessControlDecision(type);
     }
 
     private static boolean hierarchyHttpSurface(TypeDescription type) {
@@ -187,6 +188,11 @@ public final class AutomaticInstrumentation {
             instrumented = instrumented.visit(Advice.to(FilterAdvice.class).on(
                     isMethod().and(namedOneOf("doFilter", "doFilterInternal"))
                             .and(not(isAbstract()))));
+            instrumented = instrumented.visit(Advice.to(AccessControlAdvice.class).on(
+                    isMethod().and(named("isAccessAllowed")).and(not(isAbstract()))));
+        } else if (shapedAccessControlDecision(type)) {
+            instrumented = instrumented.visit(Advice.to(AccessControlAdvice.class).on(
+                    isMethod().and(named("isAccessAllowed")).and(not(isAbstract()))));
         }
         if (interceptor || shapedHttpInterceptor(type)) {
             instrumented = instrumented.visit(Advice.to(InterceptorAdvice.class).on(
@@ -194,6 +200,17 @@ public final class AutomaticInstrumentation {
                             .and(not(isAbstract()))));
         }
         return instrumented;
+    }
+
+    private static boolean shapedAccessControlDecision(TypeDescription type) {
+        String name = type.getName();
+        if (!(name.contains("AccessControl") || name.contains("shiro.web.filter")
+                || name.endsWith("LoginFilter") || name.endsWith("UserFilter"))) {
+            return false;
+        }
+        return type.getDeclaredMethods().filter(isMethod()
+                .and(named("isAccessAllowed"))
+                .and(not(isAbstract()))).size() > 0;
     }
 
     private static DynamicType.Builder<?> instrumentApplicationCalls(
@@ -376,10 +393,10 @@ public final class AutomaticInstrumentation {
             FrameworkBoundaryAdapter.applyCoveragePosture(firstRequest(args), posture);
             boolean forced = "preHandle".equals(methodName)
                     && FrameworkBoundaryAdapter.forcedReachabilityActive(posture)
-                    && FrameworkBoundaryAdapter.isRecognizedAuthGuard(className, methodName);
+                    && FrameworkBoundaryAdapter.isForceEligibleGuard(className, methodName);
             Map<String, String> detail = httpDetail("SPRING_INTERCEPTOR", view);
             if (forced) {
-                // Recording only: FilterAdvice short-circuit is the primary FORCED path.
+                // Recording only: FilterAdvice / AccessControlAdvice are the primary FORCED paths.
                 // preHandle boolean rewrite is deferred (void/boolean exit shapes differ).
                 detail = PathDebugDetail.merge(detail,
                         PathDebugDetail.guardDecision("FORCED_ALLOW", true));
@@ -391,6 +408,44 @@ public final class AutomaticInstrumentation {
         public static void exit() {
             AgentRuntime.endCoverageRequest();
             AgentRuntime.releaseRequestCorrelation();
+        }
+    }
+
+    /**
+     * P1: Shiro AccessControlFilter.isAccessAllowed (and app LoginFilter overrides) under FORCED.
+     * Skips the original body and forces a {@code true} return; does not continue FilterChain.
+     */
+    public static final class AccessControlAdvice {
+        private AccessControlAdvice() {
+        }
+
+        @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class, suppress = Throwable.class)
+        public static boolean enter(@Advice.Origin("#t") String className,
+                                    @Advice.Origin("#m") String methodName,
+                                    @Advice.This(optional = true) Object self,
+                                    @Advice.AllArguments Object[] args) {
+            String runtimeType = self != null ? self.getClass().getName() : className;
+            HttpRequestView view = HttpRequestView.fromArgs(args);
+            String posture = FrameworkBoundaryAdapter.resolvePosture(view.runtimePosture);
+            boolean force = FrameworkBoundaryAdapter.forceAccessAllowed(
+                    posture, runtimeType, methodName);
+            if (force) {
+                Map<String, String> detail = httpDetail("ACCESS_CONTROL", view);
+                detail = PathDebugDetail.merge(detail,
+                        PathDebugDetail.guardDecision("FORCED_ALLOW", true));
+                detail = PathDebugDetail.merge(detail,
+                        Map.of("forceMode", "ACCESS_ALLOWED_TRUE", "guardType", runtimeType));
+                AgentRuntime.recordTransformedDetail("HTTP", runtimeType, methodName, detail);
+            }
+            return force;
+        }
+
+        @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
+        public static void exit(@Advice.Enter boolean forced,
+                                @Advice.Return(readOnly = false) boolean allowed) {
+            if (forced) {
+                allowed = true;
+            }
         }
     }
 

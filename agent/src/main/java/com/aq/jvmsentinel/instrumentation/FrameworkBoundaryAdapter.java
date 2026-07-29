@@ -4,28 +4,37 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * P0-21: COVERAGE_POSTURE identity injection and FORCED_REACHABILITY guard handling.
  * Only active inside authorized Docker sandboxes; never on host execution.
  *
  * <p>FORCED_REACHABILITY short-circuits <em>recognized</em> auth/role/permission/license
- * filters by continuing the {@code FilterChain} and skipping the filter body. This is
- * framework-agnostic (Spring Security / Shiro / custom Auth*Filter) and must not target
- * sanitizers or infrastructure filters.
+ * filters by continuing the {@code FilterChain} and skipping the filter body, or by forcing
+ * AccessControl {@code isAccessAllowed} to true. When
+ * {@code veyrion.sandbox.forcedGuardTypeNames} is non-empty, only those runtime types are
+ * forced (heuristics remain the fallback when the allowlist is empty). Never targets
+ * sanitizers or infrastructure / container filters.
  */
 public final class FrameworkBoundaryAdapter {
     static final String DOCKER_PROPERTY = "veyrion.sandbox.docker";
     static final String POSTURE_PROPERTY = "veyrion.sandbox.runtimePosture";
     static final String POSTURE_HEADER = "X-Veyrion-Runtime-Posture";
+    static final String FORCED_GUARD_TYPES_PROPERTY = AgentConfig.FORCED_GUARD_TYPE_NAMES_PROPERTY;
     static final String SCAN_PRINCIPAL = "veyrion-scan-principal";
     static final String SCAN_ROLE = "ROLE_VEYRION_SCAN";
     static final String SCAN_ADMIN_ROLE = "ROLE_ADMIN";
     static final String REQUEST_ATTR_PRINCIPAL = "com.veyrion.scan.principal";
     static final String REQUEST_ATTR_POSTURE = "com.veyrion.scan.runtimePosture";
+    private static final int MAX_ALLOWLIST_TYPES = 48;
+
+    private static volatile Set<String> cachedAllowlist;
+    private static volatile String cachedAllowlistRaw;
 
     private FrameworkBoundaryAdapter() {
     }
@@ -89,18 +98,93 @@ public final class FrameworkBoundaryAdapter {
     }
 
     /**
-     * When FORCED and this type is a recognized auth guard, continue the filter chain and
+     * When FORCED and this type is an eligible auth guard, continue the filter chain and
      * signal callers to skip the original filter body ({@code skipOn} non-default).
      *
      * @return {@code true} when the original method should be skipped
      */
     public static boolean forcePastRecognizedFilter(String posture, String className,
                                                     String methodName, Object[] args) {
-        if (!forcedReachabilityActive(posture) || !isRecognizedAuthGuard(className, methodName)) {
+        if (!forcedReachabilityActive(posture) || !isForceEligibleGuard(className, methodName)) {
             return false;
         }
         continueFilterChain(args);
         return true;
+    }
+
+    /**
+     * When FORCED and this type is an eligible AccessControl decision method, skip the original
+     * body so advice can return {@code true} (isAccessAllowed).
+     */
+    public static boolean forceAccessAllowed(String posture, String className, String methodName) {
+        if (!forcedReachabilityActive(posture)) {
+            return false;
+        }
+        if (methodName == null || !("isAccessAllowed".equals(methodName)
+                || "isPermissive".equals(methodName))) {
+            return false;
+        }
+        return isForceEligibleGuard(className, methodName);
+    }
+
+    /**
+     * Allowlist from control-plane catalog when non-empty; otherwise name heuristics.
+     * Container / infrastructure exclusions always apply.
+     */
+    public static boolean isForceEligibleGuard(String className, String methodName) {
+        if (className == null) {
+            return false;
+        }
+        String lower = className.toLowerCase(Locale.ROOT);
+        String simple = lower;
+        int dot = lower.lastIndexOf('.');
+        if (dot >= 0 && dot + 1 < lower.length()) {
+            simple = lower.substring(dot + 1);
+        }
+        if (isInfrastructureFilter(simple, lower) || isAuthContainerFilter(simple, lower)
+                || isSanitizerOrSqlFilter(simple)) {
+            return false;
+        }
+        Set<String> allowlist = forcedGuardTypeAllowlist();
+        if (!allowlist.isEmpty()) {
+            return matchesAllowlist(className, allowlist);
+        }
+        return isRecognizedAuthGuard(className, methodName);
+    }
+
+    public static Set<String> forcedGuardTypeAllowlist() {
+        String raw = System.getProperty(FORCED_GUARD_TYPES_PROPERTY, "");
+        if (raw == null) {
+            raw = "";
+        }
+        String normalized = raw.trim();
+        Set<String> cached = cachedAllowlist;
+        if (cached != null && normalized.equals(cachedAllowlistRaw)) {
+            return cached;
+        }
+        LinkedHashSet<String> parsed = new LinkedHashSet<>();
+        if (!normalized.isEmpty()) {
+            for (String part : normalized.split(",")) {
+                String token = part == null ? "" : part.trim();
+                if (token.isEmpty() || token.length() > 200) {
+                    continue;
+                }
+                parsed.add(token);
+                if (parsed.size() >= MAX_ALLOWLIST_TYPES) {
+                    break;
+                }
+            }
+        }
+        Set<String> frozen = Set.copyOf(parsed);
+        cachedAllowlistRaw = normalized;
+        cachedAllowlist = frozen;
+        return frozen;
+    }
+
+    /** Test helper: clear allowlist property cache. */
+    static void clearForcedGuardTypeAllowlistCache() {
+        cachedAllowlist = null;
+        cachedAllowlistRaw = null;
     }
 
     public static void recordGuardDecision(String className, String methodName, String decision,
@@ -112,7 +196,8 @@ public final class FrameworkBoundaryAdapter {
 
     /**
      * Recognized auth / role / permission / license / feature guard surfaces eligible for
-     * FORCED short-circuit. Intentionally excludes infrastructure filters (CORS, encoding, …).
+     * FORCED short-circuit when the control-plane allowlist is empty. Intentionally excludes
+     * infrastructure filters (CORS, encoding, …).
      */
     public static boolean isRecognizedAuthGuard(String className, String methodName) {
         if (className == null) {
@@ -124,13 +209,27 @@ public final class FrameworkBoundaryAdapter {
         if (dot >= 0 && dot + 1 < lower.length()) {
             simple = lower.substring(dot + 1);
         }
-        if (isInfrastructureFilter(simple, lower) || isAuthContainerFilter(simple, lower)) {
+        if (isInfrastructureFilter(simple, lower) || isAuthContainerFilter(simple, lower)
+                || isSanitizerOrSqlFilter(simple)) {
             return false;
         }
         if (methodName != null && (methodName.contains("PreAuthorize")
                 || "authorize".equals(methodName)
+                || "isAccessAllowed".equals(methodName)
                 || "check".equals(methodName) && lower.contains("security"))) {
-            return true;
+            // Method-name signal alone is insufficient for PreAuthorize on non-guard types;
+            // keep package / simple-name gates below for filter types.
+            if ("isAccessAllowed".equals(methodName)
+                    && (lower.contains("shiro") || simpleContainsAny(simple,
+                    "accesscontrol", "loginfilter", "userfilter", "authfilter",
+                    "authenticationfilter", "authorizationfilter"))) {
+                return true;
+            }
+            if (methodName.contains("PreAuthorize")
+                    || "authorize".equals(methodName)
+                    || "check".equals(methodName) && lower.contains("security")) {
+                return true;
+            }
         }
         // Shiro: only authc/authz decision filters — never the outer AbstractShiroFilter
         // that establishes Subject / session. Skipping the container filter after
@@ -157,6 +256,28 @@ public final class FrameworkBoundaryAdapter {
                 "exceptiontranslationfilter", "filtersecurityinterceptor",
                 "authorizationmanager", "licensefilter", "featurefilter",
                 "securefilter", "preauth");
+    }
+
+    private static boolean matchesAllowlist(String className, Set<String> allowlist) {
+        if (allowlist.contains(className)) {
+            return true;
+        }
+        // Accept slash-form tokens from some catalogs.
+        String slash = className.replace('.', '/');
+        if (allowlist.contains(slash)) {
+            return true;
+        }
+        for (String token : allowlist) {
+            if (token.equalsIgnoreCase(className) || token.equalsIgnoreCase(slash)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isSanitizerOrSqlFilter(String simple) {
+        return simpleContainsAny(simple,
+                "xss", "sqlfilter", "sqlinjection", "sanitiz", "csrf");
     }
 
     /**

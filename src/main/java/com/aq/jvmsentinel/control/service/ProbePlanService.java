@@ -2,10 +2,12 @@ package com.aq.jvmsentinel.control.service;
 
 import com.aq.jvmsentinel.analysis.entry.NonHttpEntryProtocol;
 import com.aq.jvmsentinel.analysis.experiment.EntryParameterExperimentCompiler;
+import com.aq.jvmsentinel.analysis.experiment.GuardSurfaceCatalog;
 import com.aq.jvmsentinel.analysis.experiment.PostureExperimentCompiler;
 import com.aq.jvmsentinel.analysis.experiment.RuntimePostureOrchestrator;
 import com.aq.jvmsentinel.analysis.experiment.TracePlanCompiler;
 import com.aq.jvmsentinel.analysis.experiment.WorldPackPlanner;
+import com.aq.jvmsentinel.domain.pathdebug.GuardSurface;
 import com.aq.jvmsentinel.analysis.framework.FrameworkAdapterRegistry;
 import com.aq.jvmsentinel.control.JsonCodec;
 import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
@@ -296,9 +298,11 @@ public final class ProbePlanService {
         String scanId = scan.dto().scanId();
         String hint = pathExplorationHintText(scan);
         List<String> bypassCandidates = hint.isBlank() ? List.of() : List.of(hint);
+        List<GuardSurface> guardSurfaces = GuardSurfaceCatalog.harvest(artifactPath);
+        List<String> guardHints = GuardSurfaceCatalog.guardRefs(guardSurfaces);
         List<PostureExperimentCompiler.CompiledPostureExperiment> compiled =
                 PostureExperimentCompiler.compileAll(
-                        selected, scanId, List.of(), List.of(), List.of(), List.of(),
+                        selected, scanId, List.of(), List.of(), guardHints, List.of(),
                         bypassCandidates, Math.max(maxProbes, selected.size() * 4));
         if (compiled.isEmpty()) {
             return new PostureExpansionResult(List.of(), List.of());

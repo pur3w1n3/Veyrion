@@ -1,11 +1,14 @@
 package com.aq.jvmsentinel.instrumentation;
 
 /**
- * Unit-level acceptance for recognized-auth-guard heuristics and Docker gate.
- * Does not elevate VERIFIED; no Shiro rememberMe encryption.
+ * Unit-level acceptance for recognized-auth-guard heuristics, catalog allowlist,
+ * AccessControl force, and Docker gate. Does not elevate VERIFIED; no Shiro rememberMe encryption.
  */
 public final class ForcedReachabilityGuardAcceptanceTest {
     public static void main(String[] args) {
+        FrameworkBoundaryAdapter.clearForcedGuardTypeAllowlistCache();
+        System.clearProperty(FrameworkBoundaryAdapter.FORCED_GUARD_TYPES_PROPERTY);
+
         check(FrameworkBoundaryAdapter.isRecognizedAuthGuard(
                         "org.apache.shiro.web.filter.authc.FormAuthenticationFilter", "doFilterInternal"),
                 "Shiro FormAuthenticationFilter recognized");
@@ -37,6 +40,42 @@ public final class ForcedReachabilityGuardAcceptanceTest {
                         "org.apache.shiro.spring.web.ShiroFilterFactoryBean$SpringShiroFilter",
                         "doFilterInternal"),
                 "SpringShiroFilter container must not be force-skipped");
+        check(!FrameworkBoundaryAdapter.isRecognizedAuthGuard(
+                        "com.example.XssFilter", "doFilter"),
+                "XssFilter must not be force-skipped");
+        check(!FrameworkBoundaryAdapter.isRecognizedAuthGuard(
+                        "com.example.SQLFilter", "doFilter"),
+                "SQLFilter must not be force-skipped");
+
+        // Allowlist empty → heuristics
+        check(FrameworkBoundaryAdapter.isForceEligibleGuard(
+                        "com.kalvin.kvf.common.shiro.LoginFilter", "doFilterInternal"),
+                "empty allowlist falls back to heuristics for LoginFilter");
+        check(!FrameworkBoundaryAdapter.isForceEligibleGuard(
+                        "org.apache.shiro.web.servlet.AbstractShiroFilter", "doFilter"),
+                "empty allowlist still excludes AbstractShiroFilter");
+
+        // Allowlist non-empty → only matching types
+        System.setProperty(FrameworkBoundaryAdapter.FORCED_GUARD_TYPES_PROPERTY,
+                "com.kalvin.kvf.common.shiro.LoginFilter,org.apache.shiro.web.filter.authc.UserFilter");
+        FrameworkBoundaryAdapter.clearForcedGuardTypeAllowlistCache();
+        try {
+            check(FrameworkBoundaryAdapter.isForceEligibleGuard(
+                            "com.kalvin.kvf.common.shiro.LoginFilter", "doFilterInternal"),
+                    "allowlist matches LoginFilter");
+            check(FrameworkBoundaryAdapter.isForceEligibleGuard(
+                            "org.apache.shiro.web.filter.authc.UserFilter", "isAccessAllowed"),
+                    "allowlist matches UserFilter");
+            check(!FrameworkBoundaryAdapter.isForceEligibleGuard(
+                            "com.example.JwtAuthFilter", "doFilterInternal"),
+                    "non-allowlisted JwtAuthFilter not forced when allowlist set");
+            check(!FrameworkBoundaryAdapter.isForceEligibleGuard(
+                            "org.apache.shiro.web.servlet.AbstractShiroFilter", "doFilter"),
+                    "allowlist cannot force AbstractShiroFilter container");
+        } finally {
+            System.clearProperty(FrameworkBoundaryAdapter.FORCED_GUARD_TYPES_PROPERTY);
+            FrameworkBoundaryAdapter.clearForcedGuardTypeAllowlistCache();
+        }
 
         System.setProperty(FrameworkBoundaryAdapter.DOCKER_PROPERTY, "true");
         try {
@@ -51,6 +90,26 @@ public final class ForcedReachabilityGuardAcceptanceTest {
                             "doFilterInternal",
                             new Object[3]),
                     "COVERAGE does not skip filter body");
+            check(FrameworkBoundaryAdapter.forceAccessAllowed(
+                            "FORCED_REACHABILITY",
+                            "org.apache.shiro.web.filter.authc.UserFilter",
+                            "isAccessAllowed"),
+                    "AccessControl isAccessAllowed forced under FORCED");
+            check(FrameworkBoundaryAdapter.forceAccessAllowed(
+                            "FORCED_REACHABILITY",
+                            "com.kalvin.kvf.common.shiro.LoginFilter",
+                            "isAccessAllowed"),
+                    "LoginFilter isAccessAllowed forced under FORCED");
+            check(!FrameworkBoundaryAdapter.forceAccessAllowed(
+                            "FORCED_REACHABILITY",
+                            "org.apache.shiro.web.servlet.AbstractShiroFilter",
+                            "isAccessAllowed"),
+                    "AbstractShiroFilter isAccessAllowed not forced");
+            check(!FrameworkBoundaryAdapter.forceAccessAllowed(
+                            "COVERAGE_POSTURE",
+                            "org.apache.shiro.web.filter.authc.UserFilter",
+                            "isAccessAllowed"),
+                    "COVERAGE does not force isAccessAllowed");
         } finally {
             System.clearProperty(FrameworkBoundaryAdapter.DOCKER_PROPERTY);
         }

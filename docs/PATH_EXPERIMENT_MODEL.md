@@ -62,6 +62,7 @@ AI 负责编排实验与写笔记，不能改变沙箱权限、网络策略、�
 - **预算**：默认 = 全入口有界 UNAUTH + 全入口 COVERAGE_POSTURE + Docker 内 FORCED_REACHABILITY +（有候选时）定向 BYPASS。服务端强制总预算上限；高价值入口（上传 / deploy / token / exec / admin、静态敏感 sink、`AUTH_ANALYSIS` 标注）可加深参数空间。
 - COVERAGE_POSTURE 失败：发射 `AUTH_POSTURE_GAP`、`IDENTITY_UNAVAILABLE`、`LICENSE_UNAVAILABLE` 或 `WORLD_GAP`，不得静默认定“只打 UNAUTH 即已覆盖全部 API”。
 - FORCED_REACHABILITY 默认开启，但只能强达已识别 auth/role/permission/license/feature guard；不得默认强达 sanitizer、SQL 参数化、文件类型校验、金额/审批/状态机不变量。
+- 已识别 guard 由静态 `GuardSurface` 目录给出（`GUARD:<kind>:<simpleName>` + typeNames）；控制面写入 `forcedGuardRefs` 与有界 agent allowlist。allowlist 非空时只强达匹配类型；为空时 agent 保留名称启发式。决策形态含 Filter chain 短接与 AccessControl `isAccessAllowed`。
 - 所有姿态必须记录 `postureKind`、`postureProvenance`、`forcedGuardRefs`（若有）和 World Pack 状态。
 
 ### 3.2 路径存储与链式研判
