@@ -98,6 +98,18 @@ public final class FrameworkBoundaryAdapter {
     }
 
     /**
+     * DecisionShape-aligned rewrite mode. FORCED rewrites returns only through these modes —
+     * never arbitrary {@code Object.preHandle} or sanitizer filters.
+     */
+    public enum ForceRewriteMode {
+        NONE,
+        FILTER_CONTINUE_CHAIN,
+        ACCESS_ALLOWED_TRUE,
+        INTERCEPTOR_PREHANDLE_TRUE,
+        METHOD_SECURITY_FAIL_OPEN
+    }
+
+    /**
      * When FORCED and this type is an eligible auth guard, continue the filter chain and
      * signal callers to skip the original filter body ({@code skipOn} non-default).
      *
@@ -105,7 +117,10 @@ public final class FrameworkBoundaryAdapter {
      */
     public static boolean forcePastRecognizedFilter(String posture, String className,
                                                     String methodName, Object[] args) {
-        if (!forcedReachabilityActive(posture) || !isForceEligibleGuard(className, methodName)) {
+        if (!forcedReachabilityActive(posture)) {
+            return false;
+        }
+        if (rewriteMode(className, methodName) != ForceRewriteMode.FILTER_CONTINUE_CHAIN) {
             return false;
         }
         continueFilterChain(args);
@@ -120,11 +135,33 @@ public final class FrameworkBoundaryAdapter {
         if (!forcedReachabilityActive(posture)) {
             return false;
         }
-        if (methodName == null || !("isAccessAllowed".equals(methodName)
-                || "isPermissive".equals(methodName))) {
-            return false;
+        return rewriteMode(className, methodName) == ForceRewriteMode.ACCESS_ALLOWED_TRUE;
+    }
+
+    /**
+     * Map (type, method) to the only allowed FORCED rewrite shapes.
+     * Requires eligibility (allowlist or heuristics) first.
+     */
+    public static ForceRewriteMode rewriteMode(String className, String methodName) {
+        if (className == null || methodName == null || !isForceEligibleGuard(className, methodName)) {
+            return ForceRewriteMode.NONE;
         }
-        return isForceEligibleGuard(className, methodName);
+        if ("isAccessAllowed".equals(methodName) || "isPermissive".equals(methodName)) {
+            return ForceRewriteMode.ACCESS_ALLOWED_TRUE;
+        }
+        if ("preHandle".equals(methodName)) {
+            return isInterceptorShaped(className)
+                    ? ForceRewriteMode.INTERCEPTOR_PREHANDLE_TRUE
+                    : ForceRewriteMode.NONE;
+        }
+        if ("doFilter".equals(methodName) || "doFilterInternal".equals(methodName)) {
+            return ForceRewriteMode.FILTER_CONTINUE_CHAIN;
+        }
+        if (isMethodSecurityInterceptorType(className)
+                && ("invoke".equals(methodName) || "before".equals(methodName))) {
+            return ForceRewriteMode.METHOD_SECURITY_FAIL_OPEN;
+        }
+        return ForceRewriteMode.NONE;
     }
 
     /**
@@ -246,6 +283,14 @@ public final class FrameworkBoundaryAdapter {
                 && (lower.contains("filter") || lower.contains("access"))) {
             return true;
         }
+        if (lower.contains("cn.dev33.satoken")
+                || simpleEqualsAny(simple, "sainterceptor", "saservletfilter")
+                || simpleContainsAny(simple, "satokenfilter", "satokencontext")) {
+            return true;
+        }
+        if (isMethodSecurityInterceptorType(className)) {
+            return true;
+        }
         return simpleContainsAny(simple,
                 "authfilter", "authenticationfilter", "authorizationfilter",
                 "userfilter", "loginfilter", "permissionsauthorizationfilter",
@@ -255,7 +300,67 @@ public final class FrameworkBoundaryAdapter {
                 "usernamepasswordauthenticationfilter", "basicauthenticationfilter",
                 "exceptiontranslationfilter", "filtersecurityinterceptor",
                 "authorizationmanager", "licensefilter", "featurefilter",
-                "securefilter", "preauth");
+                "securefilter", "preauth",
+                "tokeninterceptor", "authinterceptor", "jwtinterceptor",
+                "secureinterceptor", "clientinterceptor", "signinterceptor",
+                "sainterceptor", "saservletfilter", "satokenfilter");
+    }
+
+    /**
+     * FORCED short-circuit for Spring {@code HandlerInterceptor#preHandle}.
+     * Eligible when allowlist/heuristics recognize the interceptor as an auth guard.
+     * Refuses non-interceptor shapes (no arbitrary {@code Object.preHandle}).
+     */
+    public static boolean forceInterceptorPreHandle(String posture, String className,
+                                                    String methodName) {
+        if (!forcedReachabilityActive(posture)) {
+            return false;
+        }
+        return rewriteMode(className, methodName) == ForceRewriteMode.INTERCEPTOR_PREHANDLE_TRUE;
+    }
+
+    /**
+     * FORCED fail-open for Spring method security interceptors ({@code @PreAuthorize} wall).
+     * Separate {@code forceMode=METHOD_SECURITY_FAIL_OPEN}; still INSTRUMENTATION_REACHABILITY.
+     */
+    public static boolean forceMethodSecurity(String posture, String className, String methodName) {
+        if (!forcedReachabilityActive(posture)) {
+            return false;
+        }
+        return rewriteMode(className, methodName) == ForceRewriteMode.METHOD_SECURITY_FAIL_OPEN;
+    }
+
+    public static boolean isMethodSecurityInterceptorType(String className) {
+        if (className == null) {
+            return false;
+        }
+        String lower = className.toLowerCase(Locale.ROOT);
+        return lower.contains("methodsecurityinterceptor")
+                || lower.contains("authorizationmanagerbeforemethodinterceptor")
+                || lower.contains("authorizationmanagermethodinterceptor")
+                || lower.endsWith("methodsecurityinterceptor");
+    }
+
+    private static boolean isInterceptorShaped(String className) {
+        if (className == null) {
+            return false;
+        }
+        String lower = className.toLowerCase(Locale.ROOT);
+        String simple = lower;
+        int dot = lower.lastIndexOf('.');
+        if (dot >= 0 && dot + 1 < lower.length()) {
+            simple = lower.substring(dot + 1);
+        }
+        return simple.contains("interceptor") || lower.contains(".interceptor.");
+    }
+
+    private static boolean simpleEqualsAny(String simple, String... needles) {
+        for (String needle : needles) {
+            if (simple.equals(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean matchesAllowlist(String className, Set<String> allowlist) {

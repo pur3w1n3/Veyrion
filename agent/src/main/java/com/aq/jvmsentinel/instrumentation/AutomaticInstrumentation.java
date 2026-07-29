@@ -98,7 +98,7 @@ public final class AutomaticInstrumentation {
         // Spring Boot fat JARs often hide javax/jakarta.servlet from TypePool, so hasSuperType
         // returns false for DispatcherServlet/Filters even though they are HTTP surfaces.
         return shapedHttpServlet(type) || shapedHttpFilter(type) || shapedHttpInterceptor(type)
-                || shapedAccessControlDecision(type);
+                || shapedAccessControlDecision(type) || shapedMethodSecurityInterceptor(type);
     }
 
     private static boolean hierarchyHttpSurface(TypeDescription type) {
@@ -195,11 +195,23 @@ public final class AutomaticInstrumentation {
                     isMethod().and(named("isAccessAllowed")).and(not(isAbstract()))));
         }
         if (interceptor || shapedHttpInterceptor(type)) {
+            // preHandle: FORCED may skip body and force true (Blade TokenInterceptor etc.).
+            instrumented = instrumented.visit(Advice.to(InterceptorPreHandleAdvice.class).on(
+                    isMethod().and(named("preHandle")).and(not(isAbstract()))));
             instrumented = instrumented.visit(Advice.to(InterceptorAdvice.class).on(
-                    isMethod().and(namedOneOf("preHandle", "postHandle", "afterCompletion"))
+                    isMethod().and(namedOneOf("postHandle", "afterCompletion"))
                             .and(not(isAbstract()))));
         }
+        if (shapedMethodSecurityInterceptor(type)) {
+            instrumented = instrumented.visit(Advice.to(MethodSecurityInterceptorAdvice.class).on(
+                    isMethod().and(namedOneOf("invoke", "before")).and(not(isAbstract()))));
+        }
         return instrumented;
+    }
+
+    private static boolean shapedMethodSecurityInterceptor(TypeDescription type) {
+        String name = type.getName();
+        return FrameworkBoundaryAdapter.isMethodSecurityInterceptorType(name);
     }
 
     private static boolean shapedAccessControlDecision(TypeDescription type) {
@@ -378,6 +390,50 @@ public final class AutomaticInstrumentation {
         }
     }
 
+    /**
+     * Spring HandlerInterceptor.preHandle under FORCED: skip original denial and return true.
+     * Does not elevate VERIFIED; provenance remains INSTRUMENTATION_REACHABILITY.
+     */
+    public static final class InterceptorPreHandleAdvice {
+        private InterceptorPreHandleAdvice() {
+        }
+
+        @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class, suppress = Throwable.class)
+        public static boolean enter(@Advice.Origin("#t") String className,
+                                    @Advice.Origin("#m") String methodName,
+                                    @Advice.This(optional = true) Object self,
+                                    @Advice.AllArguments Object[] args) {
+            String runtimeType = self != null ? self.getClass().getName() : className;
+            HttpRequestView view = HttpRequestView.fromArgs(args);
+            AgentRuntime.bindRequestCorrelation(view.correlationId);
+            AgentRuntime.beginCoverageRequest();
+            String posture = FrameworkBoundaryAdapter.resolvePosture(view.runtimePosture);
+            FrameworkBoundaryAdapter.applyCoveragePosture(firstRequest(args), posture);
+            boolean force = FrameworkBoundaryAdapter.forceInterceptorPreHandle(
+                    posture, runtimeType, methodName);
+            Map<String, String> detail = httpDetail("SPRING_INTERCEPTOR", view);
+            detail = PathDebugDetail.merge(detail,
+                    PathDebugDetail.guardDecision(force ? "FORCED_ALLOW" : "ENTER", force));
+            if (force) {
+                detail = PathDebugDetail.merge(detail,
+                        Map.of("forceMode", "INTERCEPTOR_PREHANDLE_TRUE",
+                                "guardType", runtimeType));
+            }
+            AgentRuntime.recordTransformedDetail("HTTP", runtimeType, methodName, detail);
+            return force;
+        }
+
+        @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
+        public static void exit(@Advice.Enter boolean forced,
+                                @Advice.Return(readOnly = false) boolean allowed) {
+            if (forced) {
+                allowed = true;
+            }
+            AgentRuntime.endCoverageRequest();
+            AgentRuntime.releaseRequestCorrelation();
+        }
+    }
+
     public static final class InterceptorAdvice {
         private InterceptorAdvice() {
         }
@@ -391,16 +447,7 @@ public final class AutomaticInstrumentation {
             AgentRuntime.beginCoverageRequest();
             String posture = FrameworkBoundaryAdapter.resolvePosture(view.runtimePosture);
             FrameworkBoundaryAdapter.applyCoveragePosture(firstRequest(args), posture);
-            boolean forced = "preHandle".equals(methodName)
-                    && FrameworkBoundaryAdapter.forcedReachabilityActive(posture)
-                    && FrameworkBoundaryAdapter.isForceEligibleGuard(className, methodName);
             Map<String, String> detail = httpDetail("SPRING_INTERCEPTOR", view);
-            if (forced) {
-                // Recording only: FilterAdvice / AccessControlAdvice are the primary FORCED paths.
-                // preHandle boolean rewrite is deferred (void/boolean exit shapes differ).
-                detail = PathDebugDetail.merge(detail,
-                        PathDebugDetail.guardDecision("FORCED_ALLOW", true));
-            }
             AgentRuntime.recordTransformedDetail("HTTP", className, methodName, detail);
         }
 
@@ -541,8 +588,14 @@ public final class AutomaticInstrumentation {
             }
             FrameworkBoundaryAdapter.applyCoveragePosture(null, posture);
             boolean forced = FrameworkBoundaryAdapter.forcedReachabilityActive(posture);
+            Map<String, String> extra = new LinkedHashMap<>();
+            extra.put("captureMode", "METHOD_SECURITY");
+            if (forced) {
+                // Annotation body reached under FORCED — wall was fail-opened upstream or absent.
+                extra.put("forceMode", "METHOD_SECURITY_ANNOTATION_OBSERVED");
+            }
             FrameworkBoundaryAdapter.recordGuardDecision(className, methodName,
-                    forced ? "FORCED_ALLOW" : "CHECK", forced, Map.of("captureMode", "METHOD_SECURITY"));
+                    forced ? "FORCED_ALLOW" : "CHECK", forced, extra);
         }
 
         public static String postureHeaderFromContext() {
@@ -557,6 +610,53 @@ public final class AutomaticInstrumentation {
                 return HttpRequestView.header(request, FrameworkBoundaryAdapter.POSTURE_HEADER);
             } catch (Throwable ignored) {
                 return "";
+            }
+        }
+    }
+
+    /**
+     * FORCED fail-open for Spring {@code MethodSecurityInterceptor} /
+     * {@code AuthorizationManagerBeforeMethodInterceptor}: skip the authorization check and
+     * {@code proceed()} the MethodInvocation. Provenance remains INSTRUMENTATION_REACHABILITY.
+     */
+    public static final class MethodSecurityInterceptorAdvice {
+        private MethodSecurityInterceptorAdvice() {
+        }
+
+        @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class, suppress = Throwable.class)
+        public static boolean enter(@Advice.Origin("#t") String className,
+                                    @Advice.Origin("#m") String methodName,
+                                    @Advice.This(optional = true) Object self) {
+            String runtimeType = self != null ? self.getClass().getName() : className;
+            String posture = FrameworkBoundaryAdapter.resolvePosture(
+                    MethodSecurityAdvice.postureHeaderFromContext());
+            if (posture.isBlank() || "UNAUTH".equals(posture)) {
+                posture = FrameworkBoundaryAdapter.configuredPosture();
+            }
+            boolean force = FrameworkBoundaryAdapter.forceMethodSecurity(
+                    posture, runtimeType, methodName);
+            if (force) {
+                FrameworkBoundaryAdapter.recordGuardDecision(runtimeType, methodName,
+                        "FORCED_ALLOW", true,
+                        Map.of("captureMode", "METHOD_SECURITY",
+                                "forceMode", "METHOD_SECURITY_FAIL_OPEN",
+                                "guardType", runtimeType));
+            }
+            return force;
+        }
+
+        @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
+        public static void exit(@Advice.Enter boolean forced,
+                                @Advice.AllArguments Object[] args,
+                                @Advice.Return(readOnly = false) Object returned) {
+            if (!forced || args == null || args.length == 0 || args[0] == null) {
+                return;
+            }
+            try {
+                Object invocation = args[0];
+                returned = invocation.getClass().getMethod("proceed").invoke(invocation);
+            } catch (Throwable ignored) {
+                // Best-effort proceed; leave returned as-is on failure.
             }
         }
     }
@@ -705,41 +805,70 @@ public final class AutomaticInstrumentation {
             };
         }
 
+        /**
+         * Top-level eventType must stay inside AgentJsonlTraceConverter whitelist.
+         * Security nuance (SSRF / JNDI / DESERIALIZATION / multi-kind) goes in
+         * pathDebugKind + effectKind / secondaryEffectKinds detail markers.
+         */
         private static String eventType(String owner, String methodName) {
             if ("java/net/http/HttpClient".equals(owner)
                     && ("send".equals(methodName) || "sendAsync".equals(methodName))) {
                 return "HTTP_CLIENT";
             }
+            // Remap former NETWORK_* / DNS_* attempt labels onto HTTP_CLIENT + effectKind=SSRF.
             if ("java/net/InetAddress".equals(owner)
                     && ("getByName".equals(methodName) || "getAllByName".equals(methodName)
                     || "getCanonicalHostName".equals(methodName))) {
-                return "DNS_LOOKUP_ATTEMPT";
+                return "HTTP_CLIENT";
             }
             if (("java/net/Socket".equals(owner) || "java/net/DatagramSocket".equals(owner))
                     && ("connect".equals(methodName) || "send".equals(methodName))) {
-                return "NETWORK_CONNECT_ATTEMPT";
+                return "HTTP_CLIENT";
             }
             if ("java/net/URL".equals(owner)
                     && ("openConnection".equals(methodName) || "openStream".equals(methodName))) {
-                return "NETWORK_REQUEST_ATTEMPT";
+                return "HTTP_CLIENT";
             }
-            if ("java/net/URL".equals(owner)
-                    && ("hashCode".equals(methodName) || "equals".equals(methodName))) {
-                return "DNS_LOOKUP_ATTEMPT";
+            if (("javax/naming/InitialContext".equals(owner) || "javax/naming/Context".equals(owner)
+                    || "javax/naming/directory/InitialDirContext".equals(owner))
+                    && ("lookup".equals(methodName) || "doLookup".equals(methodName))) {
+                return "JNDI";
             }
-            if (("javax/naming/InitialContext".equals(owner) || "javax/naming/Context".equals(owner))
-                    && "lookup".equals(methodName)) {
-                return "JNDI_LOOKUP_ATTEMPT";
+            if ("java/sql/DriverManager".equals(owner) && "getConnection".equals(methodName)) {
+                return "JDBC";
+            }
+            if ("java/sql/Driver".equals(owner) && "connect".equals(methodName)) {
+                return "JDBC";
+            }
+            if ("java/lang/Class".equals(owner)
+                    && ("forName".equals(methodName) || "newInstance".equals(methodName))) {
+                return "CLASS_LOAD";
+            }
+            if ("java/net/URLClassLoader".equals(owner)
+                    && ("loadClass".equals(methodName) || "findClass".equals(methodName)
+                    || "<init>".equals(methodName))) {
+                return "CLASS_LOAD";
+            }
+            if ("java/io/ObjectInputStream".equals(owner)
+                    && ("readObject".equals(methodName) || "readUnshared".equals(methodName))) {
+                return "PROCESS";
+            }
+            if (("javax/script/ScriptEngine".equals(owner) || "jakarta/script/ScriptEngine".equals(owner))
+                    && "eval".equals(methodName)) {
+                return "PROCESS";
             }
             if ("java/lang/ProcessBuilder".equals(owner) && "start".equals(methodName)
                     || "java/lang/Runtime".equals(owner) && methodName.startsWith("exec")) {
                 return "PROCESS";
             }
             if ("java/nio/file/Files".equals(owner)
-                    && (methodName.startsWith("write") || "newOutputStream".equals(methodName))) {
+                    && (methodName.startsWith("write") || "newOutputStream".equals(methodName)
+                    || methodName.startsWith("read") || "newInputStream".equals(methodName)
+                    || "newBufferedReader".equals(methodName))) {
                 return "FILE";
             }
-            if (("java/io/FileOutputStream".equals(owner) || "java/io/FileWriter".equals(owner))
+            if (("java/io/FileOutputStream".equals(owner) || "java/io/FileWriter".equals(owner)
+                    || "java/io/FileInputStream".equals(owner) || "java/io/FileReader".equals(owner))
                     && "<init>".equals(methodName)) {
                 return "FILE";
             }

@@ -17,6 +17,7 @@ public record GuardSurface(
     public enum DecisionShape {
         FILTER_CHAIN,
         ACCESS_CONTROL,
+        INTERCEPTOR,
         HEURISTIC
     }
 

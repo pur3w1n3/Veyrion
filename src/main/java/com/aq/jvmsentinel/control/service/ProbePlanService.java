@@ -298,7 +298,8 @@ public final class ProbePlanService {
         String scanId = scan.dto().scanId();
         String hint = pathExplorationHintText(scan);
         List<String> bypassCandidates = hint.isBlank() ? List.of() : List.of(hint);
-        List<GuardSurface> guardSurfaces = GuardSurfaceCatalog.harvest(artifactPath);
+        GuardSurfaceCatalog.HarvestResult harvest = GuardSurfaceCatalog.harvestDetailed(artifactPath);
+        List<GuardSurface> guardSurfaces = harvest.surfaces();
         List<String> guardHints = GuardSurfaceCatalog.guardRefs(guardSurfaces);
         List<PostureExperimentCompiler.CompiledPostureExperiment> compiled =
                 PostureExperimentCompiler.compileAll(
@@ -307,7 +308,7 @@ public final class ProbePlanService {
         if (compiled.isEmpty()) {
             return new PostureExpansionResult(List.of(), List.of());
         }
-        persistPostureArtifacts(scan, compiled);
+        persistPostureArtifacts(scan, compiled, harvest);
         SyntheticIdentityService identity = new SyntheticIdentityService();
         SyntheticIdentityService.MaterialBundle materials = identity.harvest(artifactPath);
         List<ExternalArtifactTaskExecutor.ProbeTarget> expanded = new ArrayList<>();
@@ -369,6 +370,12 @@ public final class ProbePlanService {
 
     private void persistPostureArtifacts(ControlPlaneStore.ScanRecord scan,
                                          List<PostureExperimentCompiler.CompiledPostureExperiment> compiled) {
+        persistPostureArtifacts(scan, compiled, GuardSurfaceCatalog.HarvestResult.empty());
+    }
+
+    private void persistPostureArtifacts(ControlPlaneStore.ScanRecord scan,
+                                         List<PostureExperimentCompiler.CompiledPostureExperiment> compiled,
+                                         GuardSurfaceCatalog.HarvestResult harvest) {
         String createdAt = Instant.now().toString();
         LinkedHashSet<String> traceIds = new LinkedHashSet<>();
         LinkedHashSet<String> worldIds = new LinkedHashSet<>();
@@ -401,6 +408,11 @@ public final class ProbePlanService {
             }
             Map<String, Object> payload = new LinkedHashMap<>(plan.toWireMap());
             payload.put("schemaVersion", 1);
+            if (harvest != null && harvest.truncated()
+                    && plan.posture().postureKind() == RuntimePostureKind.FORCED_REACHABILITY) {
+                // Visible gap: allowlist may omit walls when MAX_TYPE_NAMES / MAX_SURFACES caps hit.
+                payload.put("guardCatalogGap", GuardSurfaceCatalog.GAP_CATALOG_TRUNCATED);
+            }
             store.persistExperimentPlan(new SQLiteControlPlanePersistence.ExperimentPlanData(
                     plan.experimentPlanId(), scan.dto().scanId(), scan.dto().projectId(),
                     scan.dto().artifactDigest(), JsonCodec.stringify(payload), createdAt));

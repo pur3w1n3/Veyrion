@@ -677,8 +677,10 @@ public final class ExternalArtifactTaskExecutor {
                 : "jdbc:veyrion-mock:mem:veyrion";
         String driver = mysqlConnector ? "" : " --spring.datasource.driver-class-name="
                 + "com.aq.jvmsentinel.instrumentation.mock.VeyrionMockDriver";
-        String forcedGuardTypes = forcedGuardTypeNamesProperty(registration.path());
-        return writeProgress("启动应用 JAR（保留制品自身端口；javaagent hook + 协议级依赖替身；容器断网）")
+        ForcedGuardAllowlist forcedGuards = forcedGuardAllowlist(registration.path());
+        String forcedGuardTypes = forcedGuards.typeNamesCsv();
+        return writeProgress("启动应用 JAR（保留制品自身端口；javaagent hook + 协议级依赖替身；容器断网）"
+                + (forcedGuards.truncated() ? "；" + GuardSurfaceCatalog.GAP_CATALOG_TRUNCATED : ""))
                 + "; java"
                 + " -Dveyrion.sandbox.traceDir=" + TRACE_DIRECTORY
                 + " -Dveyrion.sandbox.traceDir.authorized=true"
@@ -689,6 +691,8 @@ public final class ExternalArtifactTaskExecutor {
                 + (forcedGuardTypes.isEmpty()
                 ? "" : " -Dveyrion.sandbox.forcedGuardTypeNames="
                 + shellSingleQuoted(forcedGuardTypes))
+                + (forcedGuards.truncated()
+                ? " -Dveyrion.sandbox.forcedGuardCatalogTruncated=true" : "")
                 // Keep app temps off the tiny trace tmpfs so probe-events.jsonl can still be written.
                 + " -Djava.io.tmpdir=/tmp"
                 // Quartz AUTO uses hostname; deny-all Docker often cannot resolve it
@@ -954,8 +958,27 @@ public final class ExternalArtifactTaskExecutor {
      * Empty when the catalog finds nothing — agent then keeps name heuristics.
      */
     public static String forcedGuardTypeNamesProperty(Path artifactPath) {
-        return GuardSurfaceCatalog.formatTypeNamesProperty(
-                GuardSurfaceCatalog.typeNames(GuardSurfaceCatalog.harvest(artifactPath)));
+        return forcedGuardAllowlist(artifactPath).typeNamesCsv();
+    }
+
+    /** Allowlist CSV + truncation gap visibility for FORCED catalog harvest. */
+    public record ForcedGuardAllowlist(String typeNamesCsv, boolean truncated, String gapCode) {
+        public ForcedGuardAllowlist {
+            typeNamesCsv = typeNamesCsv == null ? "" : typeNamesCsv;
+            gapCode = gapCode == null ? "" : gapCode.trim();
+        }
+    }
+
+    public static ForcedGuardAllowlist forcedGuardAllowlist(Path artifactPath) {
+        GuardSurfaceCatalog.HarvestResult harvest = GuardSurfaceCatalog.harvestDetailed(artifactPath);
+        GuardSurfaceCatalog.TypeNamesSelection selected =
+                GuardSurfaceCatalog.typeNamesDetailed(harvest.surfaces());
+        GuardSurfaceCatalog.TypeNamesProperty property =
+                GuardSurfaceCatalog.formatTypeNamesPropertyDetailed(selected.names());
+        boolean truncated = harvest.truncated() || selected.truncated() || property.truncated();
+        String gap = truncated ? GuardSurfaceCatalog.GAP_CATALOG_TRUNCATED
+                : (harvest.gapCode().isBlank() ? "" : harvest.gapCode());
+        return new ForcedGuardAllowlist(property.csv(), truncated, gap);
     }
 
     private static int timeoutSeconds(ResourceBudget budget) {

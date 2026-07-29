@@ -116,7 +116,7 @@ AI 只能查询受控代码切片和 Evidence Graph、提出结构化假设与�
 | 范围 | 当前能力 | 诚实边界 |
 |------|----------|----------|
 | 制品 | JAR/WAR/CLASS 有界读取；浏览器分块上传后进入内容寻址目录 | 动态主路径仅 Spring Boot 可执行 JAR |
-| 静态分析 | Spring MVC/鉴权注解、调用边、TaintPath、sink、TaintGraph/coverage 脚手架 | 反射、代理、JNI、制品外 classpath 和完整别名分析不保证 |
+| 静态分析 | Spring MVC/鉴权注解、调用边、TaintPath、sink（owner 限定；同调用点可多 kind）、TaintGraph/coverage 脚手架 | 反射、代理、JNI、制品外 classpath 和完整别名分析不保证；JDBC URL 族标 SSRF/COMMAND/CLASS_LOADING 而非 SQL-only |
 | 控制面 | Loopback REST/SSE、SQLite V001-V024、本地 PAT、Provider/角色/AI Job、Hypothesis/Coverage/Evidence Graph 查询端口；StaticFactSnapshot schemaVersion=4（Universe + 权威 Evidence Graph wire） | 单节点语义，不是分布式 exactly-once 或企业多租户；`VERIFIED` 与生产 session/SSO 仍关闭 |
 | 动态执行 | JVM Agent、loopback HTTP、JDBC/Redis/MySQL 有界替身、PathRun | `TRUSTED_DOCKER` 仅受信开发调试 |
 | AI | OpenAI Chat/Anthropic Messages 有界工具循环、六角色、双语提示快照 | Provider 生产互操作、成本与流式协议未验收 |
@@ -191,3 +191,4 @@ AI 只能查询受控代码切片和 Evidence Graph、提出结构化假设与�
 - **2026-07-29**：ADR-0004 `ACCEPTED`；digest-pinned runtime 含 Sensor Agent；授权 Boot fixture 三轨 PathTrace live 验收通过。P0-21 声明范围 `AUDITED`，OSS 实战 JAR 全链路召回仍不在范围内。
 - **2026-07-29**：FORCED_REACHABILITY 薄切片按运行时 filter 类型短接已识别 auth guard（非 rememberMe 加密主路径）；kvf Docker live 同路由 UNAUTH 302 / FORCED 200 对照成立，仍标 `INSTRUMENTATION_REACHABILITY`，不升 VERIFIED。
 - **2026-07-29**：FORCED allowlist 由静态 `GuardSurface` 目录驱动（typeNames → agent `-D`）；Filter chain + AccessControl `isAccessAllowed` 短接；allowlist 空时保留启发式；禁止 Bypass Zoo / sanitizer 强达 / 单独升 VERIFIED。
+- **2026-07-29**：FORCED 增强闭环：DecisionShape 精确改写（FILTER_CHAIN / ACCESS_CONTROL / INTERCEPTOR）；有界字节码候选 + `sa-token-*` 嵌套 lib；方法级 `METHOD_SECURITY_FAIL_OPEN`；截断可见 `GUARD_CATALOG_TRUNCATED`；Gateway/WebFlux/RPC 仍延后。

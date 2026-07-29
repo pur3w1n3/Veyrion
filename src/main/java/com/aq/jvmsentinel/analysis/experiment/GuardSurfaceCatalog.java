@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.analysis.experiment;
 
+import com.aq.jvmsentinel.analysis.GuardSurfaceBytecodeProbe;
 import com.aq.jvmsentinel.domain.pathdebug.ForcedGuardKind;
 import com.aq.jvmsentinel.domain.pathdebug.GuardSurface;
 import com.aq.jvmsentinel.domain.pathdebug.GuardSurface.DecisionShape;
@@ -28,19 +29,44 @@ public final class GuardSurfaceCatalog {
     public static final int MAX_SURFACES = 64;
     public static final int MAX_TYPE_NAMES = 48;
     public static final int MAX_TYPE_NAMES_PROPERTY_CHARS = 2048;
+    public static final String GAP_CATALOG_TRUNCATED = "GUARD_CATALOG_TRUNCATED";
     private static final int MAX_OUTER_ENTRIES = 4_000;
     private static final int MAX_NESTED_LIBS = 40;
     private static final int MAX_NESTED_CLASSES_PER_LIB = 800;
     private static final int MAX_NESTED_LIB_BYTES = 8 * 1024 * 1024;
+    private static final int MAX_BYTECODE_PROBES = 120;
+    private static final int MAX_CLASS_BYTES = 512 * 1024;
 
     private GuardSurfaceCatalog() {
     }
 
+    /** Harvest result including truncation visibility for allowlist gaps. */
+    public record HarvestResult(
+            List<GuardSurface> surfaces,
+            boolean truncated,
+            String gapCode
+    ) {
+        public HarvestResult {
+            surfaces = List.copyOf(surfaces == null ? List.of() : surfaces);
+            gapCode = gapCode == null ? "" : gapCode.trim();
+        }
+
+        public static HarvestResult empty() {
+            return new HarvestResult(List.of(), false, "");
+        }
+    }
+
     public static List<GuardSurface> harvest(Path artifactPath) {
+        return harvestDetailed(artifactPath).surfaces();
+    }
+
+    public static HarvestResult harvestDetailed(Path artifactPath) {
         if (artifactPath == null || !Files.isRegularFile(artifactPath)) {
-            return List.of();
+            return HarvestResult.empty();
         }
         Map<String, Candidate> byType = new LinkedHashMap<>();
+        int bytecodeProbes = 0;
+        boolean hitSurfaceCap = false;
         try (ZipInputStream zip = new ZipInputStream(Files.newInputStream(artifactPath))) {
             ZipEntry entry;
             int scanned = 0;
@@ -76,12 +102,36 @@ public final class GuardSurfaceCatalog {
                     }
                 }
                 String typeName = classNameFromEntry(name);
-                consider(typeName, byType);
+                if (byType.size() >= MAX_SURFACES * 2) {
+                    hitSurfaceCap = true;
+                    continue;
+                }
+                Match nameMatch = classify(typeName);
+                if (nameMatch != null) {
+                    consider(typeName, nameMatch, byType);
+                    continue;
+                }
+                // Bounded bytecode heuristic for Filter/Interceptor calling auth APIs.
+                if (bytecodeProbes >= MAX_BYTECODE_PROBES || !GuardSurfaceBytecodeProbe.looksProbeWorthy(typeName)) {
+                    continue;
+                }
+                byte[] classBytes = readLimited(zip, MAX_CLASS_BYTES);
+                bytecodeProbes++;
+                GuardSurfaceBytecodeProbe.ProbeMatch probe =
+                        GuardSurfaceBytecodeProbe.classify(classBytes, typeName);
+                if (probe != null) {
+                    consider(typeName, new Match(probe.kind(), probe.shape(), probe.simpleName()), byType);
+                }
             }
         } catch (IOException ignored) {
-            return List.of();
+            return HarvestResult.empty();
         }
-        return toSurfaces(byType);
+        List<GuardSurface> surfaces = toSurfaces(byType);
+        boolean typeNameTruncated = countTypeNames(surfaces) > MAX_TYPE_NAMES
+                || hitSurfaceCap
+                || surfaces.size() >= MAX_SURFACES;
+        String gap = typeNameTruncated ? GAP_CATALOG_TRUNCATED : "";
+        return new HarvestResult(surfaces, typeNameTruncated, gap);
     }
 
     public static List<String> guardRefs(List<GuardSurface> surfaces) {
@@ -98,33 +148,63 @@ public final class GuardSurfaceCatalog {
     }
 
     public static List<String> typeNames(List<GuardSurface> surfaces) {
+        return typeNamesDetailed(surfaces).names();
+    }
+
+    public record TypeNamesProperty(String csv, boolean truncated, String gapCode) {
+        public TypeNamesProperty {
+            csv = csv == null ? "" : csv;
+            gapCode = gapCode == null ? "" : gapCode.trim();
+        }
+    }
+
+    public record TypeNamesSelection(List<String> names, boolean truncated, String gapCode) {
+        public TypeNamesSelection {
+            names = List.copyOf(names == null ? List.of() : names);
+            gapCode = gapCode == null ? "" : gapCode.trim();
+        }
+    }
+
+    public static TypeNamesSelection typeNamesDetailed(List<GuardSurface> surfaces) {
         if (surfaces == null || surfaces.isEmpty()) {
-            return List.of();
+            return new TypeNamesSelection(List.of(), false, "");
         }
         LinkedHashSet<String> names = new LinkedHashSet<>();
+        boolean truncated = false;
         for (GuardSurface surface : surfaces) {
             if (surface == null) {
                 continue;
             }
             for (String typeName : surface.typeNames()) {
-                if (typeName != null && !typeName.isBlank()) {
-                    names.add(typeName.trim());
-                    if (names.size() >= MAX_TYPE_NAMES) {
-                        return List.copyOf(names);
-                    }
+                if (typeName == null || typeName.isBlank()) {
+                    continue;
                 }
+                if (names.size() >= MAX_TYPE_NAMES) {
+                    truncated = true;
+                    break;
+                }
+                names.add(typeName.trim());
+            }
+            if (truncated) {
+                break;
             }
         }
-        return List.copyOf(names);
+        return new TypeNamesSelection(List.copyOf(names), truncated,
+                truncated ? GAP_CATALOG_TRUNCATED : "");
     }
 
     /** Bounded CSV for {@code -Dveyrion.sandbox.forcedGuardTypeNames}. */
     public static String formatTypeNamesProperty(List<String> typeNames) {
+        return formatTypeNamesPropertyDetailed(typeNames).csv();
+    }
+
+    public static TypeNamesProperty formatTypeNamesPropertyDetailed(List<String> typeNames) {
         if (typeNames == null || typeNames.isEmpty()) {
-            return "";
+            return new TypeNamesProperty("", false, "");
         }
         StringBuilder sb = new StringBuilder();
         int count = 0;
+        boolean truncated = false;
         for (String name : typeNames) {
             if (name == null || name.isBlank()) {
                 continue;
@@ -135,6 +215,7 @@ public final class GuardSurfaceCatalog {
             }
             int nextLen = sb.isEmpty() ? trimmed.length() : sb.length() + 1 + trimmed.length();
             if (count >= MAX_TYPE_NAMES || nextLen > MAX_TYPE_NAMES_PROPERTY_CHARS) {
+                truncated = true;
                 break;
             }
             if (!sb.isEmpty()) {
@@ -143,7 +224,18 @@ public final class GuardSurfaceCatalog {
             sb.append(trimmed);
             count++;
         }
-        return sb.toString();
+        return new TypeNamesProperty(sb.toString(), truncated,
+                truncated ? GAP_CATALOG_TRUNCATED : "");
+    }
+
+    private static int countTypeNames(List<GuardSurface> surfaces) {
+        int count = 0;
+        for (GuardSurface surface : surfaces) {
+            if (surface != null) {
+                count += surface.typeNames().size();
+            }
+        }
+        return count;
     }
 
     private static void scanNestedJar(byte[] nestedJar, Map<String, Candidate> byType) {
@@ -162,22 +254,22 @@ public final class GuardSurfaceCatalog {
                     continue;
                 }
                 counted++;
-                consider(classNameFromEntry(name), byType);
+                String typeName = classNameFromEntry(name);
+                Match match = classify(typeName);
+                if (match != null) {
+                    consider(typeName, match, byType);
+                }
             }
         } catch (IOException ignored) {
             // Nested lib optional.
         }
     }
 
-    private static void consider(String typeName, Map<String, Candidate> byType) {
-        if (typeName == null || typeName.isBlank() || byType.containsKey(typeName)) {
+    private static void consider(String typeName, Match match, Map<String, Candidate> byType) {
+        if (typeName == null || typeName.isBlank() || match == null || byType.containsKey(typeName)) {
             return;
         }
         if (byType.size() >= MAX_SURFACES * 2) {
-            return;
-        }
-        Match match = classify(typeName);
-        if (match == null) {
             return;
         }
         byType.put(typeName, new Candidate(match.kind(), match.shape(), typeName, match.simpleName()));
@@ -201,6 +293,9 @@ public final class GuardSurfaceCatalog {
                 } else if (candidate.shape == DecisionShape.FILTER_CHAIN
                         || existing.decisionShape() == DecisionShape.FILTER_CHAIN) {
                     shape = DecisionShape.FILTER_CHAIN;
+                } else if (candidate.shape == DecisionShape.INTERCEPTOR
+                        || existing.decisionShape() == DecisionShape.INTERCEPTOR) {
+                    shape = DecisionShape.INTERCEPTOR;
                 }
                 byRef.put(ref, new GuardSurface(ref, candidate.kind, List.copyOf(merged), shape));
             }
@@ -211,7 +306,7 @@ public final class GuardSurfaceCatalog {
         return List.copyOf(byRef.values());
     }
 
-    private static Match classify(String typeName) {
+    static Match classify(String typeName) {
         String binary = typeName.replace('/', '.');
         String lower = binary.toLowerCase(Locale.ROOT);
         String simple = simpleName(binary).toLowerCase(Locale.ROOT);
@@ -243,7 +338,13 @@ public final class GuardSurfaceCatalog {
         if (lower.startsWith("org.apache.shiro.web.filter.authc.")
                 || lower.startsWith("org.apache.shiro.web.filter.authz.")
                 || lower.startsWith("org.springframework.security.web.")
+                || lower.contains("cn.dev33.satoken")
+                || lower.contains("cn.dev33.sa-token")
                 || simple.equals("loginfilter")
+                || simple.equals("sainterceptor")
+                || simple.equals("saservletfilter")
+                || simple.contains("satokenfilter")
+                || simple.contains("satokencontext")
                 || simple.contains("authfilter")
                 || simple.contains("authenticationfilter")
                 || simple.contains("authorizationfilter")
@@ -260,21 +361,43 @@ public final class GuardSurfaceCatalog {
                 || simple.contains("basicauthenticationfilter")
                 || simple.contains("preauth")
                 || simple.contains("securefilter")
-                || (simple.contains("auth") && simple.endsWith("filter"))) {
+                || simple.contains("tokeninterceptor")
+                || simple.contains("authinterceptor")
+                || simple.contains("jwtinterceptor")
+                || simple.contains("secureinterceptor")
+                || simple.contains("clientinterceptor")
+                || simple.contains("signinterceptor")
+                || (simple.contains("auth") && simple.endsWith("filter"))
+                || (simple.contains("auth") && simple.endsWith("interceptor")
+                && !simple.contains("handlerinterceptoradapter"))) {
             return ForcedGuardKind.AUTH;
         }
         return null;
     }
 
     private static DecisionShape shapeFor(String simple, String lower) {
+        // Shiro AccessControl decision filters (isAccessAllowed) — not outer chain binders.
         if (simple.contains("accesscontrol")
                 || lower.contains("accesscontrolfilter")
                 || lower.startsWith("org.apache.shiro.web.filter.authc.")
-                || lower.startsWith("org.apache.shiro.web.filter.authz.")) {
+                || lower.startsWith("org.apache.shiro.web.filter.authz.")
+                || simple.equals("loginfilter")
+                || simple.equals("userfilter")
+                || simple.contains("formauthenticationfilter")
+                || simple.contains("permissionsauthorizationfilter")
+                || simple.contains("rolesauthorizationfilter")) {
             return DecisionShape.ACCESS_CONTROL;
         }
+        if (simple.endsWith("interceptor")
+                || lower.contains(".interceptor.")
+                || lower.contains("handlerinterceptor")
+                || simple.equals("sainterceptor")) {
+            return DecisionShape.INTERCEPTOR;
+        }
         if (simple.endsWith("filter") || lower.contains("filterchainproxy")
-                || lower.contains("filtersecurityinterceptor")) {
+                || lower.contains("filtersecurityinterceptor")
+                || simple.contains("saservletfilter")
+                || simple.contains("satokenfilter")) {
             return DecisionShape.FILTER_CHAIN;
         }
         return DecisionShape.HEURISTIC;
@@ -320,7 +443,12 @@ public final class GuardSurfaceCatalog {
                 || file.contains("shiro-spring")
                 || file.contains("spring-security-web")
                 || file.contains("spring-security-config")
-                || file.contains("spring-security-core");
+                || file.contains("spring-security-core")
+                || file.contains("spring-security-")
+                || file.contains("blade-core-secure")
+                || file.contains("blade-starter-jwt")
+                || file.contains("blade-core-tool")
+                || file.contains("sa-token-");
     }
 
     private static String classNameFromEntry(String entryName) {

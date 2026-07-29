@@ -2,7 +2,8 @@ package com.aq.jvmsentinel.instrumentation;
 
 /**
  * Unit-level acceptance for recognized-auth-guard heuristics, catalog allowlist,
- * AccessControl force, and Docker gate. Does not elevate VERIFIED; no Shiro rememberMe encryption.
+ * DecisionShape rewrite modes, AccessControl / Interceptor / MethodSecurity force,
+ * and Docker gate. Does not elevate VERIFIED; no Shiro rememberMe encryption.
  */
 public final class ForcedReachabilityGuardAcceptanceTest {
     public static void main(String[] args) {
@@ -24,6 +25,22 @@ public final class ForcedReachabilityGuardAcceptanceTest {
         check(FrameworkBoundaryAdapter.isRecognizedAuthGuard(
                         "com.kalvin.kvf.common.shiro.LoginFilter", "doFilterInternal"),
                 "app LoginFilter recognized as auth guard");
+        check(FrameworkBoundaryAdapter.isRecognizedAuthGuard(
+                        "org.springblade.core.secure.interceptor.TokenInterceptor", "preHandle"),
+                "Blade TokenInterceptor recognized as auth guard");
+        check(FrameworkBoundaryAdapter.isRecognizedAuthGuard(
+                        "org.springblade.core.secure.interceptor.AuthInterceptor", "preHandle"),
+                "Blade AuthInterceptor recognized as auth guard");
+        check(FrameworkBoundaryAdapter.isRecognizedAuthGuard(
+                        "cn.dev33.satoken.interceptor.SaInterceptor", "preHandle"),
+                "Sa-Token SaInterceptor recognized");
+        check(FrameworkBoundaryAdapter.isRecognizedAuthGuard(
+                        "cn.dev33.satoken.filter.SaServletFilter", "doFilter"),
+                "Sa-Token SaServletFilter recognized");
+        check(FrameworkBoundaryAdapter.isRecognizedAuthGuard(
+                        "org.springframework.security.access.intercept.aopalliance.MethodSecurityInterceptor",
+                        "invoke"),
+                "MethodSecurityInterceptor recognized");
         check(!FrameworkBoundaryAdapter.isRecognizedAuthGuard(
                         "org.springframework.web.filter.CharacterEncodingFilter", "doFilterInternal"),
                 "CharacterEncodingFilter not force-skipped");
@@ -46,6 +63,9 @@ public final class ForcedReachabilityGuardAcceptanceTest {
         check(!FrameworkBoundaryAdapter.isRecognizedAuthGuard(
                         "com.example.SQLFilter", "doFilter"),
                 "SQLFilter must not be force-skipped");
+        check(!FrameworkBoundaryAdapter.isRecognizedAuthGuard(
+                        "com.example.CsrfFilter", "doFilter"),
+                "CsrfFilter must not be force-skipped");
 
         // Allowlist empty → heuristics
         check(FrameworkBoundaryAdapter.isForceEligibleGuard(
@@ -55,9 +75,11 @@ public final class ForcedReachabilityGuardAcceptanceTest {
                         "org.apache.shiro.web.servlet.AbstractShiroFilter", "doFilter"),
                 "empty allowlist still excludes AbstractShiroFilter");
 
-        // Allowlist non-empty → only matching types
+        // Allowlist non-empty → only matching types (primary path)
         System.setProperty(FrameworkBoundaryAdapter.FORCED_GUARD_TYPES_PROPERTY,
-                "com.kalvin.kvf.common.shiro.LoginFilter,org.apache.shiro.web.filter.authc.UserFilter");
+                "com.kalvin.kvf.common.shiro.LoginFilter,org.apache.shiro.web.filter.authc.UserFilter,"
+                        + "org.springblade.core.secure.interceptor.TokenInterceptor,"
+                        + "cn.dev33.satoken.interceptor.SaInterceptor");
         FrameworkBoundaryAdapter.clearForcedGuardTypeAllowlistCache();
         try {
             check(FrameworkBoundaryAdapter.isForceEligibleGuard(
@@ -66,6 +88,9 @@ public final class ForcedReachabilityGuardAcceptanceTest {
             check(FrameworkBoundaryAdapter.isForceEligibleGuard(
                             "org.apache.shiro.web.filter.authc.UserFilter", "isAccessAllowed"),
                     "allowlist matches UserFilter");
+            check(FrameworkBoundaryAdapter.isForceEligibleGuard(
+                            "cn.dev33.satoken.interceptor.SaInterceptor", "preHandle"),
+                    "allowlist matches SaInterceptor");
             check(!FrameworkBoundaryAdapter.isForceEligibleGuard(
                             "com.example.JwtAuthFilter", "doFilterInternal"),
                     "non-allowlisted JwtAuthFilter not forced when allowlist set");
@@ -76,6 +101,33 @@ public final class ForcedReachabilityGuardAcceptanceTest {
             System.clearProperty(FrameworkBoundaryAdapter.FORCED_GUARD_TYPES_PROPERTY);
             FrameworkBoundaryAdapter.clearForcedGuardTypeAllowlistCache();
         }
+
+        // DecisionShape rewrite modes (no arbitrary Object.preHandle)
+        check(FrameworkBoundaryAdapter.rewriteMode(
+                        "com.example.JwtAuthFilter", "doFilterInternal")
+                        == FrameworkBoundaryAdapter.ForceRewriteMode.FILTER_CONTINUE_CHAIN,
+                "Filter doFilter → FILTER_CONTINUE_CHAIN");
+        check(FrameworkBoundaryAdapter.rewriteMode(
+                        "org.apache.shiro.web.filter.authc.UserFilter", "isAccessAllowed")
+                        == FrameworkBoundaryAdapter.ForceRewriteMode.ACCESS_ALLOWED_TRUE,
+                "isAccessAllowed → ACCESS_ALLOWED_TRUE");
+        check(FrameworkBoundaryAdapter.rewriteMode(
+                        "org.springblade.core.secure.interceptor.TokenInterceptor", "preHandle")
+                        == FrameworkBoundaryAdapter.ForceRewriteMode.INTERCEPTOR_PREHANDLE_TRUE,
+                "Interceptor preHandle → INTERCEPTOR_PREHANDLE_TRUE");
+        check(FrameworkBoundaryAdapter.rewriteMode(
+                        "com.example.NotAGuard", "preHandle")
+                        == FrameworkBoundaryAdapter.ForceRewriteMode.NONE,
+                "arbitrary Object.preHandle not rewritten");
+        check(FrameworkBoundaryAdapter.rewriteMode(
+                        "com.example.XssFilter", "doFilter")
+                        == FrameworkBoundaryAdapter.ForceRewriteMode.NONE,
+                "sanitizer Filter not rewritten");
+        check(FrameworkBoundaryAdapter.rewriteMode(
+                        "org.springframework.security.access.intercept.aopalliance.MethodSecurityInterceptor",
+                        "invoke")
+                        == FrameworkBoundaryAdapter.ForceRewriteMode.METHOD_SECURITY_FAIL_OPEN,
+                "MethodSecurityInterceptor → METHOD_SECURITY_FAIL_OPEN");
 
         System.setProperty(FrameworkBoundaryAdapter.DOCKER_PROPERTY, "true");
         try {
@@ -100,6 +152,21 @@ public final class ForcedReachabilityGuardAcceptanceTest {
                             "com.kalvin.kvf.common.shiro.LoginFilter",
                             "isAccessAllowed"),
                     "LoginFilter isAccessAllowed forced under FORCED");
+            check(FrameworkBoundaryAdapter.forceInterceptorPreHandle(
+                            "FORCED_REACHABILITY",
+                            "org.springblade.core.secure.interceptor.TokenInterceptor",
+                            "preHandle"),
+                    "TokenInterceptor preHandle forced under FORCED");
+            check(FrameworkBoundaryAdapter.forceInterceptorPreHandle(
+                            "FORCED_REACHABILITY",
+                            "cn.dev33.satoken.interceptor.SaInterceptor",
+                            "preHandle"),
+                    "SaInterceptor preHandle forced under FORCED");
+            check(!FrameworkBoundaryAdapter.forceInterceptorPreHandle(
+                            "COVERAGE_POSTURE",
+                            "org.springblade.core.secure.interceptor.TokenInterceptor",
+                            "preHandle"),
+                    "COVERAGE does not force interceptor preHandle");
             check(!FrameworkBoundaryAdapter.forceAccessAllowed(
                             "FORCED_REACHABILITY",
                             "org.apache.shiro.web.servlet.AbstractShiroFilter",
@@ -110,6 +177,21 @@ public final class ForcedReachabilityGuardAcceptanceTest {
                             "org.apache.shiro.web.filter.authc.UserFilter",
                             "isAccessAllowed"),
                     "COVERAGE does not force isAccessAllowed");
+            check(FrameworkBoundaryAdapter.forceMethodSecurity(
+                            "FORCED_REACHABILITY",
+                            "org.springframework.security.access.intercept.aopalliance.MethodSecurityInterceptor",
+                            "invoke"),
+                    "MethodSecurityInterceptor forced under FORCED");
+            check(!FrameworkBoundaryAdapter.forceMethodSecurity(
+                            "COVERAGE_POSTURE",
+                            "org.springframework.security.access.intercept.aopalliance.MethodSecurityInterceptor",
+                            "invoke"),
+                    "COVERAGE does not force MethodSecurityInterceptor");
+            check(!FrameworkBoundaryAdapter.forceInterceptorPreHandle(
+                            "FORCED_REACHABILITY",
+                            "java.lang.Object",
+                            "preHandle"),
+                    "Object.preHandle never forced");
         } finally {
             System.clearProperty(FrameworkBoundaryAdapter.DOCKER_PROPERTY);
         }
