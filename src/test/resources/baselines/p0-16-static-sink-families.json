@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "p0-16-static-sink-families",
+  "disclaimer": "Minimal positive/near-negative family contract for static-first ranking. Not a production recall claim.",
+  "families": [
+    {"family": "SQL", "positive": true},
+    {"family": "COMMAND", "positive": true},
+    {"family": "FILE", "positive": true},
+    {"family": "SSRF", "positive": true},
+    {"family": "DESERIALIZATION", "positive": true},
+    {"family": "TEMPLATE", "positive": true},
+    {"family": "JWT", "positive": true},
+    {"family": "HARMLESS_LOGGING", "positive": false}
+  ]
+}

@@ -56,6 +56,8 @@ public final class AcceptanceTestRunner {
             "com.aq.jvmsentinel.worker.EntryHitParameterBoundAcceptanceTest",
             "com.aq.jvmsentinel.analysis.FindingRankerAcceptanceTest",
             "com.aq.jvmsentinel.analysis.experiment.EntryParameterExperimentCompilerAcceptanceTest",
+            "com.aq.jvmsentinel.analysis.recall.PracticalRecallBaselineAcceptanceTest",
+            "com.aq.jvmsentinel.analysis.BootPortCandidateHarvesterAcceptanceTest",
             "com.aq.jvmsentinel.SingleEntryDebugBaselineAcceptanceTest",
             "com.aq.jvmsentinel.AuthIdentityTrackAcceptanceTest",
             "com.aq.jvmsentinel.GuiSemanticsContractAcceptanceTest",

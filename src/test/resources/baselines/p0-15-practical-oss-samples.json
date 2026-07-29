@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "baselineId": "p0-15-practical-oss-samples",
+  "disclaimer": "Open-source selectable samples for practical recall scoring. JARs are NOT vendored; fetch via scripts/fetch-practical-samples.ps1. Without a local artifact, recall is NOT_EVALUABLE and must not be marketed as production recall.",
+  "maxInvalidPathRunRatio": 0.05,
+  "minStaticSinkRecall": 0.5,
+  "samples": [
+    {
+      "sampleId": "spring-petclinic",
+      "kind": "SPRING_BOOT",
+      "role": "BOOT_BASELINE",
+      "displayName": "Spring PetClinic",
+      "license": "Apache-2.0",
+      "repositoryUrl": "https://github.com/spring-projects/spring-petclinic",
+      "ref": "main",
+      "buildHint": "mvn -DskipTests package",
+      "artifactGlob": "target/*.jar",
+      "startupProfile": "spring.profiles.active=hsqldb; deny-all sandbox",
+      "expectedEntries": [
+        "GET /",
+        "GET /owners",
+        "GET /owners/find",
+        "GET /vets",
+        "GET /oups"
+      ],
+      "expectedSinkFamilies": ["SQL", "TEMPLATE"],
+      "knownVulnFamilies": [],
+      "knownGaps": [
+        "Thymeleaf view resolution may hide some handler bindings",
+        "Actuator endpoints may be disabled by profile"
+      ],
+      "multiAuth": false,
+      "notes": "Classic Boot sample for entry/sink baseline; not an intentional vuln lab."
+    },
+    {
+      "sampleId": "webgoat",
+      "kind": "SPRING_BOOT",
+      "role": "MULTI_AUTH_VULN_LAB",
+      "displayName": "OWASP WebGoat",
+      "license": "GPL-2.0",
+      "repositoryUrl": "https://github.com/WebGoat/WebGoat",
+      "ref": "main",
+      "buildHint": "mvn -DskipTests package",
+      "artifactGlob": "target/webgoat-*.jar",
+      "startupProfile": "default WebGoat profile; deny-all sandbox; expect heavy auth surface",
+      "expectedEntries": [
+        "GET /WebGoat",
+        "POST /WebGoat/login",
+        "GET /WebGoat/start.mvc",
+        "POST /WebGoat/SqlInjection/attack"
+      ],
+      "expectedSinkFamilies": ["SQL", "COMMAND", "DESERIALIZATION", "SSRF", "JWT"],
+      "knownVulnFamilies": ["SQL", "JWT", "SSRF"],
+      "knownGaps": [
+        "Lesson routes registered dynamically",
+        "Some sinks behind lesson unlock state"
+      ],
+      "multiAuth": true,
+      "notes": "Intentional vuln lab with multi-auth lesson paths; use only for authorized local recall scoring."
+    },
+    {
+      "sampleId": "springblade",
+      "kind": "BLADE",
+      "role": "BLADE_FRAMEWORK",
+      "displayName": "SpringBlade",
+      "license": "Apache-2.0",
+      "repositoryUrl": "https://github.com/chillzhuang/SpringBlade",
+      "ref": "master",
+      "buildHint": "mvn -DskipTests package -pl blade-auth,blade-gateway -am",
+      "artifactGlob": "**/blade-auth/target/*.jar",
+      "startupProfile": "Blade multi-module; prefer blade-auth or a runnable Boot module",
+      "expectedEntries": [
+        "POST /blade-auth/oauth/token",
+        "GET /blade-auth/oauth/user-info",
+        "GET /blade-system/menu/routes"
+      ],
+      "expectedSinkFamilies": ["SQL", "JWT", "CONFIG"],
+      "knownVulnFamilies": ["JWT"],
+      "knownGaps": [
+        "Gateway vs auth module split",
+        "Custom Secure registry may hide routes from Spring MVC harvest"
+      ],
+      "multiAuth": true,
+      "notes": "Blade-style multi-auth / JWT surface for framework adapter recall."
+    }
+  ]
+}
