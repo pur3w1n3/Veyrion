@@ -2,7 +2,16 @@ package com.aq.jvmsentinel.control.service;
 
 import com.aq.jvmsentinel.analysis.entry.NonHttpEntryProtocol;
 import com.aq.jvmsentinel.analysis.experiment.EntryParameterExperimentCompiler;
+import com.aq.jvmsentinel.analysis.experiment.PostureExperimentCompiler;
+import com.aq.jvmsentinel.analysis.experiment.RuntimePostureOrchestrator;
+import com.aq.jvmsentinel.analysis.experiment.TracePlanCompiler;
+import com.aq.jvmsentinel.analysis.experiment.WorldPackPlanner;
 import com.aq.jvmsentinel.analysis.framework.FrameworkAdapterRegistry;
+import com.aq.jvmsentinel.control.JsonCodec;
+import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
+import com.aq.jvmsentinel.domain.pathdebug.RuntimePostureKind;
+import com.aq.jvmsentinel.domain.pathdebug.TracePlan;
+import com.aq.jvmsentinel.domain.pathdebug.WorldPackManifest;
 import com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
@@ -16,6 +25,7 @@ import com.aq.jvmsentinel.worker.TaskSnapshot;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -164,9 +174,17 @@ public final class ProbePlanService {
             selectedIds.clear();
             selectedIds.add(primary.id());
         }
-        IdentityExpansionResult expansion = expandProbesByIdentityTracksDetailed(
-                scan, httpEntries, effectiveProbes, maxProbes);
-        effectiveProbes = stampExperimentPlanIds(scan, httpEntries, expansion.probes());
+        IdentityExpansionResult expansion;
+        PostureExpansionResult postureExpansion = expandProbesByPostureDetailed(
+                scan, httpEntries, effectiveProbes, true, maxProbes);
+        if (!postureExpansion.probes().isEmpty()) {
+            effectiveProbes = rejectEmptyCoverageWithoutPlan(postureExpansion.probes());
+            expansion = new IdentityExpansionResult(effectiveProbes, postureExpansion.unreached());
+        } else {
+            expansion = expandProbesByIdentityTracksDetailed(
+                    scan, httpEntries, effectiveProbes, maxProbes);
+            effectiveProbes = stampExperimentPlanIds(scan, httpEntries, expansion.probes());
+        }
         List<ApiDtos.PathDto> unreached = new ArrayList<>(expansion.identityUnreached());
         for (ApiDtos.EntryDto entry : httpEntries) {
             if (selectedIds.contains(entry.id())) continue;
@@ -218,6 +236,154 @@ public final class ProbePlanService {
                     probe.authHeader(), probe.bladeAuthHeader(), planId));
         }
         return List.copyOf(stamped);
+    }
+
+    /**
+     * P0-21: compile entry × posture experiment plans and expand probes by posture track wire.
+     * FORCED_REACHABILITY is included only when {@code dockerSandbox} is true.
+     */
+    PostureExpansionResult expandProbesByPostureDetailed(
+            ControlPlaneStore.ScanRecord scan,
+            List<ApiDtos.EntryDto> httpEntries,
+            List<ExternalArtifactTaskExecutor.ProbeTarget> base,
+            boolean dockerSandbox,
+            int maxProbes) {
+        if (base == null || base.isEmpty() || httpEntries == null || httpEntries.isEmpty()) {
+            return new PostureExpansionResult(List.of(), List.of());
+        }
+        LinkedHashSet<String> entryIds = new LinkedHashSet<>();
+        for (ExternalArtifactTaskExecutor.ProbeTarget probe : base) {
+            httpEntries.stream()
+                    .filter(entry -> routeKey(entry).equals(routeKey(probe.method(), probe.route())))
+                    .map(ApiDtos.EntryDto::id)
+                    .findFirst()
+                    .ifPresent(entryIds::add);
+        }
+        List<ApiDtos.EntryDto> selected = httpEntries.stream()
+                .filter(entry -> entryIds.contains(entry.id()))
+                .toList();
+        if (selected.isEmpty()) {
+            return new PostureExpansionResult(List.of(), List.of());
+        }
+        String scanId = scan.dto().scanId();
+        String hint = pathExplorationHintText(scan);
+        List<String> bypassCandidates = hint.isBlank() ? List.of() : List.of(hint);
+        List<PostureExperimentCompiler.CompiledPostureExperiment> compiled =
+                PostureExperimentCompiler.compileAll(
+                        selected, scanId, List.of(), List.of(), List.of(), List.of(),
+                        bypassCandidates, Math.max(maxProbes, selected.size() * 4));
+        if (compiled.isEmpty()) {
+            return new PostureExpansionResult(List.of(), List.of());
+        }
+        persistPostureArtifacts(scan, compiled);
+        List<ExternalArtifactTaskExecutor.ProbeTarget> expanded = new ArrayList<>();
+        List<ApiDtos.PathDto> unreached = new ArrayList<>();
+        for (PostureExperimentCompiler.CompiledPostureExperiment plan : compiled) {
+            if (expanded.size() >= maxProbes) break;
+            if (plan.posture().postureKind() == RuntimePostureKind.FORCED_REACHABILITY) {
+                if (!dockerSandbox) continue;
+                try {
+                    RuntimePostureOrchestrator.authorizeForcedReachability(true, false, Map.of());
+                } catch (SecurityException denied) {
+                    continue;
+                }
+            }
+            if (plan.posture().postureKind() == RuntimePostureKind.BYPASS && bypassCandidates.isEmpty()) {
+                continue;
+            }
+            ApiDtos.EntryDto entry = selected.stream()
+                    .filter(item -> item.id().equals(plan.entryRef()))
+                    .findFirst()
+                    .orElse(null);
+            if (entry == null) continue;
+            String query = plan.query().isBlank() ? syntheticQuery(entry) : plan.query();
+            expanded.add(new ExternalArtifactTaskExecutor.ProbeTarget(
+                    plan.method(),
+                    materializeRoute(plan.route()),
+                    query,
+                    plan.posture().identityTrackWire(),
+                    "",
+                    "",
+                    plan.experimentPlanId()));
+        }
+        expanded = rejectEmptyCoverageWithoutPlan(expanded);
+        return new PostureExpansionResult(List.copyOf(expanded), List.copyOf(unreached));
+    }
+
+    private void persistPostureArtifacts(ControlPlaneStore.ScanRecord scan,
+                                         List<PostureExperimentCompiler.CompiledPostureExperiment> compiled) {
+        String createdAt = Instant.now().toString();
+        LinkedHashSet<String> traceIds = new LinkedHashSet<>();
+        LinkedHashSet<String> worldIds = new LinkedHashSet<>();
+        for (PostureExperimentCompiler.CompiledPostureExperiment plan : compiled) {
+            store.registerPostureExperiment(plan);
+            if (traceIds.add(plan.tracePlanId())) {
+                ApiDtos.EntryDto entry = scan.dto().entries().stream()
+                        .filter(item -> item.id().equals(plan.entryRef()))
+                        .findFirst()
+                        .orElse(null);
+                if (entry != null) {
+                    TracePlan tracePlan = TracePlanCompiler.compile(entry, List.of(), List.of(), List.of(), List.of());
+                    Map<String, Object> payload = new LinkedHashMap<>(tracePlan.toMap());
+                    payload.put("schemaVersion", TracePlan.SCHEMA_VERSION);
+                    store.persistTracePlan(new SQLiteControlPlanePersistence.TracePlanData(
+                            tracePlan.tracePlanId(), scan.dto().scanId(), scan.dto().projectId(),
+                            scan.dto().artifactDigest(), entry.id(), JsonCodec.stringify(payload), createdAt));
+                }
+            }
+            if (worldIds.add(plan.worldPackId())) {
+                WorldPackManifest manifest = plan.worldPackId().contains("mock")
+                        ? WorldPackPlanner.planMockContinue(scan.dto().scanId())
+                        : WorldPackPlanner.planObserveFail(scan.dto().scanId(), List.of());
+                Map<String, Object> payload = new LinkedHashMap<>(manifest.toMap());
+                payload.put("schemaVersion", WorldPackManifest.SCHEMA_VERSION);
+                store.persistWorldPack(new SQLiteControlPlanePersistence.WorldPackData(
+                        manifest.worldPackId(), scan.dto().scanId(), scan.dto().projectId(),
+                        scan.dto().artifactDigest(), manifest.dependencyMode().name(),
+                        JsonCodec.stringify(payload), createdAt));
+            }
+            Map<String, Object> payload = new LinkedHashMap<>(plan.toWireMap());
+            payload.put("schemaVersion", 1);
+            store.persistExperimentPlan(new SQLiteControlPlanePersistence.ExperimentPlanData(
+                    plan.experimentPlanId(), scan.dto().scanId(), scan.dto().projectId(),
+                    scan.dto().artifactDigest(), JsonCodec.stringify(payload), createdAt));
+        }
+    }
+
+    /** Reject empty GET/POST probes without experimentPlanId as primary coverage (P0-18/P0-21). */
+    static List<ExternalArtifactTaskExecutor.ProbeTarget> rejectEmptyCoverageWithoutPlan(
+            List<ExternalArtifactTaskExecutor.ProbeTarget> probes) {
+        if (probes == null || probes.isEmpty()) return List.of();
+        List<ExternalArtifactTaskExecutor.ProbeTarget> kept = new ArrayList<>();
+        for (ExternalArtifactTaskExecutor.ProbeTarget probe : probes) {
+            if (probe == null) continue;
+            boolean getOrPost = "GET".equals(probe.method()) || "POST".equals(probe.method());
+            boolean emptyInput = probe.query() == null || probe.query().isBlank();
+            boolean missingPlan = probe.experimentPlanId() == null || probe.experimentPlanId().isBlank();
+            if (getOrPost && emptyInput && missingPlan) {
+                continue;
+            }
+            kept.add(probe);
+        }
+        return List.copyOf(kept);
+    }
+
+    private static String routeKey(ApiDtos.EntryDto entry) {
+        String method = entry.method() == null || "UNKNOWN".equalsIgnoreCase(entry.method())
+                ? "GET" : entry.method().toUpperCase(Locale.ROOT);
+        return routeKey(method, entry.route());
+    }
+
+    private static String routeKey(String method, String route) {
+        return method.toUpperCase(Locale.ROOT) + " " + materializeRoute(route);
+    }
+
+    record PostureExpansionResult(List<ExternalArtifactTaskExecutor.ProbeTarget> probes,
+                                  List<ApiDtos.PathDto> unreached) {
+        PostureExpansionResult {
+            probes = List.copyOf(probes == null ? List.of() : probes);
+            unreached = List.copyOf(unreached == null ? List.of() : unreached);
+        }
     }
 
     /** Converts only bounded name=value hints into URL query data for the selected entry. */

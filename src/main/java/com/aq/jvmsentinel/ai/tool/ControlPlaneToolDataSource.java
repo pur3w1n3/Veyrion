@@ -6,6 +6,11 @@ import com.aq.jvmsentinel.analysis.contrast.ContrastLedger;
 import com.aq.jvmsentinel.analysis.identity.AuthCodeQueryService;
 import com.aq.jvmsentinel.analysis.kernel.CfgBuilder;
 import com.aq.jvmsentinel.analysis.kernel.CfgGraph;
+import com.aq.jvmsentinel.analysis.experiment.PathDebugWireHelper;
+import com.aq.jvmsentinel.analysis.experiment.RuntimePostureOrchestrator;
+import com.aq.jvmsentinel.control.JsonCodec;
+import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
+import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
 import com.aq.jvmsentinel.control.StaticFactSnapshot;
@@ -890,6 +895,7 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
     @Override
     public List<FactRecord> searchFacts(ToolExecutionContext.Scope scope, String kind,
                                         String query, int limit) {
+        rejectPathTracePolicyOverrides(query);
         ControlPlaneStore.ScanRecord scan = scopedScan(scope);
         String requested = kind.toUpperCase(Locale.ROOT);
         String needle = query == null ? "" : query.toLowerCase(Locale.ROOT);
@@ -916,6 +922,12 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         if ("PATH_RUN".equals(requested) || "PATHRUN".equals(requested) || "ANY".equals(requested)) {
             for (ApiDtos.PathRunDto value : pathRuns(scan)) {
                 addIfMatching(result, scope, "pathrun:" + value.pathRunId(), pathRunFact(value), needle, limit);
+            }
+        }
+        if ("PATH_TRACE".equals(requested) || "PATHTRACE".equals(requested) || "ANY".equals(requested)) {
+            for (PathTrace trace : pathTraces(scan)) {
+                addIfMatching(result, scope, "pathtrace:" + trace.pathTraceId(),
+                        pathTraceFact(trace), needle, limit);
             }
         }
         if ("STATIC_CONTRAST".equals(requested) || "CONTRAST".equals(requested) || "ANY".equals(requested)) {
@@ -965,6 +977,11 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
             String id = evidenceRef.substring("pathrun:".length());
             return pathRuns(scan).stream().filter(run -> run.pathRunId().equals(id)).findFirst()
                     .map(run -> new FactRecord(scope, evidenceRef, pathRunFact(run)));
+        }
+        if (evidenceRef != null && evidenceRef.startsWith("pathtrace:")) {
+            String id = evidenceRef.substring("pathtrace:".length());
+            return pathTraces(scan).stream().filter(trace -> trace.pathTraceId().equals(id)).findFirst()
+                    .map(trace -> new FactRecord(scope, evidenceRef, pathTraceFact(trace)));
         }
         return Optional.empty();
     }
@@ -1109,6 +1126,76 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
             throw new SecurityException("path run scope mismatch");
         }
         return values;
+    }
+
+    private List<PathTrace> pathTraces(ControlPlaneStore.ScanRecord scan) {
+        ApiDtos.ScanDto dto = scan.dto();
+        List<PathTrace> traces = new ArrayList<>();
+        for (SQLiteControlPlanePersistence.PathTraceData row : store.loadPathTracesForScan(
+                dto.projectId(), dto.artifactDigest(), dto.scanId())) {
+            PathTrace cached = store.pathTraceForPathRun(row.pathRunId());
+            if (cached != null) {
+                traces.add(cached);
+                continue;
+            }
+            try {
+                traces.add(PathTrace.fromMap(JsonCodec.parseObject(row.payloadJson())));
+            } catch (RuntimeException ignored) {
+                // skip malformed rows
+            }
+        }
+        return List.copyOf(traces);
+    }
+
+    private static void rejectPathTracePolicyOverrides(String query) {
+        if (query == null || query.isBlank()) {
+            return;
+        }
+        Map<String, String> probe = new LinkedHashMap<>();
+        for (String token : query.split("[;&]")) {
+            int eq = token.indexOf('=');
+            if (eq <= 0) continue;
+            probe.put(token.substring(0, eq).trim(), token.substring(eq + 1).trim());
+        }
+        try {
+            RuntimePostureOrchestrator.authorizeForcedReachability(true, false, probe);
+        } catch (SecurityException denied) {
+            throw denied;
+        }
+        String lower = query.toLowerCase(Locale.ROOT);
+        for (String forbidden : List.of("forcedreachability", "forcedguardrefs", "command=", "image=",
+                "mount=", "network=", "uid=", "budget=")) {
+            if (lower.contains(forbidden)) {
+                throw new SecurityException("CLIENT_POLICY_OVERRIDE_DENIED:" + forbidden);
+            }
+        }
+    }
+
+    private static JsonNode pathTraceFact(PathTrace trace) {
+        ObjectNode node = JSON.createObjectNode();
+        node.put("kind", "PATH_TRACE");
+        node.put("pathTraceId", trace.pathTraceId());
+        node.put("pathRunId", trace.pathRunId());
+        node.put("entryRef", trace.entryRef());
+        node.put("track", trace.track());
+        node.put("postureKind", trace.posture().postureKind().name());
+        node.put("postureProvenance", trace.posture().postureProvenance());
+        node.put("exitReason", trace.exitReason().name());
+        node.put("lastBusinessHop", trace.lastBusinessHop());
+        node.put("legacyIncomplete", trace.legacyIncomplete());
+        node.put("authRequirement", com.aq.jvmsentinel.analysis.experiment.PathTraceProjector
+                .authRequirementFor(trace, -1));
+        ArrayNode effects = node.putArray("effectRefs");
+        for (String ref : trace.effectRefs()) effects.add(ref);
+        ArrayNode flow = node.putArray("parameterFlow");
+        for (PathTrace.ParameterFlowStep step : trace.parameterFlow()) {
+            ObjectNode row = flow.addObject();
+            row.put("source", step.source());
+            row.put("boundTo", step.boundTo());
+            row.put("flowedTo", step.flowedTo());
+            row.put("effectRef", step.effectRef());
+        }
+        return node;
     }
 
     private static ApiDtos.EntryDto requireProbeEntry(ControlPlaneStore.ScanRecord scan, String entrypointRef) {

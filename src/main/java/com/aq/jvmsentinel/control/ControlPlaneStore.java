@@ -1,6 +1,8 @@
 package com.aq.jvmsentinel.control;
 
 import com.aq.jvmsentinel.analysis.experiment.DefaultExperimentPlanFactory;
+import com.aq.jvmsentinel.analysis.experiment.PathTraceObservationBridge;
+import com.aq.jvmsentinel.analysis.experiment.PostureExperimentCompiler;
 import com.aq.jvmsentinel.analysis.experiment.RuntimeObservationProjector;
 import com.aq.jvmsentinel.ai.tool.EntryRefResolver;
 import com.aq.jvmsentinel.artifact.ArtifactUploadService;
@@ -12,6 +14,7 @@ import com.aq.jvmsentinel.domain.experiment.RuntimeObservation;
 import com.aq.jvmsentinel.domain.hypothesis.HypothesisLifecycle;
 import com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis;
 import com.aq.jvmsentinel.domain.ir.ProgramNode;
+import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
 import com.aq.jvmsentinel.event.VersionedEvent;
 import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
 import com.aq.jvmsentinel.model.ArtifactDescriptor;
@@ -83,6 +86,11 @@ public class ControlPlaneStore {
     private final Map<String, HypothesisExperimentPlan> hypothesisPlansById = new ConcurrentHashMap<>();
     /** experimentPlanId / pathRunId → probe binding for hypothesisId+planKind. */
     private final Map<String, ProbeHypothesisBinding> probeHypothesisBindings = new ConcurrentHashMap<>();
+    /** P0-21: server-compiled posture experiment plans keyed by experimentPlanId. */
+    private final Map<String, PostureExperimentCompiler.CompiledPostureExperiment> postureExperimentsById =
+            new ConcurrentHashMap<>();
+    /** pathRunId → latest PathTrace payload for API enrichment. */
+    private final Map<String, PathTrace> pathTracesByPathRunId = new ConcurrentHashMap<>();
     private final List<ObservationKindRef> pendingIncrementalSubjects = new ArrayList<>();
     private final SQLiteControlPlanePersistence persistence;
     private final SecretKey rootKey;
@@ -169,6 +177,76 @@ public class ControlPlaneStore {
         if (persistence != null) persistence.saveExperimentPlan(plan);
     }
 
+    public void persistTracePlan(SQLiteControlPlanePersistence.TracePlanData plan) {
+        if (persistence != null) persistence.saveTracePlan(plan);
+    }
+
+    public List<SQLiteControlPlanePersistence.TracePlanData> loadTracePlansForScan(String scanId) {
+        return persistence == null ? List.of() : persistence.loadTracePlansForScan(scanId);
+    }
+
+    public void persistWorldPack(SQLiteControlPlanePersistence.WorldPackData pack) {
+        if (persistence != null) persistence.saveWorldPack(pack);
+    }
+
+    public List<SQLiteControlPlanePersistence.WorldPackData> loadWorldPacksForScan(String scanId) {
+        return persistence == null ? List.of() : persistence.loadWorldPacksForScan(scanId);
+    }
+
+    public void replacePathTracesForTask(String projectId, String artifactDigest, String scanId,
+                                         String taskId, List<SQLiteControlPlanePersistence.PathTraceData> traces,
+                                         String createdAt) {
+        if (persistence != null) {
+            persistence.replacePathTracesForTask(projectId, artifactDigest, scanId, taskId, traces, createdAt);
+        }
+        if (traces != null) {
+            for (SQLiteControlPlanePersistence.PathTraceData row : traces) {
+                if (row == null || row.pathRunId() == null || row.pathRunId().isBlank()) continue;
+                try {
+                    PathTrace trace = PathTrace.fromMap(JsonCodec.parseObject(row.payloadJson()));
+                    pathTracesByPathRunId.put(row.pathRunId(), trace);
+                } catch (RuntimeException ignored) {
+                    // Malformed trace payloads must not break task completion.
+                }
+            }
+        }
+    }
+
+    public List<SQLiteControlPlanePersistence.PathTraceData> loadPathTracesForScan(
+            String projectId, String artifactDigest, String scanId) {
+        return persistence == null
+                ? List.of()
+                : persistence.loadPathTracesForScan(projectId, artifactDigest, scanId);
+    }
+
+    public PathTrace pathTraceForPathRun(String pathRunId) {
+        if (pathRunId == null || pathRunId.isBlank()) return null;
+        PathTrace cached = pathTracesByPathRunId.get(pathRunId);
+        if (cached != null) return cached;
+        return null;
+    }
+
+    public void registerPostureExperiment(PostureExperimentCompiler.CompiledPostureExperiment plan) {
+        if (plan == null || plan.experimentPlanId().isBlank()) return;
+        postureExperimentsById.put(plan.experimentPlanId(), plan);
+    }
+
+    public PostureExperimentCompiler.CompiledPostureExperiment postureExperiment(String experimentPlanId) {
+        if (experimentPlanId == null || experimentPlanId.isBlank()) return null;
+        return postureExperimentsById.get(experimentPlanId);
+    }
+
+    public Map<String, PostureExperimentCompiler.CompiledPostureExperiment> postureExperimentsForScan(String scanId) {
+        if (scanId == null || scanId.isBlank()) return Map.of();
+        Map<String, PostureExperimentCompiler.CompiledPostureExperiment> result = new LinkedHashMap<>();
+        for (PostureExperimentCompiler.CompiledPostureExperiment plan : postureExperimentsById.values()) {
+            if (plan.experimentPlanId().contains(scanId) || plan.tracePlanId().contains(scanId)) {
+                result.put(plan.experimentPlanId(), plan);
+            }
+        }
+        return Map.copyOf(result);
+    }
+
     public List<ApiDtos.PathRunDto> loadPathRunsForScan(String projectId, String artifactDigest, String scanId) {
         return persistence == null ? List.of() : persistence.loadPathRunsForScan(projectId, artifactDigest, scanId);
     }
@@ -182,8 +260,15 @@ public class ControlPlaneStore {
         if (persistence != null) {
             persistence.replacePathRunsForTask(projectId, artifactDigest, scanId, taskId, pathRuns, createdAt);
         }
-        // P1-06: successful PathRun projections may advance hypothesis lifecycle; failures are no-ops.
         applyPathRunHypothesisObservations(pathRuns);
+    }
+
+    public void replacePathRunsAndTracesForTask(String projectId, String artifactDigest, String scanId,
+                                                String taskId, List<ApiDtos.PathRunDto> pathRuns,
+                                                List<SQLiteControlPlanePersistence.PathTraceData> traces,
+                                                String createdAt) {
+        replacePathTracesForTask(projectId, artifactDigest, scanId, taskId, traces, createdAt);
+        replacePathRunsForTask(projectId, artifactDigest, scanId, taskId, pathRuns, createdAt);
     }
 
     /**
@@ -219,6 +304,11 @@ public class ControlPlaneStore {
                 continue;
             }
             RuntimeObservation observation = projectPathRunObservation(run, hypothesisId, planKind);
+            PathTrace trace = pathTraceForPathRun(run.pathRunId());
+            if (trace != null && !trace.legacyIncomplete()) {
+                observation = PathTraceObservationBridge.fromPathTrace(
+                        trace, hypothesisId, planKind, run.evidenceRefs());
+            }
             decisions.add(applyHypothesisObservation(planId, observation));
         }
         return List.copyOf(decisions);

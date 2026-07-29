@@ -315,7 +315,7 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 ### P0-21 动态路径调试器（三轨 Posture + World Pack + PathTrace）
 
-状态：`NOT STARTED`（设计已重写；实施需 ADR-0004 评审或任务包显式授权）
+状态：`PARTIAL`（domain 编译器与 V025 持久化已接线；live Sensor/Evidence Graph 增量与 ADR-0004 全量验收未闭合）
 
 **目标**：把动态能力从“HTTP 洪水 + Agent 特例绕过”迁移为 Docker 内动态路径调试器。对每个可识别入口尽最大努力记录最深可达业务路径、参数流、sink/effect 触发和最终阻断原因；即使最终因为数据库、License、文件、业务状态或依赖不可达失败，也要保留失败前真实经过的 Controller/Service/Util/Repository/Guard/Effect 证据，并反馈给 AI。
 
@@ -351,53 +351,53 @@ Artifact Universe / Security IR
 **迁移与开发步骤**：
 
 1. **合同冻结**
-   - [ ] 定义 `TracePlan` schema：entry、参数、预期 hops、guard refs、effect refs、unresolved points、预算。
-   - [ ] 定义 `PathTrace` / `TraceEvent` schema：ENTRY、PARAMETER、METHOD_HOP、GUARD、EFFECT、DEPENDENCY、EXCEPTION、EXIT。
-   - [ ] 定义 `WorldPack` manifest：profile、env、system properties、license/files、schema/seed、dependency stubs、missing material gaps。
-   - [ ] 定义 `RuntimePosture`：`UNAUTH`、`COVERAGE_POSTURE`、`FORCED_REACHABILITY`、`BYPASS`，含 `postureProvenance`、`forcedGuardRefs`。
-   - [ ] 旧 PathRun 兼容读取：无 trace/posture/world 字段时标 `LEGACY_DYNAMIC_INCOMPLETE`，不得回填假阳性。
+   - [x] 定义 `TracePlan` schema：entry、参数、预期 hops、guard refs、effect refs、unresolved points、预算。
+   - [x] 定义 `PathTrace` / `TraceEvent` schema：ENTRY、PARAMETER、METHOD_HOP、GUARD、EFFECT、DEPENDENCY、EXCEPTION、EXIT。
+   - [x] 定义 `WorldPack` manifest：profile、env、system properties、license/files、schema/seed、dependency stubs、missing material gaps。
+   - [x] 定义 `RuntimePosture`：`UNAUTH`、`COVERAGE_POSTURE`、`FORCED_REACHABILITY`、`BYPASS`，含 `postureProvenance`、`forcedGuardRefs`。
+   - [x] 旧 PathRun 兼容读取：无 trace/posture/world 字段时标 `LEGACY_DYNAMIC_INCOMPLETE`，不得回填假阳性。
 
 2. **静态 TracePlan 编译**
-   - [ ] 从 EntrySurface、参数签名、DTO/config、Guard、Effect、调用边和 coverage gap 编译 TracePlan。
-   - [ ] 支持 0 参数入口，并记录 empty-input rationale。
+   - [x] 从 EntrySurface、参数签名、DTO/config、Guard、Effect、调用边和 coverage gap 编译 TracePlan。
+   - [x] 支持 0 参数入口，并记录 empty-input rationale。
    - [ ] 将旧 sink/taint path 兼容投影为 expected effect/hop。
-   - [ ] 反射、动态 dispatch、未解析 wrapper 写入 unresolved points。
+   - [x] 反射、动态 dispatch、未解析 wrapper 写入 unresolved points。
 
 3. **ExperimentPlan 编译**
-   - [ ] 编译 entry × 0-n 参数 × posture。
-   - [ ] 默认每入口生成 `UNAUTH`、`COVERAGE_POSTURE`、`FORCED_REACHABILITY`；`BYPASS` 只按候选生成。
-   - [ ] 每个计划绑定 TracePlan、WorldPack、expected/counter signal、stop condition 和预算。
-   - [ ] 禁止无 `experimentPlanId` 的空 GET/POST 作为主覆盖。
+   - [x] 编译 entry × 0-n 参数 × posture。
+   - [x] 默认每入口生成 `UNAUTH`、`COVERAGE_POSTURE`、`FORCED_REACHABILITY`；`BYPASS` 只按候选生成。
+   - [x] 每个计划绑定 TracePlan、WorldPack、expected/counter signal、stop condition 和预算。
+   - [x] 禁止无 `experimentPlanId` 的空 GET/POST 作为主覆盖。
 
 4. **World Pack 最小版**
-   - [ ] 支持 `OBSERVE_FAIL`：依赖不可达时真实失败，但保留失败前路径。
-   - [ ] 支持 `MOCK_CONTINUE`：替身返回空结果或 seed，继续探索更深路径，并标 MOCK。
+   - [x] 支持 `OBSERVE_FAIL`：依赖不可达时真实失败，但保留失败前路径。
+   - [x] 支持 `MOCK_CONTINUE`：替身返回空结果或 seed，继续探索更深路径，并标 MOCK。
    - [ ] 将 JDBC/Redis/MySQL 现有替身迁入 World Pack 语义。
-   - [ ] 统一输出 `DEPENDENCY_UNAVAILABLE`、`DEPENDENCY_DATA_GAP`、`WORLD_STATE_GAP`、`LICENSE_UNAVAILABLE`。
+   - [x] 统一输出 `DEPENDENCY_UNAVAILABLE`、`DEPENDENCY_DATA_GAP`、`WORLD_STATE_GAP`、`LICENSE_UNAVAILABLE`。
 
 5. **Runtime Posture Orchestrator**
-   - [ ] `UNAUTH`：真实无身份撞墙，标 `authRequirement`。
+   - [x] `UNAUTH`：真实无身份撞墙，标 `authRequirement`。
    - [ ] `COVERAGE_POSTURE`：标准框架边界注入扫描身份，优先支持 Servlet Principal、Spring SecurityContext、Method Security。
-   - [ ] `FORCED_REACHABILITY`：默认启用但仅 Docker；只强达已识别 auth/role/permission/license/feature guard；写 `INSTRUMENTATION_REACHABILITY`。
+   - [x] `FORCED_REACHABILITY`：默认启用但仅 Docker；只强达已识别 auth/role/permission/license/feature guard；写 `INSTRUMENTATION_REACHABILITY`。
    - [ ] `BYPASS`：仅 UNAUTH 意外过闸或 AUTH_ANALYSIS PoC 触发。
-   - [ ] 非 Docker Worker、STATIC_ONLY、宿主路径、用户/AI 策略字段全部拒绝。
+   - [x] 非 Docker Worker、STATIC_ONLY、宿主路径、用户/AI 策略字段全部拒绝。
 
 6. **Sensor Agent 与 PathTrace 投影**
    - [ ] Agent 只做 Sensor：entry、参数绑定、方法 hop、guard decision、effect、dependency、exception、exit。
    - [ ] 每个事件贯穿 scan、task、pathRun、probeAttempt、experimentPlan、tracePlan、entry、track、posture、correlationId。
-   - [ ] effect 已触发但后续 DB 不可达时，PathTrace 保留 effect，并以依赖失败作为 exit。
-   - [ ] trace 预算截断必须记录 `TRACE_TRUNCATED`，不能静默丢路径。
+   - [x] effect 已触发但后续 DB 不可达时，PathTrace 保留 effect，并以依赖失败作为 exit。
+   - [x] trace 预算截断必须记录 `TRACE_TRUNCATED`，不能静默丢路径。
 
 7. **Evidence Graph 与 AI 反馈**
-   - [ ] PathTrace 投影为 RuntimeObservation：Entry、Parameter、MethodHop、Guard、Effect、Dependency、Exception、Exit。
+   - [x] PathTrace 投影为 RuntimeObservation：Entry、Parameter、MethodHop、Guard、Effect、Dependency、Exception、Exit。
    - [ ] Evidence Graph delta 触发 hypothesis lifecycle 有界更新。
-   - [ ] AI 工具可查询 path trace slice、参数流、最后业务 hop、effect 和退出原因。
+   - [x] AI 工具可查询 path trace slice、参数流、最后业务 hop、effect 和退出原因。
    - [ ] PATH/TRIAGE 根据 PathTrace 缺口提出下一轮参数、World Pack 或 replay 建议；服务端仍负责最终编译和授权。
 
 8. **报告与 GUI**
-   - [ ] 最终报告按入口展示三轨 outcome、最深可达路径、参数流、sink/effect、退出原因、World/Posture/强达限制。
+   - [x] 最终报告按入口展示三轨 outcome、最深可达路径、参数流、sink/effect、退出原因、World/Posture/强达限制。
    - [ ] Dynamic Diagnostics 展示 World Pack gaps、Posture gaps、forced guard refs、依赖失败。
-   - [ ] Findings 主列表不得把强达-only、MOCK-only、UNKNOWN/-1 作为真实漏洞支持。
+   - [x] Findings 主列表不得把强达-only、MOCK-only、UNKNOWN/-1 作为真实漏洞支持。
 
 **验证逻辑**：
 
@@ -405,8 +405,8 @@ Artifact Universe / Security IR
 - [ ] 鉴权 fixture：UNAUTH 401 标 `authRequirement`；COVERAGE_POSTURE 进入 handler 或输出 `AUTH_POSTURE_GAP`；FORCED_REACHABILITY 越过已识别 guard 并标限制。
 - [ ] DB 缺表 fixture：已观察 SQL/effect，但退出为 `DEPENDENCY_DATA_GAP`；不丢前置路径。
 - [ ] License fixture：缺 license 输出 `LICENSE_UNAVAILABLE`；强达轨可探索下游但不得升验证。
-- [ ] 安全拒绝：非 Docker 强达、AI/前端策略覆盖、强达 sanitizer/SQL 参数化/业务状态机不变量均 fail-closed。
-- [ ] 旧扫描兼容：旧 PathRun 无 PathTrace 时显示 legacy incomplete，不回填 posture。
+- [x] 安全拒绝：非 Docker 强达、AI/前端策略覆盖、强达 sanitizer/SQL 参数化/业务状态机不变量均 fail-closed。
+- [x] 旧扫描兼容：旧 PathRun 无 PathTrace 时显示 legacy incomplete，不回填 posture。
 - [ ] 报告验收：AI 研判必须引用 PathTrace evidence refs，不能只引用 HTTP 500 或模型文本。
 
 验收：对 `scan-28ab5e591f4d4b5a` 类样本，动态覆盖不再被 UNAUTH 401 洪水主导；对数据库不可达样本，系统能展示失败前真实业务路径、参数流、sink/effect 和依赖退出原因；报告不把扫描身份或强达可达写成未授权利用；静态 sink 排序不被无效 PathRun 稀释。

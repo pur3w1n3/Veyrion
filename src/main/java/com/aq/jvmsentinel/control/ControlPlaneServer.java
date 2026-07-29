@@ -20,6 +20,7 @@ import com.aq.jvmsentinel.application.port.PathRunQueryPort;
 import com.aq.jvmsentinel.application.port.ProviderQueryPort;
 import com.aq.jvmsentinel.application.port.ScanQueryPort;
 
+import com.aq.jvmsentinel.analysis.experiment.PathDebugWireHelper;
 import com.aq.jvmsentinel.analysis.CandidateRanker;
 import com.aq.jvmsentinel.analysis.PreAnalysisResult;
 import com.aq.jvmsentinel.analysis.PreAnalysisInput;
@@ -101,6 +102,7 @@ import com.aq.jvmsentinel.security.auth.OperatorRole;
 import com.aq.jvmsentinel.security.auth.Permission;
 import com.aq.jvmsentinel.control.persistence.PayloadSchemaGuard;
 import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
+import com.aq.jvmsentinel.control.JsonCodec;
 import com.aq.jvmsentinel.control.service.ProbePlanService;
 import com.aq.jvmsentinel.worker.InMemoryTaskCoordinator;
 import com.aq.jvmsentinel.worker.InMemoryTraceStore;
@@ -350,6 +352,7 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         this.traceStore = new InMemoryTraceStore(this.clock, workerState.traces(), this.store::persistWorkerTrace);
         this.taskCoordinator = new InMemoryTaskCoordinator(this.clock, this.traceStore, workerState.tasks(), this.store::persistWorkerTask);
         this.traceProjectionService = new TraceProjectionService(this.traceStore);
+        this.traceProjectionService.bindPosturePlanResolver(store::postureExperiment);
         this.workerApi = new WorkerControlPlaneApi(this.workerToken, this.clock, this.store, this.sseHub,
                 this.traceStore, this.taskCoordinator, this.traceProjectionService);
         this.probePlanService = new ProbePlanService(this.store,
@@ -1652,11 +1655,35 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         ApiDtos.ScanDto dto = scan.dto();
         List<ApiDtos.PathRunDto> pathRuns = mergedPathRunsForScan(
                 dto.projectId(), dto.artifactDigest(), scanId);
+        Map<String, com.aq.jvmsentinel.domain.pathdebug.PathTrace> tracesByRun = pathTracesByPathRunId(
+                dto.projectId(), dto.artifactDigest(), scanId);
         List<Map<String, Object>> maps = new ArrayList<>(pathRuns.size());
         for (ApiDtos.PathRunDto run : pathRuns) {
-            maps.add(pathRunMap(run));
+            maps.add(PathDebugWireHelper.enrichPathRunMap(
+                    PathDebugWireHelper.basePathRunMap(run),
+                    tracesByRun.get(run.pathRunId())));
         }
         return maps;
+    }
+
+    private Map<String, com.aq.jvmsentinel.domain.pathdebug.PathTrace> pathTracesByPathRunId(
+            String projectId, String artifactDigest, String scanId) {
+        Map<String, com.aq.jvmsentinel.domain.pathdebug.PathTrace> byRun = new LinkedHashMap<>();
+        for (SQLiteControlPlanePersistence.PathTraceData row : store.loadPathTracesForScan(
+                projectId, artifactDigest, scanId)) {
+            com.aq.jvmsentinel.domain.pathdebug.PathTrace cached = store.pathTraceForPathRun(row.pathRunId());
+            if (cached != null) {
+                byRun.put(row.pathRunId(), cached);
+                continue;
+            }
+            try {
+                byRun.put(row.pathRunId(), com.aq.jvmsentinel.domain.pathdebug.PathTrace.fromMap(
+                        JsonCodec.parseObject(row.payloadJson())));
+            } catch (RuntimeException ignored) {
+                // skip malformed persisted traces
+            }
+        }
+        return byRun;
     }
 
     @Override public synchronized void createDynamicTask(HttpExchange exchange, String scanId) throws IOException {
@@ -2944,6 +2971,32 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         body.put("hypotheses", hypothesisMaps(store.hypotheses(dto.scanId())));
         body.put("paths", paths);
         body.put("pathRuns", pathRunMaps);
+        List<Object> pathDebugSummaries = new ArrayList<>();
+        Map<String, com.aq.jvmsentinel.domain.pathdebug.PathTrace> traceIndex = pathTracesByPathRunId(
+                dto.projectId(), dto.artifactDigest(), dto.scanId());
+        for (ApiDtos.EntryDto entry : dto.entries()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("entryId", entry.id());
+            row.put("route", entry.route());
+            List<Map<String, Object>> tracks = new ArrayList<>();
+            for (ApiDtos.PathRunDto run : pathRuns) {
+                if (!run.entrypointRef().contains(entry.id()) && !run.entrypointRef().contains(entry.route())) {
+                    continue;
+                }
+                com.aq.jvmsentinel.domain.pathdebug.PathTrace trace = traceIndex.get(run.pathRunId());
+                Map<String, Object> trackRow = new LinkedHashMap<>(PathDebugWireHelper.pathDebugSummary(trace));
+                trackRow.put("track", run.track());
+                trackRow.put("httpStatus", run.httpStatus());
+                trackRow.put("verificationStatus", run.verificationStatus());
+                tracks.add(trackRow);
+            }
+            if (tracks.isEmpty()) {
+                tracks.add(PathDebugWireHelper.pathDebugSummary(null));
+            }
+            row.put("tracks", tracks);
+            pathDebugSummaries.add(row);
+        }
+        body.put("pathDebugSummaries", pathDebugSummaries);
         body.put("path", path);
         List<Object> shapeMaps = new ArrayList<>();
         for (ExperimentShapeView.Shape shape : ExperimentShapeView.fromPathRuns(pathRuns)) {
@@ -3796,46 +3849,7 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     }
 
     private static Map<String, Object> pathRunMap(ApiDtos.PathRunDto dto) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("schemaVersion", dto.schemaVersion());
-        result.put("pathRunId", dto.pathRunId());
-        result.put("scanId", dto.scanId());
-        result.put("entrypointRef", dto.entrypointRef());
-        result.put("track", dto.track());
-        result.put("attemptId", dto.attemptId());
-        if (dto.experimentPlanId() != null && !dto.experimentPlanId().isBlank()) {
-            result.put("experimentPlanId", dto.experimentPlanId());
-        }
-        String correlationId = correlationIdFromPathRun(dto);
-        if (!correlationId.isBlank()) {
-            result.put("correlationId", correlationId);
-        }
-        result.put("method", dto.method());
-        result.put("contentType", dto.contentType());
-        result.put("requestSummary", dto.requestSummary());
-        result.put("outcomeClass", dto.outcomeClass());
-        result.put("httpStatus", dto.httpStatus());
-        result.put("entryHit", dto.entryHit());
-        result.put("parameterBound", dto.parameterBound());
-        List<Object> sqlEvents = new ArrayList<>();
-        for (ApiDtos.SqlEventDto sql : dto.sqlEvents()) {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("sqlText", sql.sqlText());
-            row.put("parameterSummary", sql.parameterSummary());
-            row.put("readWrite", sql.readWrite());
-            row.put("parameterized", sql.parameterized());
-            row.put("maliciousFragmentPresent", sql.maliciousFragmentPresent());
-            row.put("captureMode", sql.captureMode());
-            sqlEvents.add(row);
-        }
-        result.put("sqlEvents", sqlEvents);
-        result.put("stopReason", dto.stopReason());
-        result.put("verificationStatus", dto.verificationStatus());
-        result.put("evidenceRefs", dto.evidenceRefs());
-        result.put("identityProvenance", dto.identityProvenance());
-        result.put("identityPrecondition", dto.identityPrecondition());
-        result.put("branchHitMap", dto.branchHitMap());
-        return result;
+        return PathDebugWireHelper.basePathRunMap(dto);
     }
 
     private static String correlationIdFromPathRun(ApiDtos.PathRunDto dto) {

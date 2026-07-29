@@ -471,6 +471,152 @@ public final class SQLiteControlPlanePersistence {
         });
     }
 
+    public void saveTracePlan(TracePlanData plan) {
+        Objects.requireNonNull(plan, "plan");
+        transaction("could not persist trace plan", connection -> update(connection,
+                "INSERT INTO trace_plans(trace_plan_id,scan_id,project_id,artifact_digest,entry_ref,payload_json,created_at) "
+                        + "VALUES(?,?,?,?,?,?,?) ON CONFLICT(scan_id,trace_plan_id) DO UPDATE SET "
+                        + "payload_json=excluded.payload_json,created_at=excluded.created_at",
+                plan.tracePlanId(), plan.scanId(), plan.projectId(), plan.artifactDigest(),
+                plan.entryRef(), plan.payloadJson(), plan.createdAt()));
+    }
+
+    public List<TracePlanData> loadTracePlansForScan(String scanId) {
+        Objects.requireNonNull(scanId, "scanId");
+        try (Connection connection = open();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT trace_plan_id,scan_id,project_id,artifact_digest,entry_ref,payload_json,created_at "
+                             + "FROM trace_plans WHERE scan_id=? ORDER BY created_at,trace_plan_id")) {
+            statement.setString(1, scanId);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<TracePlanData> result = new ArrayList<>();
+                while (rows.next()) {
+                    result.add(new TracePlanData(
+                            rows.getString(1), rows.getString(2), rows.getString(3),
+                            rows.getString(4), rows.getString(5), rows.getString(6), rows.getString(7)));
+                }
+                if (result.size() > 512) throw new PersistenceException("per-scan trace plan limit exceeded");
+                return List.copyOf(result);
+            }
+        } catch (SQLException failure) {
+            throw databaseFailure("could not load trace plans for scan", failure);
+        }
+    }
+
+    public void saveWorldPack(WorldPackData pack) {
+        Objects.requireNonNull(pack, "pack");
+        transaction("could not persist world pack", connection -> update(connection,
+                "INSERT INTO world_packs(world_pack_id,scan_id,project_id,artifact_digest,dependency_mode,payload_json,created_at) "
+                        + "VALUES(?,?,?,?,?,?,?) ON CONFLICT(scan_id,world_pack_id) DO UPDATE SET "
+                        + "dependency_mode=excluded.dependency_mode,payload_json=excluded.payload_json,"
+                        + "created_at=excluded.created_at",
+                pack.worldPackId(), pack.scanId(), pack.projectId(), pack.artifactDigest(),
+                pack.dependencyMode(), pack.payloadJson(), pack.createdAt()));
+    }
+
+    public List<WorldPackData> loadWorldPacksForScan(String scanId) {
+        Objects.requireNonNull(scanId, "scanId");
+        try (Connection connection = open();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT world_pack_id,scan_id,project_id,artifact_digest,dependency_mode,payload_json,created_at "
+                             + "FROM world_packs WHERE scan_id=? ORDER BY created_at,world_pack_id")) {
+            statement.setString(1, scanId);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<WorldPackData> result = new ArrayList<>();
+                while (rows.next()) {
+                    result.add(new WorldPackData(
+                            rows.getString(1), rows.getString(2), rows.getString(3),
+                            rows.getString(4), rows.getString(5), rows.getString(6), rows.getString(7)));
+                }
+                if (result.size() > 64) throw new PersistenceException("per-scan world pack limit exceeded");
+                return List.copyOf(result);
+            }
+        } catch (SQLException failure) {
+            throw databaseFailure("could not load world packs for scan", failure);
+        }
+    }
+
+    public void savePathTrace(PathTraceData trace) {
+        Objects.requireNonNull(trace, "trace");
+        transaction("could not persist path trace", connection -> update(connection,
+                "INSERT INTO path_traces(path_trace_id,path_run_id,scan_id,project_id,artifact_digest,task_id,"
+                        + "experiment_plan_id,trace_plan_id,world_pack_id,posture_kind,exit_reason,legacy_incomplete,"
+                        + "payload_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                        + "ON CONFLICT(path_trace_id) DO UPDATE SET payload_json=excluded.payload_json,"
+                        + "exit_reason=excluded.exit_reason,legacy_incomplete=excluded.legacy_incomplete,"
+                        + "created_at=excluded.created_at",
+                trace.pathTraceId(), trace.pathRunId(), trace.scanId(), trace.projectId(),
+                trace.artifactDigest(), trace.taskId(), trace.experimentPlanId(), trace.tracePlanId(),
+                trace.worldPackId(), trace.postureKind(), trace.exitReason(), trace.legacyIncomplete() ? 1 : 0,
+                trace.payloadJson(), trace.createdAt()));
+    }
+
+    public List<PathTraceData> loadPathTracesForScan(String projectId, String artifactDigest, String scanId) {
+        Objects.requireNonNull(projectId, "projectId");
+        Objects.requireNonNull(artifactDigest, "artifactDigest");
+        Objects.requireNonNull(scanId, "scanId");
+        try (Connection connection = open();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT path_trace_id,path_run_id,scan_id,project_id,artifact_digest,task_id,"
+                             + "experiment_plan_id,trace_plan_id,world_pack_id,posture_kind,exit_reason,"
+                             + "legacy_incomplete,payload_json,created_at FROM path_traces "
+                             + "WHERE project_id=? AND artifact_digest=? AND scan_id=? "
+                             + "ORDER BY created_at,path_trace_id")) {
+            statement.setString(1, projectId);
+            statement.setString(2, artifactDigest);
+            statement.setString(3, scanId);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<PathTraceData> result = new ArrayList<>();
+                while (rows.next()) {
+                    result.add(new PathTraceData(
+                            rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4),
+                            rows.getString(5), rows.getString(6), rows.getString(7), rows.getString(8),
+                            rows.getString(9), rows.getString(10), rows.getString(11),
+                            rows.getInt(12) != 0, rows.getString(13), rows.getString(14)));
+                }
+                if (result.size() > 50_000) throw new PersistenceException("persistent path trace limit exceeded");
+                return List.copyOf(result);
+            }
+        } catch (SQLException failure) {
+            throw databaseFailure("could not load path traces for scan", failure);
+        }
+    }
+
+    public void replacePathTracesForTask(String projectId, String artifactDigest, String scanId,
+                                         String taskId, List<PathTraceData> traces, String createdAt) {
+        Objects.requireNonNull(projectId, "projectId");
+        Objects.requireNonNull(artifactDigest, "artifactDigest");
+        Objects.requireNonNull(scanId, "scanId");
+        Objects.requireNonNull(taskId, "taskId");
+        Objects.requireNonNull(createdAt, "createdAt");
+        List<PathTraceData> rows = List.copyOf(traces == null ? List.of() : traces);
+        if (rows.size() > 20_000) throw new PersistenceException("path trace batch limit exceeded");
+        transaction("could not persist path traces", connection -> {
+            try (PreparedStatement delete = connection.prepareStatement(
+                    "DELETE FROM path_traces WHERE task_id=?")) {
+                delete.setString(1, taskId);
+                delete.executeUpdate();
+            }
+            for (PathTraceData trace : rows) {
+                if (!scanId.equals(trace.scanId())) {
+                    throw new PersistenceException("path trace scan scope mismatch");
+                }
+                savePathTrace(connection, trace, createdAt);
+            }
+        });
+    }
+
+    private void savePathTrace(Connection connection, PathTraceData trace, String createdAt) throws SQLException {
+        update(connection,
+                "INSERT INTO path_traces(path_trace_id,path_run_id,scan_id,project_id,artifact_digest,task_id,"
+                        + "experiment_plan_id,trace_plan_id,world_pack_id,posture_kind,exit_reason,legacy_incomplete,"
+                        + "payload_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                trace.pathTraceId(), trace.pathRunId(), trace.scanId(), trace.projectId(),
+                trace.artifactDigest(), trace.taskId(), trace.experimentPlanId(), trace.tracePlanId(),
+                trace.worldPackId(), trace.postureKind(), trace.exitReason(), trace.legacyIncomplete() ? 1 : 0,
+                trace.payloadJson(), createdAt);
+    }
+
     public List<ArtifactUploadService.PersistedSession> loadArtifactUploads() {
         try (Connection connection = open();
              PreparedStatement statement = connection.prepareStatement(
@@ -1863,6 +2009,17 @@ public final class SQLiteControlPlanePersistence {
             this(planId, scanId, projectId, artifactDigest, payloadJson, createdAt, null);
         }
     }
+    public record TracePlanData(String tracePlanId, String scanId, String projectId,
+                                String artifactDigest, String entryRef, String payloadJson,
+                                String createdAt) { }
+    public record WorldPackData(String worldPackId, String scanId, String projectId,
+                                String artifactDigest, String dependencyMode, String payloadJson,
+                                String createdAt) { }
+    public record PathTraceData(String pathTraceId, String pathRunId, String scanId, String projectId,
+                                String artifactDigest, String taskId, String experimentPlanId,
+                                String tracePlanId, String worldPackId, String postureKind,
+                                String exitReason, boolean legacyIncomplete, String payloadJson,
+                                String createdAt) { }
     public record Snapshot(List<ProjectData> projects, List<ArtifactData> artifacts,
                            List<ControlPlaneStore.ScanRecord> scans,
                            Map<String, StaticFactSnapshot> staticFacts,

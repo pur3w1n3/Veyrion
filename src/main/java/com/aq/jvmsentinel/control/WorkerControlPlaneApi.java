@@ -5,6 +5,7 @@ import com.aq.jvmsentinel.event.EventFactory;
 import com.aq.jvmsentinel.event.IdempotencyKey;
 import com.aq.jvmsentinel.event.VersionedEvent;
 import com.aq.jvmsentinel.policy.NetworkMode;
+import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
 import com.aq.jvmsentinel.worker.InMemoryTaskCoordinator;
 import com.aq.jvmsentinel.worker.InMemoryTraceStore;
 import com.aq.jvmsentinel.worker.NetworkPolicy;
@@ -437,13 +438,39 @@ final class WorkerControlPlaneApi implements HttpHandler {
 
     private void persistProjectedPathRuns(TaskSnapshot snapshot, TraceProjectionService.Projection projection) {
         TaskScope scope = snapshot.scope();
-        store.replacePathRunsForTask(
+        String createdAt = Instant.now(clock).toString();
+        List<SQLiteControlPlanePersistence.PathTraceData> traces = new ArrayList<>();
+        int index = 0;
+        for (com.aq.jvmsentinel.domain.pathdebug.PathTrace trace : projection.pathTraces()) {
+            if (trace == null) continue;
+            Map<String, Object> payload = new LinkedHashMap<>(trace.toMap());
+            payload.put("schemaVersion", com.aq.jvmsentinel.domain.pathdebug.PathTrace.SCHEMA_VERSION);
+            traces.add(new SQLiteControlPlanePersistence.PathTraceData(
+                    trace.pathTraceId(),
+                    trace.pathRunId().isBlank() && index < projection.pathRuns().size()
+                            ? projection.pathRuns().get(index).pathRunId() : trace.pathRunId(),
+                    scope.scanId(),
+                    scope.projectId(),
+                    scope.artifactDigest(),
+                    scope.taskId(),
+                    trace.experimentPlanId(),
+                    trace.tracePlanId(),
+                    trace.worldPackId(),
+                    trace.posture().postureKind().name(),
+                    trace.exitReason().name(),
+                    trace.legacyIncomplete(),
+                    com.aq.jvmsentinel.control.JsonCodec.stringify(payload),
+                    createdAt));
+            index++;
+        }
+        store.replacePathRunsAndTracesForTask(
                 scope.projectId(),
                 scope.artifactDigest(),
                 scope.scanId(),
                 scope.taskId(),
                 projection.pathRuns(),
-                Instant.now(clock).toString());
+                traces,
+                createdAt);
     }
 
     private void publishTerminal(TaskSnapshot snapshot, String key) {

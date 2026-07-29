@@ -166,11 +166,13 @@ public final class AiToolRegistry {
                 Set.of("kind"));
         ToolDefinition definition = new ToolDefinition("facts_search",
                 "Search already-indexed, read-only facts in the server-bound project. "
-                        + "Kinds: SCAN, ENTRY, DEPENDENCY, SINK, EVIDENCE, DYNAMIC_EVIDENCE, PATH_RUN, "
+                        +                 "Kinds: SCAN, ENTRY, DEPENDENCY, SINK, EVIDENCE, DYNAMIC_EVIDENCE, PATH_RUN, PATH_TRACE, "
                         + "STATIC_CONTRAST, ANY. "
                         + "For PRE_ANALYSIS, query ENTRY with entry ids, routes, controller/class names, HTTP methods, "
                         + "or English enum keywords; do not rely only on translated prose. "
                         + "PATH_RUN returns persisted HTTP status, outcomeClass, and SQL event detail. "
+                        + "PATH_TRACE returns parameter flow, last business hop, effects, and exit reason. "
+                        + "Policy override fields (command/image/mount/network/uid/budget/forcedReachability) are rejected. "
                         + "STATIC_CONTRAST returns sink-perspective static↔PathRun contrast rows "
                         + "(MATCHED/PARTIAL/STATIC_ONLY/DYNAMIC_ONLY); STATIC_ONLY is never bypass-confirmed.",
                 schema.jsonSchema(), OverflowPolicy.TRUNCATE);

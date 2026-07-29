@@ -723,6 +723,13 @@ export type SqlEventDto = {
   captureMode?: string
 }
 
+export type PathTraceParameterFlowStep = {
+  source?: string
+  boundTo?: string
+  flowedTo?: string
+  effectRef?: string
+}
+
 export type PathRunDto = {
   schemaVersion: number
   pathRunId: string
@@ -748,6 +755,19 @@ export type PathRunDto = {
   identityPrecondition?: string
   /** method → hit branch indices from BRANCH_COVERAGE (MVP-1). */
   branchHitMap?: Record<string, number[]>
+  /** P0-21 path-debug extensions (optional; absent on legacy runs). */
+  postureKind?: string
+  postureProvenance?: string
+  forcedGuardRefs?: string[]
+  tracePlanId?: string
+  pathTraceId?: string
+  worldPackId?: string
+  exitReason?: string
+  legacyIncomplete?: boolean
+  authRequirement?: string
+  parameterFlow?: PathTraceParameterFlowStep[]
+  lastBusinessHop?: string
+  effectRefs?: string[]
 }
 export type RoleAssignmentDto = {
   schemaVersion: number
@@ -1748,7 +1768,33 @@ const parsePathRun = (value: unknown): PathRunDto => {
     evidenceRefs: evidenceRefsOf(value.evidenceRefs, 'pathRun.evidenceRefs'),
     identityProvenance: strictOptionalText(value.identityProvenance, 'pathRun.identityProvenance'),
     identityPrecondition: strictOptionalText(value.identityPrecondition, 'pathRun.identityPrecondition'),
-    branchHitMap: parseBranchHitMap(value.branchHitMap)
+    branchHitMap: parseBranchHitMap(value.branchHitMap),
+    postureKind: strictOptionalText(value.postureKind, 'pathRun.postureKind'),
+    postureProvenance: strictOptionalText(value.postureProvenance, 'pathRun.postureProvenance'),
+    forcedGuardRefs: Array.isArray(value.forcedGuardRefs)
+      ? value.forcedGuardRefs.filter((item): item is string => typeof item === 'string')
+      : undefined,
+    tracePlanId: strictOptionalText(value.tracePlanId, 'pathRun.tracePlanId'),
+    pathTraceId: strictOptionalText(value.pathTraceId, 'pathRun.pathTraceId'),
+    worldPackId: strictOptionalText(value.worldPackId, 'pathRun.worldPackId'),
+    exitReason: strictOptionalText(value.exitReason, 'pathRun.exitReason'),
+    legacyIncomplete: value.legacyIncomplete === true ? true : value.legacyIncomplete === false ? false : undefined,
+    authRequirement: strictOptionalText(value.authRequirement, 'pathRun.authRequirement'),
+    parameterFlow: Array.isArray(value.parameterFlow)
+      ? value.parameterFlow.map((item) => {
+        if (!isRecord(item)) throw new Error('invalid pathRun.parameterFlow')
+        return {
+          source: strictOptionalText(item.source, 'pathRun.parameterFlow.source'),
+          boundTo: strictOptionalText(item.boundTo, 'pathRun.parameterFlow.boundTo'),
+          flowedTo: strictOptionalText(item.flowedTo, 'pathRun.parameterFlow.flowedTo'),
+          effectRef: strictOptionalText(item.effectRef, 'pathRun.parameterFlow.effectRef')
+        }
+      })
+      : undefined,
+    lastBusinessHop: strictOptionalText(value.lastBusinessHop, 'pathRun.lastBusinessHop'),
+    effectRefs: Array.isArray(value.effectRefs)
+      ? value.effectRefs.filter((item): item is string => typeof item === 'string')
+      : undefined
   }
 }
 

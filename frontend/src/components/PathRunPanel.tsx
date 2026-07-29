@@ -201,6 +201,15 @@ export function PathRunPanel({
             <div><dt>{english ? 'Identity' : '身份前置'}</dt><dd>{selected.identityPrecondition || selected.identityProvenance || 'MOCK'}</dd></div>
             <div><dt>SQL</dt><dd>{selected.sqlEvents.length === 0 ? (english ? 'none (not a success claim)' : '无（不等于注入成功）') : selected.sqlEvents.map((sql) => sql.sqlText).join(' | ')}</dd></div>
             <div><dt>{english ? 'Stop reason' : '停止原因'}</dt><dd>{selected.stopReason || '—'}</dd></div>
+            {(selected.legacyIncomplete || selected.postureKind || selected.exitReason) && <>
+              <div><dt>{english ? 'Path debug' : '路径调试'}</dt>
+                <dd>{selected.legacyIncomplete
+                  ? (english ? 'Legacy incomplete (no PathTrace)' : '旧版动态不完整（无 PathTrace）')
+                  : `${selected.postureKind ?? '—'} · ${selected.exitReason ?? '—'}`}</dd></div>
+              {selected.lastBusinessHop && <div><dt>{english ? 'Last hop' : '最后业务 hop'}</dt><dd>{selected.lastBusinessHop}</dd></div>}
+              {selected.authRequirement && <div><dt>{english ? 'Auth req.' : '鉴权要求'}</dt><dd>{selected.authRequirement}</dd></div>}
+              {selected.effectRefs && selected.effectRefs.length > 0 && <div><dt>{english ? 'Effects' : 'Effect'}</dt><dd>{selected.effectRefs.join(', ')}</dd></div>}
+            </>}
             <div><dt>{english ? 'Dependency' : '依赖模式'}</dt><dd><span className="inference-badge">MOCK</span></dd></div>
             <div>
               <dt>branchHitMap</dt>

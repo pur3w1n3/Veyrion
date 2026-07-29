@@ -1,6 +1,9 @@
 package com.aq.jvmsentinel.worker;
 
+import com.aq.jvmsentinel.analysis.experiment.PathTraceProjectionBridge;
+import com.aq.jvmsentinel.analysis.experiment.PostureExperimentCompiler;
 import com.aq.jvmsentinel.control.ApiDtos;
+import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
 import com.aq.jvmsentinel.model.IdentityTrack;
 import com.aq.jvmsentinel.model.PathOutcomeClass;
 import com.aq.jvmsentinel.model.PathOutcomeClassifier;
@@ -38,8 +41,17 @@ public final class TraceProjectionService {
     /** Optional taskId → experimentPlanId binder (P0-08). */
     private final Map<String, String> taskExperimentPlanIds = new ConcurrentHashMap<>();
 
+    /** Optional experimentPlanId → posture plan resolver (P0-21). */
+    private java.util.function.Function<String, PostureExperimentCompiler.CompiledPostureExperiment> posturePlans =
+            ignored -> null;
+
     public TraceProjectionService(InMemoryTraceStore traces) {
         this.traces = Objects.requireNonNull(traces, "traces");
+    }
+
+    public void bindPosturePlanResolver(
+            java.util.function.Function<String, PostureExperimentCompiler.CompiledPostureExperiment> resolver) {
+        this.posturePlans = resolver == null ? ignored -> null : resolver;
     }
 
     public void bindExperimentPlan(String taskId, String experimentPlanId) {
@@ -113,6 +125,7 @@ public final class TraceProjectionService {
         List<PendingSql> pendingSql = new ArrayList<>();
         List<SqlEvent> orphanSql = new ArrayList<>();
         List<ApiDtos.PathRunDto> pathRuns = new ArrayList<>();
+        List<PathTrace> pathTraces = new ArrayList<>();
         Set<String> springBoundRouteKeys = new HashSet<>();
         String scopeDigest = WorkerContracts.sha256((snapshot.scope().projectId() + "\n"
                 + snapshot.scope().artifactDigest() + "\n" + snapshot.scope().scanId() + "\n"
@@ -209,9 +222,14 @@ public final class TraceProjectionService {
                 }
                 pendingSql.clear();
                 pendingSql.addAll(retained);
-                pathRuns.add(pathRunFromHttp(
+                ApiDtos.PathRunDto pathRun = pathRunFromHttp(
                         snapshot, event, evidenceId, httpAttempt++, List.copyOf(windowSql),
-                        springBoundRouteKeys));
+                        springBoundRouteKeys);
+                pathRuns.add(pathRun);
+                PostureExperimentCompiler.CompiledPostureExperiment posturePlan =
+                        posturePlans.apply(pathRun.experimentPlanId());
+                pathTraces.add(PathTraceProjectionBridge.projectFromPathRun(
+                        pathRun, posturePlan, List.of()));
             }
             if ("BRANCH_COVERAGE".equals(event.eventType()) && !pathRuns.isEmpty()) {
                 ApiDtos.PathRunDto last = pathRuns.remove(pathRuns.size() - 1);
@@ -248,10 +266,12 @@ public final class TraceProjectionService {
         // Flood / cold-start tasks may emit JDBC/Agent evidence without HTTP events.
         // Still materialize one PathRun so AI tools and dashboard retain SQL detail.
         if (pathRuns.isEmpty()) {
-            pathRuns.add(taskLevelPathRun(snapshot, refs, orphanSql));
+            ApiDtos.PathRunDto taskRun = taskLevelPathRun(snapshot, refs, orphanSql);
+            pathRuns.add(taskRun);
+            pathTraces.add(PathTraceProjectionBridge.projectFromPathRun(taskRun, null, List.of()));
         }
         return new Projection(snapshot.scope(), path, List.copyOf(paths), List.copyOf(pathRuns),
-                projectedEvidence, snapshot.updatedAt().toString());
+                List.copyOf(pathTraces), projectedEvidence, snapshot.updatedAt().toString());
     }
 
     public List<ApiDtos.PathRunDto> pathRunsForScan(String projectId, String artifactDigest, String scanId) {
@@ -861,11 +881,17 @@ public final class TraceProjectionService {
     private record HttpObservation(String method, String route, String requestTarget, String response) { }
 
     public record Projection(TaskScope scope, ApiDtos.PathDto path, List<ApiDtos.PathDto> paths,
-                             List<ApiDtos.PathRunDto> pathRuns,
+                             List<ApiDtos.PathRunDto> pathRuns, List<PathTrace> pathTraces,
                              Map<String, ApiDtos.EvidenceDto> evidence, String completedAt) {
         public Projection(TaskScope scope, ApiDtos.PathDto path, List<ApiDtos.PathDto> paths,
                           Map<String, ApiDtos.EvidenceDto> evidence, String completedAt) {
-            this(scope, path, paths, List.of(), evidence, completedAt);
+            this(scope, path, paths, List.of(), List.of(), evidence, completedAt);
+        }
+
+        public Projection(TaskScope scope, ApiDtos.PathDto path, List<ApiDtos.PathDto> paths,
+                          List<ApiDtos.PathRunDto> pathRuns,
+                          Map<String, ApiDtos.EvidenceDto> evidence, String completedAt) {
+            this(scope, path, paths, pathRuns, List.of(), evidence, completedAt);
         }
 
         public Projection {
@@ -873,6 +899,7 @@ public final class TraceProjectionService {
             Objects.requireNonNull(path, "path");
             paths = List.copyOf(paths == null || paths.isEmpty() ? List.of(path) : paths);
             pathRuns = List.copyOf(pathRuns == null ? List.of() : pathRuns);
+            pathTraces = List.copyOf(pathTraces == null ? List.of() : pathTraces);
             evidence = Map.copyOf(evidence);
             Objects.requireNonNull(completedAt, "completedAt");
         }
