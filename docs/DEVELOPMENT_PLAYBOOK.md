@@ -218,6 +218,40 @@ Control Plane 可以调用 Analyzer/Runtime port，但 domain 不得反向依赖
 - `DYNAMIC_SUSPECTED`、`DYNAMIC_CONFIRMED`、`VERIFIED`、`UNREACHED`、`MOCK`、`INFERENCE`、`FACT` 的语义必须与服务端一致。
 - 对 `scan-7b619e8a65064fa9` 类失败数据，界面应突出动态失败诊断和静态候选，不出现上千条无效动态疑似主列表。
 
+### 4.4 动态路径调试器实施手册
+
+动态重构按 [DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](DYNAMIC_SANDBOX_POSTURE_REDESIGN.md) 与 P0-21 执行。目标不是让所有接口完整 2xx，而是让系统在 Docker 沙箱中尽最大努力记录每个入口失败前真实经过的业务路径、参数流、sink/effect 和退出原因，并将结构化证据反馈给 AI。
+
+目标模块边界：
+
+| 模块 | 职责 | 禁止项 |
+|------|------|--------|
+| `TracePlan Compiler` | 从 Entry/参数/Guard/Effect/调用边生成观测计划 | 不执行请求，不补写 FACT |
+| `ExperimentPlan Compiler` | 编译 entry × 0-n 参数 × posture | 不接受模型提供命令/网络/挂载/预算 |
+| `World Pack` | profile/env/license/files/schema/seed/dependency stubs | 不把 MOCK 写成真实环境 |
+| `Runtime Posture Orchestrator` | UNAUTH / COVERAGE_POSTURE / Docker-only FORCED_REACHABILITY / BYPASS | 不在宿主强达，不强达 sanitizer/参数化/业务不变量 |
+| `Sensor Agent` | 观测 entry、参数、method hop、guard、effect、dependency、exit | 不新增逐点鉴权/License fail-open 主线 |
+| `PathTrace Projector` | 生成有序路径和退出原因 | 不因 HTTP 500 丢弃前置 effect |
+| `AI Evidence Tooling` | 查询 PathTrace slice 和 evidence refs | 不允许 AI 补写 FACT 或升级状态 |
+
+实施顺序：
+
+1. 先加合同和兼容读取：TracePlan、PathTrace、WorldPack、RuntimePosture；旧 PathRun 标 legacy incomplete。
+2. 再做静态 TracePlan 编译：entry、0-n 参数、预期 hops、guard refs、effect refs、unresolved points。
+3. 再接 Sensor Agent 事件映射和 PathTrace 投影，证明 DB 不可达时仍保留失败前 path/effect。
+4. 再做 World Pack：`OBSERVE_FAIL` 与 `MOCK_CONTINUE`，迁移现有 JDBC/Redis/MySQL 替身语义。
+5. 再做 Runtime Posture：UNAUTH、COVERAGE_POSTURE、Docker-only FORCED_REACHABILITY、BYPASS。
+6. 最后接 AI 查询、报告和 GUI。每一步都保持旧 PathRun/API 兼容。
+
+动态验收最低样例：
+
+- `GET /code?code=x`：参数进入 Controller -> Service -> Util，触发表达式/SQL/命令等 effect，随后 DB 不可达；PathTrace 必须保留 effect 和 `DEPENDENCY_UNAVAILABLE`。
+- 鉴权入口：UNAUTH 401 标鉴权墙；COVERAGE_POSTURE 进入 handler 或产生 `AUTH_POSTURE_GAP`；FORCED_REACHABILITY 越过已识别 guard 并标 `INSTRUMENTATION_REACHABILITY`。
+- 依赖缺表/缺 seed：保留 SQL/effect，退出为 `DEPENDENCY_DATA_GAP`，不得升 VERIFIED。
+- 安全拒绝：非 Docker 强达、AI/前端策略覆盖、强达 sanitizer/SQL 参数化/文件类型校验/业务状态机不变量均 fail-closed。
+
+任务报告必须给出：新增合同、迁移兼容、实际 PathTrace 样例、被保留的失败前路径、退出原因、测试命令、断言数量和仍未覆盖的入口/依赖/姿态 gap。
+
 ## 5. 变更分类与决策门禁
 
 ### 5.1 普通实现变更

@@ -100,8 +100,10 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                             && mock.creates == createsAfterInitialProbe,
                     "follow-up probe reuses retained sandbox");
             mock.assertRetainedProbeReused();
+            executor.releaseRetainedForScan("project-1", digest, scope(digest, "task-success").scanId());
+            check(mock.deleted == 1, "scan-scoped release destroys retained sandbox after TRIAGE");
             executor.closeRetainedSessions();
-            check(mock.deleted == 1, "retained sandbox cleanup");
+            check(mock.deleted == 1, "release after TRIAGE leaves no extra cleanup");
 
             ExternalArtifactTaskExecutor trusted = executor(
                     mock, scope(digest, "task-trusted-local"), registration);

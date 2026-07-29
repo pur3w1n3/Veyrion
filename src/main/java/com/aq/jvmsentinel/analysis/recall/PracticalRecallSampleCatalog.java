@@ -5,9 +5,12 @@ import com.aq.jvmsentinel.control.JsonCodec;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.PathMatcher;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -15,6 +18,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * P0-15: selectable open-source practical recall samples.
@@ -284,21 +288,81 @@ public final class PracticalRecallSampleCatalog {
         return new Report(catalog, scores, failures);
     }
 
-    /** Resolve optional local artifact under a samples root directory. */
+    /**
+     * Resolve optional local artifact under a samples root directory.
+     * Prefers {@link Sample#artifactGlob()} matches, skips wrapper/sources/javadoc jars,
+     * prefers larger bootable jars under {@code target/}, and breaks ties by path.
+     */
     public static Path resolveLocalArtifact(Path samplesRoot, Sample sample) {
         if (samplesRoot == null || sample == null) return null;
         Path sampleDir = samplesRoot.resolve(sample.sampleId());
         if (!Files.isDirectory(sampleDir)) return null;
-        try (var stream = Files.walk(sampleDir, 6)) {
-            return stream
+        try (var stream = Files.walk(sampleDir, 8)) {
+            List<Path> candidates = stream
                     .filter(Files::isRegularFile)
-                    .filter(path -> path.getFileName().toString().endsWith(".jar"))
-                    .filter(path -> !path.getFileName().toString().endsWith("-sources.jar"))
-                    .filter(path -> !path.getFileName().toString().endsWith("-javadoc.jar"))
-                    .findFirst()
+                    .filter(path -> isCandidateJar(path.getFileName().toString()))
+                    .collect(Collectors.toCollection(ArrayList::new));
+            if (candidates.isEmpty()) return null;
+
+            String glob = sample.artifactGlob();
+            List<Path> preferred = candidates;
+            if (glob != null && !glob.isBlank()) {
+                List<Path> matched = candidates.stream()
+                        .filter(path -> matchesArtifactGlob(sampleDir, path, glob))
+                        .collect(Collectors.toCollection(ArrayList::new));
+                if (!matched.isEmpty()) {
+                    preferred = matched;
+                }
+            }
+            return preferred.stream()
+                    .max(artifactPreference(sampleDir))
                     .orElse(null);
         } catch (IOException ignored) {
             return null;
+        }
+    }
+
+    static boolean isCandidateJar(String fileName) {
+        if (fileName == null) return false;
+        String lower = fileName.toLowerCase(Locale.ROOT);
+        if (!lower.endsWith(".jar")) return false;
+        if (lower.endsWith("-sources.jar") || lower.endsWith("-javadoc.jar")) return false;
+        if (lower.endsWith("-wrapper.jar")) return false;
+        if (lower.contains("gradle-wrapper") || lower.contains("maven-wrapper")) return false;
+        return true;
+    }
+
+    static boolean matchesArtifactGlob(Path sampleDir, Path jar, String globPattern) {
+        if (sampleDir == null || jar == null || globPattern == null || globPattern.isBlank()) {
+            return false;
+        }
+        String relative = sampleDir.relativize(jar).toString().replace('\\', '/');
+        String pattern = globPattern.replace('\\', '/');
+        PathMatcher matcher = FileSystems.getDefault().getPathMatcher("glob:" + pattern);
+        Path relativePath = Path.of(relative);
+        return matcher.matches(relativePath) || matcher.matches(jar.getFileName());
+    }
+
+    private static Comparator<Path> artifactPreference(Path sampleDir) {
+        return Comparator
+                .comparingInt((Path path) -> underTargetDirectory(sampleDir, path) ? 1 : 0)
+                .thenComparingLong(PracticalRecallSampleCatalog::safeSize)
+                .thenComparing(path -> sampleDir.relativize(path).toString().replace('\\', '/'));
+    }
+
+    private static boolean underTargetDirectory(Path sampleDir, Path jar) {
+        Path relative = sampleDir.relativize(jar);
+        for (Path part : relative) {
+            if ("target".equals(part.toString())) return true;
+        }
+        return false;
+    }
+
+    private static long safeSize(Path path) {
+        try {
+            return Files.size(path);
+        } catch (IOException ignored) {
+            return 0L;
         }
     }
 

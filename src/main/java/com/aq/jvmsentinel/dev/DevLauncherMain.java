@@ -44,6 +44,9 @@ public final class DevLauncherMain {
                             server.workerToken(), new LocalDockerTrustedSandboxClient(),
                             server::requireLocalArtifact, requiredRuntimeImage()).start()
                     : null;
+            if (worker != null) {
+                server.setRetainedSandboxRelease(worker::releaseRetainedForScan);
+            }
             // Do not bootstrap or force-select a default workspace; the GUI workspaces home owns that.
             syncFrontendEnv(config, server.baseUri(), token);
             Process frontend = startFrontend(config, server.baseUri(), token);

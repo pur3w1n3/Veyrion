@@ -77,6 +77,11 @@ public final class LocalArtifactWorkerLoop implements AutoCloseable {
         return executed;
     }
 
+    /** Releases a scan-scoped retained sandbox after TRIAGE or pipeline abandon. */
+    public void releaseRetainedForScan(String projectId, String artifactDigest, String scanId) {
+        executor.releaseRetainedForScan(projectId, artifactDigest, scanId);
+    }
+
     private static String safe(String value) {
         if (value == null) return "TRUSTED_DOCKER_EXECUTION_FAILED";
         String normalized = value.replace("\\", "\\\\").replace("\"", "\\\"")

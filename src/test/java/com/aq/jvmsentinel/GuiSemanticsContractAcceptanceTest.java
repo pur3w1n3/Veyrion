@@ -71,6 +71,13 @@ public final class GuiSemanticsContractAcceptanceTest {
                 "Entry Parameter Exploration view entry");
         check(results.contains("getScanCoverage") && results.contains("getEvidenceGraph"),
                 "Coverage/Evidence Graph fetched via API boundary");
+        // Subnav badges must prefetch on scan mount (not only after tab click).
+        check(results.contains("[snapshot?.scanId]"),
+                "coverage/evidence graph prefetch keyed by scanId");
+        check(semantics.contains("zh: '证据图'") || semantics.contains("zh: \"证据图\""),
+                "Evidence Graph Chinese subnav label");
+        check(semantics.contains("zh: '覆盖矩阵'") || semantics.contains("zh: \"覆盖矩阵\""),
+                "Coverage Matrix Chinese subnav label");
     }
 
     private static void workerBlockedProjectionLabels(String labels, String audit) {

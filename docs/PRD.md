@@ -15,6 +15,9 @@ Veyrion 面向用户明确授权的闭源 JVM 制品，通过静态事实、受�
 | Entry | 可由外部协议或框架触发的入口 |
 | Identity Track | `UNAUTH`、`USER`、`ADMIN`、`AUTH_BYPASS` 等合成身份轨 |
 | PathRun | 一次入口、身份轨、输入和运行结果的不可变实验记录 |
+| PathTrace | PathRun 内的有序运行时路径：入口、参数绑定、方法 hop、guard、sink/effect、依赖调用、退出原因 |
+| World Pack | 沙箱内的业务世界材料：profile、环境变量、license/文件、schema/seed、依赖替身和缺口 |
+| Runtime Posture | 动态执行姿态：UNAUTH、COVERAGE_POSTURE、FORCED_REACHABILITY、BYPASS |
 | Probe | 服务端固定策略下的一次有界动态尝试 |
 | Evidence | 带来源、作用域、摘要和引用的事实、观察或推断 |
 | Finding | 由证据、前置条件、根因和状态组成的安全结论 |
@@ -34,6 +37,7 @@ Veyrion 面向用户明确授权的闭源 JVM 制品，通过静态事实、受�
 9. 让数据流、鉴权/所有权、状态机、typestate/API misuse、配置/依赖、并发和资源生命周期检测器并行产生结构化假设。
 10. 对每个入口族、漏洞族和分析器展示覆盖率、未解析区域和停止原因，而不是承诺“未发现即安全”。
 11. 保持一个语言无关的 Control Plane、证据模型、流水线和 GUI；新增语言不得复制授权、状态机、存储或报告逻辑。
+12. 将动态能力建设为 Docker 内动态路径调试器：即使最终因数据库、License、文件、状态或依赖不可达失败，也要保留失败前真实经过的业务路径、参数流、sink/effect 触发和最终阻断原因。
 
 ### 2.2 非目标
 
@@ -42,6 +46,7 @@ Veyrion 面向用户明确授权的闭源 JVM 制品，通过静态事实、受�
 - 把模型文本、MOCK 命中或静态调用事实当成已验证漏洞；
 - 在当前版本提供生产级多租户、SSO、跨租户调度或任意语言；
 - 用单一百分比或风险分数掩盖未覆盖路径和证据缺口。
+- 承诺所有接口一定完整跑通或一定返回 2xx；产品只能承诺输出最深可达路径、已触发 effect 和阻断原因。
 
 ## 3. 用户画像与场景
 
@@ -63,7 +68,7 @@ Veyrion 面向用户明确授权的闭源 JVM 制品，通过静态事实、受�
 3. 执行静态扫描，产出入口、鉴权、调用、依赖、sink 和有界污点候选。
 4. 前置 AI 解释业务对象、优先级和实验计划，但不改写静态 FACT。
 5. 鉴权 AI 查询真实代码，枚举鉴权链并生成多个机制不同的 PoC 或不可行证据。
-6. 服务端按身份轨做基础动态观察，再执行鉴权确认、动态验证、路径探索和漏洞研判。
+6. 服务端编译 TracePlan、World Pack 与 entry × 0-n 参数实验计划，在 Docker 沙箱中按 UNAUTH、COVERAGE_POSTURE、FORCED_REACHABILITY 和 BYPASS 姿态做动态路径调试。
 7. 用户在报告、PathRun、finding、证据和对照视图间审阅、重放、确认或驳回。
 8. 导出不同用途的制品，并在新制品版本上复用计划进行回归。
 
@@ -115,10 +120,20 @@ Security IR / Evidence Graph 至少包含：
 动态实验必须：
 
 - 绑定明确的 entry、identity track、objective、输入、预算和 stop condition；
+- 绑定 `tracePlanId`、`postureKind`、World Pack 策略、expected/counter signal 和退出原因；
 - 只在服务端固定策略和用户授权下进入 Worker；
-- 记录 HTTP、入口命中、参数绑定、Agent/JDBC 事件和超时分类；
+- 记录 HTTP、入口命中、参数绑定、PathTrace、Sensor Agent 事件、JDBC/依赖事件和超时/退出分类；
+- 在数据库、Redis、文件、License、业务状态或外部服务不可达时，保留失败前已经观察到的业务方法、参数流和 sink/effect；
 - 在 Worker 不可用、排队超时、失败或证据投影失败时形成显式终态；
 - 绝不回退到宿主机直接执行被测制品。
+
+动态姿态要求：
+
+- `UNAUTH` 默认对每个入口有界执行，用于标注鉴权墙和意外过闸。
+- `COVERAGE_POSTURE` 默认启用，通过标准框架边界尽量注入扫描身份进入业务逻辑；结果必须标 `SCAN_AUTH_POSTURE`，不得写成匿名可利用。
+- `FORCED_REACHABILITY` 默认启用但仅限 Docker 沙箱，只能对已识别 auth/role/permission/license/feature guard 强达；结果必须标 `INSTRUMENTATION_REACHABILITY`，不能单独升 `DYNAMIC_CONFIRMED` 或 `VERIFIED`。
+- `BYPASS` 只在 UNAUTH 意外过闸或 AUTH_ANALYSIS 产出 PoC 时执行，用于确认绕过候选。
+- Agent 只能作为 Sensor 记录路径，不得继续扩展逐点鉴权/License/中间件 fail-open 作为主路线。
 
 ### 5.3 AI 角色合同
 
@@ -173,6 +188,8 @@ AI 不承担基础召回。PRE/AUTH/PATH/TRIAGE 只能查询 Evidence Graph 和�
 
 动态结论必须绑定 PathRun。静态 finding、静态入口和未执行候选可以没有 PathRun，但必须绑定 scan/entry/evidence 并说明限制或停止原因。
 
+PathRun 若包含 PathTrace，即使最终 HTTP 500 或依赖不可达，也可作为“已到达某业务点/已触发某 effect”的动态证据。报告必须同时展示 posture、World Pack、MOCK、强达和依赖不可达限制。
+
 SQL `DYNAMIC_CONFIRMED` 至少要求同一 PathRun 中存在恶意片段进入实际 JDBC/替身语句、入口到 SQL 间无过滤或参数化阻断证据，以及可重放引用。它不等于生产实库已证实。`VERIFIED` 还要求强化沙箱 attestation、原始制品和运行画像、完整证据链、实际副作用摘要与可重复结果。
 
 模型、规则、MOCK、前端或人工确认都不能单独提升验证状态。
@@ -222,5 +239,8 @@ SQL `DYNAMIC_CONFIRMED` 至少要求同一 PathRun 中存在恶意片段进入�
 16. Test Analyzer 提交错误 scope/digest/schema、缺块、超预算或迟到结果时，Control Plane 拒绝发布部分 Security IR，并保留明确终态。
 17. 第二语言静态切片复用同一 Artifact Universe、Security IR、Hypothesis、coverage matrix、证据查询和 GUI，不新增平行流水线或语言专属 Finding。
 18. GUI 遇到未知语言节点、入口协议或 namespaced extension 时仍能展示通用 evidence、coverage 和 stop reason，不因硬编码枚举导致扫描不可读。
+19. 对 `GET /code?code=...` 类入口，若参数进入 Controller、Service、Util 并触发表达式执行，随后数据库不可达，PathTrace 必须保留参数流、表达式 effect 和 DB 退出原因；报告不得因 HTTP 500 丢弃前置 effect。
+20. 对需要鉴权的接口，UNAUTH 轨标注鉴权墙；COVERAGE_POSTURE 或 FORCED_REACHABILITY 轨进入业务时必须标 posture/provenance，不能写成匿名可利用。
+21. FORCED_REACHABILITY 默认只在 Docker 沙箱内运行；尝试在宿主、无 Docker Worker 或由 AI/前端改变强达策略时必须拒绝。
 
 当前实现是否满足上述场景，只能依据 [MVP Backlog](MVP_BACKLOG.md) 中的审计与测试证据判断。

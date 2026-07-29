@@ -22,6 +22,7 @@ Java 17 Control Plane
     |-- Artifact Registry / Upload
     |-- Static Fact Index
     |-- Audit Pipeline / AI Orchestrator
+    |-- TracePlan / ExperimentPlan Compiler
     |-- PathRun / Finding / Dashboard Projection
     |-- SQLite Persistence
     |
@@ -29,8 +30,10 @@ Java 17 Control Plane
           |-- STATIC_ONLY
           `-- TRUSTED_DOCKER (explicit local debug)
                  |-- executable Spring Boot JAR
-                 |-- startup JVM Agent
-                 `-- loopback HTTP/JDBC/Redis/MySQL substitutes
+                 |-- Runtime Posture Orchestrator
+                 |-- World Pack
+                 |-- Framework Boundary Adapter
+                 `-- Sensor Agent
 ```
 
 当前为单节点、loopback、本地 SQLite 语义，不是分布式 exactly-once 工作流系统。GUI 与 Control Plane 在开发模式下分别运行于 Vite 和 Java 服务；Java 托管静态前端与 Desktop Core 属于目标打包形态。
@@ -92,21 +95,48 @@ JVM Agent 观察 Spring/Servlet、JDBC、HTTP client、文件、进程、Socket�
 
 依赖替身当前覆盖固定 loopback HTTP、JDBC、Redis RESP2/RESP3 子集和 MySQL Classic 子集。未知命令、畸形帧和预算超限 fail-closed。每个结果记录 `provenance`，替身命中不能证明真实环境影响。
 
-当前动态薄弱点：
+目标动态执行模型：
+
+```text
+TracePlan
+  -> ExperimentPlan(entry x 0-n inputs x posture)
+  -> Docker Sandbox
+       -> World Pack(profile/env/license/files/schema/seed/dependency stubs)
+       -> Runtime Posture(UNAUTH / COVERAGE_POSTURE / FORCED_REACHABILITY / BYPASS)
+       -> Framework Boundary Adapter(Servlet/Spring identity boundary)
+       -> Sensor Agent(entry/parameter/method/guard/effect/dependency/exit)
+  -> PathTrace
+  -> PathRun summary
+  -> Evidence Graph delta
+```
+
+职责边界：
+
+- `TracePlan Compiler`：从 Security IR 生成每入口的参数、预期方法 hop、guard、effect、未知点和观测预算。
+- `ExperimentPlan Compiler`：生成 entry × 0-n 参数 × posture 的可执行计划，绑定 expected/counter signal 和停止条件。
+- `World Pack`：提供 profile、环境、license/文件材料、schema/seed 和依赖替身；缺材料输出 world gap。
+- `Runtime Posture Orchestrator`：服务端固定启用 `UNAUTH`、`COVERAGE_POSTURE`、Docker-only `FORCED_REACHABILITY` 和按候选 `BYPASS`。
+- `Framework Boundary Adapter`：只在标准框架边界注入扫描身份或记录边界，不追每个自定义 Filter 特例。
+- `Sensor Agent`：只观测 entry、参数、方法 hop、guard、effect、依赖、异常和退出；不作为默认 fail-open/bypass 引擎。
+- `PathTrace Projector`：把运行时事件投影为有序路径，保留失败前真实业务路径、参数流、sink/effect 和最终阻断原因。
+
+当前动态薄弱点与新约束：
 
 - 启动成功不等于业务路径可达；依赖替身只能降低启动阻力，不能补齐真实表结构、数据、租户、流程状态或第三方服务语义。
 - 端口发现必须排除 3306/6379/5432 等依赖监听端口，只有真实 HTTP 服务端口可进入 loopback probe。
 - 目标动态模型是“任意入口 × 0-n 参数组合 → 下游 guard/effect/state/dependency 观测 → 反推漏洞假设”。通用 GET/空 payload 只有在绑定 entry signature、空参数理由和观测目标时才是合法探索；盲目洪水不足以发现需要 body、session、CSRF、业务状态或多请求序列的漏洞。
 - 动态失败、UNKNOWN、空 PathRun、`httpStatus=-1` 和 MOCK 前置条件不得提升为漏洞疑似；它们应生成启动诊断或 coverage gap。
 - 成功启动的断网容器应在有界 TTL 内保留给 PATH/TRIAGE 复用，直到漏洞研判发包确认完成、取消或预算耗尽。
+- HTTP 2xx 不是动态成功的唯一标准。若请求最终因数据库不可达、缺表、缺 license、缺文件或业务状态失败，但此前已观察到参数绑定、业务方法或 sink/effect，PathTrace 必须保留这些证据，并把依赖/世界缺口作为退出原因。
+- `FORCED_REACHABILITY` 默认开启但仅限 Docker/后续 hardened sandbox，且只能强达已识别 auth/role/permission/license/feature guard。它不得绕过 sanitizer、SQL 参数化、文件类型校验、金额/审批/状态机不变量；其结果必须标 `INSTRUMENTATION_REACHABILITY`，不能单独升 `DYNAMIC_CONFIRMED` 或 `VERIFIED`。
 
 ### 3.6 PathRun 与投影
 
-PathRun 是动态实验的核心记录，绑定 scan、entry、identity track、probe attempt、请求、结果、Agent/JDBC 观察、依赖模式、状态和停止原因。详细 schema 见 [PATH_EXPERIMENT_MODEL](PATH_EXPERIMENT_MODEL.md)。
+PathRun 是动态实验的核心摘要记录，绑定 scan、entry、identity track、posture、probe attempt、请求、结果、PathTrace、依赖模式、状态和停止原因。详细 schema 见 [PATH_EXPERIMENT_MODEL](PATH_EXPERIMENT_MODEL.md)。
 
-目标顺序是：应用启动诊断 -> 入口参数空间与实验计划编译 -> Worker 执行 -> trace 校验提交 -> 请求级投影 -> PathRun/evidence 可查 -> hypothesis/detector 有界重算 -> 阶段成功。动态结果可以从下游 effect/guard/state 反推新假设，也可以增强、反证或解释静态假设；不能因为动态不可达而删除静态高危候选。
+目标顺序是：应用启动诊断 -> TracePlan 编译 -> World Pack 计划 -> 入口参数空间与实验计划编译 -> Worker 执行 -> PathTrace 校验提交 -> 请求级投影 -> PathRun/evidence 可查 -> hypothesis/detector 有界重算 -> 阶段成功。动态结果可以从下游 effect/guard/state 反推新假设，也可以增强、反证或解释静态假设；不能因为动态不可达而删除静态高危候选。
 
-每次 `sandbox_probe` 需要独立 `probeAttemptId`，绑定 canonical tool call、规范化 payload hash、technique、双鉴权通道、计划、task 和 PathRun。`BUSY`、`FAILED`、`CANCELLED`、`UNKNOWN`、空投影或未投影结果不是有效尝试。`DYNAMIC_SUSPECTED` 只能来自真实观察到入口、guard/effect/state 或结构差分的 PathRun。
+每次 `sandbox_probe` 需要独立 `probeAttemptId`，绑定 canonical tool call、规范化 payload hash、technique、posture、World Pack、计划、task 和 PathRun。`BUSY`、`FAILED`、`CANCELLED`、`UNKNOWN`、空投影或未投影结果不是有效尝试。`DYNAMIC_SUSPECTED` 只能来自真实观察到入口、参数绑定、guard/effect/state、依赖副作用或结构差分的 PathRun/PathTrace。强达轨的观察必须带限制，不能单独证明真实可利用。
 
 ## 4. 数据与持久化
 

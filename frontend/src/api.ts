@@ -1606,6 +1606,14 @@ export const parseDashboard = (value: unknown): DashboardSnapshot => {
     contrastSnapshotId: strictOptionalText(value.contrastSnapshotId, 'dashboard.contrastSnapshotId'),
     contrastRoundIndex: typeof value.contrastRoundIndex === 'number' && Number.isFinite(value.contrastRoundIndex)
       ? Math.max(0, Math.floor(value.contrastRoundIndex))
+      : undefined,
+    dynamicSupportedPathRuns: typeof value.dynamicSupportedPathRuns === 'number'
+      && Number.isFinite(value.dynamicSupportedPathRuns)
+      ? Math.max(0, Math.floor(value.dynamicSupportedPathRuns))
+      : undefined,
+    dynamicFailedPathRuns: typeof value.dynamicFailedPathRuns === 'number'
+      && Number.isFinite(value.dynamicFailedPathRuns)
+      ? Math.max(0, Math.floor(value.dynamicFailedPathRuns))
       : undefined
   }
 }

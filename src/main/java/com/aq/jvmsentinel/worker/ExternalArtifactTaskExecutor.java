@@ -236,6 +236,8 @@ public final class ExternalArtifactTaskExecutor {
                     "保留断网沙箱会话供 PATH/TRIAGE 复用");
             retainedSessions.retain(request.scope(), registration.sha256(), sandboxId, httpPort, sandbox);
             sandboxId = null;
+            pulse(request.scope(), lease, heartbeatExtension,
+                    "任务完成；断网沙箱保留至 TRIAGE 动态校验结束");
             WorkerControlPlaneClient.TaskDescriptor completed =
                     control.complete(request.scope(), lease.leaseId(), workerId);
             validateDescriptor(completed, request.scope(), TaskLifecycle.COMPLETED);
@@ -328,6 +330,8 @@ public final class ExternalArtifactTaskExecutor {
                 control.commitTrace(request.scope(), lease.leaseId(), workerId, chunk);
             }
             retainedSessions.touch(session);
+            pulse(request.scope(), lease, heartbeatExtension,
+                    "复用沙箱探针完成；会话继续保留至 TRIAGE 结束");
             WorkerControlPlaneClient.TaskDescriptor completed =
                     control.complete(request.scope(), lease.leaseId(), workerId);
             validateDescriptor(completed, request.scope(), TaskLifecycle.COMPLETED);
@@ -1169,6 +1173,15 @@ public final class ExternalArtifactTaskExecutor {
             }
         }
 
+        void releaseForScan(String projectId, String artifactDigest, String scanId,
+                            SandboxRuntimeClient sandbox) {
+            SessionKey key = new SessionKey(projectId, artifactDigest, scanId);
+            RetainedSandboxSession session = sessions.remove(key);
+            if (session != null) {
+                deleteQuietly(sandbox, session.sandboxId());
+            }
+        }
+
         private static void deleteQuietly(SandboxRuntimeClient sandbox, String sandboxId) {
             try {
                 sandbox.delete(sandboxId);
@@ -1187,6 +1200,15 @@ public final class ExternalArtifactTaskExecutor {
 
     public void closeRetainedSessions() {
         retainedSessions.releaseAll(sandbox);
+    }
+
+    /** Releases the retained deny-all sandbox for one scan after TRIAGE or pipeline abandon. */
+    public void releaseRetainedForScan(String projectId, String artifactDigest, String scanId) {
+        retainedSessions.releaseForScan(
+                requireId(projectId, "projectId"),
+                requireId(artifactDigest, "artifactDigest"),
+                requireId(scanId, "scanId"),
+                sandbox);
     }
     @FunctionalInterface
     public interface ArtifactCatalog {

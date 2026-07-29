@@ -104,6 +104,12 @@ public final class AuditPipelineCoordinator {
 
         /** Observe current task lifecycle name for restart reconciliation. */
         default String taskLifecycle(String projectId, String scanId, String taskId) { return null; }
+
+        /**
+         * Best-effort release of a scan-scoped retained deny-all sandbox after PATH/TRIAGE
+         * dynamic validation completes or the pipeline abandons a stage that may have held one.
+         */
+        default void releaseRetainedSandbox(Arm arm) { }
     }
 
     public enum PipelineStage {
@@ -320,8 +326,10 @@ public final class AuditPipelineCoordinator {
             case DYNAMIC_VERIFICATION -> waitForDynamicIdleThenPath(live);
             case PATH_EXPLORATION -> beginRoleStage(live,
                     PipelineStage.VULNERABILITY_TRIAGE, AgentRole.VULNERABILITY_TRIAGE);
-            case VULNERABILITY_TRIAGE -> beginRoleStage(live,
-                    PipelineStage.REPORT_GENERATION, AgentRole.REPORT_GENERATION);
+            case VULNERABILITY_TRIAGE -> {
+                actions.releaseRetainedSandbox(live.arm());
+                beginRoleStage(live, PipelineStage.REPORT_GENERATION, AgentRole.REPORT_GENERATION);
+            }
             case REPORT_GENERATION -> disarm(live, PipelineStage.COMPLETE.name());
             default -> { }
         }
@@ -509,6 +517,7 @@ public final class AuditPipelineCoordinator {
         if (live == null || !sameAttempt(live, cursor)) {
             return;
         }
+        actions.releaseRetainedSandbox(live.arm());
         Cursor terminal = new Cursor(live.arm(), live.stage(), live.stageAttemptId(),
                 live.expectedJobId(), live.expectedTaskId());
         if (!actions.compareAndAdvance(live, terminal, false, stopReason)) {

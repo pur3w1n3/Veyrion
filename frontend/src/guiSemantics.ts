@@ -81,13 +81,13 @@ export const RESULTS_VIEW_META: Record<ResultsViewId, { zh: string; en: string; 
     blurbEn: 'Entry × identity-track × probe attempt sessions'
   },
   evidenceGraph: {
-    zh: 'Evidence Graph',
+    zh: '证据图',
     en: 'Evidence Graph',
     blurbZh: '局部证据图；未知 kind 可降级',
     blurbEn: 'Local evidence graph; unknown kinds degrade safely'
   },
   coverage: {
-    zh: 'Coverage Matrix',
+    zh: '覆盖矩阵',
     en: 'Coverage Matrix',
     blurbZh: '覆盖矩阵与未解析缺口；成功≠安全',
     blurbEn: 'Coverage matrix and unresolved gaps; success ≠ safe'

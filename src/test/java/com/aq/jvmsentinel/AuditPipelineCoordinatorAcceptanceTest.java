@@ -34,6 +34,7 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
         foreignManualAndDuplicateDoNotAdvance();
         staleAttemptAndRetryInvalidateOldCallbacks();
         failedExpectedJobDisarmsWithoutEnqueue();
+        triageCompletionReleasesRetainedSandbox();
         System.out.println("AuditPipelineCoordinatorAcceptanceTest passed ("
                 + ASSERTIONS.get() + " assertions)");
     }
@@ -122,6 +123,21 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
         check(fixture.authCreated.await(3, TimeUnit.SECONDS), "new run expected job still advances");
     }
 
+    private static void triageCompletionReleasesRetainedSandbox() throws Exception {
+        Fixture fixture = new Fixture();
+        AuditPipelineCoordinator coordinator = fixture.coordinator;
+        coordinator.armForJob("scan-triage", "project-a", "operator-a", AiOutputLanguage.ZH_CN,
+                PipelineStage.VULNERABILITY_TRIAGE, "job-triage");
+        check(fixture.actions.stream().noneMatch(value -> value.startsWith("release-sandbox:")),
+                "arming TRIAGE does not release retained sandbox");
+        coordinator.onAiJobFinished(job("job-triage", "scan-triage", AgentRole.VULNERABILITY_TRIAGE, "COMPLETED"));
+        check(fixture.triageReleased.await(3, TimeUnit.SECONDS),
+                "TRIAGE completion releases retained sandbox before REPORT");
+        check(fixture.sandboxReleases.get() == 1, "TRIAGE completion releases exactly once");
+        check(fixture.reportCreated.await(3, TimeUnit.SECONDS),
+                "TRIAGE completion enqueues REPORT_GENERATION");
+    }
+
     private static void failedExpectedJobDisarmsWithoutEnqueue() throws Exception {
         Fixture fixture = new Fixture();
         AuditPipelineCoordinator coordinator = fixture.coordinator;
@@ -172,6 +188,9 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
         private final CountDownLatch pathCreated = new CountDownLatch(1);
         private final CountDownLatch dynamicCreated = new CountDownLatch(1);
         private final CountDownLatch verifyCreated = new CountDownLatch(1);
+        private final CountDownLatch triageReleased = new CountDownLatch(1);
+        private final CountDownLatch reportCreated = new CountDownLatch(1);
+        private final AtomicInteger sandboxReleases = new AtomicInteger();
         private final AtomicInteger roleEnqueues = new AtomicInteger();
         private final AtomicInteger authJobs = new AtomicInteger();
         private final Map<String, Cursor> persisted = new ConcurrentHashMap<>();
@@ -208,6 +227,9 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
                 }
                 if (role == AgentRole.DYNAMIC_VERIFICATION) {
                     verifyCreated.countDown();
+                }
+                if (role == AgentRole.REPORT_GENERATION) {
+                    reportCreated.countDown();
                 }
                 return jobId;
             }
@@ -272,6 +294,13 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
                 }
                 actions.add("cas:" + expected.stage() + "->" + next.stage() + ":" + armed);
                 return true;
+            }
+
+            @Override
+            public void releaseRetainedSandbox(AuditPipelineCoordinator.Arm arm) {
+                actions.add("release-sandbox:" + arm.scanId());
+                sandboxReleases.incrementAndGet();
+                triageReleased.countDown();
             }
         }
     }

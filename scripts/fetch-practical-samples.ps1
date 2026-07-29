@@ -33,22 +33,39 @@ function Fetch-Sample($sample) {
     try {
         Write-Host "    build: $($sample.buildHint)"
         Invoke-Expression $sample.buildHint
+        if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+            Write-Warning "Build failed for $id (exit $LASTEXITCODE); continuing with remaining samples."
+            return
+        }
+    } catch {
+        Write-Warning "Build failed for $id : $($_.Exception.Message); continuing with remaining samples."
+        return
     } finally {
         Pop-Location
     }
-    $jars = Get-ChildItem -Path $dest -Recurse -Filter *.jar |
-        Where-Object { $_.Name -notmatch '(-sources|-javadoc)\.jar$' }
+    $jars = Get-ChildItem -Path $dest -Recurse -Filter *.jar -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name -notmatch '(-sources|-javadoc|-wrapper)\.jar$' -and
+            $_.Name -notmatch '(gradle-wrapper|maven-wrapper)'
+        } |
+        Sort-Object Length -Descending
     if (-not $jars) {
         Write-Warning "No runnable jar found for $id — check buildHint/module selection."
     } else {
-        Write-Host "    jars:"
-        $jars | Select-Object -First 8 | ForEach-Object { Write-Host "      $($_.FullName)" }
+        Write-Host "    jars (wrappers skipped, largest first):"
+        $jars | Select-Object -First 8 | ForEach-Object {
+            Write-Host ("      {0:N2} MB  {1}" -f ($_.Length / 1MB), $_.FullName)
+        }
     }
 }
 
 foreach ($sample in $catalog.samples) {
     if ($SampleId -and $sample.sampleId -ne $SampleId) { continue }
-    Fetch-Sample $sample
+    try {
+        Fetch-Sample $sample
+    } catch {
+        Write-Warning "Sample $(($sample).sampleId) failed: $($_.Exception.Message); continuing."
+    }
 }
 
 Write-Host "Done. Artifacts stay under $OutRoot and must not be committed."

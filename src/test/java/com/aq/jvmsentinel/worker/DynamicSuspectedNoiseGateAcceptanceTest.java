@@ -66,6 +66,15 @@ public final class DynamicSuspectedNoiseGateAcceptanceTest {
         check(ApiDtos.DYNAMIC_SUSPECTED.equals(TraceProjectionService.verificationStatusFor(
                         PathOutcomeClass.HTTP_OBSERVED, 200)),
                 "HTTP_OBSERVED 200 without explicit entryHit still may suspect via status");
+        check(ApiDtos.UNREACHED.equals(TraceProjectionService.verificationStatusFor(
+                        PathOutcomeClass.AUTH_CHALLENGE, 401, true, false)),
+                "401 AUTH_CHALLENGE without effect is diagnostic UNREACHED, not suspected vuln");
+        check(ApiDtos.UNREACHED.equals(TraceProjectionService.verificationStatusFor(
+                        PathOutcomeClass.AUTH_CHALLENGE, 403, true, false)),
+                "403 AUTH_CHALLENGE without effect is diagnostic UNREACHED");
+        check(ApiDtos.DYNAMIC_SUSPECTED.equals(TraceProjectionService.verificationStatusFor(
+                        PathOutcomeClass.AUTH_CHALLENGE, 401, true, true)),
+                "AUTH_CHALLENGE with effect/SQL signal may still be DYNAMIC_SUSPECTED");
     }
 
     private static void floodRatioGate() {

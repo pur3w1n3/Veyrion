@@ -47,13 +47,15 @@ export function ResultsShell({
         viewMeta={viewMeta}
         english={english}
       />
-      <div className="results-shell__body">
+      <div className={`results-shell__body${activeView === 'report' ? ' results-shell__body--report' : ''}`}>
         <main className="results-shell__main">{children}</main>
-        <EvidenceInspector
-          selection={selection}
-          english={english}
-          hypothesisById={hypothesisById}
-        />
+        {activeView !== 'report' && (
+          <EvidenceInspector
+            selection={selection}
+            english={english}
+            hypothesisById={hypothesisById}
+          />
+        )}
       </div>
     </section>
   )

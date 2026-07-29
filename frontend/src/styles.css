@@ -103,6 +103,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .results-subnav__secondary { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 4px; border-top: 1px dashed var(--line); }
 .results-subnav__secondary button { opacity: .92; }
 .results-shell__body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 320px); gap: 12px; align-items: start; }
+.results-shell__body--report { grid-template-columns: minmax(0, 1fr); }
 .results-shell__main { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 16px; }
 .results-view__head { display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 12px; }
 .results-view__head h2, .results-view__head h3 { margin: 0; font-size: 15px; }

@@ -41,10 +41,11 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 |----|------|
 | 触发 | 授权制品扫描 `scan-7b619e8a65064fa9` 暴露动态路径和真实漏洞发现能力严重不足 |
 | 观察 | 历史数据出现 `2036` 条 PathRun，其中 `1935` 条为 `DYNAMIC_SUSPECTED / httpStatus=-1 / outcomeClass=UNKNOWN / identityProvenance=MOCK`；最大来源任务 `task-dynamic-3c5ac1abe4994477` 产生 `1838` 条无效动态疑似 |
+| 补充（2026-07-29） | `scan-28ab5e591f4d4b5a`（Blade）：266 PathRun → 184×401 `AUTH_CHALLENGE`（曾误标 `DYNAMIC_SUSPECTED`）、56×超时、25×MOCK gap、1×200；261×UNAUTH / 5×BYPASS；`parameterBound` 全空。鉴权墙 + 身份材料缺口 + 无计划洪水，仍未进入业务代码 |
 | 结论 | 现有 `AUDITED` 多数只代表 fixture 合同和安全拒绝路径通过，不代表真实 JAR 漏洞召回可用；当前 MVP 的最低可靠能力仍是静态入口、调用边、sink 与部分 Security IR |
 | 根因 | 动态洪水没有按 entry signature、0-n 参数空间、身份轨和下游 effect/guard/state 观测组织，导致通用 HTTP 探测替代了真实路径探索；依赖替身只让应用尽量启动，不能补齐业务状态、鉴权上下文和数据种子；PathRun/RuntimeObservation 与 detector 重算闭环薄；AI 阶段更多在解释失败结果，没有获得足够代码语义和可执行实验计划 |
-| 状态调整 | 动态执行、PathRun 驱动 triage、Provider DynamicProbe 主流程、非污点 detector 的实战召回统一按 `PARTIAL` 看待；不得再用 gate PASS 描述为“基本可用漏洞挖掘” |
-| 产品取舍 | MVP 先回到“静态事实可靠召回 + 动态用于证伪/复现/补证”的路线。动态沙箱在完成 P0-15 到 P0-20 前，不作为主发现引擎，也不应覆盖静态 sink 结果排序 |
+| 状态调整 | 动态执行、PathRun 驱动 triage、Provider DynamicProbe 主流程、非污点 detector 的实战召回统一按 `PARTIAL` 看待；不得再用 gate PASS 描述为“基本可用漏洞挖掘”；系统性格局见 **P0-21** |
+| 产品取舍 | MVP 先回到“静态事实可靠召回 + 动态用于证伪/复现/补证”的路线。动态沙箱在完成 P0-15 到 P0-21 前，不作为主发现引擎，也不应覆盖静态 sink 结果排序 |
 
 ## 1. 状态图例
 
@@ -306,10 +307,109 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 - [x] `FindingRanker`：静态证据优先、动态支持加权、`UNREACHED`/MOCK 动态降权。
 - [x] `DYNAMIC_SUSPECTED` 仅在真实 HTTP/effect 观察时；`UNKNOWN/-1/MOCK-gap/REACHED_NO_BIND` → `UNREACHED`。
+- [x] `AUTH_CHALLENGE`（401/403 鉴权墙）无 effect/SQL 信号时 → `UNREACHED`（`outcomeClass` 仍保留供对照；不得把 UNAUTH 401 洪水标成疑似漏洞）。证据：`scan-28ab5e591f4d4b5a` 184×401 曾被标 `DYNAMIC_SUSPECTED`；`DynamicSuspectedNoiseGateAcceptanceTest`。
 - [x] TRIAGE classification：`SUPPORTED` / `CONTRADICTED` / `INSUFFICIENT_EVIDENCE` / `UNREACHED`（`INFERENCE` 兼容别名为 `SUPPORTED`）。
 - [x] Dashboard/GUI 摘要区分 dynamicSupported / dynamicFailed；Dynamic Diagnostics 承接失败噪声。
 
 验收：对 `scan-7b619e8a65064fa9` 类失败样本，报告应突出静态 sink 和动态不可达原因，而不是输出上千条动态疑似；真实可达漏洞必须能看到静态证据、实验计划、PathRun 和 triage 结论链。
+
+### P0-21 动态路径调试器（三轨 Posture + World Pack + PathTrace）
+
+状态：`NOT STARTED`（设计已重写；实施需 ADR-0004 评审或任务包显式授权）
+
+**目标**：把动态能力从“HTTP 洪水 + Agent 特例绕过”迁移为 Docker 内动态路径调试器。对每个可识别入口尽最大努力记录最深可达业务路径、参数流、sink/effect 触发和最终阻断原因；即使最终因为数据库、License、文件、业务状态或依赖不可达失败，也要保留失败前真实经过的 Controller/Service/Util/Repository/Guard/Effect 证据，并反馈给 AI。
+
+**权威设计**：[DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](DYNAMIC_SANDBOX_POSTURE_REDESIGN.md)；方向提案 [ADR-0004](adr/0004-sandbox-posture-vs-agent-bypass.md)（`PROPOSED`）。实现不得继续扩大 Agent Bypass Zoo。
+
+**核心模型**：
+
+```text
+Artifact Universe / Security IR
+  -> TracePlan(entry / params / guards / effects / expected hops)
+  -> World Pack(profile / env / license / files / schema / seed / stubs)
+  -> ExperimentPlan(entry x 0-n params x posture)
+  -> Docker Sandbox
+       -> UNAUTH
+       -> COVERAGE_POSTURE
+       -> FORCED_REACHABILITY (default, Docker-only)
+       -> BYPASS (candidate only)
+       -> Sensor Agent
+  -> PathTrace(entry / param / method / guard / effect / dependency / exit)
+  -> Evidence Graph delta
+  -> AI PATH/TRIAGE/REPORT
+```
+
+**禁止**：
+
+- 把“所有接口完整 2xx”作为承诺；只能承诺最深可达路径和阻断原因。
+- 在宿主执行动态或强达轨。
+- 让 AI/前端改变强达策略、命令、网络、挂载、UID 或预算。
+- 新增每个 Filter/License/中间件一个 fail-open Agent 特例。
+- 默认绕过 sanitizer、SQL 参数化、文件类型校验、金额/审批/状态机不变量。
+- 把 `FORCED_REACHABILITY`、MOCK、World Pack 或扫描身份姿态单独升 `DYNAMIC_CONFIRMED` / `VERIFIED`。
+
+**迁移与开发步骤**：
+
+1. **合同冻结**
+   - [ ] 定义 `TracePlan` schema：entry、参数、预期 hops、guard refs、effect refs、unresolved points、预算。
+   - [ ] 定义 `PathTrace` / `TraceEvent` schema：ENTRY、PARAMETER、METHOD_HOP、GUARD、EFFECT、DEPENDENCY、EXCEPTION、EXIT。
+   - [ ] 定义 `WorldPack` manifest：profile、env、system properties、license/files、schema/seed、dependency stubs、missing material gaps。
+   - [ ] 定义 `RuntimePosture`：`UNAUTH`、`COVERAGE_POSTURE`、`FORCED_REACHABILITY`、`BYPASS`，含 `postureProvenance`、`forcedGuardRefs`。
+   - [ ] 旧 PathRun 兼容读取：无 trace/posture/world 字段时标 `LEGACY_DYNAMIC_INCOMPLETE`，不得回填假阳性。
+
+2. **静态 TracePlan 编译**
+   - [ ] 从 EntrySurface、参数签名、DTO/config、Guard、Effect、调用边和 coverage gap 编译 TracePlan。
+   - [ ] 支持 0 参数入口，并记录 empty-input rationale。
+   - [ ] 将旧 sink/taint path 兼容投影为 expected effect/hop。
+   - [ ] 反射、动态 dispatch、未解析 wrapper 写入 unresolved points。
+
+3. **ExperimentPlan 编译**
+   - [ ] 编译 entry × 0-n 参数 × posture。
+   - [ ] 默认每入口生成 `UNAUTH`、`COVERAGE_POSTURE`、`FORCED_REACHABILITY`；`BYPASS` 只按候选生成。
+   - [ ] 每个计划绑定 TracePlan、WorldPack、expected/counter signal、stop condition 和预算。
+   - [ ] 禁止无 `experimentPlanId` 的空 GET/POST 作为主覆盖。
+
+4. **World Pack 最小版**
+   - [ ] 支持 `OBSERVE_FAIL`：依赖不可达时真实失败，但保留失败前路径。
+   - [ ] 支持 `MOCK_CONTINUE`：替身返回空结果或 seed，继续探索更深路径，并标 MOCK。
+   - [ ] 将 JDBC/Redis/MySQL 现有替身迁入 World Pack 语义。
+   - [ ] 统一输出 `DEPENDENCY_UNAVAILABLE`、`DEPENDENCY_DATA_GAP`、`WORLD_STATE_GAP`、`LICENSE_UNAVAILABLE`。
+
+5. **Runtime Posture Orchestrator**
+   - [ ] `UNAUTH`：真实无身份撞墙，标 `authRequirement`。
+   - [ ] `COVERAGE_POSTURE`：标准框架边界注入扫描身份，优先支持 Servlet Principal、Spring SecurityContext、Method Security。
+   - [ ] `FORCED_REACHABILITY`：默认启用但仅 Docker；只强达已识别 auth/role/permission/license/feature guard；写 `INSTRUMENTATION_REACHABILITY`。
+   - [ ] `BYPASS`：仅 UNAUTH 意外过闸或 AUTH_ANALYSIS PoC 触发。
+   - [ ] 非 Docker Worker、STATIC_ONLY、宿主路径、用户/AI 策略字段全部拒绝。
+
+6. **Sensor Agent 与 PathTrace 投影**
+   - [ ] Agent 只做 Sensor：entry、参数绑定、方法 hop、guard decision、effect、dependency、exception、exit。
+   - [ ] 每个事件贯穿 scan、task、pathRun、probeAttempt、experimentPlan、tracePlan、entry、track、posture、correlationId。
+   - [ ] effect 已触发但后续 DB 不可达时，PathTrace 保留 effect，并以依赖失败作为 exit。
+   - [ ] trace 预算截断必须记录 `TRACE_TRUNCATED`，不能静默丢路径。
+
+7. **Evidence Graph 与 AI 反馈**
+   - [ ] PathTrace 投影为 RuntimeObservation：Entry、Parameter、MethodHop、Guard、Effect、Dependency、Exception、Exit。
+   - [ ] Evidence Graph delta 触发 hypothesis lifecycle 有界更新。
+   - [ ] AI 工具可查询 path trace slice、参数流、最后业务 hop、effect 和退出原因。
+   - [ ] PATH/TRIAGE 根据 PathTrace 缺口提出下一轮参数、World Pack 或 replay 建议；服务端仍负责最终编译和授权。
+
+8. **报告与 GUI**
+   - [ ] 最终报告按入口展示三轨 outcome、最深可达路径、参数流、sink/effect、退出原因、World/Posture/强达限制。
+   - [ ] Dynamic Diagnostics 展示 World Pack gaps、Posture gaps、forced guard refs、依赖失败。
+   - [ ] Findings 主列表不得把强达-only、MOCK-only、UNKNOWN/-1 作为真实漏洞支持。
+
+**验证逻辑**：
+
+- [ ] `GET /code?code=x` fixture：参数进入 Controller → Service → Util，触发表达式执行，随后 DB 不可达；PathTrace 必须保留表达式 effect 与 `DEPENDENCY_UNAVAILABLE` exit。
+- [ ] 鉴权 fixture：UNAUTH 401 标 `authRequirement`；COVERAGE_POSTURE 进入 handler 或输出 `AUTH_POSTURE_GAP`；FORCED_REACHABILITY 越过已识别 guard 并标限制。
+- [ ] DB 缺表 fixture：已观察 SQL/effect，但退出为 `DEPENDENCY_DATA_GAP`；不丢前置路径。
+- [ ] License fixture：缺 license 输出 `LICENSE_UNAVAILABLE`；强达轨可探索下游但不得升验证。
+- [ ] 安全拒绝：非 Docker 强达、AI/前端策略覆盖、强达 sanitizer/SQL 参数化/业务状态机不变量均 fail-closed。
+- [ ] 旧扫描兼容：旧 PathRun 无 PathTrace 时显示 legacy incomplete，不回填 posture。
+- [ ] 报告验收：AI 研判必须引用 PathTrace evidence refs，不能只引用 HTTP 500 或模型文本。
+
+验收：对 `scan-28ab5e591f4d4b5a` 类样本，动态覆盖不再被 UNAUTH 401 洪水主导；对数据库不可达样本，系统能展示失败前真实业务路径、参数流、sink/effect 和依赖退出原因；报告不把扫描身份或强达可达写成未授权利用；静态 sink 排序不被无效 PathRun 稀释。
 
 ## 4. P1：建立开放式发现内核
 
@@ -542,7 +642,8 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 |------|----------|----------|----------|
 | 缺少实战 ground truth | fixture gate 通过，但真实授权 JAR 漏报无法量化 | 无法判断改动是提升还是换噪声 | P0-15 |
 | 静态内核深度不足 | 轻量 call graph / summary / sanitizer 能过正例，但复杂 wrapper、别名、异步、反射不稳 | 静态 sink 以外的真实漏洞召回弱 | P0-16、P1-04 |
-| 动态入口实验过于通用 | 未围绕 entry signature、0-n 参数空间、身份轨和下游 effect/guard/state 观测组织；盲目空 GET / 洪水 probe 多 | 大量路径不可达，动态结果不如静态 sink 实在 | P0-18 |
+| 动态入口实验过于通用 | 未围绕 entry signature、0-n 参数、三用途轨（UNAUTH/PRIVILEGED/BYPASS）和下游 effect 组织；盲 UNAUTH 洪水当覆盖 | 鉴权入口停在墙外；动态不如静态 sink 实在 | P0-18、P0-21 |
+| Blade/PreAuth 鉴权墙 | 几乎只打 UNAUTH→401；JWT/Blade-Auth mint 失败无 PRIVILEGED 覆盖；`parameterBound` 全空 | 无法“进业务调试”；曾把 401 标动态疑似；缺 `IDENTITY_UNAVAILABLE` | P0-20、P0-21 |
 | 沙箱启动诊断弱 | 依赖端口、启动失败、探针 JVM 失败、依赖替身缺口容易混成 UNKNOWN | `httpStatus=-1` 噪声污染 triage | P0-17 |
 | 依赖替身不是业务环境 | JDBC/Redis/MySQL 替身只能帮助启动，缺表、缺数据和协议细节不能还原业务流 | 动态假阴性高，MOCK 证据不能证明真实影响 | P0-17、P0-18 |
 | RuntimeObservation 与 IR 对齐薄 | Agent 事件不能稳定映射 Entry/Guard/Effect/State | PathRun 难以支持或反证 hypothesis | P0-19 |

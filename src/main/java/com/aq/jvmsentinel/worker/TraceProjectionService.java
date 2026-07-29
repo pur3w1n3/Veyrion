@@ -381,7 +381,9 @@ public final class TraceProjectionService {
 
     /**
      * P0-20: DYNAMIC_SUSPECTED only when a real HTTP/effect observation exists.
-     * {@code httpStatus=-1}, UNKNOWN/timeout/MOCK-gap/no-bind, and empty signals stay UNREACHED.
+     * {@code httpStatus=-1}, UNKNOWN/timeout/MOCK-gap/no-bind, AUTH_CHALLENGE (401/403 wall)
+     * without effect, and empty signals stay UNREACHED. Auth-wall floods are diagnostics
+     * ({@code outcomeClass=AUTH_CHALLENGE} retained for contrast); they are not suspected vulns.
      */
     static String verificationStatusFor(PathOutcomeClass outcome, int httpStatus) {
         return verificationStatusFor(outcome, httpStatus, null, false);
@@ -395,10 +397,16 @@ public final class TraceProjectionService {
         if (httpStatus < 0) {
             return ApiDtos.UNREACHED;
         }
+        // Auth challenge alone (filter hit, no business bind/effect) is not a success path.
+        if (outcome == PathOutcomeClass.AUTH_CHALLENGE) {
+            return hasEffectOrSqlSignal
+                    ? VerificationStatus.DYNAMIC_SUSPECTED.name()
+                    : ApiDtos.UNREACHED;
+        }
         if (Boolean.TRUE.equals(entryHit) || hasEffectOrSqlSignal) {
             return VerificationStatus.DYNAMIC_SUSPECTED.name();
         }
-        if ((outcome == PathOutcomeClass.HTTP_OBSERVED || outcome == PathOutcomeClass.AUTH_CHALLENGE)
+        if (outcome == PathOutcomeClass.HTTP_OBSERVED
                 && httpStatus >= 200 && httpStatus < 500 && httpStatus != 404) {
             return VerificationStatus.DYNAMIC_SUSPECTED.name();
         }

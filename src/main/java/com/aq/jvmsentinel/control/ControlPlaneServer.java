@@ -226,6 +226,7 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     private final ProviderInventoryService providerInventoryService;
     private final AiJobOrchestrator aiJobOrchestrator;
     private final AuditPipelineCoordinator auditPipeline;
+    private volatile RetainedSandboxRelease retainedSandboxRelease = (projectId, artifactDigest, scanId) -> { };
     private final Clock clock;
     private final Authorizer authorizer = new Authorizer();
     private final ScheduledExecutorService pipelineReaper = Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -443,6 +444,11 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                 }
                 return null;
             }
+
+            @Override
+            public void releaseRetainedSandbox(AuditPipelineCoordinator.Arm arm) {
+                releaseRetainedSandboxForScan(arm.scanId());
+            }
         });
         this.aiJobOrchestrator.setTerminalListener(auditPipeline::onAiJobFinished);
         this.workerApi.setTerminalListener(auditPipeline::onDynamicTaskFinished);
@@ -605,6 +611,32 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     public String mutationToken() { return mutationToken; }
     /** Process-local credential for the internal Worker contract; never accepted by GUI routes. */
     public String workerToken() { return workerToken; }
+
+    /**
+     * Optional hook from the co-located trusted Docker worker. Invoked when TRIAGE completes or
+     * the audit pipeline abandons a scan that may still hold a retained deny-all sandbox.
+     */
+    @FunctionalInterface
+    public interface RetainedSandboxRelease {
+        void release(String projectId, String artifactDigest, String scanId);
+    }
+
+    public void setRetainedSandboxRelease(RetainedSandboxRelease release) {
+        this.retainedSandboxRelease = release == null
+                ? (projectId, artifactDigest, scanId) -> { }
+                : release;
+    }
+
+    private void releaseRetainedSandboxForScan(String scanId) {
+        try {
+            ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
+            retainedSandboxRelease.release(
+                    scan.dto().projectId(), scan.dto().artifactDigest(), scanId);
+        } catch (RuntimeException ignored) {
+            // Best-effort; scan teardown or foreign callbacks must not block pipeline CAS.
+        }
+    }
+
     public ControlPlaneStore store() { return store; }
     public SseHub sseHub() { return sseHub; }
     public ArtifactRegistry artifactRegistry() { return artifactRegistry; }

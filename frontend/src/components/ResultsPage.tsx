@@ -99,6 +99,8 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
     setShowAuthGap(false)
   }, [projectId, snapshot?.scanId])
 
+  // Prefetch coverage + evidence-graph summaries on scan mount so subnav badges
+  // match EvidenceSummaryStrip without requiring a tab click (GUI_DESIGN §4.1).
   useEffect(() => {
     let active = true
     setCoverage(undefined)
@@ -106,28 +108,24 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
     setEvidenceGraph(undefined)
     setEvidenceGraphError(undefined)
     if (!snapshot?.scanId || snapshot.scanId === 'unscanned') return () => { active = false }
-    if (activeView === 'coverage') {
-      setCoverageLoading(true)
-      void api.getScanCoverage(snapshot.scanId).then((matrix) => {
-        if (active) setCoverage(matrix)
-      }).catch((cause) => {
-        if (active) setCoverageError(errorMessage(cause))
-      }).finally(() => {
-        if (active) setCoverageLoading(false)
-      })
-    }
-    if (activeView === 'evidenceGraph') {
-      setEvidenceGraphLoading(true)
-      void api.getEvidenceGraph(snapshot.scanId).then((graph) => {
-        if (active) setEvidenceGraph(graph)
-      }).catch((cause) => {
-        if (active) setEvidenceGraphError(errorMessage(cause))
-      }).finally(() => {
-        if (active) setEvidenceGraphLoading(false)
-      })
-    }
+    setCoverageLoading(true)
+    setEvidenceGraphLoading(true)
+    void api.getScanCoverage(snapshot.scanId).then((matrix) => {
+      if (active) setCoverage(matrix)
+    }).catch((cause) => {
+      if (active) setCoverageError(errorMessage(cause))
+    }).finally(() => {
+      if (active) setCoverageLoading(false)
+    })
+    void api.getEvidenceGraph(snapshot.scanId).then((graph) => {
+      if (active) setEvidenceGraph(graph)
+    }).catch((cause) => {
+      if (active) setEvidenceGraphError(errorMessage(cause))
+    }).finally(() => {
+      if (active) setEvidenceGraphLoading(false)
+    })
     return () => { active = false }
-  }, [activeView, snapshot?.scanId])
+  }, [snapshot?.scanId])
 
   useEffect(() => {
     let active = true
@@ -262,9 +260,20 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       case 'pathRuns':
         return { label, count: pathRuns.length, blurb }
       case 'evidenceGraph':
-        return { label, count: evidenceGraph?.nodes.length ?? evidenceGraph?.nodeCount ?? 0, blurb }
+        return {
+          label,
+          count: evidenceGraph?.nodeCount
+            ?? evidenceGraph?.nodes.length
+            ?? 0,
+          blurb
+        }
       case 'coverage':
-        return { label, count: coverage?.gaps?.total ?? coverage?.gaps?.unreached ?? 0, blurb }
+        return {
+          label,
+          // Server coverage matrix only — 0 means no gaps (or not yet loaded).
+          count: coverage?.gaps?.total ?? 0,
+          blurb
+        }
       case 'diagnostics':
         return { label, count: summaryCounts.dynamicFailed, blurb }
       case 'experiments':
@@ -322,7 +331,10 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       reportErrorCode={reportJob?.errorCode}
       summaryCounts={summaryCounts}
       activeView={activeView}
-      onViewChange={setActiveView}
+      onViewChange={(view) => {
+        setActiveView(view)
+        if (view === 'report') setSelection(null)
+      }}
       viewMeta={viewMeta}
       selection={selection}
       hypothesisById={hypothesisById}

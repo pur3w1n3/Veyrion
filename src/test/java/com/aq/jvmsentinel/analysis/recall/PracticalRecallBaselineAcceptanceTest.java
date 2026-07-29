@@ -2,6 +2,8 @@ package com.aq.jvmsentinel.analysis.recall;
 
 import com.aq.jvmsentinel.AcceptanceAssertions;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -15,11 +17,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class PracticalRecallBaselineAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         AcceptanceAssertions.reset();
         ASSERTIONS.set(0);
         catalogShapeAndRoles();
         notEvaluableWithoutArtifact();
+        prefersFatJarOverGradleWrapper();
         scoredGateWithSyntheticObservation();
         invalidPathRunRatioFailsWhenScored();
         System.out.println("PracticalRecallBaselineAcceptanceTest: PASS ("
@@ -31,8 +34,11 @@ public final class PracticalRecallBaselineAcceptanceTest {
         check(catalog.samples().size() >= 3, "≥3 selectable OSS samples");
         check(catalog.samples().stream().anyMatch(s -> "spring-petclinic".equals(s.sampleId())),
                 "includes spring-petclinic");
-        check(catalog.samples().stream().anyMatch(s -> "webgoat".equals(s.sampleId())),
-                "includes webgoat");
+        PracticalRecallSampleCatalog.Sample webgoat = catalog.samples().stream()
+                .filter(s -> "webgoat".equals(s.sampleId()))
+                .findFirst()
+                .orElseThrow();
+        check("v2023.8".equals(webgoat.ref()), "webgoat pinned to v2023.8 for Java 17/21");
         check(catalog.samples().stream().anyMatch(s -> "springblade".equals(s.sampleId())),
                 "includes springblade");
         check(catalog.samples().stream().filter(PracticalRecallSampleCatalog.Sample::multiAuth).count() >= 1,
@@ -54,8 +60,8 @@ public final class PracticalRecallBaselineAcceptanceTest {
                 .findFirst()
                 .orElseThrow();
         Path missing = PracticalRecallSampleCatalog.resolveLocalArtifact(
-                Path.of("samples", "practical-oss"), pet);
-        check(missing == null, "default tree has no vendored petclinic jar");
+                Path.of("samples", "practical-oss-absent-for-test"), pet);
+        check(missing == null, "missing samples root yields null artifact");
         PracticalRecallSampleCatalog.SampleScore score = PracticalRecallSampleCatalog.score(
                 pet,
                 new PracticalRecallSampleCatalog.Observation(Set.of(), Set.of(), 0, 0, false, ""),
@@ -63,6 +69,48 @@ public final class PracticalRecallBaselineAcceptanceTest {
         check(PracticalRecallSampleCatalog.NOT_EVALUABLE.equals(score.evaluability()),
                 "missing artifact is NOT_EVALUABLE");
         check(score.staticSinkGatePassed(), "NOT_EVALUABLE does not fail sink gate");
+    }
+
+    private static void prefersFatJarOverGradleWrapper() throws IOException {
+        PracticalRecallSampleCatalog.Catalog catalog = PracticalRecallSampleCatalog.loadDefault();
+        PracticalRecallSampleCatalog.Sample pet = catalog.samples().stream()
+                .filter(s -> "spring-petclinic".equals(s.sampleId()))
+                .findFirst()
+                .orElseThrow();
+        Path root = Files.createTempDirectory("practical-recall-resolve-");
+        try {
+            Path sampleDir = root.resolve(pet.sampleId());
+            Path wrapper = sampleDir.resolve("gradle").resolve("wrapper").resolve("gradle-wrapper.jar");
+            Path fatJar = sampleDir.resolve("target")
+                    .resolve("spring-petclinic-4.0.0-SNAPSHOT.jar");
+            Files.createDirectories(wrapper.getParent());
+            Files.createDirectories(fatJar.getParent());
+            Files.write(wrapper, new byte[64]);
+            Files.write(fatJar, new byte[256 * 1024]);
+
+            check(!PracticalRecallSampleCatalog.isCandidateJar("gradle-wrapper.jar"),
+                    "gradle-wrapper.jar is excluded");
+            Path resolved = PracticalRecallSampleCatalog.resolveLocalArtifact(root, pet);
+            check(resolved != null, "resolves a jar when fat jar exists");
+            check(fatJar.toAbsolutePath().normalize().equals(resolved.toAbsolutePath().normalize()),
+                    "prefers target fat jar over gradle-wrapper.jar: " + resolved);
+        } finally {
+            deleteRecursively(root);
+        }
+    }
+
+    private static void deleteRecursively(Path root) throws IOException {
+        if (root == null || !Files.exists(root)) return;
+        try (var walk = Files.walk(root)) {
+            walk.sorted((a, b) -> b.getNameCount() - a.getNameCount())
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (IOException ignored) {
+                            // best-effort cleanup
+                        }
+                    });
+        }
     }
 
     private static void scoredGateWithSyntheticObservation() {

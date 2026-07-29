@@ -233,7 +233,7 @@ export function EvidenceGraphPanel({
       <div className="panel-head">
         <div>
           <p className="eyebrow">EVIDENCE GRAPH</p>
-          <h2>{english ? 'Evidence Graph (local)' : 'Evidence Graph（局部）'}</h2>
+          <h2>{english ? 'Evidence Graph (local)' : '证据图（局部）'}</h2>
         </div>
         <span>{nodes.length}</span>
       </div>

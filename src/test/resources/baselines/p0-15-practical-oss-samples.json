@@ -39,7 +39,7 @@
       "displayName": "OWASP WebGoat",
       "license": "GPL-2.0",
       "repositoryUrl": "https://github.com/WebGoat/WebGoat",
-      "ref": "main",
+      "ref": "v2023.8",
       "buildHint": "mvn -DskipTests package",
       "artifactGlob": "target/webgoat-*.jar",
       "startupProfile": "default WebGoat profile; deny-all sandbox; expect heavy auth surface",
@@ -56,7 +56,7 @@
         "Some sinks behind lesson unlock state"
       ],
       "multiAuth": true,
-      "notes": "Intentional vuln lab with multi-auth lesson paths; use only for authorized local recall scoring."
+      "notes": "Pinned to tag v2023.8 (Java 17 toolchain). Upstream main may require Java 23+. Intentional vuln lab with multi-auth lesson paths; use only for authorized local recall scoring."
     },
     {
       "sampleId": "springblade",
