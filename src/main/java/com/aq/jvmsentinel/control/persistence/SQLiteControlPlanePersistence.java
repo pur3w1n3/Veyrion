@@ -91,7 +91,8 @@ public final class SQLiteControlPlanePersistence {
             "db/migration/V022__pipeline_run_stage_attempt_identity.sql",
             "db/migration/V023__security_hypotheses.sql",
             "db/migration/V024__scope_security_hypothesis_ids.sql",
-            "db/migration/V025__path_debug_contracts.sql");
+            "db/migration/V025__path_debug_contracts.sql",
+            "db/migration/V026__probe_plan_payload.sql");
     private static final int SCHEMA_VERSION = MIGRATIONS.size();
     public static final String LOCAL_WORKSPACE = "local";
 
@@ -293,11 +294,13 @@ public final class SQLiteControlPlanePersistence {
     public List<ProbePlanData> loadProbePlans() {
         try (Connection connection = open(); Statement statement = connection.createStatement();
              ResultSet rows = statement.executeQuery(
-                     "SELECT task_id,project_id,artifact_digest,scan_id,target_entry_id,candidate_inputs_json,max_requests,plan_hash,created_at "
+                     "SELECT task_id,project_id,artifact_digest,scan_id,target_entry_id,candidate_inputs_json,"
+                             + "max_requests,plan_hash,created_at,payload_json "
                              + "FROM dynamic_probe_plans ORDER BY created_at,task_id")) {
             List<ProbePlanData> result = new ArrayList<>();
             while (rows.next()) result.add(new ProbePlanData(rows.getString(1), rows.getString(2), rows.getString(3),
-                    rows.getString(4), rows.getString(5), rows.getString(6), rows.getInt(7), rows.getString(8), rows.getString(9)));
+                    rows.getString(4), rows.getString(5), rows.getString(6), rows.getInt(7), rows.getString(8),
+                    rows.getString(9), rows.getString(10)));
             if (result.size() > 20_000) throw new PersistenceException("persistent probe plan limit exceeded");
             return List.copyOf(result);
         } catch (SQLException failure) {
@@ -308,11 +311,15 @@ public final class SQLiteControlPlanePersistence {
     public void saveProbePlan(ProbePlanData plan) {
         Objects.requireNonNull(plan, "plan");
         transaction("could not persist probe plan", connection -> update(connection,
-                "INSERT INTO dynamic_probe_plans(task_id,project_id,artifact_digest,scan_id,target_entry_id,candidate_inputs_json,max_requests,plan_hash,created_at) "
-                        + "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET candidate_inputs_json=excluded.candidate_inputs_json,"
-                        + "max_requests=excluded.max_requests,plan_hash=excluded.plan_hash",
+                "INSERT INTO dynamic_probe_plans(task_id,project_id,artifact_digest,scan_id,target_entry_id,"
+                        + "candidate_inputs_json,max_requests,plan_hash,created_at,payload_json) "
+                        + "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET "
+                        + "candidate_inputs_json=excluded.candidate_inputs_json,"
+                        + "max_requests=excluded.max_requests,plan_hash=excluded.plan_hash,"
+                        + "payload_json=excluded.payload_json",
                 plan.taskId(), plan.projectId(), plan.artifactDigest(), plan.scanId(), plan.targetEntryId(),
-                plan.candidateInputsJson(), plan.maxRequests(), plan.planHash(), plan.createdAt()));
+                plan.candidateInputsJson(), plan.maxRequests(), plan.planHash(), plan.createdAt(),
+                plan.payloadJson()));
     }
 
     public List<ExperimentPlanData> loadExperimentPlans() {
@@ -730,26 +737,48 @@ public final class SQLiteControlPlanePersistence {
                 while (rows.next()) tasks.add(readTask(rows));
             }
             if (tasks.size() > 20_000) throw new PersistenceException("persistent worker task limit exceeded");
+            // Hydrate chunks only for resumable tasks. Terminal task evidence lives in path_runs /
+            // path_traces; loading every historical worker_trace_chunk blocks Control Plane startup.
             Map<TaskScope, ResourceBudget> budgets = new LinkedHashMap<>();
-            for (TaskSnapshot task : tasks) budgets.put(task.scope(), task.spec().resourceBudget());
+            Set<TaskScope> resumable = new java.util.HashSet<>();
+            for (TaskSnapshot task : tasks) {
+                budgets.put(task.scope(), task.spec().resourceBudget());
+                if (isResumableWorkerLifecycle(task.lifecycle())) {
+                    resumable.add(task.scope());
+                }
+            }
             List<InMemoryTraceStore.StoredTrace> traces = new ArrayList<>();
             long bytes = 0;
-            try (Statement statement = connection.createStatement(); ResultSet rows = statement.executeQuery(
-                    "SELECT project_id,artifact_digest,scan_id,task_id,sequence,idempotency_key,schema_version," +
-                            "previous_digest,emitted_at,payload,digest FROM worker_trace_chunks " +
-                            "ORDER BY project_id,artifact_digest,scan_id,task_id,sequence")) {
-                while (rows.next()) {
-                    TaskScope scope = new TaskScope(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4));
-                    if (!budgets.containsKey(scope)) throw new PersistenceException("trace has no task scope");
-                    byte[] payload = rows.getBytes(10);
-                    bytes = Math.addExact(bytes, payload.length);
-                    if (bytes > 1_073_741_824L) throw new PersistenceException("persistent trace byte limit exceeded");
-                    TraceChunk chunk = new TraceChunk(rows.getInt(7), scope, rows.getLong(5), rows.getString(8),
-                            Instant.parse(rows.getString(9)), payload, rows.getString(11));
-                    if (payload.length > budgets.get(scope).maxTraceBytes()) {
-                        throw new PersistenceException("trace exceeds task byte budget");
+            if (!resumable.isEmpty()) {
+                try (PreparedStatement statement = connection.prepareStatement(
+                        "SELECT c.project_id,c.artifact_digest,c.scan_id,c.task_id,c.sequence,c.idempotency_key,"
+                                + "c.schema_version,c.previous_digest,c.emitted_at,c.payload,c.digest "
+                                + "FROM worker_trace_chunks c "
+                                + "INNER JOIN worker_tasks t ON c.project_id=t.project_id "
+                                + "AND c.artifact_digest=t.artifact_digest AND c.scan_id=t.scan_id "
+                                + "AND c.task_id=t.task_id "
+                                + "WHERE t.lifecycle IN ('QUEUED','LEASED','RUNNING','PAUSED') "
+                                + "ORDER BY c.project_id,c.artifact_digest,c.scan_id,c.task_id,c.sequence");
+                     ResultSet rows = statement.executeQuery()) {
+                    while (rows.next()) {
+                        TaskScope scope = new TaskScope(rows.getString(1), rows.getString(2),
+                                rows.getString(3), rows.getString(4));
+                        if (!budgets.containsKey(scope) || !resumable.contains(scope)) {
+                            throw new PersistenceException("trace has no resumable task scope");
+                        }
+                        byte[] payload = rows.getBytes(10);
+                        bytes = Math.addExact(bytes, payload.length);
+                        if (bytes > 1_073_741_824L) {
+                            throw new PersistenceException("persistent trace byte limit exceeded");
+                        }
+                        TraceChunk chunk = new TraceChunk(rows.getInt(7), scope, rows.getLong(5),
+                                rows.getString(8), Instant.parse(rows.getString(9)), payload,
+                                rows.getString(11));
+                        if (payload.length > budgets.get(scope).maxTraceBytes()) {
+                            throw new PersistenceException("trace exceeds task byte budget");
+                        }
+                        traces.add(new InMemoryTraceStore.StoredTrace(rows.getString(6), chunk));
                     }
-                    traces.add(new InMemoryTraceStore.StoredTrace(rows.getString(6), chunk));
                 }
             }
             if (traces.size() > 100_000) throw new PersistenceException("persistent trace chunk limit exceeded");
@@ -884,17 +913,11 @@ public final class SQLiteControlPlanePersistence {
                             chains.getOrDefault(scanId, List.of())));
                 }
             }
-            Map<String, StaticFactSnapshot> staticFacts = new LinkedHashMap<>();
-            try (Statement statement = connection.createStatement();
-                 ResultSet rows = statement.executeQuery(
-                         "SELECT scan_id, graph_json FROM taint_graphs ORDER BY rowid")) {
-                while (rows.next()) {
-                    staticFacts.put(rows.getString(1), StaticFactSnapshot.fromJson(rows.getString(2)));
-                }
-            }
+            // taint_graphs stay on disk until first staticFacts(scanId); startup must not
+            // deserialize multi-MB IR for every historical scan.
             Map<String, List<com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis>> hypotheses =
                     loadHypotheses(connection);
-            return new Snapshot(projects, artifacts, scans, staticFacts, hypotheses);
+            return new Snapshot(projects, artifacts, scans, Map.of(), hypotheses);
         } catch (SQLException failure) {
             throw databaseFailure("could not load Control Plane state", failure);
         }
@@ -934,6 +957,22 @@ public final class SQLiteControlPlanePersistence {
             audit(connection, projectId, actorId, "scan.security_hypotheses", "scan", scanId,
                     "{\"count\":" + hypotheses.size() + "}", Instant.now().toString());
         });
+    }
+
+    /** Lazy load one scan's static facts IR; used by ControlPlaneStore.staticFacts. */
+    public Optional<StaticFactSnapshot> loadTaintGraph(String scanId) {
+        if (scanId == null || scanId.isBlank()) return Optional.empty();
+        try (Connection connection = open();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT graph_json FROM taint_graphs WHERE scan_id=?")) {
+            statement.setString(1, scanId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return Optional.empty();
+                return Optional.of(StaticFactSnapshot.fromJson(rows.getString(1)));
+            }
+        } catch (SQLException failure) {
+            throw databaseFailure("could not load static facts for scan", failure);
+        }
     }
 
     public void insertTaintGraph(String scanId, String graphJson, String createdAt, String actorId) {
@@ -1617,6 +1656,14 @@ public final class SQLiteControlPlanePersistence {
         return statements;
     }
 
+    /** Tasks that may still append or resume traces after Control Plane restart. */
+    private static boolean isResumableWorkerLifecycle(TaskLifecycle lifecycle) {
+        return lifecycle == TaskLifecycle.QUEUED
+                || lifecycle == TaskLifecycle.LEASED
+                || lifecycle == TaskLifecycle.RUNNING
+                || lifecycle == TaskLifecycle.PAUSED;
+    }
+
     private static boolean isForeignKeysPragma(String statementSql) {
         String normalized = statementSql.replaceAll("\\s+", " ").trim();
         return normalized.regionMatches(true, 0, "PRAGMA foreign_keys", 0, "PRAGMA foreign_keys".length());
@@ -2000,7 +2047,16 @@ public final class SQLiteControlPlanePersistence {
     }
     public record ProbePlanData(String taskId, String projectId, String artifactDigest,
                                 String scanId, String targetEntryId, String candidateInputsJson,
-                                int maxRequests, String planHash, String createdAt) { }
+                                int maxRequests, String planHash, String createdAt,
+                                String payloadJson) {
+        /** V011 metadata-only shape (no compiled payload). */
+        public ProbePlanData(String taskId, String projectId, String artifactDigest,
+                             String scanId, String targetEntryId, String candidateInputsJson,
+                             int maxRequests, String planHash, String createdAt) {
+            this(taskId, projectId, artifactDigest, scanId, targetEntryId, candidateInputsJson,
+                    maxRequests, planHash, createdAt, null);
+        }
+    }
     public record ExperimentPlanData(String planId, String scanId, String projectId,
                                      String artifactDigest, String payloadJson, String createdAt,
                                      String fuzzStrategyJson) {

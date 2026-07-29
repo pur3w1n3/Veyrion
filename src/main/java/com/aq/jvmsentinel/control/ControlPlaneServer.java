@@ -21,6 +21,9 @@ import com.aq.jvmsentinel.application.port.ProviderQueryPort;
 import com.aq.jvmsentinel.application.port.ScanQueryPort;
 
 import com.aq.jvmsentinel.analysis.experiment.PathDebugWireHelper;
+import com.aq.jvmsentinel.analysis.experiment.PostureExperimentCompiler;
+import com.aq.jvmsentinel.domain.pathdebug.WorldPackDependencyMode;
+import com.aq.jvmsentinel.domain.pathdebug.WorldPackExecutionStage;
 import com.aq.jvmsentinel.analysis.CandidateRanker;
 import com.aq.jvmsentinel.analysis.PreAnalysisResult;
 import com.aq.jvmsentinel.analysis.PreAnalysisInput;
@@ -2123,14 +2126,15 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         List<String> boundedInputs = candidateInputs == null ? List.of()
                 : candidateInputs.stream().filter(Objects::nonNull).limit(16).toList();
         String inputsJson = JsonCodec.stringify(boundedInputs);
-        // V011 stores only bounded probe-input metadata (CHECK max_requests 1..8), not the
-        // full flood size; actual probe count remains in the in-memory / recovered plan.
+        // V011 stores bounded probe-input metadata (CHECK max_requests 1..8).
+        // V026 also stores the compiled plan payload so startup restore skips harvest.
         int storedMaxRequests = Math.max(1, Math.min(8, maxRequests));
+        String payloadJson = ProbePlanService.serializePlanPayload(plan);
         store.persistProbePlan(new SQLiteControlPlanePersistence.ProbePlanData(
                 taskId, scan.dto().projectId(), scan.dto().artifactDigest(), scanId,
                 plan.primary().id(), inputsJson, storedMaxRequests,
                 probePlanHash(scanId, plan.primary().id(), inputsJson, storedMaxRequests),
-                Instant.now(clock).toString()));
+                Instant.now(clock).toString(), payloadJson));
         store.auditChange(scan.dto().projectId(), actorId, "dynamic-task.enqueue",
                 "worker-task", taskId,
                 "{\"capability\":\"TRUSTED_DOCKER\",\"networkMode\":\"DENY\",\"source\":\"PIPELINE\","
@@ -2197,37 +2201,97 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         return new ExternalArtifactTaskExecutor.ArtifactRegistration(
                 scope.projectId(), scope.artifactDigest(), path, artifact.sizeBytes(), true,
                 primaryProbe.method(), primaryProbe.route(), classPrefix, plan.probes(),
-                WorldPackPlanner.planMockContinue(scope.scanId()).dependencyMode().name());
+                resolveWorldPackDependencyMode(plan.probes()).name());
     }
 
     /**
-     * Builds a budgeted multi-entry probe plan for one TRUSTED_DOCKER task.
-     * Entries beyond the budget become UNREACHED path placeholders (not silently dropped).
+     * Resolve the single JVM World Pack dependency mode for a multi-probe Docker task.
+     * Primary registration is always the exploration stage ({@code MOCK_CONTINUE});
+     * confirmation ({@code OBSERVE_FAIL}) is a later staged World Pack binding — never
+     * AI/frontend override and never DB-vendor branching.
+     */
+    private WorldPackDependencyMode resolveWorldPackDependencyMode(
+            List<ExternalArtifactTaskExecutor.ProbeTarget> probes) {
+        List<PostureExperimentCompiler.CompiledPostureExperiment> plans = new ArrayList<>();
+        if (probes != null) {
+            for (ExternalArtifactTaskExecutor.ProbeTarget probe : probes) {
+                if (probe == null || probe.experimentPlanId() == null || probe.experimentPlanId().isBlank()) {
+                    continue;
+                }
+                PostureExperimentCompiler.CompiledPostureExperiment plan =
+                        store.postureExperiment(probe.experimentPlanId());
+                if (plan != null) {
+                    plans.add(plan);
+                }
+            }
+        }
+        return WorldPackPlanner.resolveRuntimeDependencyMode(
+                plans, WorldPackExecutionStage.EXPLORATION);
+    }
+
+    /**
+     * Hydrates in-memory probe plans from durable V026 payloads.
+     * Does not call {@code buildProbePlan} / identity harvest / posture re-persist on startup.
+     * Incomplete or corrupt rows are skipped (fail closed per row) rather than silently rebuilt.
      */
     private void restoreProbePlans() {
-        for (SQLiteControlPlanePersistence.ProbePlanData stored : store.loadProbePlans()) {
-            ControlPlaneStore.ScanRecord scan = store.scan(stored.scanId());
-            if (scan == null || !scan.dto().projectId().equals(stored.projectId())
-                    || !scan.dto().artifactDigest().equals(stored.artifactDigest())) {
-                throw new SQLiteControlPlanePersistence.PersistenceException("probe plan scope does not match scan");
+        List<SQLiteControlPlanePersistence.ProbePlanData> storedPlans = store.loadProbePlans();
+        long startedNanos = System.nanoTime();
+        System.out.println("Restoring " + storedPlans.size() + " probe plans...");
+        int restored = 0;
+        int skipped = 0;
+        for (SQLiteControlPlanePersistence.ProbePlanData stored : storedPlans) {
+            try {
+                ControlPlaneStore.ScanRecord scan = store.scan(stored.scanId());
+                if (scan == null || !scan.dto().projectId().equals(stored.projectId())
+                        || !scan.dto().artifactDigest().equals(stored.artifactDigest())) {
+                    throw new SQLiteControlPlanePersistence.PersistenceException(
+                            "probe plan scope does not match scan");
+                }
+                TaskSnapshot task = workerApi.snapshots(stored.projectId(), stored.scanId()).stream()
+                        .filter(value -> value.scope().taskId().equals(stored.taskId())).findFirst()
+                        .orElseThrow(() -> new SQLiteControlPlanePersistence.PersistenceException(
+                                "probe plan has no persistent worker task"));
+                if (!task.spec().targetEntryId().equals(stored.targetEntryId())) {
+                    throw new SQLiteControlPlanePersistence.PersistenceException(
+                            "probe plan target does not match task");
+                }
+                persistedStringList(stored.candidateInputsJson());
+                String expectedHash = probePlanHash(stored.scanId(), stored.targetEntryId(),
+                        stored.candidateInputsJson(), stored.maxRequests());
+                if (!expectedHash.equals(stored.planHash())) {
+                    throw new SQLiteControlPlanePersistence.PersistenceException("probe plan checksum mismatch");
+                }
+                ProbePlanService.ProbePlan plan =
+                        ProbePlanService.hydrateFromStoredPayload(stored.payloadJson());
+                if (plan == null) {
+                    System.err.println("Skipping probe plan " + stored.taskId()
+                            + ": stored payload missing (no re-harvest on startup)");
+                    skipped++;
+                    continue;
+                }
+                if (plan.primary() == null || !stored.targetEntryId().equals(plan.primary().id())) {
+                    throw new SQLiteControlPlanePersistence.PersistenceException(
+                            "probe plan payload primary does not match target entry");
+                }
+                dynamicProbePlans.put(stored.taskId(), plan);
+                unreachedDynamicPaths.put(stored.scanId(), plan.unreachedPaths());
+                scanExpandedProbes.put(stored.scanId(), List.copyOf(plan.probes()));
+                restored++;
+            } catch (RuntimeException failure) {
+                System.err.println("Skipping probe plan " + stored.taskId() + ": " + failure.getMessage());
+                skipped++;
             }
-            TaskSnapshot task = workerApi.snapshots(stored.projectId(), stored.scanId()).stream()
-                    .filter(value -> value.scope().taskId().equals(stored.taskId())).findFirst()
-                    .orElseThrow(() -> new SQLiteControlPlanePersistence.PersistenceException(
-                            "probe plan has no persistent worker task"));
-            if (!task.spec().targetEntryId().equals(stored.targetEntryId())) {
-                throw new SQLiteControlPlanePersistence.PersistenceException("probe plan target does not match task");
-            }
-            List<String> inputs = persistedStringList(stored.candidateInputsJson());
-            String expectedHash = probePlanHash(stored.scanId(), stored.targetEntryId(),
-                    stored.candidateInputsJson(), stored.maxRequests());
-            if (!expectedHash.equals(stored.planHash())) {
-                throw new SQLiteControlPlanePersistence.PersistenceException("probe plan checksum mismatch");
-            }
-            ProbePlanService.ProbePlan plan = buildProbePlan(scan, stored.taskId(), stored.targetEntryId(),
-                    inputs, stored.maxRequests(), null, null, null);
-            dynamicProbePlans.put(stored.taskId(), plan);
         }
+        double seconds = (System.nanoTime() - startedNanos) / 1_000_000_000.0;
+        System.out.println("Restored " + restored + " probe plans in "
+                + String.format(Locale.ROOT, "%.2f", seconds) + "s"
+                + (skipped == 0 ? "" : " (skipped " + skipped + ")"));
+    }
+
+    /** Package-visible for restore acceptance tests. */
+    ProbePlanService.ProbePlan restoredDynamicProbePlan(String taskId) {
+        return dynamicProbePlans.get(taskId);
     }
 
     private static List<String> persistedStringList(String json) {
@@ -3331,7 +3395,8 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                 sinks,
                 dependencies,
                 evidence,
-                configurationLines);
+                configurationLines,
+                descriptor.normalizedPath());
         List<SecurityHypothesis> detected = new ArrayList<>(
                 DetectorRegistry.defaults().analyzeAll(detectorContext));
         for (ProviderContribution.Detector detector : providerBundle.detectors()) {

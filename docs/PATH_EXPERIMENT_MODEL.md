@@ -46,7 +46,7 @@ AI 负责编排实验与写笔记，不能改变沙箱权限、网络策略、�
 
 ### 3.1 四用途姿态（撞墙、标准流通、强达、绕过）
 
-> **重设计中**：产品要求「尽可能记录失败前真实业务路径、参数流和 sink/effect，且禁止 Agent 逐点加插桩」。目标方案见 [DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](DYNAMIC_SANDBOX_POSTURE_REDESIGN.md) 与 [ADR-0004](adr/0004-sandbox-posture-vs-agent-bypass.md)（`PROPOSED`）。
+> 产品要求「尽可能记录失败前真实业务路径、参数流和 sink/effect，且禁止 Agent 逐点加插桩」。目标方案见 [DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](DYNAMIC_SANDBOX_POSTURE_REDESIGN.md) 与 [ADR-0004](adr/0004-sandbox-posture-vs-agent-bypass.md)（`ACCEPTED`）。
 
 
 产品目标是**有界动态调试全部可识别 HTTP 入口**（含默认鉴权挡住的入口），以便观测最深业务路径、参数流和 effect/sink；**不是**“保证所有接口完整 2xx”，也不是“忽略鉴权”。
@@ -91,7 +91,7 @@ ContrastLedger 对照仍然正确：UNAUTH 证明墙或意外过闸；COVERAGE_P
 - `postureKind` / `postureProvenance`
 - `tracePlanId`
 - `experimentPlanId`（若有）
-- `worldPackId` 与 World Pack 策略（`OBSERVE_FAIL` / `MOCK_CONTINUE`）
+- `worldPackId` 与 World Pack 策略（`OBSERVE_FAIL` / `MOCK_CONTINUE`；冷启动探索=`EXPLORATION`→`MOCK_CONTINUE`，确认=`CONFIRMATION`→`OBSERVE_FAIL`，不按 DB 厂商分支）
 - 请求摘要（method、content-type、参数名、身份轨；敏感值脱敏）
 - `outcomeClass`（§5 超时/失败枚举）
 - HTTP 状态或传输结果

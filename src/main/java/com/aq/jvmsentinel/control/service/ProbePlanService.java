@@ -22,6 +22,8 @@ import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.aq.jvmsentinel.model.IdentityTrack;
 import com.aq.jvmsentinel.worker.ExternalArtifactTaskExecutor;
 import com.aq.jvmsentinel.worker.TaskSnapshot;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -47,6 +49,10 @@ public final class ProbePlanService {
     /** Serialized TSV upload budget; must match trusted-sandbox {@code uploadFile}. */
     public static final int MAX_PROBE_PLAN_UPLOAD_BYTES =
             ExternalArtifactTaskExecutor.MAX_PROBE_PLAN_UPLOAD_BYTES;
+    /** Bound for durable JSON probe-plan payloads (primary + probes + unreached paths). */
+    public static final int MAX_PROBE_PLAN_PAYLOAD_BYTES = 8 * 1024 * 1024;
+    private static final int STORED_PROBE_PLAN_SCHEMA = 1;
+    private static final ObjectMapper PAYLOAD_JSON = new ObjectMapper();
 
     private final ControlPlaneStore store;
     private final BiFunction<String, String, List<TaskSnapshot>> workerSnapshots;
@@ -175,8 +181,20 @@ public final class ProbePlanService {
             selectedIds.add(primary.id());
         }
         IdentityExpansionResult expansion;
+        Path postureArtifact = artifactPath;
+        if (postureArtifact == null) {
+            try {
+                ArtifactDescriptor artifact = store.artifact(
+                        store.requireProject(scan.dto().projectId()), scan.dto().artifactDigest());
+                if (artifact != null) {
+                    postureArtifact = artifact.normalizedPath();
+                }
+            } catch (RuntimeException ignored) {
+                postureArtifact = null;
+            }
+        }
         PostureExpansionResult postureExpansion = expandProbesByPostureDetailed(
-                scan, httpEntries, effectiveProbes, true, maxProbes);
+                scan, httpEntries, effectiveProbes, true, maxProbes, postureArtifact);
         if (!postureExpansion.probes().isEmpty()) {
             effectiveProbes = rejectEmptyCoverageWithoutPlan(postureExpansion.probes());
             expansion = new IdentityExpansionResult(effectiveProbes, postureExpansion.unreached());
@@ -233,7 +251,7 @@ public final class ProbePlanService {
             String planId = planByKey.getOrDefault(key, "");
             stamped.add(new ExternalArtifactTaskExecutor.ProbeTarget(
                     probe.method(), probe.route(), probe.query(), probe.track(),
-                    probe.authHeader(), probe.bladeAuthHeader(), planId));
+                    probe.authHeader(), probe.bladeAuthHeader(), planId, probe.cookieHeader()));
         }
         return List.copyOf(stamped);
     }
@@ -248,6 +266,16 @@ public final class ProbePlanService {
             List<ExternalArtifactTaskExecutor.ProbeTarget> base,
             boolean dockerSandbox,
             int maxProbes) {
+        return expandProbesByPostureDetailed(scan, httpEntries, base, dockerSandbox, maxProbes, null);
+    }
+
+    PostureExpansionResult expandProbesByPostureDetailed(
+            ControlPlaneStore.ScanRecord scan,
+            List<ApiDtos.EntryDto> httpEntries,
+            List<ExternalArtifactTaskExecutor.ProbeTarget> base,
+            boolean dockerSandbox,
+            int maxProbes,
+            Path artifactPath) {
         if (base == null || base.isEmpty() || httpEntries == null || httpEntries.isEmpty()) {
             return new PostureExpansionResult(List.of(), List.of());
         }
@@ -276,6 +304,8 @@ public final class ProbePlanService {
             return new PostureExpansionResult(List.of(), List.of());
         }
         persistPostureArtifacts(scan, compiled);
+        SyntheticIdentityService identity = new SyntheticIdentityService();
+        SyntheticIdentityService.MaterialBundle materials = identity.harvest(artifactPath);
         List<ExternalArtifactTaskExecutor.ProbeTarget> expanded = new ArrayList<>();
         List<ApiDtos.PathDto> unreached = new ArrayList<>();
         for (PostureExperimentCompiler.CompiledPostureExperiment plan : compiled) {
@@ -301,14 +331,33 @@ public final class ProbePlanService {
                     || "UNKNOWN".equalsIgnoreCase(plan.method())
                     ? "GET" : plan.method().toUpperCase(Locale.ROOT);
             String safePlanId = sanitizeExperimentPlanId(plan.experimentPlanId());
+            String track = plan.posture().identityTrackWire();
+            String auth = "";
+            String secondary = "";
+            String cookie = "";
+            // UNAUTH stays empty; COVERAGE/FORCED/BYPASS carry harvested materials when available.
+            if (plan.posture().postureKind() != RuntimePostureKind.UNAUTH) {
+                IdentityTrack identityTrack = identityTrackFromWire(track);
+                SyntheticIdentityService.SyntheticIdentity synth =
+                        identity.synthesize(identityTrack, materials);
+                if (synth.available()) {
+                    auth = normalizeProbeToken(synth.authorizationHeader());
+                    cookie = synth.cookieHeader() == null ? "" : synth.cookieHeader();
+                    if (!auth.isBlank() && (materials.preferSecondaryAuthHeader()
+                            || materials.multiHeaderAuthSurface())) {
+                        secondary = SyntheticIdentityService.secondaryAuthHeaderValue(auth);
+                    }
+                }
+            }
             expanded.add(new ExternalArtifactTaskExecutor.ProbeTarget(
                     method,
                     materializeRoute(plan.route()),
                     sanitizeQuery(query),
-                    plan.posture().identityTrackWire(),
-                    "",
-                    "",
-                    safePlanId));
+                    track,
+                    auth,
+                    secondary,
+                    safePlanId,
+                    cookie));
         }
         expanded = rejectEmptyCoverageWithoutPlan(expanded);
         return new PostureExpansionResult(List.copyOf(expanded), List.copyOf(unreached));
@@ -597,6 +646,87 @@ public final class ProbePlanService {
                              List<ApiDtos.PathDto> unreachedPaths) {
     }
 
+    /**
+     * Serialize a compiled probe plan for durable restore. Does not harvest or rebuild.
+     */
+    public static String serializePlanPayload(ProbePlan plan) {
+        Objects.requireNonNull(plan, "plan");
+        if (plan.primary() == null) {
+            throw new IllegalArgumentException("probe plan primary entry is required");
+        }
+        List<ExternalArtifactTaskExecutor.ProbeTarget> probes =
+                plan.probes() == null ? List.of() : plan.probes();
+        if (probes.isEmpty() || probes.size() > MAX_DYNAMIC_PROBES) {
+            throw new IllegalArgumentException("probe plan probe count is out of bounds");
+        }
+        try {
+            String json = PAYLOAD_JSON.writeValueAsString(new StoredProbePlanPayload(
+                    STORED_PROBE_PLAN_SCHEMA, plan.primary(), probes,
+                    plan.unreachedPaths() == null ? List.of() : plan.unreachedPaths()));
+            if (json.length() > MAX_PROBE_PLAN_PAYLOAD_BYTES) {
+                throw new IllegalArgumentException("probe plan payload exceeds durable size budget");
+            }
+            return json;
+        } catch (IllegalArgumentException invalid) {
+            throw invalid;
+        } catch (Exception failure) {
+            throw new IllegalArgumentException("probe plan payload could not be serialized", failure);
+        }
+    }
+
+    /**
+     * Hydrate an in-memory probe plan from a stored payload without identity harvest.
+     * Returns {@code null} when the payload is absent (legacy rows); throws when corrupt.
+     */
+    public static ProbePlan hydrateFromStoredPayload(String payloadJson) {
+        if (payloadJson == null || payloadJson.isBlank()) {
+            return null;
+        }
+        if (payloadJson.length() > MAX_PROBE_PLAN_PAYLOAD_BYTES) {
+            throw new IllegalArgumentException("probe plan payload exceeds durable size budget");
+        }
+        try {
+            StoredProbePlanPayload stored = PAYLOAD_JSON.readValue(payloadJson, StoredProbePlanPayload.class);
+            if (stored == null || stored.schemaVersion() != STORED_PROBE_PLAN_SCHEMA) {
+                throw new IllegalArgumentException("unsupported probe plan payload schema");
+            }
+            if (stored.primary() == null) {
+                throw new IllegalArgumentException("probe plan payload missing primary entry");
+            }
+            List<ExternalArtifactTaskExecutor.ProbeTarget> probes =
+                    stored.probes() == null ? List.of() : List.copyOf(stored.probes());
+            if (probes.isEmpty() || probes.size() > MAX_DYNAMIC_PROBES) {
+                throw new IllegalArgumentException("probe plan payload probe count is out of bounds");
+            }
+            // Reconstruct ProbeTarget through the validating constructor (fail closed).
+            List<ExternalArtifactTaskExecutor.ProbeTarget> validated = new ArrayList<>(probes.size());
+            for (ExternalArtifactTaskExecutor.ProbeTarget probe : probes) {
+                if (probe == null) {
+                    throw new IllegalArgumentException("probe plan payload contains a null probe");
+                }
+                validated.add(new ExternalArtifactTaskExecutor.ProbeTarget(
+                        probe.method(), probe.route(), probe.query(), probe.track(),
+                        probe.authHeader(), probe.bladeAuthHeader(), probe.experimentPlanId(),
+                        probe.cookieHeader()));
+            }
+            List<ApiDtos.PathDto> unreached = stored.unreachedPaths() == null
+                    ? List.of() : List.copyOf(stored.unreachedPaths());
+            return new ProbePlan(stored.primary(), List.copyOf(validated), unreached);
+        } catch (IllegalArgumentException invalid) {
+            throw invalid;
+        } catch (Exception failure) {
+            throw new IllegalArgumentException("probe plan payload is corrupt or incomplete", failure);
+        }
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record StoredProbePlanPayload(
+            int schemaVersion,
+            ApiDtos.EntryDto primary,
+            List<ExternalArtifactTaskExecutor.ProbeTarget> probes,
+            List<ApiDtos.PathDto> unreachedPaths) {
+    }
+
     public static ExternalArtifactTaskExecutor.ProbeTarget probeTargetFor(ApiDtos.EntryDto entry) {
         String method = entry.method() == null ? "GET" : entry.method().toUpperCase(Locale.ROOT);
         if ("UNKNOWN".equals(method)) method = "GET";
@@ -771,9 +901,10 @@ public final class ProbePlanService {
         if (!token.isBlank() && materialsPreferSecondaryAuth(expansion, synth)) {
             secondary = SyntheticIdentityService.secondaryAuthHeaderValue(token);
         }
+        String cookie = synth.cookieHeader() == null ? "" : synth.cookieHeader();
         expanded.add(new ExternalArtifactTaskExecutor.ProbeTarget(
                 probe.method(), probe.route(), probe.query(),
-                synth.track().name(), token, secondary));
+                synth.track().name(), token, secondary, "", cookie));
     }
 
     /**
@@ -849,6 +980,17 @@ public final class ProbePlanService {
     }
 
     /** Keep ProbeTarget.experimentPlanId within wire charset/length. */
+    static IdentityTrack identityTrackFromWire(String track) {
+        if (track == null || track.isBlank()) {
+            return IdentityTrack.ADMIN;
+        }
+        try {
+            return IdentityTrack.valueOf(track.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ignored) {
+            return IdentityTrack.ADMIN;
+        }
+    }
+
     static String sanitizeExperimentPlanId(String experimentPlanId) {
         if (experimentPlanId == null || experimentPlanId.isBlank()) {
             return "";

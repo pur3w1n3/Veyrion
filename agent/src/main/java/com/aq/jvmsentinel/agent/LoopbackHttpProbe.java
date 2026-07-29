@@ -30,9 +30,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * A fixed {@code @planFile#port} argument keeps the plan and port in one shell token;
  * {@code @planFile} alone falls back to a fixed property or sibling {@code http-port.txt}.
  * Each plan line is
- * {@code METHOD\troute[\tquery[\ttrack[\tauthHeader[\tbladeAuthHeader]]]]}.
- * Authorization and Blade-Auth are independent channels — a non-blank
- * {@code authHeader} does not imply {@code Blade-Auth}, and vice versa.</p>
+ * {@code METHOD\troute[\tquery[\ttrack[\tauthHeader[\tbladeAuthHeader[\texperimentPlanId[\tcookieHeader]]]]]]}.
+ * Authorization, Blade-Auth, and Cookie are independent channels — a non-blank
+ * {@code authHeader} does not imply {@code Blade-Auth} or Cookie, and vice versa.</p>
  *
  * <p>Batch uses a dual-phase strategy: a fast parallel pass (800ms connect/read),
  * then a capped slow retry (2000ms) for {@code BUSINESS_TIMEOUT} targets,
@@ -93,7 +93,7 @@ public final class LoopbackHttpProbe {
         int port = args.length >= 3 ? Integer.parseInt(args[2]) : 8080;
         String query = args.length >= 4 ? args[3] : "";
         lastBatchPort = port;
-        ProbeAttempt attempt = probeOne(method, route, port, query, "UNAUTH", "", "",
+        ProbeAttempt attempt = probeOne(method, route, port, query, "UNAUTH", "", "", "", "",
                 FAST_CONNECT_TIMEOUT_MS, FAST_READ_TIMEOUT_MS, 1);
         writeAttemptEvent(attempt);
         if (attempt.status < 0) System.exit(2);
@@ -153,7 +153,7 @@ public final class LoopbackHttpProbe {
         for (String line : lines) {
             if (line == null || line.isBlank() || line.startsWith("#")) continue;
             String[] parts = line.split("\t", -1);
-            if (parts.length < 2 || parts.length > 7) {
+            if (parts.length < 2 || parts.length > 8) {
                 throw new IllegalArgumentException("probe plan line is invalid");
             }
             ordinal++;
@@ -165,6 +165,7 @@ public final class LoopbackHttpProbe {
                     parts.length >= 5 ? parts[4].trim() : "",
                     parts.length >= 6 ? parts[5].trim() : "",
                     parts.length >= 7 ? parts[6].trim() : "",
+                    parts.length >= 8 ? parts[7].trim() : "",
                     ordinal));
         }
         if (targets.isEmpty()) throw new IllegalArgumentException("probe plan is empty");
@@ -241,7 +242,8 @@ public final class LoopbackHttpProbe {
                         + target.route + " [" + target.track + "]"
                         + (target.query.isEmpty() ? "" : "?" + target.query));
                 return probeOne(target.method, target.route, port, target.query, target.track,
-                        target.authHeader, target.bladeAuthHeader,
+                        target.authHeader, target.bladeAuthHeader, target.experimentPlanId,
+                        target.cookieHeader,
                         connectTimeoutMs, readTimeoutMs, target.ordinal);
             }));
         }
@@ -284,6 +286,7 @@ public final class LoopbackHttpProbe {
 
     private static ProbeAttempt probeOne(String rawMethod, String route, int port, String query,
                                          String track, String authHeader, String bladeAuthHeader,
+                                         String experimentPlanId, String cookieHeader,
                                          int connectTimeoutMs, int readTimeoutMs, int ordinal) {
         ProbeTarget target = new ProbeTarget(
                 rawMethod == null ? "" : rawMethod,
@@ -292,6 +295,8 @@ public final class LoopbackHttpProbe {
                 track == null || track.isBlank() ? "UNAUTH" : track,
                 authHeader == null ? "" : authHeader,
                 bladeAuthHeader == null ? "" : bladeAuthHeader,
+                experimentPlanId == null ? "" : experimentPlanId,
+                cookieHeader == null ? "" : cookieHeader,
                 ordinal);
         String method = target.method.toUpperCase(Locale.ROOT);
         if (!METHODS.contains(method)
@@ -302,7 +307,8 @@ public final class LoopbackHttpProbe {
                 && !query.matches("[A-Za-z0-9_=&%./{}:-]{1,256}"))
                 || (track != null && !track.matches("[A-Z_]{1,32}"))
                 || (authHeader != null && authHeader.length() > 2048)
-                || (bladeAuthHeader != null && bladeAuthHeader.length() > 2048)) {
+                || (bladeAuthHeader != null && bladeAuthHeader.length() > 2048)
+                || (cookieHeader != null && cookieHeader.length() > 2048)) {
             return new ProbeAttempt(target, -1, "InvalidTarget",
                     route == null ? "" : route, connectTimeoutMs, readTimeoutMs, "");
         }
@@ -320,7 +326,7 @@ public final class LoopbackHttpProbe {
             OutputStream output = socket.getOutputStream();
             String headerBlock = buildRequestHeaders(method, requestTarget, body.length,
                     target.authHeader, target.bladeAuthHeader, correlationId,
-                    target.track, target.experimentPlanId);
+                    target.track, target.experimentPlanId, target.cookieHeader);
             output.write(headerBlock.getBytes(StandardCharsets.US_ASCII));
             output.write(body);
             output.flush();
@@ -361,12 +367,19 @@ public final class LoopbackHttpProbe {
     static String buildRequestHeaders(String method, String requestTarget, int contentLength,
                                       String authHeader, String bladeAuthHeader, String correlationId) {
         return buildRequestHeaders(method, requestTarget, contentLength, authHeader, bladeAuthHeader,
-                correlationId, "UNAUTH", "");
+                correlationId, "UNAUTH", "", "");
     }
 
     static String buildRequestHeaders(String method, String requestTarget, int contentLength,
                                       String authHeader, String bladeAuthHeader, String correlationId,
                                       String track, String experimentPlanId) {
+        return buildRequestHeaders(method, requestTarget, contentLength, authHeader, bladeAuthHeader,
+                correlationId, track, experimentPlanId, "");
+    }
+
+    static String buildRequestHeaders(String method, String requestTarget, int contentLength,
+                                      String authHeader, String bladeAuthHeader, String correlationId,
+                                      String track, String experimentPlanId, String cookieHeader) {
         StringBuilder headers = new StringBuilder();
         headers.append(method).append(' ').append(requestTarget).append(" HTTP/1.1\r\n")
                 .append("Host: 127.0.0.1\r\nConnection: close\r\n")
@@ -384,6 +397,9 @@ public final class LoopbackHttpProbe {
         }
         if (bladeAuthHeader != null && !bladeAuthHeader.isBlank()) {
             headers.append("Blade-Auth: ").append(bladeAuthHeader).append("\r\n");
+        }
+        if (cookieHeader != null && !cookieHeader.isBlank()) {
+            headers.append("Cookie: ").append(cookieHeader).append("\r\n");
         }
         headers.append("\r\n");
         return headers.toString();
@@ -588,20 +604,27 @@ public final class LoopbackHttpProbe {
         final String authHeader;
         final String bladeAuthHeader;
         final String experimentPlanId;
+        final String cookieHeader;
         final int ordinal;
 
         ProbeTarget(String method, String route, String query, String track,
                     String authHeader, int ordinal) {
-            this(method, route, query, track, authHeader, "", "", ordinal);
+            this(method, route, query, track, authHeader, "", "", "", ordinal);
         }
 
         ProbeTarget(String method, String route, String query, String track,
                     String authHeader, String bladeAuthHeader, int ordinal) {
-            this(method, route, query, track, authHeader, bladeAuthHeader, "", ordinal);
+            this(method, route, query, track, authHeader, bladeAuthHeader, "", "", ordinal);
         }
 
         ProbeTarget(String method, String route, String query, String track,
                     String authHeader, String bladeAuthHeader, String experimentPlanId, int ordinal) {
+            this(method, route, query, track, authHeader, bladeAuthHeader, experimentPlanId, "", ordinal);
+        }
+
+        ProbeTarget(String method, String route, String query, String track,
+                    String authHeader, String bladeAuthHeader, String experimentPlanId,
+                    String cookieHeader, int ordinal) {
             this.method = method;
             this.route = route;
             this.query = query;
@@ -609,6 +632,7 @@ public final class LoopbackHttpProbe {
             this.authHeader = authHeader == null ? "" : authHeader;
             this.bladeAuthHeader = bladeAuthHeader == null ? "" : bladeAuthHeader;
             this.experimentPlanId = experimentPlanId == null ? "" : experimentPlanId;
+            this.cookieHeader = cookieHeader == null ? "" : cookieHeader;
             this.ordinal = ordinal;
         }
     }

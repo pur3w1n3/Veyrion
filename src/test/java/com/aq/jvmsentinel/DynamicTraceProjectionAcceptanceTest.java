@@ -1,5 +1,7 @@
 package com.aq.jvmsentinel;
 
+import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
+import com.aq.jvmsentinel.domain.pathdebug.TraceEventKind;
 import com.aq.jvmsentinel.worker.AgentJsonlTraceConverter;
 import com.aq.jvmsentinel.worker.InMemoryTaskCoordinator;
 import com.aq.jvmsentinel.worker.InMemoryTraceStore;
@@ -54,8 +56,44 @@ public final class DynamicTraceProjectionAcceptanceTest {
                     + "\"timestamp\":\"2026-07-24T00:00:01Z\",\"thread\":\"main\","
                     + "\"detail\":{\"targetClass\":\"java.net.http.HttpClient\","
                     + "\"targetMethod\":\"send\",\"instructionOrdinal\":\"0\"}}\n";
+    /** Sensor hops/effects before probe HTTP must land in PathTrace via correlation window. */
+    private static final String PATH_DEBUG_JSONL =
+            "{\"schemaVersion\":1,\"sequence\":0,\"eventType\":\"AGENT_STARTED\","
+                    + "\"provenanceKind\":\"RUNTIME_OBSERVED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                    + "\"class\":\"\",\"method\":\"premain\",\"timestamp\":\"2026-07-24T00:00:00Z\","
+                    + "\"thread\":\"main\",\"detail\":{\"mode\":\"test\"}}\n"
+                    + "{\"schemaVersion\":1,\"sequence\":1,\"eventType\":\"HTTP\","
+                    + "\"provenanceKind\":\"AGENT_INSTRUMENTED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                    + "\"class\":\"com.example.CodeService\",\"method\":\"handle\","
+                    + "\"timestamp\":\"2026-07-24T00:00:01Z\",\"thread\":\"http-1\","
+                    + "\"detail\":{\"pathDebugKind\":\"METHOD_HOP\",\"captureMode\":\"APPLICATION_METHOD\","
+                    + "\"correlationId\":\"req-1\",\"route\":\"/code\",\"httpMethod\":\"GET\"}}\n"
+                    + "{\"schemaVersion\":1,\"sequence\":2,\"eventType\":\"PROCESS\","
+                    + "\"provenanceKind\":\"AGENT_INSTRUMENTED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                    + "\"class\":\"com.example.Util\",\"method\":\"eval\","
+                    + "\"timestamp\":\"2026-07-24T00:00:02Z\",\"thread\":\"http-1\","
+                    + "\"detail\":{\"pathDebugKind\":\"EFFECT_TRIGGERED\",\"effectKind\":\"EXPRESSION\","
+                    + "\"correlationId\":\"req-1\"}}\n"
+                    + "{\"schemaVersion\":1,\"sequence\":3,\"eventType\":\"JDBC\","
+                    + "\"provenanceKind\":\"AGENT_INSTRUMENTED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                    + "\"class\":\"com.example.Repo\",\"method\":\"execute\","
+                    + "\"timestamp\":\"2026-07-24T00:00:03Z\",\"thread\":\"http-1\","
+                    + "\"detail\":{\"pathDebugKind\":\"DEPENDENCY_FAILURE\","
+                    + "\"failureClass\":\"DEPENDENCY_UNAVAILABLE\",\"summary\":\"Connection refused\","
+                    + "\"correlationId\":\"req-1\",\"sql\":\"SELECT 1\",\"readWrite\":\"READ\","
+                    + "\"captureMode\":\"STATEMENT\"}}\n"
+                    + "{\"schemaVersion\":1,\"sequence\":4,\"eventType\":\"HTTP\","
+                    + "\"provenanceKind\":\"APPLICATION_REPORTED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                    + "\"class\":\"com.aq.jvmsentinel.agent.LoopbackHttpProbe\",\"method\":\"main\","
+                    + "\"timestamp\":\"2026-07-24T00:00:04Z\",\"thread\":\"main\","
+                    + "\"detail\":{\"httpMethod\":\"GET\",\"route\":\"/code\","
+                    + "\"requestTarget\":\"/code?code=x\",\"status\":\"500\","
+                    + "\"port\":\"8080\",\"error\":\"\",\"correlationId\":\"req-1\","
+                    + "\"captureMode\":\"LOOPBACK_HTTP_PROBE\",\"entryHit\":\"true\","
+                    + "\"parameterBound\":\"true\"}}\n";
 
     public static void main(String[] args) throws Exception {
+        AcceptanceAssertions.reset();
         Clock clock = Clock.fixed(Instant.parse("2026-07-24T00:00:10Z"), ZoneOffset.UTC);
         InMemoryTraceStore traces = new InMemoryTraceStore(clock);
         InMemoryTaskCoordinator tasks = new InMemoryTaskCoordinator(clock, traces);
@@ -158,7 +196,32 @@ public final class DynamicTraceProjectionAcceptanceTest {
                         completed.scope().scanId()).stream()
                         .noneMatch(item -> "VERIFIED".equals(item.verificationStatus())),
                 "published evidence contains no VERIFIED status");
-        System.out.println("DynamicTraceProjectionAcceptanceTest: PASS");
+
+        WorkerTaskSpec pathDebugSpec = spec("scan-path-debug", "task-path-debug");
+        TaskSnapshot pathDebugActive = start(tasks, pathDebugSpec, "path-debug");
+        List<TraceChunk> pathDebugChunks = converter.convert(
+                PATH_DEBUG_JSONL.getBytes(StandardCharsets.UTF_8), pathDebugActive.scope(),
+                pathDebugSpec.resourceBudget());
+        for (TraceChunk chunk : pathDebugChunks) {
+            traces.append(pathDebugActive.scope(), "pd-" + chunk.sequence(), chunk);
+        }
+        TaskSnapshot pathDebugCompleted = tasks.complete(
+                pathDebugActive.scope(), pathDebugActive.lease().leaseId(), "worker-1", "pd-complete");
+        TraceProjectionService.Projection pathDebugProjection =
+                service.publishCompleted(pathDebugCompleted);
+        check(!pathDebugProjection.pathTraces().isEmpty(), "path-debug projection emits PathTrace");
+        PathTrace pathTrace = pathDebugProjection.pathTraces().get(0);
+        check(pathTrace.events().stream().anyMatch(e -> e.kind() == TraceEventKind.METHOD_HOP),
+                "PathTrace includes correlated METHOD_HOP from sensor window");
+        check(pathTrace.events().stream().anyMatch(e -> e.kind() == TraceEventKind.EFFECT_TRIGGERED),
+                "PathTrace includes correlated EFFECT_TRIGGERED from sensor window");
+        check(pathTrace.events().stream().anyMatch(e -> e.kind() == TraceEventKind.DEPENDENCY_FAILURE),
+                "PathTrace includes correlated DEPENDENCY_FAILURE from sensor window");
+        check(!"VERIFIED".equals(pathTrace.posture().postureProvenance()),
+                "path-debug PathTrace does not elevate verification provenance");
+
+        System.out.println("DynamicTraceProjectionAcceptanceTest: PASS ("
+                + AcceptanceAssertions.get() + " assertions)");
     }
 
     private static WorkerTaskSpec spec(String scanId, String taskId) {
@@ -188,6 +251,7 @@ public final class DynamicTraceProjectionAcceptanceTest {
 
     private static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
+        AcceptanceAssertions.record();
     }
 
     @FunctionalInterface

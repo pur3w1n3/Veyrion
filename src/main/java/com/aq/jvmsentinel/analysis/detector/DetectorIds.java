@@ -6,6 +6,8 @@ public final class DetectorIds {
     public static final String OWNERSHIP_IDOR = "ownership-idor";
     public static final String DANGEROUS_CONFIG = "dangerous-config";
     public static final String DESERIALIZATION_CONFIG = "deserialization-config";
+    /** CONFIG/TYPESTATE: hardcoded rememberMe / cookie cipher keys. */
+    public static final String REMEMBER_ME_CIPHER = "remember-me-cipher";
     public static final String DEPENDENCY_VERSION = "dependency-version";
     public static final String RESOURCE_LIFECYCLE = "resource-lifecycle";
     /** P2 scaffolding — cross-request state / repeat-submit / quota. */

@@ -20,6 +20,7 @@ public final class DetectorRegistry {
                 new OwnershipIdorDetector(),
                 new DangerousConfigDetector(),
                 new DeserializationConfigDetector(),
+                new HardcodedRememberMeCipherDetector(),
                 new DependencyVersionDetector(),
                 new ResourceLifecycleDetector(),
                 new StateSequenceDetector(),

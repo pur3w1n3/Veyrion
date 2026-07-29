@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.analysis.identity;
 
+import com.aq.jvmsentinel.AcceptanceAssertions;
 import com.aq.jvmsentinel.model.AuthBypassTechnique;
 import com.aq.jvmsentinel.model.IdentityTrack;
 
@@ -18,6 +19,7 @@ public final class SyntheticIdentityAcceptanceTest {
         noArtifactNoHs256Mint();
         secretLessTechniquesAlwaysAvailable();
         harvestCustomConfigSecret();
+        noJwtNoCookieMeansAdminUnavailable();
         System.out.println("SyntheticIdentityAcceptanceTest: PASS");
     }
 
@@ -28,6 +30,18 @@ public final class SyntheticIdentityAcceptanceTest {
         SyntheticIdentityService.SyntheticIdentity admin =
                 new SyntheticIdentityService().synthesize(IdentityTrack.ADMIN, materials);
         check(!admin.available(), "ADMIN unavailable without harvested secret");
+    }
+
+    private static void noJwtNoCookieMeansAdminUnavailable() {
+        SyntheticIdentityService.MaterialBundle empty =
+                new SyntheticIdentityService.MaterialBundle(
+                        java.util.Optional.empty(), "NONE", java.util.List.of("no material"),
+                        false, false, "", java.util.List.of());
+        SyntheticIdentityService.SyntheticIdentity admin =
+                new SyntheticIdentityService().synthesize(IdentityTrack.ADMIN, empty);
+        check(!admin.available(), "ADMIN unavailable without JWT or Cookie material");
+        check(admin.precondition().contains("IDENTITY_UNAVAILABLE"),
+                "honest IDENTITY_UNAVAILABLE precondition");
     }
 
     private static void secretLessTechniquesAlwaysAvailable() {
@@ -74,6 +88,7 @@ public final class SyntheticIdentityAcceptanceTest {
     }
 
     private static void check(boolean condition, String message) {
+        AcceptanceAssertions.record();
         if (!condition) throw new AssertionError(message);
     }
 }

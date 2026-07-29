@@ -1,6 +1,8 @@
 package com.aq.jvmsentinel.analysis.experiment;
 
 import com.aq.jvmsentinel.domain.pathdebug.TraceExitReason;
+import com.aq.jvmsentinel.domain.pathdebug.WorldPackDependencyMode;
+import com.aq.jvmsentinel.domain.pathdebug.WorldPackExecutionStage;
 import com.aq.jvmsentinel.domain.pathdebug.WorldPackManifest;
 
 import java.util.ArrayList;
@@ -29,6 +31,36 @@ public final class WorldPackPlanner {
         String safeScan = normalizeScanId(scanId);
         List<String> normalizedGaps = normalizeGaps(gaps);
         return WorldPackManifest.observeFail("worldpack:observe:" + safeScan, normalizedGaps);
+    }
+
+    /**
+     * Resolves the Docker JVM dependency mode for the <em>exploration</em> stage
+     * (primary dynamic registration / cold start). Always {@link WorldPackDependencyMode#MOCK_CONTINUE}
+     * so deny-all jars can bind HTTP under protocol-agnostic stubs before probes run.
+     *
+     * <p>Confirmation ({@link WorldPackDependencyMode#OBSERVE_FAIL}) is a separate stage —
+     * use {@link #resolveRuntimeDependencyMode(Iterable, WorldPackExecutionStage)} with
+     * {@link WorldPackExecutionStage#CONFIRMATION}. Never branch on MySQL/PostgreSQL/vendor.</p>
+     */
+    public static WorldPackDependencyMode resolveRuntimeDependencyMode(
+            Iterable<PostureExperimentCompiler.CompiledPostureExperiment> plans) {
+        return resolveRuntimeDependencyMode(plans, WorldPackExecutionStage.EXPLORATION);
+    }
+
+    /**
+     * Stage-driven World Pack mode for one Docker JVM. Mode follows execution stage only;
+     * posture mix and database vendor must not select the mode.
+     *
+     * @param plans reserved for future stage narrowing (ignored for mode selection today)
+     */
+    public static WorldPackDependencyMode resolveRuntimeDependencyMode(
+            Iterable<PostureExperimentCompiler.CompiledPostureExperiment> plans,
+            WorldPackExecutionStage stage) {
+        Objects.requireNonNull(stage, "stage");
+        return switch (stage) {
+            case EXPLORATION -> WorldPackDependencyMode.MOCK_CONTINUE;
+            case CONFIRMATION -> WorldPackDependencyMode.OBSERVE_FAIL;
+        };
     }
 
     public static TraceExitReason classifyDependencyFailure(String message) {

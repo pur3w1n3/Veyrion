@@ -199,8 +199,10 @@ public final class AgentRuntime {
 
     static boolean record(String eventType, String className, String methodName, Map<String, String> detail) {
         EventWriter current = writer;
+        // Application-reported JDBC/HTTP helpers must carry request correlation when bound so
+        // Worker PathRun windows can join SQL statements to the probe that produced them (H3).
         return current != null && !current.isStopped()
-                && current.writeApplication(eventType, className, methodName, detail);
+                && current.writeApplication(eventType, className, methodName, withCorrelation(detail));
     }
 
     private record MethodKey(String className, String methodDescriptor) {

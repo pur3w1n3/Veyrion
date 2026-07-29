@@ -32,7 +32,12 @@ public final class TraceProjectionService {
     private static final int MAX_PROJECTED_TASKS = 20_000;
     private static final int MAX_PROJECTED_EVIDENCE = 100_000;
     private static final int MAX_CHUNKS = 10_000;
-    private static final int MAX_EVENTS = 10_000;
+    /**
+     * Must stay aligned with {@link AgentJsonlTraceConverter} / agent {@code maxEvents}
+     * (up to 100_000). Real Spring Boot JARs under coverage emit far more than 10k lines;
+     * projecting below the ingest ceiling fail-closed with PROJECTION_FAILED.
+     */
+    private static final int MAX_EVENTS = 100_000;
     private static final int MAX_LINE_BYTES = 64 * 1024;
 
     private final InMemoryTraceStore traces;
@@ -124,6 +129,9 @@ public final class TraceProjectionService {
         // When correlationId is present on HTTP/JDBC, only same-correlation SQL joins the PathRun.
         List<PendingSql> pendingSql = new ArrayList<>();
         List<SqlEvent> orphanSql = new ArrayList<>();
+        // Sensor path-debug events (METHOD_HOP/GUARD/EFFECT/DEPENDENCY) buffered until the
+        // matching probe HTTP PathRun is closed — same correlation window as request SQL.
+        List<PendingWindowEvent> pendingWindowEvents = new ArrayList<>();
         List<ApiDtos.PathRunDto> pathRuns = new ArrayList<>();
         List<PathTrace> pathTraces = new ArrayList<>();
         Set<String> springBoundRouteKeys = new HashSet<>();
@@ -133,6 +141,9 @@ public final class TraceProjectionService {
         int httpAttempt = 0;
         for (EventWithDigest item : events) {
             AgentJsonlTraceConverter.AgentEvent event = item.event();
+            if (isPathTraceWindowEvent(event) && !isProbeHttpEvent(event)) {
+                pendingWindowEvents.add(new PendingWindowEvent(event, correlationId(event.detail())));
+            }
             String evidenceId = "evidence-dynamic-" + scopeDigest + "-" + event.sequence();
             String kind = switch (event.eventType()) {
                 case "AGENT_STARTED", "HTTP" -> "entry";
@@ -228,8 +239,10 @@ public final class TraceProjectionService {
                 pathRuns.add(pathRun);
                 PostureExperimentCompiler.CompiledPostureExperiment posturePlan =
                         posturePlans.apply(pathRun.experimentPlanId());
+                List<AgentJsonlTraceConverter.AgentEvent> windowEvents =
+                        drainWindowEvents(pendingWindowEvents, httpCorr);
                 pathTraces.add(PathTraceProjectionBridge.projectFromPathRun(
-                        pathRun, posturePlan, List.of()));
+                        pathRun, posturePlan, windowEvents));
             }
             if ("BRANCH_COVERAGE".equals(event.eventType()) && !pathRuns.isEmpty()) {
                 ApiDtos.PathRunDto last = pathRuns.remove(pathRuns.size() - 1);
@@ -268,10 +281,53 @@ public final class TraceProjectionService {
         if (pathRuns.isEmpty()) {
             ApiDtos.PathRunDto taskRun = taskLevelPathRun(snapshot, refs, orphanSql);
             pathRuns.add(taskRun);
-            pathTraces.add(PathTraceProjectionBridge.projectFromPathRun(taskRun, null, List.of()));
+            List<AgentJsonlTraceConverter.AgentEvent> leftover =
+                    drainWindowEvents(pendingWindowEvents, "");
+            pathTraces.add(PathTraceProjectionBridge.projectFromPathRun(taskRun, null, leftover));
         }
         return new Projection(snapshot.scope(), path, List.copyOf(paths), List.copyOf(pathRuns),
                 List.copyOf(pathTraces), projectedEvidence, snapshot.updatedAt().toString());
+    }
+
+    /**
+     * Events that enrich PathTrace beyond HTTP/SQL PathRun heuristics.
+     * Plain JDBC statement rows stay on PathRun.sqlEvents to avoid double-counting.
+     */
+    static boolean isPathTraceWindowEvent(AgentJsonlTraceConverter.AgentEvent event) {
+        if (event == null) return false;
+        Map<String, String> detail = event.detail();
+        if (detail != null) {
+            String pathDebugKind = detail.getOrDefault("pathDebugKind", "").trim();
+            if (!pathDebugKind.isEmpty()) {
+                return true;
+            }
+        }
+        return switch (event.eventType()) {
+            case "PROCESS", "FILE", "HTTP_CLIENT" -> true;
+            default -> false;
+        };
+    }
+
+    private static List<AgentJsonlTraceConverter.AgentEvent> drainWindowEvents(
+            List<PendingWindowEvent> pending, String httpCorr) {
+        List<AgentJsonlTraceConverter.AgentEvent> window = new ArrayList<>();
+        List<PendingWindowEvent> retained = new ArrayList<>();
+        String corr = httpCorr == null ? "" : httpCorr;
+        for (PendingWindowEvent item : pending) {
+            if (corr.isBlank()) {
+                window.add(item.event());
+            } else if (item.correlationId().isBlank()) {
+                // Correlated HTTP: uncorrelated sensor events must not cross-attach.
+                continue;
+            } else if (corr.equals(item.correlationId())) {
+                window.add(item.event());
+            } else {
+                retained.add(item);
+            }
+        }
+        pending.clear();
+        pending.addAll(retained);
+        return List.copyOf(window);
     }
 
     public List<ApiDtos.PathRunDto> pathRunsForScan(String projectId, String artifactDigest, String scanId) {
@@ -600,6 +656,13 @@ public final class TraceProjectionService {
 
     private record PendingSql(SqlEvent event, String correlationId) {
         private PendingSql {
+            event = Objects.requireNonNull(event, "event");
+            correlationId = correlationId == null ? "" : correlationId;
+        }
+    }
+
+    private record PendingWindowEvent(AgentJsonlTraceConverter.AgentEvent event, String correlationId) {
+        private PendingWindowEvent {
             event = Objects.requireNonNull(event, "event");
             correlationId = correlationId == null ? "" : correlationId;
         }

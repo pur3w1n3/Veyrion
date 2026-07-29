@@ -179,20 +179,23 @@ public final class LiveTrustedDockerMultiRequestAcceptanceTest {
             WorkerControlPlaneClient control = new WorkerControlPlaneClient(
                     server.baseUri().resolve("/internal/worker/v1/"),
                     server.workerToken(), Duration.ofSeconds(20));
+            LocalDockerTrustedSandboxClient sandboxClient = new LocalDockerTrustedSandboxClient();
             ExternalArtifactTaskExecutor executor = new ExternalArtifactTaskExecutor(
-                    control, new LocalDockerTrustedSandboxClient(),
+                    control, sandboxClient,
                     scope -> {
                         check(scope.taskId().equals(taskId), "catalog scope matches live task");
                         return registration;
                     },
                     ExternalArtifactTaskExecutor.RuntimePolicy.trustedLocalDocker(image),
                     "live-docker-multi-worker");
+            List<Map<String, Object>> pathRuns;
+            try {
             ExternalArtifactTaskExecutor.ExecutionResult result = executor.execute(
                     new ExternalArtifactTaskExecutor.ExecutionRequest(
                             new TaskScope(projectId, digest, scanId, taskId)));
             check(result.lifecycle() == TaskLifecycle.COMPLETED, "live TRUSTED_DOCKER task completed");
 
-            List<Map<String, Object>> pathRuns = awaitPathRuns(server, scanId);
+            pathRuns = awaitPathRuns(server, scanId);
             check(pathRuns.size() >= 2, "live projects ≥2 PathRuns: " + pathRuns.size());
             boolean sawA = false;
             boolean sawB = false;
@@ -243,6 +246,13 @@ public final class LiveTrustedDockerMultiRequestAcceptanceTest {
                     URI.create(server.baseUri() + "/projects/" + projectId + "/dashboard"), null);
             check(dashboard.toString().contains("HTTP") || dashboard.toString().contains("/api/"),
                     "dashboard reflects live dynamic HTTP evidence");
+            } finally {
+                executor.closeRetainedSessions();
+                try {
+                    sandboxClient.close();
+                } catch (RuntimeException ignored) {
+                }
+            }
         } finally {
             deleteTreeBestEffort(root);
         }

@@ -5,6 +5,7 @@ import com.aq.jvmsentinel.domain.pathdebug.PathRunPathDebugView;
 import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -27,6 +28,13 @@ public final class PathDebugWireHelper {
         String authRequirement = PathTraceProjector.authRequirementFor(pathTrace, httpStatus(base));
         PathRunPathDebugView view = PathRunPathDebugView.fromPathTrace(pathTrace, authRequirement);
         merged.putAll(view.toMap());
+        // Flatten UI-facing PathTrace fields onto PathRun so GUI parsers need not dig nested.
+        if (pathTrace.lastBusinessHop() != null && !pathTrace.lastBusinessHop().isBlank()) {
+            merged.put("lastBusinessHop", pathTrace.lastBusinessHop());
+        }
+        merged.put("effectRefs", pathTrace.effectRefs());
+        merged.put("parameterFlow", pathTrace.parameterFlow().stream()
+                .map(PathTrace.ParameterFlowStep::toMap).toList());
         merged.put("pathTrace", pathTrace.toMap());
         return merged;
     }
@@ -73,6 +81,10 @@ public final class PathDebugWireHelper {
         if (trace == null) {
             summary.put("legacyIncomplete", true);
             summary.put("exitReason", "LEGACY_DYNAMIC_INCOMPLETE");
+            // Keep wire shape stable for GUI parsers that expect arrays.
+            summary.put("effectRefs", List.of());
+            summary.put("forcedGuardRefs", List.of());
+            summary.put("parameterFlow", List.of());
             return Map.copyOf(summary);
         }
         summary.put("entryRef", trace.entryRef());

@@ -42,9 +42,27 @@ public final class FrameworkAdapterRegistry {
         Set<String> seen = new LinkedHashSet<>();
         for (FrameworkAdapter adapter : ADAPTERS) {
             for (AuthCodeQueryService.WellKnownKey key : adapter.wellKnownSecretHints()) {
-                if (key != null && seen.add(key.alias() + "|" + key.value())) {
+                if (key != null && seen.add(key.alias() + "|" + key.value() + "|" + key.usage())) {
                     keys.add(key);
                 }
+            }
+        }
+        // Platform rememberMe cipher dictionary (not JWT mint material).
+        for (AuthCodeQueryService.WellKnownKey key
+                : com.aq.jvmsentinel.analysis.identity.RememberMeCipherHarvester.dictionary()) {
+            if (key != null && seen.add(key.alias() + "|" + key.value() + "|" + key.usage())) {
+                keys.add(key);
+            }
+        }
+        return List.copyOf(keys);
+    }
+
+    /** JWT-signing subset only — never includes rememberMe cipher keys. */
+    public static List<AuthCodeQueryService.WellKnownKey> wellKnownJwtSigningDictionaries() {
+        List<AuthCodeQueryService.WellKnownKey> keys = new ArrayList<>();
+        for (AuthCodeQueryService.WellKnownKey key : wellKnownSecretDictionaries()) {
+            if (key != null && key.jwtSigning()) {
+                keys.add(key);
             }
         }
         return List.copyOf(keys);

@@ -73,6 +73,6 @@
 | Docker-only 强达 / 策略拒绝 | `RuntimePostureOrchestratorAcceptanceTest`、`PathTraceQueryDenialAcceptanceTest` |
 | effect 后 DB 不可达仍保留路径 | `PathDebugMinimumAcceptanceTest` / `PathTraceProjectorAcceptanceTest` |
 | 授权样本三轨 live | `LivePathTracePostureAcceptanceTest`：digest-pinned runtime、tracks=`UNAUTH`+`ADMIN`、pathDebug=true、不升 VERIFIED |
-| 镜像 digest-pin | `sandbox-pack/.runtime/state.json` → `127.0.0.1:5000/veyrion/artifact-runtime@sha256:e2b926582e099bfbf5714995413326942a2be2ec26c3db427ccd63cdd2d1c4dd` |
+| 镜像 digest-pin | `sandbox-pack/.runtime/state.json` → `127.0.0.1:5000/veyrion/artifact-runtime@sha256:08c4f097a44b8ad03fe3840e97c8d7fdb593d8205685f01e991634056a47fbf7` |
 
 声明范围外：OSS 实战 JAR（WebGoat/Blade）全链路召回、gVisor/Kata、`VERIFIED` 仍不在本 ADR 验收内。实现状态见 [MVP_BACKLOG.md](../MVP_BACKLOG.md) P0-21。

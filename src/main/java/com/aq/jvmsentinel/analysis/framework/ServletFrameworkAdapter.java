@@ -24,7 +24,10 @@ public final class ServletFrameworkAdapter implements FrameworkAdapter {
             "javax/servlet/Filter",
             "jakarta/servlet/Filter",
             "javax/servlet/http/HttpServlet",
-            "jakarta/servlet/http/HttpServlet");
+            "jakarta/servlet/http/HttpServlet",
+            "org/apache/shiro",
+            "CookieRememberMeManager",
+            "RememberMeManager");
 
     @Override
     public String id() {

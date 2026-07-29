@@ -30,17 +30,17 @@ final class VeyrionMockPreparedStatement extends VeyrionMockStatement implements
     }
 
     @Override
-    public ResultSet executeQuery() {
+    public ResultSet executeQuery() throws SQLException {
         return executeQuery(sql);
     }
 
     @Override
-    public int executeUpdate() {
+    public int executeUpdate() throws SQLException {
         return executeUpdate(sql);
     }
 
     @Override
-    public boolean execute() {
+    public boolean execute() throws SQLException {
         return execute(sql);
     }
 

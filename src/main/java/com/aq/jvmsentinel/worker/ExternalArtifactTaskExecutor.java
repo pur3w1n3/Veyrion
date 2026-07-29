@@ -240,8 +240,7 @@ public final class ExternalArtifactTaskExecutor {
                     "任务完成；断网沙箱保留至 TRIAGE 动态校验结束");
             WorkerControlPlaneClient.TaskDescriptor completed =
                     control.complete(request.scope(), lease.leaseId(), workerId);
-            validateDescriptor(completed, request.scope(), TaskLifecycle.COMPLETED);
-            requireStableDescriptor(descriptor, completed);
+            requireCompletedDescriptor(completed, request.scope(), descriptor);
             return new ExecutionResult(request.scope(), registration.sha256(), chunks.size(),
                     chunks.get(chunks.size() - 1).digest(), TaskLifecycle.COMPLETED);
         } catch (RuntimeException failure) {
@@ -334,8 +333,7 @@ public final class ExternalArtifactTaskExecutor {
                     "复用沙箱探针完成；会话继续保留至 TRIAGE 结束");
             WorkerControlPlaneClient.TaskDescriptor completed =
                     control.complete(request.scope(), lease.leaseId(), workerId);
-            validateDescriptor(completed, request.scope(), TaskLifecycle.COMPLETED);
-            requireStableDescriptor(descriptor, completed);
+            requireCompletedDescriptor(completed, request.scope(), descriptor);
             return new ExecutionResult(request.scope(), registration.sha256(), chunks.size(),
                     chunks.get(chunks.size() - 1).digest(), TaskLifecycle.COMPLETED);
         } catch (RuntimeException failure) {
@@ -425,6 +423,27 @@ public final class ExternalArtifactTaskExecutor {
                 || !value.networkPolicy().allowlist().isEmpty()) {
             throw new SecurityException("external artifact execution requires deny-all network policy");
         }
+    }
+
+    /**
+     * Completing may fail-closed into FAILED (e.g. PROJECTION_FAILED) while keeping scope stable.
+     * Surface that distinctly so callers do not misread it as a lease/start identity mismatch.
+     */
+    private static void requireCompletedDescriptor(WorkerControlPlaneClient.TaskDescriptor value,
+                                                   TaskScope expectedScope,
+                                                   WorkerControlPlaneClient.TaskDescriptor baseline) {
+        if (!value.scope().equals(expectedScope)) {
+            throw new SecurityException("task response changed execution identity or lifecycle");
+        }
+        if (value.lifecycle() == TaskLifecycle.FAILED) {
+            throw new ExternalArtifactExecutionException(
+                    "PROJECTION_OR_COMPLETE_FAILED",
+                    "control plane rejected task completion (lifecycle=FAILED); "
+                            + "inspect /scans/{scanId}/dynamic-tasks failureDiagnostic",
+                    null);
+        }
+        validateDescriptor(value, expectedScope, TaskLifecycle.COMPLETED);
+        requireStableDescriptor(baseline, value);
     }
 
     private static void validateRegistration(ArtifactRegistration value, TaskScope scope) {
@@ -533,8 +552,9 @@ public final class ExternalArtifactTaskExecutor {
     }
 
     /**
-     * Reads only fixed trace paths through bounded Base64 blocks. The general command response
-     * ceiling remains unchanged and every block is length-checked before evidence parsing.
+     * Reads only fixed trace paths through bounded Base64 blocks. The live Agent may still
+     * append to the source while the sandbox is retained, so this copies to a stable
+     * {@code *.snapshot} first, then length-checks every block against that frozen size.
      */
     static byte[] readTraceFile(SandboxRuntimeClient sandbox, String sandboxId, String path,
                                 long maxBytes, boolean required) {
@@ -545,13 +565,15 @@ public final class ExternalArtifactTaskExecutor {
         if (maxBytes < 0 || maxBytes > MAX_TRACE_BYTES) {
             throw new SecurityException("trace read budget is outside limits");
         }
+        String snapshot = path + ".snapshot";
         try {
+            // Freeze the JSONL before sizing/reading: retained apps keep writing via FileChannel.
             String sizeCommand = required
-                    ? "wc -c < " + path
-                    : "if [ -f " + path + " ]; then wc -c < " + path
-                            + "; else printf '0\\n'; fi";
+                    ? "cp -f " + path + " " + snapshot + " && wc -c < " + snapshot
+                    : "if [ -f " + path + " ]; then cp -f " + path + " " + snapshot
+                            + " && wc -c < " + snapshot + "; else printf '0\\n'; fi";
             CommandResult sizeResult = sandbox.command(sandboxId, new CommandRequest(
-                    sizeCommand, WORKING_DIRECTORY, Duration.ofSeconds(10),
+                    sizeCommand, WORKING_DIRECTORY, Duration.ofSeconds(20),
                     SANDBOX_UID, SANDBOX_GID));
             String sizeText = sizeResult.stdout().strip();
             if (sizeResult.exitCode() != 0 || !sizeText.matches("[0-9]{1,10}")) {
@@ -575,7 +597,7 @@ public final class ExternalArtifactTaskExecutor {
             int blocks = Math.toIntExact((size + TRACE_READ_BLOCK_BYTES - 1)
                     / TRACE_READ_BLOCK_BYTES);
             for (int block = 0; block < blocks; block++) {
-                String command = "dd if=" + path + " bs=" + TRACE_READ_BLOCK_BYTES
+                String command = "dd if=" + snapshot + " bs=" + TRACE_READ_BLOCK_BYTES
                         + " skip=" + block + " count=1 2>/dev/null"
                         + " | base64 | tr -d '\\r\\n'";
                 CommandResult chunk = sandbox.command(sandboxId, new CommandRequest(
@@ -585,9 +607,10 @@ public final class ExternalArtifactTaskExecutor {
                     throw new ExternalArtifactExecutionException(
                             "TRACE_READ_FAILED", "trace block command failed", null);
                 }
+                String encoded = chunk.stdout() == null ? "" : chunk.stdout().replaceAll("\\s+", "");
                 byte[] decoded;
                 try {
-                    decoded = Base64.getDecoder().decode(chunk.stdout());
+                    decoded = Base64.getDecoder().decode(encoded);
                 } catch (IllegalArgumentException malformed) {
                     throw new ExternalArtifactExecutionException(
                             "TRACE_READ_FAILED", "trace block is not valid Base64", malformed);
@@ -596,7 +619,11 @@ public final class ExternalArtifactTaskExecutor {
                         size - (long) block * TRACE_READ_BLOCK_BYTES);
                 if (decoded.length != expected) {
                     throw new ExternalArtifactExecutionException(
-                            "TRACE_READ_FAILED", "trace block length mismatch", null);
+                            "TRACE_READ_FAILED",
+                            "trace block length mismatch (block=" + block
+                                    + " expected=" + expected
+                                    + " actual=" + decoded.length + ")",
+                            null);
                 }
                 output.write(decoded, 0, decoded.length);
             }
@@ -611,6 +638,14 @@ public final class ExternalArtifactTaskExecutor {
         } catch (RuntimeException failure) {
             throw new ExternalArtifactExecutionException(
                     "TRACE_READ_FAILED", "trace could not be read safely", failure);
+        } finally {
+            try {
+                sandbox.command(sandboxId, new CommandRequest(
+                        "rm -f " + snapshot,
+                        WORKING_DIRECTORY, Duration.ofSeconds(5), SANDBOX_UID, SANDBOX_GID));
+            } catch (RuntimeException ignored) {
+                // Best-effort snapshot cleanup on the trace tmpfs.
+            }
         }
     }
 
@@ -815,8 +850,13 @@ public final class ExternalArtifactTaskExecutor {
                     .append(target.track() == null ? "UNAUTH" : target.track()).append('\t')
                     .append(target.authHeader() == null ? "" : target.authHeader()).append('\t')
                     .append(target.bladeAuthHeader() == null ? "" : target.bladeAuthHeader());
-            if (target.experimentPlanId() != null && !target.experimentPlanId().isBlank()) {
-                text.append('\t').append(target.experimentPlanId());
+            boolean hasCookie = target.cookieHeader() != null && !target.cookieHeader().isBlank();
+            boolean hasPlan = target.experimentPlanId() != null && !target.experimentPlanId().isBlank();
+            if (hasPlan || hasCookie) {
+                text.append('\t').append(hasPlan ? target.experimentPlanId() : "");
+            }
+            if (hasCookie) {
+                text.append('\t').append(target.cookieHeader());
             }
             text.append('\n');
         }
@@ -845,8 +885,14 @@ public final class ExternalArtifactTaskExecutor {
             total += auth.getBytes(StandardCharsets.UTF_8).length + 1;
             String blade = target.bladeAuthHeader() == null ? "" : target.bladeAuthHeader();
             total += blade.getBytes(StandardCharsets.UTF_8).length + 1;
-            if (target.experimentPlanId() != null && !target.experimentPlanId().isBlank()) {
-                total += target.experimentPlanId().getBytes(StandardCharsets.UTF_8).length + 1;
+            boolean hasCookie = target.cookieHeader() != null && !target.cookieHeader().isBlank();
+            boolean hasPlan = target.experimentPlanId() != null && !target.experimentPlanId().isBlank();
+            if (hasPlan || hasCookie) {
+                String planId = hasPlan ? target.experimentPlanId() : "";
+                total += planId.getBytes(StandardCharsets.UTF_8).length + 1;
+            }
+            if (hasCookie) {
+                total += target.cookieHeader().getBytes(StandardCharsets.UTF_8).length + 1;
             }
         }
         return total;
@@ -1225,23 +1271,29 @@ public final class ExternalArtifactTaskExecutor {
 
     /** One bounded HTTP stimulus inside the deny-all container. */
     public record ProbeTarget(String method, String route, String query, String track,
-                              String authHeader, String bladeAuthHeader, String experimentPlanId) {
+                              String authHeader, String bladeAuthHeader, String experimentPlanId,
+                              String cookieHeader) {
         public ProbeTarget(String method, String route) {
-            this(method, route, "", "UNAUTH", "", "", "");
+            this(method, route, "", "UNAUTH", "", "", "", "");
         }
 
         public ProbeTarget(String method, String route, String query) {
-            this(method, route, query, "UNAUTH", "", "", "");
+            this(method, route, query, "UNAUTH", "", "", "", "");
         }
 
-        /** Auth-only constructor; Blade-Auth stays empty (channels are independent). */
+        /** Auth-only constructor; Blade-Auth / Cookie stay empty (channels are independent). */
         public ProbeTarget(String method, String route, String query, String track, String authHeader) {
-            this(method, route, query, track, authHeader, "", "");
+            this(method, route, query, track, authHeader, "", "", "");
         }
 
         public ProbeTarget(String method, String route, String query, String track,
                            String authHeader, String bladeAuthHeader) {
-            this(method, route, query, track, authHeader, bladeAuthHeader, "");
+            this(method, route, query, track, authHeader, bladeAuthHeader, "", "");
+        }
+
+        public ProbeTarget(String method, String route, String query, String track,
+                           String authHeader, String bladeAuthHeader, String experimentPlanId) {
+            this(method, route, query, track, authHeader, bladeAuthHeader, experimentPlanId, "");
         }
 
         public ProbeTarget {
@@ -1251,6 +1303,7 @@ public final class ExternalArtifactTaskExecutor {
             authHeader = authHeader == null ? "" : authHeader;
             bladeAuthHeader = bladeAuthHeader == null ? "" : bladeAuthHeader;
             experimentPlanId = experimentPlanId == null ? "" : experimentPlanId.trim();
+            cookieHeader = cookieHeader == null ? "" : cookieHeader;
             if (!Set.of("GET", "POST", "PUT", "PATCH", "DELETE").contains(method)
                     || route == null
                     || !route.matches("/[A-Za-z0-9_./{}:-]{0,1023}")
@@ -1260,6 +1313,8 @@ public final class ExternalArtifactTaskExecutor {
                     || authHeader.chars().anyMatch(c -> c < 0x20 || c == 0x7f)
                     || bladeAuthHeader.length() > 2048
                     || bladeAuthHeader.chars().anyMatch(c -> c < 0x20 || c == 0x7f)
+                    || cookieHeader.length() > 2048
+                    || cookieHeader.chars().anyMatch(c -> c < 0x20 || c == 0x7f)
                     || experimentPlanId.length() > 128
                     || (!experimentPlanId.isEmpty()
                     && !experimentPlanId.matches("[A-Za-z0-9_.:/-]{1,128}"))) {

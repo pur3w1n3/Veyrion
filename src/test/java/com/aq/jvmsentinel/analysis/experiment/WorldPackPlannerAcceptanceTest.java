@@ -1,9 +1,13 @@
 package com.aq.jvmsentinel.analysis.experiment;
 
 import com.aq.jvmsentinel.AcceptanceAssertions;
+import com.aq.jvmsentinel.domain.pathdebug.RuntimePosture;
+import com.aq.jvmsentinel.domain.pathdebug.RuntimePostureKind;
 import com.aq.jvmsentinel.domain.pathdebug.TraceExitReason;
 import com.aq.jvmsentinel.domain.pathdebug.WorldPackDependencyMode;
+import com.aq.jvmsentinel.domain.pathdebug.WorldPackExecutionStage;
 import com.aq.jvmsentinel.domain.pathdebug.WorldPackManifest;
+import com.aq.jvmsentinel.model.IdentityTrack;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -21,6 +25,7 @@ public final class WorldPackPlannerAcceptanceTest {
         observeFailPlan();
         stubNameMigration();
         classifyDependencyFailure();
+        resolveRuntimeDependencyMode();
         System.out.println("WorldPackPlannerAcceptanceTest: PASS ("
                 + Math.max(ASSERTIONS.get(), AcceptanceAssertions.get()) + " assertions)");
     }
@@ -82,6 +87,60 @@ public final class WorldPackPlannerAcceptanceTest {
         check(WorldPackPlanner.classifyDependencyFailure("tenant context unavailable")
                         == TraceExitReason.WORLD_STATE_GAP,
                 "tenant gap → WORLD_STATE_GAP");
+    }
+
+    private static void resolveRuntimeDependencyMode() {
+        PostureExperimentCompiler.CompiledPostureExperiment coverage = stubPlan(
+                "plan:coverage", RuntimePosture.coverage());
+        PostureExperimentCompiler.CompiledPostureExperiment forced = stubPlan(
+                "plan:forced", RuntimePosture.forced(List.of("GUARD:AUTH")));
+        check(WorldPackPlanner.resolveRuntimeDependencyMode(List.of(coverage, forced))
+                        == WorldPackDependencyMode.MOCK_CONTINUE,
+                "exploration stage defaults MOCK_CONTINUE for mixed tracks");
+        check(WorldPackPlanner.resolveRuntimeDependencyMode(List.of(forced))
+                        == WorldPackDependencyMode.MOCK_CONTINUE,
+                "exploration stage forced-only still MOCK_CONTINUE");
+        check(WorldPackPlanner.resolveRuntimeDependencyMode(List.of())
+                        == WorldPackDependencyMode.MOCK_CONTINUE,
+                "empty plans keep exploration MOCK_CONTINUE");
+        check(WorldPackPlanner.resolveRuntimeDependencyMode(null)
+                        == WorldPackDependencyMode.MOCK_CONTINUE,
+                "null plans keep exploration MOCK_CONTINUE");
+        check(WorldPackPlanner.resolveRuntimeDependencyMode(
+                                List.of(coverage, forced), WorldPackExecutionStage.EXPLORATION)
+                        == WorldPackDependencyMode.MOCK_CONTINUE,
+                "explicit EXPLORATION → MOCK_CONTINUE");
+        check(WorldPackPlanner.resolveRuntimeDependencyMode(
+                                List.of(coverage, forced), WorldPackExecutionStage.CONFIRMATION)
+                        == WorldPackDependencyMode.OBSERVE_FAIL,
+                "CONFIRMATION stage → OBSERVE_FAIL (vendor-agnostic)");
+        check(WorldPackPlanner.resolveRuntimeDependencyMode(
+                                List.of(), WorldPackExecutionStage.CONFIRMATION)
+                        == WorldPackDependencyMode.OBSERVE_FAIL,
+                "CONFIRMATION ignores empty plans");
+    }
+
+    private static PostureExperimentCompiler.CompiledPostureExperiment stubPlan(
+            String planId, RuntimePosture posture) {
+        IdentityTrack track = posture.postureKind() == RuntimePostureKind.UNAUTH
+                ? IdentityTrack.UNAUTH : IdentityTrack.ADMIN;
+        return new PostureExperimentCompiler.CompiledPostureExperiment(
+                planId,
+                "traceplan:stub",
+                posture.postureKind() == RuntimePostureKind.FORCED_REACHABILITY
+                        ? "worldpack:mock:scan-wp" : "worldpack:observe:scan-wp",
+                "entry:stub",
+                "GET",
+                "/stub",
+                posture,
+                track,
+                List.of(),
+                "",
+                "",
+                "empty-ok",
+                List.of(),
+                List.of(),
+                "BUDGET");
     }
 
     private static void check(boolean condition, String message) {

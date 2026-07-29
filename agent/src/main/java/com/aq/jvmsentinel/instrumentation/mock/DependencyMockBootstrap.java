@@ -17,12 +17,30 @@ public final class DependencyMockBootstrap {
 
     public static void install(Instrumentation instrumentation, boolean dependencyMock,
                                String worldPackDependencyMode) {
-        if ("OBSERVE_FAIL".equalsIgnoreCase(worldPackDependencyMode)) {
-            AgentRuntime.recordJdbc(DependencyMockBootstrap.class.getName(), "install",
-                    Map.of("captureMode", "DEPENDENCY_MOCK",
-                            "dependencyMode", "OBSERVE_FAIL",
-                            "provenance", "SERVER_FIXED_POLICY",
-                            "outcome", "OBSERVE_FAIL"));
+        boolean observeFail = "OBSERVE_FAIL".equalsIgnoreCase(worldPackDependencyMode);
+        // OBSERVE_FAIL still needs the mock JDBC driver so Statement.execute* can record SQL
+        // text (H3 / PathTrace) and then fail closed. Skip Redis/MySQL success stubs that
+        // would continue business past unavailable real dependencies.
+        if (observeFail) {
+            try {
+                JarFile agentJar = agentJarFile();
+                if (agentJar != null) {
+                    instrumentation.appendToSystemClassLoaderSearch(agentJar);
+                }
+                VeyrionMockDriver.register();
+                QuartzInstanceIdFailOpen.install(instrumentation);
+                AgentRuntime.recordJdbc(DependencyMockBootstrap.class.getName(), "install",
+                        Map.of("captureMode", "DEPENDENCY_MOCK",
+                                "dependencyMode", "OBSERVE_FAIL",
+                                "provenance", "SERVER_FIXED_POLICY",
+                                "outcome", "OBSERVE_FAIL",
+                                "jdbc", "veyrion-mock"));
+            } catch (Exception failure) {
+                AgentRuntime.recordJdbc(DependencyMockBootstrap.class.getName(), "installFailed",
+                        Map.of("captureMode", "DEPENDENCY_MOCK",
+                                "dependencyMode", "OBSERVE_FAIL",
+                                "error", failure.getClass().getSimpleName()));
+            }
             return;
         }
         if (!dependencyMock) return;

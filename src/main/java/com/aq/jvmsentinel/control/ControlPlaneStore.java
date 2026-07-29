@@ -1230,7 +1230,11 @@ public class ControlPlaneStore {
     public Optional<StaticFactSnapshot> staticFacts(String scanId) {
         if (scanId == null || scanId.isBlank()) return Optional.empty();
         StaticFactSnapshot cached = staticFacts.get(scanId);
-        return cached == null ? Optional.empty() : Optional.of(cached);
+        if (cached != null) return Optional.of(cached);
+        if (persistence == null) return Optional.empty();
+        Optional<StaticFactSnapshot> loaded = persistence.loadTaintGraph(scanId);
+        loaded.ifPresent(snapshot -> staticFacts.putIfAbsent(scanId, snapshot));
+        return Optional.ofNullable(staticFacts.get(scanId));
     }
 
     public List<ScanRecord> scansForProject(String projectId) {

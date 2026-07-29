@@ -1054,13 +1054,14 @@ const outputLanguageOf = (value: unknown, field: string): OutputLanguage => {
 }
 
 const listOfText = (value: unknown, field: string, optional = false): string[] => {
-  if (value === undefined && optional) return []
+  // JSON null and omitted fields are equivalent for optional arrays.
+  if ((value === undefined || value === null) && optional) return []
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw new Error(`invalid ${field}`)
   return value as string[]
 }
 
 const evidenceRefsOf = (value: unknown, field: string, optional = true): EvidenceRef[] => {
-  if (value === undefined && optional) return []
+  if ((value === undefined || value === null) && optional) return []
   if (!Array.isArray(value)) throw new Error(`invalid ${field}`)
   return value.map((item) => {
     if (typeof item === 'string' && item.trim() !== '') return item
@@ -1156,8 +1157,9 @@ const parseRootCause = (value: unknown, field: string): RootCauseDto | undefined
         if (!isRecord(step)) throw new Error(`invalid ${field}.attackPath[${index}]`)
         return {
           layer: optionalText(step.layer) ?? 'unknown',
-          label: asText(step.label, `${field}.attackPath[${index}].label`),
-          evidenceRefs: listOfText(step.evidenceRefs ?? [], `${field}.attackPath[${index}].evidenceRefs`)
+          // Backend copyRootCause may emit "" when label was null.
+          label: optionalText(step.label) || 'unknown',
+          evidenceRefs: listOfText(step.evidenceRefs ?? [], `${field}.attackPath[${index}].evidenceRefs`, true)
         }
       })
       : (() => { throw new Error(`invalid ${field}.attackPath`) })()
@@ -1185,15 +1187,15 @@ const parseRankedSink = (value: unknown): RankedSinkDto => {
     score: asFiniteNumber(value.score, 'rankedSink.score', 0),
     category: optionalText(value.category) ?? '',
     symbol: strictOptionalText(value.symbol, 'rankedSink.symbol'),
-    rankReasons: listOfText(value.rankReasons ?? [], 'rankedSink.rankReasons')
+    rankReasons: listOfText(value.rankReasons, 'rankedSink.rankReasons', true)
   }
 }
 
 const parseLedgerDiff = (value: unknown): LedgerDiffDto => {
   if (!isRecord(value)) throw new Error('invalid ledgerDiff')
   return {
-    newlyMatched: listOfText(value.newlyMatched ?? [], 'ledgerDiff.newlyMatched'),
-    regressions: listOfText(value.regressions ?? [], 'ledgerDiff.regressions'),
+    newlyMatched: listOfText(value.newlyMatched, 'ledgerDiff.newlyMatched', true),
+    regressions: listOfText(value.regressions, 'ledgerDiff.regressions', true),
     unchangedCount: typeof value.unchangedCount === 'number' && Number.isFinite(value.unchangedCount)
       ? Math.max(0, Math.floor(value.unchangedCount))
       : 0,
@@ -1258,7 +1260,7 @@ export const parseSecurityHypothesis = (item: unknown): SecurityHypothesisDto =>
   }
   if (item.extensions !== undefined && !isRecord(item.extensions)) throw new Error('invalid securityHypothesis.extensions')
   const listRefs = (value: unknown, field: string): string[] => {
-    if (value === undefined) return []
+    if (value === undefined || value === null) return []
     if (!Array.isArray(value)) throw new Error(`invalid ${field}`)
     return value.map((entry, index) => asText(entry, `${field}[${index}]`))
   }
@@ -1566,9 +1568,9 @@ export const parsePathTrace = (item: unknown): PathTrace => {
     verificationStatus: statusOf(item.verificationStatus ?? item.status, 'dashboard.paths.verificationStatus'),
     dependencyMode: asText(item.dependencyMode, 'dashboard.paths.dependencyMode'),
     stopReason: asText(item.stopReason, 'dashboard.paths.stopReason'),
-    preconditions: listOfText(item.preconditions, 'dashboard.paths.preconditions'),
+    preconditions: listOfText(item.preconditions, 'dashboard.paths.preconditions', true),
     steps: item.steps.map(parsePath),
-    evidenceRefs: evidenceRefsOf(item.evidenceRefs, 'dashboard.paths.evidenceRefs'),
+    evidenceRefs: evidenceRefsOf(item.evidenceRefs, 'dashboard.paths.evidenceRefs', true),
     requiredCapability: item.requiredCapability === undefined ? undefined : workerCapabilityOf(item.requiredCapability, 'dashboard.paths.requiredCapability'),
     taskId: strictOptionalText(item.taskId, 'dashboard.paths.taskId'),
     dynamicExecutionMode: strictOptionalText(item.dynamicExecutionMode, 'dashboard.paths.dynamicExecutionMode')
@@ -1679,7 +1681,7 @@ const parseExperimentShape = (value: unknown): ExperimentShapeDto => {
     httpStatus: typeof value.httpStatus === 'number' ? value.httpStatus : -1,
     entryHit: value.entryHit === undefined ? undefined : value.entryHit === null ? null : value.entryHit === true,
     parameterBound: value.parameterBound === undefined ? undefined : value.parameterBound === null ? null : value.parameterBound === true,
-    sqlTexts: listOfText(value.sqlTexts, 'experimentShape.sqlTexts'),
+    sqlTexts: listOfText(value.sqlTexts, 'experimentShape.sqlTexts', true),
     stopReason: optionalText(value.stopReason) ?? 'UNKNOWN',
     outcomeClass: optionalText(value.outcomeClass) ?? 'UNKNOWN',
     dependencyMode: typeof value.dependencyMode === 'string' ? value.dependencyMode : 'MOCK',
@@ -1706,7 +1708,7 @@ const parseSqlExperimentCard = (value: unknown): SqlExperimentCardDto => {
     stopCondition: optionalText(value.stopCondition) ?? 'UNKNOWN',
     dependencyMode: typeof value.dependencyMode === 'string' ? value.dependencyMode : 'MOCK',
     verificationStatus: status,
-    pathRunRefs: listOfText(value.pathRunRefs, 'sqlExperimentCard.pathRunRefs'),
+    pathRunRefs: listOfText(value.pathRunRefs, 'sqlExperimentCard.pathRunRefs', true),
     evidenceRefs: evidenceRefsOf(value.evidenceRefs, 'sqlExperimentCard.evidenceRefs'),
     replayable: value.replayable !== false
   }
@@ -1723,7 +1725,7 @@ const parseExperimentPlan = (value: unknown): ExperimentPlanDto => {
     method: asText(value.method, 'experimentPlan.method'),
     contentType: asText(value.contentType, 'experimentPlan.contentType'),
     maxAttempts: typeof value.maxAttempts === 'number' ? Math.max(1, Math.min(8, Math.floor(value.maxAttempts))) : 1,
-    candidateInputs: listOfText(value.candidateInputs, 'experimentPlan.candidateInputs'),
+    candidateInputs: listOfText(value.candidateInputs, 'experimentPlan.candidateInputs', true),
     stopCondition: optionalText(value.stopCondition) ?? 'COMPLETED',
     packId: strictOptionalText(value.packId, 'experimentPlan.packId'),
     boundForExecution: value.boundForExecution === true,
@@ -1764,8 +1766,9 @@ const parsePathDebugTrackSummary = (value: unknown): PathDebugTrackSummary => {
     postureProvenance: optionalText(value.postureProvenance),
     exitReason: optionalText(value.exitReason),
     lastBusinessHop: optionalText(value.lastBusinessHop),
-    effectRefs: listOfText(value.effectRefs, 'pathDebug.effectRefs'),
-    forcedGuardRefs: listOfText(value.forcedGuardRefs, 'pathDebug.forcedGuardRefs'),
+    // Legacy / no-trace rows omit these arrays; treat missing as empty.
+    effectRefs: listOfText(value.effectRefs, 'pathDebug.effectRefs', true),
+    forcedGuardRefs: listOfText(value.forcedGuardRefs, 'pathDebug.forcedGuardRefs', true),
     worldPackId: optionalText(value.worldPackId),
     authRequirement: optionalText(value.authRequirement),
     httpStatus: typeof value.httpStatus === 'number' ? value.httpStatus : undefined,
@@ -1798,8 +1801,10 @@ const parsePathDebugEntrySummary = (value: unknown): PathDebugEntrySummary => {
 
 const parsePathRun = (value: unknown): PathRunDto => {
   if (!isRecord(value)) throw new Error('invalid pathRun')
+  // PathTrace enrichment may live nested under pathTrace; prefer top-level, fall back to nested.
+  const nestedTrace = isRecord(value.pathTrace) ? value.pathTrace : undefined
   const sqlRaw = value.sqlEvents
-  const sqlEvents = sqlRaw === undefined
+  const sqlEvents = sqlRaw === undefined || sqlRaw === null
     ? []
     : Array.isArray(sqlRaw)
       ? sqlRaw.map((item) => {
@@ -1844,14 +1849,21 @@ const parsePathRun = (value: unknown): PathRunDto => {
       ? value.forcedGuardRefs.filter((item): item is string => typeof item === 'string')
       : undefined,
     tracePlanId: strictOptionalText(value.tracePlanId, 'pathRun.tracePlanId'),
-    pathTraceId: strictOptionalText(value.pathTraceId, 'pathRun.pathTraceId'),
-    worldPackId: strictOptionalText(value.worldPackId, 'pathRun.worldPackId'),
+    pathTraceId: strictOptionalText(
+      value.pathTraceId ?? nestedTrace?.pathTraceId, 'pathRun.pathTraceId'),
+    worldPackId: strictOptionalText(
+      value.worldPackId ?? nestedTrace?.worldPackId, 'pathRun.worldPackId'),
     worldPackDependencyMode: strictOptionalText(value.worldPackDependencyMode, 'pathRun.worldPackDependencyMode'),
-    exitReason: strictOptionalText(value.exitReason, 'pathRun.exitReason'),
+    exitReason: strictOptionalText(
+      value.exitReason ?? nestedTrace?.exitReason, 'pathRun.exitReason'),
     legacyIncomplete: value.legacyIncomplete === true ? true : value.legacyIncomplete === false ? false : undefined,
     authRequirement: strictOptionalText(value.authRequirement, 'pathRun.authRequirement'),
-    parameterFlow: Array.isArray(value.parameterFlow)
-      ? value.parameterFlow.map((item) => {
+    parameterFlow: (() => {
+      const raw = Array.isArray(value.parameterFlow)
+        ? value.parameterFlow
+        : Array.isArray(nestedTrace?.parameterFlow) ? nestedTrace.parameterFlow : undefined
+      if (raw === undefined) return undefined
+      return raw.map((item) => {
         if (!isRecord(item)) throw new Error('invalid pathRun.parameterFlow')
         return {
           source: strictOptionalText(item.source, 'pathRun.parameterFlow.source'),
@@ -1860,11 +1872,17 @@ const parsePathRun = (value: unknown): PathRunDto => {
           effectRef: strictOptionalText(item.effectRef, 'pathRun.parameterFlow.effectRef')
         }
       })
-      : undefined,
-    lastBusinessHop: strictOptionalText(value.lastBusinessHop, 'pathRun.lastBusinessHop'),
-    effectRefs: Array.isArray(value.effectRefs)
-      ? value.effectRefs.filter((item): item is string => typeof item === 'string')
-      : undefined
+    })(),
+    lastBusinessHop: strictOptionalText(
+      value.lastBusinessHop ?? nestedTrace?.lastBusinessHop, 'pathRun.lastBusinessHop'),
+    effectRefs: (() => {
+      const raw = Array.isArray(value.effectRefs)
+        ? value.effectRefs
+        : Array.isArray(nestedTrace?.effectRefs) ? nestedTrace.effectRefs : undefined
+      return raw === undefined
+        ? undefined
+        : raw.filter((item): item is string => typeof item === 'string')
+    })()
   }
 }
 

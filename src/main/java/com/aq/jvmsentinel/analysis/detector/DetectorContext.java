@@ -4,6 +4,7 @@ import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.StaticFactSnapshot;
 import com.aq.jvmsentinel.domain.universe.ArtifactUniverse;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -20,8 +21,22 @@ public record DetectorContext(
         List<ApiDtos.SinkDto> sinks,
         List<ApiDtos.DependencyDto> dependencies,
         Map<String, ApiDtos.EvidenceDto> evidence,
-        List<String> configurationLines
+        List<String> configurationLines,
+        Path artifactPath
 ) {
+    public DetectorContext(
+            String scanId,
+            ArtifactUniverse universe,
+            StaticFactSnapshot staticFacts,
+            List<ApiDtos.EntryDto> entries,
+            List<ApiDtos.SinkDto> sinks,
+            List<ApiDtos.DependencyDto> dependencies,
+            Map<String, ApiDtos.EvidenceDto> evidence,
+            List<String> configurationLines) {
+        this(scanId, universe, staticFacts, entries, sinks, dependencies, evidence,
+                configurationLines, null);
+    }
+
     public DetectorContext {
         Objects.requireNonNull(scanId, "scanId");
         if (scanId.isBlank()) throw new IllegalArgumentException("scanId must not be blank");

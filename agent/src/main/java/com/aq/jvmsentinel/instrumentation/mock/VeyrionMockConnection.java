@@ -1,6 +1,8 @@
 package com.aq.jvmsentinel.instrumentation.mock;
 
+import com.aq.jvmsentinel.instrumentation.AgentConfig;
 import com.aq.jvmsentinel.instrumentation.AgentRuntime;
+import com.aq.jvmsentinel.instrumentation.PathDebugDetail;
 
 import java.sql.Array;
 import java.sql.Blob;
@@ -17,6 +19,7 @@ import java.sql.SQLXML;
 import java.sql.Savepoint;
 import java.sql.Statement;
 import java.sql.Struct;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Executor;
@@ -296,6 +299,15 @@ final class VeyrionMockConnection implements Connection {
         return iface.isInstance(this);
     }
 
+    boolean observeFailMode() {
+        return "OBSERVE_FAIL".equalsIgnoreCase(
+                System.getProperty(AgentConfig.WORLD_PACK_DEPENDENCY_MODE_PROPERTY, "MOCK_CONTINUE"));
+    }
+
+    /**
+     * Record statement SQL for PathRun/H3. In OBSERVE_FAIL the caller must throw after this
+     * returns so the request keeps pre-failure PathTrace evidence and exits on dependency.
+     */
     void observeSql(String sql) {
         String text = sql == null ? "" : sql;
         String lower = text.toLowerCase(java.util.Locale.ROOT);
@@ -305,15 +317,22 @@ final class VeyrionMockConnection implements Connection {
                 || lower.startsWith("replace") ? "WRITE" : "UNKNOWN";
         boolean parameterized = text.contains("?");
         boolean malicious = lower.contains("'\"veyrion-sqli-meta");
-        AgentRuntime.recordJdbc(getClass().getName(), "execute",
-                Map.of("captureMode", "DEPENDENCY_MOCK",
-                        "dependencyMode", "MOCK",
-                        "provenance", "RULE_GENERATED",
-                        "sql", truncate(text),
-                        "readWrite", readWrite,
-                        "parameterized", Boolean.toString(parameterized),
-                        "maliciousFragmentPresent", Boolean.toString(malicious),
-                        "parameterSummary", parameterized ? "jdbc-placeholders" : "inline"));
+        boolean observeFail = observeFailMode();
+        Map<String, String> detail = new LinkedHashMap<>();
+        detail.put("captureMode", "JDBC_STATEMENT");
+        detail.put("dependencyMode", observeFail ? "OBSERVE_FAIL" : "MOCK");
+        detail.put("provenance", observeFail ? "SERVER_FIXED_POLICY" : "RULE_GENERATED");
+        detail.put("sql", truncate(text));
+        detail.put("readWrite", readWrite);
+        detail.put("parameterized", Boolean.toString(parameterized));
+        detail.put("maliciousFragmentPresent", Boolean.toString(malicious));
+        detail.put("parameterSummary", parameterized ? "jdbc-placeholders" : "inline");
+        if (observeFail) {
+            detail.putAll(PathDebugDetail.dependencyFailure("DEPENDENCY_UNAVAILABLE", truncate(text)));
+        } else {
+            detail.putAll(PathDebugDetail.dependencyCall(truncate(text)));
+        }
+        AgentRuntime.recordJdbc(getClass().getName(), "execute", detail);
     }
 
     private static String truncate(String value) {

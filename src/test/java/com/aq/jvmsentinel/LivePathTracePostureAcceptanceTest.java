@@ -150,58 +150,67 @@ public final class LivePathTracePostureAcceptanceTest {
             WorkerControlPlaneClient control = new WorkerControlPlaneClient(
                     server.baseUri().resolve("/internal/worker/v1/"),
                     server.workerToken(), Duration.ofSeconds(30));
+            LocalDockerTrustedSandboxClient sandboxClient = new LocalDockerTrustedSandboxClient();
             ExternalArtifactTaskExecutor executor = new ExternalArtifactTaskExecutor(
-                    control, new LocalDockerTrustedSandboxClient(),
+                    control, sandboxClient,
                     scope -> registration,
                     ExternalArtifactTaskExecutor.RuntimePolicy.trustedLocalDocker(image),
                     "live-pathtrace-worker");
-            ExternalArtifactTaskExecutor.ExecutionResult result = executor.execute(
-                    new ExternalArtifactTaskExecutor.ExecutionRequest(
-                            new TaskScope(projectId, digest, scanId, taskId)));
-            check(result.lifecycle() == TaskLifecycle.COMPLETED,
-                    "live TRUSTED_DOCKER PathTrace task completed");
+            try {
+                ExternalArtifactTaskExecutor.ExecutionResult result = executor.execute(
+                        new ExternalArtifactTaskExecutor.ExecutionRequest(
+                                new TaskScope(projectId, digest, scanId, taskId)));
+                check(result.lifecycle() == TaskLifecycle.COMPLETED,
+                        "live TRUSTED_DOCKER PathTrace task completed");
 
-            List<Map<String, Object>> pathRuns = awaitPathRuns(server, scanId, 1);
-            check(!pathRuns.isEmpty(), "live PathRuns projected");
-            boolean sawPathDebug = false;
-            boolean sawNonVerified = true;
-            for (Map<String, Object> run : pathRuns) {
-                if ("VERIFIED".equals(String.valueOf(run.get("verificationStatus")))) {
-                    sawNonVerified = false;
+                List<Map<String, Object>> pathRuns = awaitPathRuns(server, scanId, 1);
+                check(!pathRuns.isEmpty(), "live PathRuns projected");
+                boolean sawPathDebug = false;
+                boolean sawNonVerified = true;
+                for (Map<String, Object> run : pathRuns) {
+                    if ("VERIFIED".equals(String.valueOf(run.get("verificationStatus")))) {
+                        sawNonVerified = false;
+                    }
+                    Object posture = run.get("postureKind");
+                    Object pathTrace = run.get("pathTrace");
+                    Object legacy = run.get("legacyIncomplete");
+                    if (posture != null || pathTrace instanceof Map<?, ?> || Boolean.FALSE.equals(legacy)) {
+                        sawPathDebug = true;
+                    }
+                    if (pathTrace instanceof Map<?, ?> nested) {
+                        Object exit = nested.get("exitReason");
+                        check(exit != null && !String.valueOf(exit).isBlank(),
+                                "PathTrace exitReason present");
+                        Object events = nested.get("events");
+                        check(events instanceof List<?> list && !list.isEmpty(),
+                                "PathTrace events non-empty when pathTrace nested");
+                    }
                 }
-                Object posture = run.get("postureKind");
-                Object pathTrace = run.get("pathTrace");
-                Object legacy = run.get("legacyIncomplete");
-                if (posture != null || pathTrace instanceof Map<?, ?> || Boolean.FALSE.equals(legacy)) {
-                    sawPathDebug = true;
-                }
-                if (pathTrace instanceof Map<?, ?> nested) {
-                    Object exit = nested.get("exitReason");
-                    check(exit != null && !String.valueOf(exit).isBlank(),
-                            "PathTrace exitReason present");
-                    Object events = nested.get("events");
-                    check(events instanceof List<?> list && !list.isEmpty(),
-                            "PathTrace events non-empty when pathTrace nested");
+                check(sawNonVerified, "live PathTrace never VERIFIED");
+                // Path-debug enrichment is best-effort when projection succeeds; at minimum
+                // experimentPlanId from posture plans must appear on at least one PathRun.
+                boolean sawPlanId = pathRuns.stream().anyMatch(run -> {
+                    Object id = run.get("experimentPlanId");
+                    return id != null && !String.valueOf(id).isBlank();
+                });
+                check(sawPlanId || sawPathDebug,
+                        "live PathRuns carry experimentPlanId and/or path-debug enrichment");
+
+                Map<String, Object> dashboard = get(http,
+                        URI.create(server.baseUri() + "/projects/" + projectId + "/dashboard"), null);
+                Object summaries = dashboard.get("pathDebugSummaries");
+                check(summaries instanceof List<?> || dashboard.toString().contains("pathRun"),
+                        "dashboard exposes path debug or PathRun evidence");
+                System.out.println("LivePathTracePostureAcceptanceTest: pathRuns=" + pathRuns.size()
+                        + " tracks=" + tracks + " planIds=" + planIds.size()
+                        + " pathDebug=" + sawPathDebug);
+            } finally {
+                executor.closeRetainedSessions();
+                try {
+                    sandboxClient.close();
+                } catch (RuntimeException ignored) {
                 }
             }
-            check(sawNonVerified, "live PathTrace never VERIFIED");
-            // Path-debug enrichment is best-effort when projection succeeds; at minimum
-            // experimentPlanId from posture plans must appear on at least one PathRun.
-            boolean sawPlanId = pathRuns.stream().anyMatch(run -> {
-                Object id = run.get("experimentPlanId");
-                return id != null && !String.valueOf(id).isBlank();
-            });
-            check(sawPlanId || sawPathDebug,
-                    "live PathRuns carry experimentPlanId and/or path-debug enrichment");
-
-            Map<String, Object> dashboard = get(http,
-                    URI.create(server.baseUri() + "/projects/" + projectId + "/dashboard"), null);
-            Object summaries = dashboard.get("pathDebugSummaries");
-            check(summaries instanceof List<?> || dashboard.toString().contains("pathRun"),
-                    "dashboard exposes path debug or PathRun evidence");
-            System.out.println("LivePathTracePostureAcceptanceTest: pathRuns=" + pathRuns.size()
-                    + " tracks=" + tracks + " planIds=" + planIds.size()
-                    + " pathDebug=" + sawPathDebug);
         } finally {
             deleteTreeBestEffort(root);
         }

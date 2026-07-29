@@ -82,14 +82,30 @@ public final class AuthCodeQueryService {
             "JwtAuthenticationFilter",
             "UsernamePasswordAuthenticationFilter");
 
-    public record WellKnownKey(String alias, String value) {
+    public record WellKnownKey(String alias, String value, String usage) {
+        public static final String USAGE_JWT_SIGNING = "JWT_SIGNING";
+        public static final String USAGE_REMEMBER_ME_CIPHER = "REMEMBER_ME_CIPHER";
+
+        public WellKnownKey(String alias, String value) {
+            this(alias, value, USAGE_JWT_SIGNING);
+        }
+
         public WellKnownKey {
             alias = Objects.requireNonNull(alias, "alias");
             value = Objects.requireNonNull(value, "value");
+            usage = usage == null || usage.isBlank() ? USAGE_JWT_SIGNING : usage.trim();
         }
 
         public int keyLen() {
             return value.length();
+        }
+
+        public boolean jwtSigning() {
+            return USAGE_JWT_SIGNING.equals(usage);
+        }
+
+        public boolean rememberMeCipher() {
+            return USAGE_REMEMBER_ME_CIPHER.equals(usage);
         }
     }
 
@@ -139,7 +155,8 @@ public final class AuthCodeQueryService {
             List<String> recommendedTechniques,
             List<AuthCodeFact> facts,
             List<SecretCandidateHint> secretCandidates,
-            Optional<String> mintSecret
+            Optional<String> mintSecret,
+            List<IdentityMaterial> identityMaterials
     ) {
         public AuthCodeQueryResult {
             preferredSignKeyProvenance = preferredSignKeyProvenance == null ? "" : preferredSignKeyProvenance;
@@ -149,10 +166,11 @@ public final class AuthCodeQueryService {
             facts = List.copyOf(facts == null ? List.of() : facts);
             secretCandidates = List.copyOf(secretCandidates == null ? List.of() : secretCandidates);
             mintSecret = mintSecret == null ? Optional.empty() : mintSecret;
+            identityMaterials = List.copyOf(identityMaterials == null ? List.of() : identityMaterials);
         }
 
         /**
-         * Compact constructor for callers that omit secondary header name.
+         * Compact constructor for callers that omit secondary header name / materials.
          */
         public AuthCodeQueryResult(
                 boolean multiHeaderAuthSurface,
@@ -166,7 +184,22 @@ public final class AuthCodeQueryService {
             this(multiHeaderAuthSurface, jwtSecretMaterialFound, preferredSignKeyProvenance,
                     preferredHeaderChannel,
                     "Authorization".equals(preferredHeaderChannel) ? "" : preferredHeaderChannel,
-                    recommendedTechniques, facts, secretCandidates, mintSecret);
+                    recommendedTechniques, facts, secretCandidates, mintSecret, List.of());
+        }
+
+        public AuthCodeQueryResult(
+                boolean multiHeaderAuthSurface,
+                boolean jwtSecretMaterialFound,
+                String preferredSignKeyProvenance,
+                String preferredHeaderChannel,
+                String secondaryAuthHeaderName,
+                List<String> recommendedTechniques,
+                List<AuthCodeFact> facts,
+                List<SecretCandidateHint> secretCandidates,
+                Optional<String> mintSecret) {
+            this(multiHeaderAuthSurface, jwtSecretMaterialFound, preferredSignKeyProvenance,
+                    preferredHeaderChannel, secondaryAuthHeaderName, recommendedTechniques, facts,
+                    secretCandidates, mintSecret, List.of());
         }
 
         /** @deprecated Prefer {@link #multiHeaderAuthSurface()}; adapter-local naming. */
@@ -207,6 +240,7 @@ public final class AuthCodeQueryService {
         boolean tokenFilterSeen = false;
         String secondaryHeader = "";
 
+        List<IdentityMaterial> materials = new ArrayList<>();
         if (artifactPath != null && Files.isRegularFile(artifactPath)) {
             try {
                 ScanAccumulator acc = scanArtifact(artifactPath);
@@ -220,6 +254,7 @@ public final class AuthCodeQueryService {
                 preAuthSeen = acc.preAuthSeen;
                 tokenFilterSeen = acc.tokenFilterSeen;
                 secondaryHeader = acc.secondaryAuthHeaderName;
+                materials.addAll(acc.identityMaterials);
                 if (secretFound) {
                     String classification = keyProvenance.startsWith("CONFIG_KEY:")
                             || keyProvenance.startsWith("CONFIG_OR_RESOURCE:")
@@ -236,6 +271,24 @@ public final class AuthCodeQueryService {
                             classification,
                             mintSecret.map(String::length).orElse(0),
                             true));
+                    materials.add(new IdentityMaterial(
+                            IdentityMaterialKind.SIGNING_KEY,
+                            AuthChannel.HEADER,
+                            "Authorization",
+                            classification,
+                            keyAlias.isBlank() ? "HARVESTED" : keyAlias,
+                            mintSecret,
+                            List.of(),
+                            keyProvenance));
+                    materials.add(new IdentityMaterial(
+                            IdentityMaterialKind.BEARER_TOKEN,
+                            AuthChannel.HEADER,
+                            "Authorization",
+                            "RULE_GENERATED",
+                            keyAlias.isBlank() ? "HARVESTED" : keyAlias,
+                            Optional.empty(),
+                            List.of(),
+                            keyProvenance));
                 } else if (acc.configKeyPresentRedacted) {
                     candidates.add(new SecretCandidateHint(
                             "CUSTOM_REDACTED",
@@ -302,6 +355,25 @@ public final class AuthCodeQueryService {
                             + "aliases only as HINT via FRAMEWORK_ADAPTER_CONTEXT after code_query",
                     "",
                     Map.of("mintable", "false")));
+        }
+        boolean cipherMaterial = materials.stream()
+                .anyMatch(m -> m.kind() == IdentityMaterialKind.CIPHER_KEY);
+        if (cipherMaterial) {
+            IdentityMaterial cipher = materials.stream()
+                    .filter(m -> m.kind() == IdentityMaterialKind.CIPHER_KEY)
+                    .findFirst()
+                    .orElseThrow();
+            facts.add(new AuthCodeFact(
+                    "auth-code:remember-me-cipher-material",
+                    "COOKIE_MATERIAL",
+                    "RememberMe / cookie cipher-key material harvested from artifact "
+                            + "(not a JWT signing secret; Cookie channel only)",
+                    cipher.sourcePath(),
+                    Map.of("matched", cipher.alias().isBlank() ? "HARVESTED" : cipher.alias(),
+                            "channel", AuthChannel.COOKIE.name(),
+                            "cookieName", cipher.name().isBlank() ? "rememberMe" : cipher.name(),
+                            "secretRedacted", "true",
+                            "classification", cipher.valueProvenance())));
         }
         if (preAuthSeen) {
             facts.add(new AuthCodeFact(
@@ -373,7 +445,13 @@ public final class AuthCodeQueryService {
                 techniques,
                 filtered,
                 candidates,
-                mintSecret);
+                mintSecret,
+                materials);
+    }
+
+    /** Channel-agnostic identity materials harvested from the authorized artifact. */
+    public List<IdentityMaterial> harvestMaterials(Path artifactPath) {
+        return query(artifactPath, "", 50).identityMaterials();
     }
 
     private static boolean matches(AuthCodeFact fact, String needle) {
@@ -398,11 +476,12 @@ public final class AuthCodeQueryService {
         boolean tokenFilterSeen;
         final Set<String> skipUrls = new LinkedHashSet<>();
         final Set<String> authClasses = new LinkedHashSet<>();
+        final List<IdentityMaterial> identityMaterials = new ArrayList<>();
     }
 
     private static ScanAccumulator scanArtifact(Path jar) throws IOException {
         ScanAccumulator acc = new ScanAccumulator();
-        List<WellKnownKey> dictionary = FrameworkAdapterRegistry.wellKnownSecretDictionaries();
+        List<WellKnownKey> jwtDictionary = FrameworkAdapterRegistry.wellKnownJwtSigningDictionaries();
         Set<String> adapterAuthPaths = FrameworkAdapterRegistry.authClassPathSignals();
         String secondaryHint = FrameworkAdapterRegistry.secondaryAuthHeaderName(jar, List.of());
         try (ZipInputStream zip = new ZipInputStream(Files.newInputStream(jar))) {
@@ -438,7 +517,7 @@ public final class AuthCodeQueryService {
                         acc.tokenFilterSeen = true;
                     }
                     if (acc.mintSecret.isEmpty()) {
-                        for (WellKnownKey known : dictionary) {
+                        for (WellKnownKey known : jwtDictionary) {
                             if (latin.contains(known.value())) {
                                 acc.mintSecret = Optional.of(known.value());
                                 acc.keyAlias = known.alias();
@@ -469,7 +548,7 @@ public final class AuthCodeQueryService {
                     acc.tokenFilterSeen = true;
                 }
                 if (acc.mintSecret.isEmpty()) {
-                    for (WellKnownKey known : dictionary) {
+                    for (WellKnownKey known : jwtDictionary) {
                         if (text.contains(known.value())) {
                             acc.mintSecret = Optional.of(known.value());
                             acc.keyAlias = known.alias();
@@ -489,7 +568,7 @@ public final class AuthCodeQueryService {
                 Matcher keyLine = JWT_KEY_LINE.matcher(text);
                 if (keyLine.find() && acc.mintSecret.isEmpty()) {
                     String value = keyLine.group(1).trim();
-                    Optional<WellKnownKey> known = matchWellKnown(value, dictionary);
+                    Optional<WellKnownKey> known = matchWellKnown(value, jwtDictionary);
                     if (known.isPresent()) {
                         acc.mintSecret = Optional.of(known.get().value());
                         acc.keyAlias = known.get().alias();
@@ -499,7 +578,8 @@ public final class AuthCodeQueryService {
                             markSecondaryHeader(acc, textLower, secondaryHint);
                         }
                     } else if (value.length() >= 8 && value.length() <= 256
-                            && looksPlausibleSecret(value)) {
+                            && looksPlausibleSecret(value)
+                            && !isKnownRememberMeCipher(value)) {
                         acc.mintSecret = Optional.of(value);
                         acc.keyAlias = "CUSTOM_CONFIG";
                         acc.keyProvenance = "CONFIG_KEY:" + truncate(name, 160);
@@ -510,7 +590,17 @@ public final class AuthCodeQueryService {
                 }
             }
         }
+        List<RememberMeCipherHarvester.Hit> cipherHits = RememberMeCipherHarvester.scan(jar);
+        acc.identityMaterials.addAll(RememberMeCipherHarvester.toMaterials(cipherHits));
         return acc;
+    }
+
+    private static boolean isKnownRememberMeCipher(String value) {
+        if (value == null) return false;
+        for (WellKnownKey known : RememberMeCipherHarvester.dictionary()) {
+            if (known.value().equals(value)) return true;
+        }
+        return false;
     }
 
     private static void markSecondaryHeader(

@@ -59,7 +59,15 @@ public final class SandboxStartupDiagnostics {
         details.put("exitCode", exitCode);
         details.put("diagnosticLength", text.length());
 
-        if (exitCode == 70 || text.toLowerCase(Locale.ROOT).contains("wait-http-ready")) {
+        String lower = text.toLowerCase(Locale.ROOT);
+        if (lower.contains("trace_read_failed") || lower.contains("trace block length mismatch")
+                || lower.contains("trace size could not be read")
+                || lower.contains("trace block is not valid base64")) {
+            return new Diagnosis(FailureClass.UNKNOWN_STARTUP_FAILURE, "TRACE_READ_FAILED",
+                    "Agent/probe trace could not be read from the sandbox (often a live append race)",
+                    details);
+        }
+        if (exitCode == 70 || lower.contains("wait-http-ready")) {
             if (mentionsDependencyPort(text)) {
                 return new Diagnosis(FailureClass.DEPENDENCY_PORT_MISCLASSIFIED,
                         "DEPENDENCY_PORT_MISCLASSIFIED",

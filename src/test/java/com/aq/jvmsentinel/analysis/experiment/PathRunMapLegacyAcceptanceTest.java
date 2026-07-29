@@ -25,6 +25,8 @@ public final class PathRunMapLegacyAcceptanceTest {
                 "compatibility marker set");
         check(!wire.containsKey("postureKind") || wire.get("postureKind").toString().isBlank(),
                 "no invented postureKind");
+        check(wire.get("forcedGuardRefs") instanceof List<?> guards && guards.isEmpty(),
+                "legacy wire always emits empty forcedGuardRefs");
         System.out.println("PathRunMapLegacyAcceptanceTest: PASS ("
                 + AcceptanceAssertions.get() + " assertions)");
     }

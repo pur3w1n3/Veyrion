@@ -63,6 +63,7 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
 
     private final String dockerExecutable;
     private final Map<String, SandboxRequest> sandboxes = new ConcurrentHashMap<>();
+    private final Thread shutdownHook;
 
     public LocalDockerTrustedSandboxClient() {
         this("docker");
@@ -75,6 +76,14 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
             throw new IllegalArgumentException("dockerExecutable is invalid");
         }
         this.dockerExecutable = dockerExecutable;
+        // TRUSTED_DOCKER tasks retain sandboxes for PATH/TRIAGE reuse; short-lived test JVMs
+        // otherwise leave veyrion-trusted-* containers running (entrypoint sleep infinity).
+        this.shutdownHook = new Thread(this::bestEffortCloseAll, "veyrion-trusted-docker-cleanup");
+        try {
+            Runtime.getRuntime().addShutdownHook(shutdownHook);
+        } catch (IllegalStateException ignored) {
+            // JVM already shutting down — nothing to register.
+        }
     }
 
     @Override
@@ -190,6 +199,11 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
 
     @Override
     public void close() {
+        try {
+            Runtime.getRuntime().removeShutdownHook(shutdownHook);
+        } catch (IllegalStateException | SecurityException ignored) {
+            // Already shutting down or hook already ran.
+        }
         RuntimeException primary = null;
         for (String sandboxId : List.copyOf(sandboxes.keySet())) {
             try {
@@ -200,6 +214,18 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
             }
         }
         if (primary != null) throw primary;
+    }
+
+    private void bestEffortCloseAll() {
+        for (String sandboxId : List.copyOf(sandboxes.keySet())) {
+            try {
+                run(List.of(dockerExecutable, "rm", "--force", sandboxId), Duration.ofSeconds(30));
+            } catch (RuntimeException ignored) {
+                // Best-effort process-exit cleanup.
+            } finally {
+                sandboxes.remove(sandboxId);
+            }
+        }
     }
 
     private void verifyEffectivePolicy(String sandboxId, SandboxRequest request,

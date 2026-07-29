@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.analysis;
 
+import com.aq.jvmsentinel.AcceptanceAssertions;
 import com.aq.jvmsentinel.model.BytecodeFactIndex;
 
 import java.util.LinkedHashMap;
@@ -15,12 +16,18 @@ public final class JvmSinkSignaturesAcceptanceTest {
                 "(Ljava/lang/String;)Ljava/lang/Object;"), "DESERIALIZATION");
         expected.put(new Target("org.yaml.snakeyaml.Yaml", "load",
                 "(Ljava/lang/String;)Ljava/lang/Object;"), "DESERIALIZATION");
+        expected.put(new Target("com.google.gson.Gson", "fromJson",
+                "(Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;"), "DESERIALIZATION");
         expected.put(new Target("org.mvel2.MVEL", "eval",
                 "(Ljava/lang/String;)Ljava/lang/Object;"), "EXPRESSION");
         expected.put(new Target("org.springframework.expression.Expression", "getValue",
                 "()Ljava/lang/Object;"), "EXPRESSION");
+        expected.put(new Target("javax.el.ValueExpression", "getValue",
+                "(Ljavax/el/ELContext;)Ljava/lang/Object;"), "EXPRESSION");
         expected.put(new Target("freemarker.template.Template", "process",
                 "(Ljava/lang/Object;Ljava/io/Writer;)V"), "TEMPLATE");
+        expected.put(new Target("org.thymeleaf.TemplateEngine", "process",
+                "(Ljava/lang/String;Lorg/thymeleaf/context/IContext;)Ljava/lang/String;"), "TEMPLATE");
         expected.put(new Target("javax.naming.InitialContext", "lookup",
                 "(Ljava/lang/String;)Ljava/lang/Object;"), "JNDI");
         expected.put(new Target("java.lang.reflect.Method", "invoke",
@@ -93,6 +100,7 @@ public final class JvmSinkSignaturesAcceptanceTest {
     }
 
     private static void check(boolean value, String message) {
+        AcceptanceAssertions.record();
         if (!value) throw new AssertionError(message);
     }
 

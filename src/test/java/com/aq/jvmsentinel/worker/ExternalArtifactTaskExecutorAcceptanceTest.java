@@ -315,10 +315,15 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
     private static String traceReadOutput(String command) {
         byte[] source;
         String path;
-        if (command.startsWith("wc -c < " + ExternalArtifactTaskExecutor.TRACE_FILE)) {
+        if (command.startsWith("rm -f ") && command.contains(".snapshot")) {
+            return "";
+        }
+        if (command.contains("cp -f " + ExternalArtifactTaskExecutor.TRACE_FILE)
+                && command.contains("wc -c < ")) {
             return Integer.toString(MockServices.agentJsonl().getBytes(StandardCharsets.UTF_8).length);
         }
-        if (command.startsWith("wc -c < " + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)) {
+        if (command.contains("cp -f " + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)
+                && command.contains("wc -c < ")) {
             return Integer.toString(MockServices.probeJsonl().getBytes(StandardCharsets.UTF_8).length);
         }
         if (command.startsWith("if [ -f " + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)) {
@@ -327,12 +332,14 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         if (command.startsWith("cat " + ExternalArtifactTaskExecutor.TRACE_DIRECTORY + "/http-port.txt")) {
             return "8080\n";
         }
-        if (command.startsWith("dd if=" + ExternalArtifactTaskExecutor.TRACE_FILE)) {
+        String agentSnap = ExternalArtifactTaskExecutor.TRACE_FILE + ".snapshot";
+        String probeSnap = ExternalArtifactTaskExecutor.PROBE_TRACE_FILE + ".snapshot";
+        if (command.startsWith("dd if=" + agentSnap)) {
             source = MockServices.agentJsonl().getBytes(StandardCharsets.UTF_8);
-            path = ExternalArtifactTaskExecutor.TRACE_FILE;
-        } else if (command.startsWith("dd if=" + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)) {
+            path = agentSnap;
+        } else if (command.startsWith("dd if=" + probeSnap)) {
             source = MockServices.probeJsonl().getBytes(StandardCharsets.UTF_8);
-            path = ExternalArtifactTaskExecutor.PROBE_TRACE_FILE;
+            path = probeSnap;
         } else {
             return null;
         }
@@ -341,7 +348,7 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                 block * ExternalArtifactTaskExecutor.TRACE_READ_BLOCK_BYTES);
         int to = Math.min(source.length,
                 from + ExternalArtifactTaskExecutor.TRACE_READ_BLOCK_BYTES);
-        check(command.startsWith("dd if=" + path), "fixed trace path command");
+        check(command.startsWith("dd if=" + path), "fixed trace snapshot path command");
         return Base64.getEncoder().encodeToString(Arrays.copyOfRange(source, from, to));
     }
 
@@ -372,17 +379,24 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         @Override
         public CommandResult command(String sandboxId, CommandRequest request) {
             String command = request.command();
-            if (command.startsWith("wc -c < ")) {
+            if (command.startsWith("rm -f ") && command.contains(".snapshot")) {
+                return new CommandResult(null, "", "", 0);
+            }
+            // Optional probe: if [ -f path ]; then cp ...; else 0
+            if (command.startsWith("if [ -f ")) {
+                return new CommandResult(null, data == null ? "0\n" : data.length + "\n", "", 0);
+            }
+            // Required: cp -f <path> <path>.snapshot && wc -c < <path>.snapshot
+            if (command.startsWith("cp -f ") && command.contains(".snapshot")
+                    && command.contains("wc -c < ")) {
                 return data == null
                         ? new CommandResult(null, "", "missing", 1)
                         : new CommandResult(null, data.length + "\n", "", 0);
             }
-            if (command.startsWith("if [ -f ")) {
-                return new CommandResult(null, data == null ? "0\n" : data.length + "\n", "", 0);
-            }
             if (!command.startsWith("dd if=") || data == null) {
                 return new CommandResult(null, "", "unsupported", 1);
             }
+            check(command.contains(".snapshot"), "trace blocks are read from frozen snapshot");
             int block = blockIndex(command);
             blockReads++;
             if (block == malformedBlock) return new CommandResult(null, "%%%", "", 0);

@@ -67,11 +67,10 @@ public final class AutomaticInstrumentation {
         };
 
         AgentBuilder builder = new AgentBuilder.Default().with(listener);
-        // BranchCoverageInstrumentation injects probe calls; that requires class-format changes.
-        // Advice-only mode keeps disableClassFormatChanges for the default (coverage off) path.
-        if (!config.coverageEnabled) {
-            builder = builder.disableClassFormatChanges();
-        }
+        // Must allow class-format changes: FilterAdvice FORCED_REACHABILITY uses
+        // OnMethodEnter(skipOn=...) to short-circuit recognized auth filters. Branch coverage
+        // also requires format changes when enabled. (Previously Advice-only mode called
+        // disableClassFormatChanges, which silently disabled FORCED skip.)
         builder = builder
                 .type(applicationTypes)
                 .transform((builder0, type, loader, module, domain) -> {
@@ -131,8 +130,18 @@ public final class AutomaticInstrumentation {
         String name = type.getName();
         if (name.equals("org.springframework.web.filter.OncePerRequestFilter")
                 || name.equals("org.springframework.web.filter.GenericFilterBean")
-                || name.endsWith("OncePerRequestFilter")) {
+                || name.endsWith("OncePerRequestFilter")
+                || name.equals("org.apache.shiro.web.servlet.AbstractShiroFilter")
+                || name.contains("ShiroFilterFactoryBean$SpringShiroFilter")
+                || name.equals("org.springframework.security.web.FilterChainProxy")) {
             return true;
+        }
+        // Shiro / Spring Security filter packages often inherit doFilter; do not require a local
+        // declaration or TypePool servlet hierarchy (fat JARs hide javax/jakarta.servlet).
+        if (name.startsWith("org.apache.shiro.web.filter.")
+                || name.startsWith("org.apache.shiro.spring.web.")
+                || name.startsWith("org.springframework.security.web.")) {
+            return name.contains("Filter") || name.contains("filter");
         }
         if (!(name.endsWith("Filter") || name.contains(".filter.") || name.contains(".Filter"))) {
             return false;
@@ -314,21 +323,35 @@ public final class AutomaticInstrumentation {
         private FilterAdvice() {
         }
 
-        @Advice.OnMethodEnter(suppress = Throwable.class)
-        public static void enter(@Advice.Origin("#t") String className,
-                                 @Advice.Origin("#m") String methodName,
-                                 @Advice.AllArguments Object[] args) {
+        /**
+         * Returns {@code true} to skip the original filter body after FORCED continues the chain.
+         * Non-forced paths return {@code false} (default) so the real filter runs.
+         */
+        @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class, suppress = Throwable.class)
+        public static boolean enter(@Advice.Origin("#t") String className,
+                                    @Advice.Origin("#m") String methodName,
+                                    @Advice.This(optional = true) Object self,
+                                    @Advice.AllArguments Object[] args) {
+            // Shiro auth filters inherit doFilterInternal from AdviceFilter; Origin #t is the
+            // declaring type. Prefer runtime class so LoginFilter / UserFilter are recognized.
+            String runtimeType = self != null ? self.getClass().getName() : className;
             HttpRequestView view = HttpRequestView.fromArgs(args);
             AgentRuntime.bindRequestCorrelation(view.correlationId);
             AgentRuntime.beginCoverageRequest();
             String posture = FrameworkBoundaryAdapter.resolvePosture(view.runtimePosture);
             FrameworkBoundaryAdapter.applyCoveragePosture(firstRequest(args), posture);
-            boolean forced = FrameworkBoundaryAdapter.forcedReachabilityActive(posture)
-                    && FrameworkBoundaryAdapter.isRecognizedAuthGuard(className, methodName);
+            boolean skip = FrameworkBoundaryAdapter.forcePastRecognizedFilter(
+                    posture, runtimeType, methodName, args);
             Map<String, String> detail = httpDetail("SERVLET_FILTER", view);
             detail = PathDebugDetail.merge(detail,
-                    PathDebugDetail.guardDecision(forced ? "FORCED_ALLOW" : "ENTER", forced));
-            AgentRuntime.recordTransformedDetail("HTTP", className, methodName, detail);
+                    PathDebugDetail.guardDecision(skip ? "FORCED_ALLOW" : "ENTER", skip));
+            if (skip) {
+                detail = PathDebugDetail.merge(detail,
+                        Map.of("forceMode", "SKIP_FILTER_CONTINUE_CHAIN",
+                                "guardType", runtimeType));
+            }
+            AgentRuntime.recordTransformedDetail("HTTP", runtimeType, methodName, detail);
+            return skip;
         }
 
         @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
@@ -349,8 +372,19 @@ public final class AutomaticInstrumentation {
             HttpRequestView view = HttpRequestView.fromArgs(args);
             AgentRuntime.bindRequestCorrelation(view.correlationId);
             AgentRuntime.beginCoverageRequest();
-            AgentRuntime.recordTransformedDetail("HTTP", className, methodName,
-                    httpDetail("SPRING_INTERCEPTOR", view));
+            String posture = FrameworkBoundaryAdapter.resolvePosture(view.runtimePosture);
+            FrameworkBoundaryAdapter.applyCoveragePosture(firstRequest(args), posture);
+            boolean forced = "preHandle".equals(methodName)
+                    && FrameworkBoundaryAdapter.forcedReachabilityActive(posture)
+                    && FrameworkBoundaryAdapter.isRecognizedAuthGuard(className, methodName);
+            Map<String, String> detail = httpDetail("SPRING_INTERCEPTOR", view);
+            if (forced) {
+                // Recording only: FilterAdvice short-circuit is the primary FORCED path.
+                // preHandle boolean rewrite is deferred (void/boolean exit shapes differ).
+                detail = PathDebugDetail.merge(detail,
+                        PathDebugDetail.guardDecision("FORCED_ALLOW", true));
+            }
+            AgentRuntime.recordTransformedDetail("HTTP", className, methodName, detail);
         }
 
         @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
@@ -445,10 +479,30 @@ public final class AutomaticInstrumentation {
         @Advice.OnMethodEnter(suppress = Throwable.class)
         public static void enter(@Advice.Origin("#t") String className,
                                  @Advice.Origin("#m") String methodName) {
-            String posture = FrameworkBoundaryAdapter.configuredPosture();
+            // Prefer per-request posture header via Spring RequestContextHolder; JVM -D is fallback.
+            String posture = FrameworkBoundaryAdapter.resolvePosture(postureHeaderFromContext());
+            if (posture.isBlank() || "UNAUTH".equals(posture)) {
+                posture = FrameworkBoundaryAdapter.configuredPosture();
+            }
+            FrameworkBoundaryAdapter.applyCoveragePosture(null, posture);
             boolean forced = FrameworkBoundaryAdapter.forcedReachabilityActive(posture);
             FrameworkBoundaryAdapter.recordGuardDecision(className, methodName,
                     forced ? "FORCED_ALLOW" : "CHECK", forced, Map.of("captureMode", "METHOD_SECURITY"));
+        }
+
+        public static String postureHeaderFromContext() {
+            try {
+                Class<?> holder = Class.forName(
+                        "org.springframework.web.context.request.RequestContextHolder");
+                Object attrs = holder.getMethod("getRequestAttributes").invoke(null);
+                if (attrs == null) {
+                    return "";
+                }
+                Object request = attrs.getClass().getMethod("getRequest").invoke(attrs);
+                return HttpRequestView.header(request, FrameworkBoundaryAdapter.POSTURE_HEADER);
+            } catch (Throwable ignored) {
+                return "";
+            }
         }
     }
 

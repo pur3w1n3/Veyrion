@@ -1,11 +1,21 @@
 package com.aq.jvmsentinel.instrumentation;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 /**
- * P0-21: COVERAGE_POSTURE identity injection and FORCED_REACHABILITY guard recording.
+ * P0-21: COVERAGE_POSTURE identity injection and FORCED_REACHABILITY guard handling.
  * Only active inside authorized Docker sandboxes; never on host execution.
+ *
+ * <p>FORCED_REACHABILITY short-circuits <em>recognized</em> auth/role/permission/license
+ * filters by continuing the {@code FilterChain} and skipping the filter body. This is
+ * framework-agnostic (Spring Security / Shiro / custom Auth*Filter) and must not target
+ * sanitizers or infrastructure filters.
  */
 public final class FrameworkBoundaryAdapter {
     static final String DOCKER_PROPERTY = "veyrion.sandbox.docker";
@@ -13,6 +23,9 @@ public final class FrameworkBoundaryAdapter {
     static final String POSTURE_HEADER = "X-Veyrion-Runtime-Posture";
     static final String SCAN_PRINCIPAL = "veyrion-scan-principal";
     static final String SCAN_ROLE = "ROLE_VEYRION_SCAN";
+    static final String SCAN_ADMIN_ROLE = "ROLE_ADMIN";
+    static final String REQUEST_ATTR_PRINCIPAL = "com.veyrion.scan.principal";
+    static final String REQUEST_ATTR_POSTURE = "com.veyrion.scan.runtimePosture";
 
     private FrameworkBoundaryAdapter() {
     }
@@ -47,36 +60,47 @@ public final class FrameworkBoundaryAdapter {
         return configured.isBlank() ? "UNAUTH" : configured;
     }
 
-    /** Inject scan Principal / SecurityContext for COVERAGE_POSTURE only. */
+    /**
+     * Inject scan Principal / SecurityContext / session seed for COVERAGE_POSTURE
+     * (and FORCED as a best-effort identity seed before guard short-circuit).
+     */
     public static void applyCoveragePosture(Object request, String posture) {
-        if (!sandboxEnabled() || request == null || !"COVERAGE_POSTURE".equals(posture)) {
+        if (!sandboxEnabled() || request == null) {
+            return;
+        }
+        if (!"COVERAGE_POSTURE".equals(posture) && !"FORCED_REACHABILITY".equals(posture)) {
             return;
         }
         try {
             request.getClass().getMethod("setAttribute", String.class, Object.class)
-                    .invoke(request, "javax.servlet.request.X509Certificate", null);
+                    .invoke(request, REQUEST_ATTR_PRINCIPAL, SCAN_PRINCIPAL);
             request.getClass().getMethod("setAttribute", String.class, Object.class)
-                    .invoke(request, "com.veyrion.scan.principal", SCAN_PRINCIPAL);
+                    .invoke(request, REQUEST_ATTR_POSTURE, posture);
         } catch (Throwable ignored) {
             // Servlet API shape varies; attribute injection is best-effort.
         }
-        try {
-            Class<?> holder = Class.forName("org.springframework.security.core.context.SecurityContextHolder");
-            Object context = holder.getMethod("createEmptyContext").invoke(null);
-            Class<?> authClass = Class.forName("org.springframework.security.authentication.UsernamePasswordAuthenticationToken");
-            Object auth = authClass.getConstructor(Object.class, Object.class)
-                    .newInstance(SCAN_PRINCIPAL, "N/A");
-            authClass.getMethod("setAuthenticated", boolean.class).invoke(auth, true);
-            context.getClass().getMethod("setAuthentication", Class.forName("org.springframework.security.core.Authentication"))
-                    .invoke(context, auth);
-            holder.getMethod("setContext", context.getClass()).invoke(null, context);
-        } catch (Throwable ignored) {
-            // Spring Security optional.
-        }
+        seedHttpSession(request);
+        seedSpringSecurityContext();
+        seedShiroSubjectBestEffort();
     }
 
     public static boolean forcedReachabilityActive(String posture) {
         return sandboxEnabled() && "FORCED_REACHABILITY".equals(posture);
+    }
+
+    /**
+     * When FORCED and this type is a recognized auth guard, continue the filter chain and
+     * signal callers to skip the original filter body ({@code skipOn} non-default).
+     *
+     * @return {@code true} when the original method should be skipped
+     */
+    public static boolean forcePastRecognizedFilter(String posture, String className,
+                                                    String methodName, Object[] args) {
+        if (!forcedReachabilityActive(posture) || !isRecognizedAuthGuard(className, methodName)) {
+            return false;
+        }
+        continueFilterChain(args);
+        return true;
     }
 
     public static void recordGuardDecision(String className, String methodName, String decision,
@@ -86,14 +110,201 @@ public final class FrameworkBoundaryAdapter {
         AgentRuntime.recordTransformedDetail("HTTP", className, methodName, detail);
     }
 
-    /** Recognized auth guard surfaces eligible for forced reachability recording. */
+    /**
+     * Recognized auth / role / permission / license / feature guard surfaces eligible for
+     * FORCED short-circuit. Intentionally excludes infrastructure filters (CORS, encoding, …).
+     */
     public static boolean isRecognizedAuthGuard(String className, String methodName) {
-        if (className == null || methodName == null) {
+        if (className == null) {
             return false;
         }
         String lower = className.toLowerCase(Locale.ROOT);
-        return lower.contains("security") || lower.contains("auth") || lower.contains("filter")
-                || lower.endsWith("interceptor") || methodName.contains("PreAuthorize")
-                || methodName.contains("authorize");
+        String simple = lower;
+        int dot = lower.lastIndexOf('.');
+        if (dot >= 0 && dot + 1 < lower.length()) {
+            simple = lower.substring(dot + 1);
+        }
+        if (isInfrastructureFilter(simple, lower) || isAuthContainerFilter(simple, lower)) {
+            return false;
+        }
+        if (methodName != null && (methodName.contains("PreAuthorize")
+                || "authorize".equals(methodName)
+                || "check".equals(methodName) && lower.contains("security"))) {
+            return true;
+        }
+        // Shiro: only authc/authz decision filters — never the outer AbstractShiroFilter
+        // that establishes Subject / session. Skipping the container filter after
+        // continueFilterChain commonly hangs or starves the request.
+        if (lower.startsWith("org.apache.shiro.web.filter.authc.")
+                || lower.startsWith("org.apache.shiro.web.filter.authz.")
+                || (lower.contains("shiro") && simpleContainsAny(simple,
+                "formauthenticationfilter", "userfilter", "anonymousfilter",
+                "permissionsauthorizationfilter", "rolesauthorizationfilter",
+                "portfilter", "sslfilter"))) {
+            return true;
+        }
+        if (lower.contains("springframework.security.web")
+                && (lower.contains("filter") || lower.contains("access"))) {
+            return true;
+        }
+        return simpleContainsAny(simple,
+                "authfilter", "authenticationfilter", "authorizationfilter",
+                "userfilter", "loginfilter", "permissionsauthorizationfilter",
+                "rolesauthorizationfilter",
+                "jwtfilter", "tokenfilter", "bearertoken", "bearerfilter",
+                "accesscontrol", "filterchainproxy",
+                "usernamepasswordauthenticationfilter", "basicauthenticationfilter",
+                "exceptiontranslationfilter", "filtersecurityinterceptor",
+                "authorizationmanager", "licensefilter", "featurefilter",
+                "securefilter", "preauth");
+    }
+
+    /**
+     * Outer container filters that must keep running under FORCED so the framework can
+     * bind Subject/SecurityContext; only nested auth decision filters are short-circuited.
+     */
+    private static boolean isAuthContainerFilter(String simple, String lower) {
+        return simpleContainsAny(simple,
+                "abstractshirofilter", "springshirofilter", "pathmatchingfilter",
+                "advicefilter", "onceperrequestfilter", "genericfilterbean")
+                || lower.contains("shirofilterfactorybean$springshirofilter")
+                || lower.endsWith(".abstractshirofilter");
+    }
+
+    /** Invoke {@code FilterChain.doFilter(request, response)} when args look like a filter call. */
+    public static boolean continueFilterChain(Object[] args) {
+        if (args == null || args.length < 3) {
+            return false;
+        }
+        Object request = args[0];
+        Object response = args[1];
+        Object chain = args[2];
+        if (request == null || response == null || chain == null) {
+            return false;
+        }
+        try {
+            for (Method method : chain.getClass().getMethods()) {
+                if (!"doFilter".equals(method.getName()) || method.getParameterCount() != 2) {
+                    continue;
+                }
+                method.setAccessible(true);
+                method.invoke(chain, request, response);
+                return true;
+            }
+        } catch (Throwable ignored) {
+            return false;
+        }
+        return false;
+    }
+
+    private static void seedHttpSession(Object request) {
+        try {
+            Object session = request.getClass().getMethod("getSession", boolean.class)
+                    .invoke(request, true);
+            if (session == null) {
+                return;
+            }
+            session.getClass().getMethod("setAttribute", String.class, Object.class)
+                    .invoke(session, REQUEST_ATTR_PRINCIPAL, SCAN_PRINCIPAL);
+            session.getClass().getMethod("setAttribute", String.class, Object.class)
+                    .invoke(session, "veyrion.scan.authenticated", Boolean.TRUE);
+        } catch (Throwable ignored) {
+            // optional
+        }
+    }
+
+    private static void seedSpringSecurityContext() {
+        try {
+            Class<?> holder = Class.forName("org.springframework.security.core.context.SecurityContextHolder");
+            Object context = holder.getMethod("createEmptyContext").invoke(null);
+            Class<?> authClass = Class.forName(
+                    "org.springframework.security.authentication.UsernamePasswordAuthenticationToken");
+            Collection<?> authorities = springAuthorities();
+            Object auth;
+            try {
+                Constructor<?> ctor = authClass.getConstructor(Object.class, Object.class, Collection.class);
+                auth = ctor.newInstance(SCAN_PRINCIPAL, "N/A", authorities);
+            } catch (NoSuchMethodException fallback) {
+                auth = authClass.getConstructor(Object.class, Object.class)
+                        .newInstance(SCAN_PRINCIPAL, "N/A");
+                authClass.getMethod("setAuthenticated", boolean.class).invoke(auth, true);
+            }
+            context.getClass().getMethod("setAuthentication",
+                            Class.forName("org.springframework.security.core.Authentication"))
+                    .invoke(context, auth);
+            holder.getMethod("setContext", context.getClass()).invoke(null, context);
+        } catch (Throwable ignored) {
+            // Spring Security optional.
+        }
+    }
+
+    private static Collection<?> springAuthorities() {
+        List<Object> authorities = new ArrayList<>();
+        try {
+            Class<?> roleClass = Class.forName(
+                    "org.springframework.security.core.authority.SimpleGrantedAuthority");
+            Constructor<?> ctor = roleClass.getConstructor(String.class);
+            authorities.add(ctor.newInstance(SCAN_ROLE));
+            authorities.add(ctor.newInstance(SCAN_ADMIN_ROLE));
+            authorities.add(ctor.newInstance("admin"));
+            authorities.add(ctor.newInstance("administrator"));
+        } catch (Throwable ignored) {
+            return List.of();
+        }
+        return authorities;
+    }
+
+    /**
+     * Best-effort Shiro Subject bind when a SecurityManager is already present.
+     * Does not encrypt rememberMe cookies; session seed for COVERAGE/FORCED only.
+     */
+    private static void seedShiroSubjectBestEffort() {
+        try {
+            Class<?> securityUtils = Class.forName("org.apache.shiro.SecurityUtils");
+            Object subject = securityUtils.getMethod("getSubject").invoke(null);
+            if (subject == null) {
+                return;
+            }
+            Boolean authenticated = (Boolean) subject.getClass().getMethod("isAuthenticated")
+                    .invoke(subject);
+            if (Boolean.TRUE.equals(authenticated)) {
+                return;
+            }
+            // login with token if possible — many apps require realm; keep best-effort only.
+            try {
+                Class<?> tokenClass = Class.forName(
+                        "org.apache.shiro.authc.UsernamePasswordToken");
+                Object token = tokenClass.getConstructor(String.class, String.class)
+                        .newInstance(SCAN_PRINCIPAL, "veyrion-scan");
+                subject.getClass().getMethod("login",
+                                Class.forName("org.apache.shiro.authc.AuthenticationToken"))
+                        .invoke(subject, token);
+            } catch (Throwable ignoredLogin) {
+                // Realm may reject; FORCED filter skip remains the primary path.
+            }
+        } catch (Throwable ignored) {
+            // Shiro optional.
+        }
+    }
+
+    private static boolean isInfrastructureFilter(String simple, String lower) {
+        return simpleContainsAny(simple,
+                "characterencoding", "corsfilter", "cors.", "hiddenhttpmethod",
+                "requestcontextfilter", "formcontentfilter", "forwardedheader",
+                "resourcerequest", "onceperrequestfilter", "serverhttprequest",
+                "orderedhidden", "orderedrequest", "orderedform",
+                "websitemesh", "metrictag", "httptrace")
+                || lower.contains("org.springframework.web.filter.onceperrequestfilter")
+                || lower.contains("org.springframework.web.filter.characterencodingfilter")
+                || lower.contains("org.springframework.web.filter.corsfilter");
+    }
+
+    private static boolean simpleContainsAny(String simple, String... needles) {
+        for (String needle : needles) {
+            if (simple.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

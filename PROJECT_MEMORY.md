@@ -189,3 +189,4 @@ AI 只能查询受控代码切片和 Evidence Graph、提出结构化假设与�
 - **2026-07-29**：实战召回复核后，MVP 路线调整为静态事实和 sink/effect 主召回、动态沙箱补证/证伪；动态路径和 AI 研判在 P0-15 到 P0-20 闭合前不得宣称基本可用。
 - **2026-07-29**：动态沙箱目标改为“失败前路径完整记录”的动态路径调试器：TracePlan + World Pack + 三轨 Posture + Docker-only 强达 + Sensor Agent + PathTrace；禁止继续把 Agent Bypass Zoo 当主路线。
 - **2026-07-29**：ADR-0004 `ACCEPTED`；digest-pinned runtime 含 Sensor Agent；授权 Boot fixture 三轨 PathTrace live 验收通过。P0-21 声明范围 `AUDITED`，OSS 实战 JAR 全链路召回仍不在范围内。
+- **2026-07-29**：FORCED_REACHABILITY 薄切片按运行时 filter 类型短接已识别 auth guard（非 rememberMe 加密主路径）；kvf Docker live 同路由 UNAUTH 302 / FORCED 200 对照成立，仍标 `INSTRUMENTATION_REACHABILITY`，不升 VERIFIED。

@@ -8,11 +8,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-final class AgentConfig {
-    static final String TRACE_DIR_PROPERTY = "veyrion.sandbox.traceDir";
-    static final String TRACE_DIR_AUTHORIZED_PROPERTY = "veyrion.sandbox.traceDir.authorized";
-    static final String COVERAGE_ENABLED_PROPERTY = "veyrion.coverage.enabled";
-    static final String WORLD_PACK_DEPENDENCY_MODE_PROPERTY = "veyrion.worldPack.dependencyMode";
+public final class AgentConfig {
+    public static final String TRACE_DIR_PROPERTY = "veyrion.sandbox.traceDir";
+    public static final String TRACE_DIR_AUTHORIZED_PROPERTY = "veyrion.sandbox.traceDir.authorized";
+    public static final String COVERAGE_ENABLED_PROPERTY = "veyrion.coverage.enabled";
+    public static final String WORLD_PACK_DEPENDENCY_MODE_PROPERTY = "veyrion.worldPack.dependencyMode";
     static final String TRACE_FILE_NAME = "agent-events.jsonl";
 
     private static final Pattern CLASS_PREFIX = Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(?:[./][A-Za-z_$][A-Za-z0-9_$]*)*[./]?");

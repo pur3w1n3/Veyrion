@@ -129,9 +129,8 @@ public record PathRunPathDebugView(
         if (!postureProvenance.isBlank()) {
             map.put("postureProvenance", postureProvenance);
         }
-        if (!forcedGuardRefs.isEmpty()) {
-            map.put("forcedGuardRefs", forcedGuardRefs);
-        }
+        // Always emit so GUI wire parsers see a stable array shape.
+        map.put("forcedGuardRefs", forcedGuardRefs);
         if (!tracePlanId.isBlank()) {
             map.put("tracePlanId", tracePlanId);
         }

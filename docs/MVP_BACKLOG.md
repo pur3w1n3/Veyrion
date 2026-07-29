@@ -315,11 +315,21 @@ P0 主体升 `AUDITED`；明确延后 gVisor/Kata 与生产 SSO；`VERIFIED` 恒
 
 ### P0-21 动态路径调试器（三轨 Posture + World Pack + PathTrace）
 
-状态：`AUDITED`（声明范围=合同/V025/三轨编译/World Pack/Posture 安全拒绝/Sensor pathDebugKind/PathTrace 投影/Evidence Graph delta/AI PATH_TRACE/授权 Boot fixture live 三轨；ADR-0004 `ACCEPTED`；runtime digest `sha256:e2b926582e099bfbf5714995413326942a2be2ec26c3db427ccd63cdd2d1c4dd`）
+状态：`AUDITED`（声明范围=合同/V025/三轨编译/World Pack/Posture 安全拒绝/Sensor pathDebugKind/PathTrace 投影/Evidence Graph delta/AI PATH_TRACE/授权 Boot fixture live 三轨；ADR-0004 `ACCEPTED`；runtime digest `sha256:08c4f097a44b8ad03fe3840e97c8d7fdb593d8205685f01e991634056a47fbf7`）
 
 **权威设计**：[DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](DYNAMIC_SANDBOX_POSTURE_REDESIGN.md)；[ADR-0004](adr/0004-sandbox-posture-vs-agent-bypass.md)（`ACCEPTED`）。
 
 根再审计（2026-07-29）：`PathDebugMinimumAcceptanceTest`（41）、`LivePathTracePostureAcceptanceTest`（41，tracks=UNAUTH+ADMIN，pathDebug=true，不升 VERIFIED）、`PathDebugSensorAcceptanceTest`、`AcceptanceTestGate` 全绿。限制：OSS WebGoat/Blade 实战召回、gVisor/Kata、`VERIFIED` 不在声明范围；不得外推为恶意制品隔离或生产可用。
+
+根修复（2026-07-29 后续）：闭环两处高优先级断链——(1) `TraceProjectionService` 按 correlation 窗口把 Sensor `pathDebugKind` 事件传入 `PathTraceProjectionBridge`（`DynamicTraceProjectionAcceptanceTest` 覆盖 METHOD_HOP/EFFECT/DEPENDENCY）；(2) Docker 注册按 World Pack **阶段**解析 runtime 模式：冷启动/主任务=`EXPLORATION`→`MOCK_CONTINUE`，确认阶段=`CONFIRMATION`→`OBSERVE_FAIL`（不按 DB 厂商分支；纠正混轨优先 OBSERVE 导致断网 JAR 冷启动探针失败）。启动 hydrate：`taint_graphs` 按 scan 懒加载；`worker_trace_chunks` 仅恢复可续跑任务（QUEUED/LEASED/RUNNING/PAUSED），终端任务证据以 path_runs 为准。仍开放：按工作区作用域加载、CONFIRMATION 阶段任务接线、静态 IR→TracePlan hints、EG delta→detector 重算、GUI `pathDebugSummaries` 渲染、OSS 实战召回。
+
+根增量（2026-07-29，`PARTIAL`，声明范围=高优 sink 补全 + rememberMe cipherKey CONFIG 检测 + 通道无关 IdentityMaterial）：`JvmSinkSignatures` 补 Gson/EL/Thymeleaf 等；`HardcodedRememberMeCipherDetector` 对 `CookieRememberMeManager`+`setCipherKey`+已知默认 Base64 key（含 kvf `2AvVhdsgUs0FSA3SDFAdag==`）产出非 Fastjson 的 `HARDCODED_REMEMBER_ME_CIPHER_KEY`；`IdentityMaterial`/`AuthChannel` + harvest 使 Cookie 材料进入 probe plan，无 JWT 不再假装 ADMIN Bearer。验收：`IdentityMaterialAcceptanceTest` + sink/identity mains。限制：完整登录状态机与 rememberMe 加密 payload/PoC 利用不在本轮；不得外推为 VERIFIED。
+
+根增量（2026-07-29，`PARTIAL`，声明范围=通用 FORCED_REACHABILITY + 会话注入薄切片，Docker-only）：`FrameworkBoundaryAdapter` 对已识别 auth guard（含 app `LoginFilter` / Shiro authc·authz / Spring Security）在 FORCED 下 `continueFilterChain`+skip；COVERAGE/FORCED 注入 HttpSession + Spring SecurityContext + best-effort Shiro Subject；FilterAdvice 用运行时 `this.getClass()` 识别继承自 `AdviceFilter` 的 guard（避免 Origin 落在父类）。投影 `MAX_EVENTS` 与 agent ingest 对齐至 100k，避免大 JAR `PROJECTION_FAILED`。kvf JAR live（`LiveKvfForcedReachabilityDemo`，runtime `@sha256:0f0d83557ba3…`）：UNAUTH `/ueditor/upload`→302；同路由 FORCED→**200**（`INSTRUMENTATION_REACHABILITY`，非 VERIFIED）；部分业务页 FORCED 仍 `BUSINESS_TIMEOUT`（依赖/页面重）。验收：`ForcedReachabilityGuardAcceptanceTest` + 上述 demo（测后释放 retained sandbox / `veyrion-trusted-*`）。限制：登录表单状态机、rememberMe AES mint、forcedGuardRefs 在 TRACE_TRUNCATED 下的完整投影仍开放。
+
+根修复（2026-07-29 H3）：`OBSERVE_FAIL` 仍注册 `VeyrionMockDriver`（statement 先记 SQL 再 fail）；`AgentRuntime.record` 绑定 `correlationId`。授权 SQLi demo JAR live：`STATIC_INFERRED` + marker PathRun → **`DYNAMIC_CONFIRMED`**（`LiveSqliJarFlowDemo`；VERIFIED 仍关闭）。runtime digest 见上。
+
+根增量（2026-07-29，`PARTIAL`，声明范围=Control Plane 启动 restore 性能）：`dynamic_probe_plans.payload_json`（V026）持久化已编译 probe plan；`restoreProbePlans` 直接 hydrate，**不再**对每条记录调用 `buildProbePlan` / `SyntheticIdentityService.harvest` / `persistPostureArtifacts`。缺 payload 或损坏行 fail-closed 跳过（不静默发明探针）。进度日志：`Restoring N probe plans...` / `Restored N probe plans in Xs`。验收：`ProbePlanRestoreAcceptanceTest`。限制：升级前已有无 payload 的历史行需重新 enqueue 才会进入缓存；按 digest 的 harvest 缓存未做。
 
 **目标**：把动态能力从“HTTP 洪水 + Agent 特例绕过”迁移为 Docker 内动态路径调试器。对每个可识别入口尽最大努力记录最深可达业务路径、参数流、sink/effect 触发和最终阻断原因；即使最终因为数据库、License、文件、业务状态或依赖不可达失败，也要保留失败前真实经过的 Controller/Service/Util/Repository/Guard/Effect 证据，并反馈给 AI。实现不得继续扩大 Agent Bypass Zoo。
 
