@@ -44,7 +44,8 @@ public final class LoopbackHttpProbe {
     private static final int MAX_RESPONSE_BYTES = 64 * 1024;
     private static final int MAX_BATCH_LINES = 512;
     private static final int FAST_CONNECT_TIMEOUT_MS = 800;
-    private static final int FAST_READ_TIMEOUT_MS = 800;
+    /** Slightly above 800ms so FORCED past-auth controller work is less often deferred to slow wave. */
+    private static final int FAST_READ_TIMEOUT_MS = 1500;
     private static final int SLOW_CONNECT_TIMEOUT_MS = 2000;
     private static final int SLOW_READ_TIMEOUT_MS = 2000;
     /** Wave-2 budget: recover timed-out high-value / UNAUTH observations. */
@@ -267,19 +268,34 @@ public final class LoopbackHttpProbe {
         if (timedOut == null || timedOut.isEmpty() || maxRetries <= 0) return List.of();
         List<ProbeAttempt> ranked = new ArrayList<>(timedOut);
         ranked.sort(Comparator
-                .comparingInt((ProbeAttempt a) -> trackRetryRank(a.target.track))
+                .comparingInt((ProbeAttempt a) -> retryRank(a))
                 .thenComparingInt(a -> a.target.ordinal));
         if (ranked.size() <= maxRetries) return List.copyOf(ranked);
         return List.copyOf(ranked.subList(0, maxRetries));
     }
 
+    /**
+     * FORCED_REACHABILITY is wire-tracked as ADMIN but must retry before ordinary COVERAGE
+     * ADMIN — otherwise Shiro gate-pass PathTraces starve after XSS METHOD_HOP floods.
+     */
+    static int retryRank(ProbeAttempt attempt) {
+        if (attempt == null || attempt.target == null) {
+            return 99;
+        }
+        String plan = attempt.target.experimentPlanId;
+        if (plan != null && plan.toUpperCase(Locale.ROOT).contains("FORCED")) {
+            return 0;
+        }
+        return trackRetryRank(attempt.target.track);
+    }
+
     static int trackRetryRank(String track) {
         if (track == null) return 99;
         return switch (track) {
-            case "UNAUTH" -> 0;
-            case "USER" -> 1;
-            case "ADMIN" -> 2;
-            case "BYPASS_CANDIDATE" -> 3;
+            case "UNAUTH" -> 1;
+            case "USER" -> 2;
+            case "ADMIN" -> 3;
+            case "BYPASS_CANDIDATE" -> 4;
             default -> 50;
         };
     }

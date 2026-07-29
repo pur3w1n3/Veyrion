@@ -61,7 +61,7 @@ public final class AgentAcceptanceTest {
     private static void verifyAutomaticObservation(Path agentJar, Path traceDirectory) throws Exception {
         Files.createDirectory(traceDirectory);
         ProcessResult result = runFixture(agentJar, traceDirectory, AutomaticFixture.class,
-                "maxEvents=100,maxBytes=65536,classPrefix=com.aq.fixture", true);
+                "maxEvents=160,maxBytes=98304,classPrefix=com.aq.fixture", true);
         check(result.exitCode == 0, "instrumented fixture failed: " + result.output);
         check(result.output.contains("AutomaticFixture: PASS"), "automatic fixture did not complete");
 
@@ -149,7 +149,15 @@ public final class AgentAcceptanceTest {
         check(result.exitCode == 0, "budget exhaustion must not crash fixture: " + result.output);
         Path trace = traceDirectory.resolve(AgentConfig.TRACE_FILE_NAME);
         List<String> lines = Files.readAllLines(trace, StandardCharsets.UTF_8);
-        check(lines.size() == 2, "event count budget was not enforced");
+        // maxEvents=2 keeps two payload events; optional TRACE_BUDGET_EXHAUSTED sentinel is +1.
+        check(lines.size() == 2 || lines.size() == 3,
+                "event count budget was not enforced; lines=" + lines.size());
+        check(lines.size() < 2 || !lines.get(0).contains("TRACE_BUDGET_EXHAUSTED"),
+                "budget sentinel must not replace the first payload events");
+        if (lines.size() == 3) {
+            check(lines.get(2).contains("TRACE_BUDGET_EXHAUSTED"),
+                    "third line must be TRACE_BUDGET_EXHAUSTED sentinel");
+        }
         check(Files.size(trace) <= 4096, "byte budget was exceeded");
         check(!any(lines, "\"eventType\":\"PROCESS\""), "events continued after budget exhaustion");
     }

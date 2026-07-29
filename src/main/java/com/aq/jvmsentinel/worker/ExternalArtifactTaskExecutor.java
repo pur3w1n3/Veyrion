@@ -652,7 +652,8 @@ public final class ExternalArtifactTaskExecutor {
 
     private static String fixedCommand(ResourceBudget budget, ArtifactRegistration registration) {
         long maxBytes = agentTraceBudget(budget, registration.probePlan().size());
-        long maxEvents = Math.max(1, Math.min(100_000, maxBytes / 256));
+        // ~128 bytes/event average after XSS hop filtering; keep headroom for FORCED PathTraces.
+        long maxEvents = Math.max(1, Math.min(100_000, maxBytes / 128));
         long runSeconds = Math.max(1, budget.maxWallClockSeconds() - 15);
         String worldPackMode = registration.worldPackDependencyMode();
         boolean mockDependencies = !"OBSERVE_FAIL".equalsIgnoreCase(worldPackMode);

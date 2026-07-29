@@ -113,7 +113,7 @@ public final class LiveKvfForcedReachabilityDemo {
                         new ExternalArtifactTaskExecutor.ArtifactRegistration(
                                 projectId, digest, content, Files.size(content), true,
                                 forcedHeavy.get(0).method(), forcedHeavy.get(0).route(),
-                                "com.kalvin",
+                                "com.kalvin.kvf",
                                 forcedHeavy,
                                 "MOCK_CONTINUE");
 
@@ -146,6 +146,7 @@ public final class LiveKvfForcedReachabilityDemo {
 
                 List<Map<String, Object>> pathRuns = awaitPathRuns(server, scanId, 1);
                 summarize(pathRuns);
+                summarizePathTraces(server, scanId, pathRuns);
             }
         } finally {
             if (executor != null) {
@@ -181,6 +182,8 @@ public final class LiveKvfForcedReachabilityDemo {
                     probe.route().toLowerCase(Locale.ROOT).contains("admin")
                             || probe.route().toLowerCase(Locale.ROOT).contains("user")
                             || probe.route().toLowerCase(Locale.ROOT).contains("sys")
+                            || probe.route().toLowerCase(Locale.ROOT).contains("generator")
+                            || probe.route().toLowerCase(Locale.ROOT).contains("check/code")
                             || probe.route().equals("/")
                             || probe.route().contains("login"));
             if (isForced && interesting) {
@@ -190,12 +193,28 @@ public final class LiveKvfForcedReachabilityDemo {
             }
         }
         List<ExternalArtifactTaskExecutor.ProbeTarget> out = new ArrayList<>();
+        // Prefer QLExpress expression-injection surface (exact /generator/check/code).
+        forced.stream()
+                .filter(p -> p.route() != null
+                        && p.route().replace('\\', '/').endsWith("/generator/check/code"))
+                .findFirst()
+                .ifPresent(out::add);
+        if (out.isEmpty()) {
+            forced.stream()
+                    .filter(p -> p.route() != null && p.route().contains("/generator/check/code"))
+                    .findFirst()
+                    .ifPresent(out::add);
+        }
         for (ExternalArtifactTaskExecutor.ProbeTarget probe : forced) {
-            if (out.size() >= 3) break;
+            if (out.size() >= 4) break;
+            if (out.stream().anyMatch(existing -> existing.route().equals(probe.route())
+                    && existing.experimentPlanId().equals(probe.experimentPlanId()))) {
+                continue;
+            }
             out.add(probe);
         }
         for (ExternalArtifactTaskExecutor.ProbeTarget probe : other) {
-            if (out.size() >= 4) break;
+            if (out.size() >= 5) break;
             out.add(probe);
         }
         if (out.isEmpty()) {
@@ -268,6 +287,67 @@ public final class LiveKvfForcedReachabilityDemo {
                 + " sawNonWallPrivilegedHttp=" + sawNon302Admin);
         System.out.println("NOTE: non-wall HTTP under FORCED is exploration evidence "
                 + "(INSTRUMENTATION_REACHABILITY), not VERIFIED exploitability.");
+    }
+
+    private static void summarizePathTraces(ControlPlaneServer server, String scanId,
+                                            List<Map<String, Object>> pathRuns) {
+        System.out.println("--- PathTraces ---");
+        int forcedWithHops = 0;
+        int forcedEmpty = 0;
+        int forcedGuardAllow = 0;
+        int forcedEffect = 0;
+        for (Map<String, Object> run : pathRuns) {
+            String pathRunId = String.valueOf(run.get("pathRunId"));
+            if (pathRunId == null || pathRunId.isBlank() || "null".equals(pathRunId)) {
+                continue;
+            }
+            var trace = server.store().pathTraceForPathRun(pathRunId);
+            if (trace == null) {
+                System.out.println("  missing PathTrace for " + pathRunId);
+                continue;
+            }
+            String posture = trace.posture() == null || trace.posture().postureKind() == null
+                    ? "?" : trace.posture().postureKind().name();
+            int hops = 0;
+            int guards = 0;
+            int forcedGuards = 0;
+            int effects = 0;
+            int entries = 0;
+            for (var event : trace.events()) {
+                if (event == null || event.kind() == null) continue;
+                switch (event.kind().name()) {
+                    case "METHOD_HOP" -> hops++;
+                    case "GUARD_DECISION" -> {
+                        guards++;
+                        if (event.forced()) forcedGuards++;
+                    }
+                    case "EFFECT_TRIGGERED" -> effects++;
+                    case "ENTRY_HIT" -> entries++;
+                    default -> {
+                    }
+                }
+            }
+            boolean isForced = posture.contains("FORCED");
+            if (isForced) {
+                if (hops > 0) forcedWithHops++;
+                else forcedEmpty++;
+                if (forcedGuards > 0) forcedGuardAllow++;
+                if (effects > 0) forcedEffect++;
+            }
+            System.out.println("  " + pathRunId
+                    + " posture=" + posture
+                    + " events=" + trace.events().size()
+                    + " ENTRY_HIT=" + entries
+                    + " METHOD_HOP=" + hops
+                    + " GUARD=" + guards
+                    + " FORCED_ALLOW=" + forcedGuards
+                    + " EFFECT=" + effects
+                    + " lastHop=" + trace.lastBusinessHop());
+        }
+        System.out.println("forcedWithMethodHops=" + forcedWithHops
+                + " forcedEmptyTraces=" + forcedEmpty
+                + " forcedWithFORCED_ALLOW=" + forcedGuardAllow
+                + " forcedWithEffect=" + forcedEffect);
     }
 
     private static Object first(Map<String, Object> run, String... keys) {

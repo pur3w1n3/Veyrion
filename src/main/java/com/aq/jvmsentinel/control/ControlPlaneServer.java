@@ -31,6 +31,7 @@ import com.aq.jvmsentinel.analysis.ArtifactMetadataReader;
 import com.aq.jvmsentinel.analysis.coverage.CoverageMatrixProjector;
 import com.aq.jvmsentinel.analysis.detector.DetectorContext;
 import com.aq.jvmsentinel.analysis.detector.DetectorRegistry;
+import com.aq.jvmsentinel.analysis.hypothesis.FindingRuntimeEnricher;
 import com.aq.jvmsentinel.analysis.hypothesis.SecurityHypothesisProjector;
 import com.aq.jvmsentinel.analysis.spi.ProviderBundle;
 import com.aq.jvmsentinel.analysis.spi.ProviderContext;
@@ -341,7 +342,7 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         this.coverageQueryPort = new DelegatingCoverageQueryAdapter(this.store, this::coverageMatrixForScan);
         this.evidenceGraphQueryPort = new DelegatingEvidenceGraphQueryAdapter(
                 this.store, this::projectEvidenceGraphBase, this.analyzerIrIngestPort);
-        this.findingQueryPort = new StoreFindingQueryAdapter(this.store, ControlPlaneServer::findingMap);
+        this.findingQueryPort = new StoreFindingQueryAdapter(this.store, this::enrichedFindingMap);
         this.pathRunQueryPort = new DelegatingPathRunQueryAdapter(this.store, this::pathRunViewsForPort);
         this.providerQueryPort = new StoreProviderQueryAdapter(this.store, ControlPlaneServer::providerMap);
         this.scanQueryHttp = new ScanQueryHttpSupport(
@@ -1176,6 +1177,54 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         result.put("scanId", latestRecord == null ? "unscanned" : latestRecord.dto().scanId());
         result.put("latestScanId", latestRecord == null ? "unscanned" : latestRecord.dto().scanId());
         sendJson(exchange, 200, result);
+    }
+
+    @Override public void deleteScan(HttpExchange exchange, String projectId, String scanId) throws IOException {
+        ControlPlaneStore.ScanRecord existing = store.requireScan(scanId);
+        String scopedProjectId = projectId == null ? existing.dto().projectId() : projectId;
+        if (projectId != null) {
+            store.requireProject(projectId);
+        }
+        if (!scopedProjectId.equals(existing.dto().projectId())) {
+            throw new ControlPlaneStore.MissingRecordException("scan not found");
+        }
+        // Audit-history delete: cancel in-flight work for this scan, then hard-delete.
+        // Stuck QUEUED dynamic tasks (e.g. after restore skip / no Worker) must not 409 forever.
+        String operatorId = actor(exchange).operatorId();
+        String now = Instant.now(clock).toString();
+        invalidateArmedPipelineForRetry(scanId, operatorId);
+        if ("SQLITE".equals(store.persistenceMode())) {
+            for (var job : List.copyOf(store.aiJobs(scopedProjectId))) {
+                if (!scanId.equals(job.scanId())) continue;
+                if (!"QUEUED".equals(job.status()) && !"RUNNING".equals(job.status())) continue;
+                var cancelled = store.cancelAiJob(job.aiJobId(), operatorId, now);
+                aiJobOrchestrator.cancel(job.aiJobId());
+                auditPipeline.onAiJobFinished(cancelled);
+            }
+        }
+        workerApi.cancelActiveDynamicTasks(scopedProjectId, scanId);
+        if ("SQLITE".equals(store.persistenceMode())) {
+            for (var job : store.aiJobs(scopedProjectId)) {
+                if (scanId.equals(job.scanId())
+                        && ("QUEUED".equals(job.status()) || "RUNNING".equals(job.status()))) {
+                    throw new ApiException(409, "SCAN_ACTIVE",
+                            "active AI jobs could not be cancelled before deleting this scan");
+                }
+            }
+        }
+        if (workerApi.hasActiveDynamicTask(scopedProjectId, scanId)) {
+            throw new ApiException(409, "SCAN_ACTIVE",
+                    "active dynamic tasks could not be cancelled before deleting this scan");
+        }
+        releaseRetainedSandboxForScan(scanId);
+        try {
+            store.deleteScan(scanId, scopedProjectId, operatorId, now);
+        } catch (IllegalStateException active) {
+            throw new ApiException(409, "SCAN_ACTIVE", active.getMessage());
+        }
+        workerApi.forgetScanHistory(scopedProjectId, scanId);
+        unreachedDynamicPaths.remove(scanId);
+        sendEmpty(exchange, 204);
     }
 
     @Override public synchronized void startAudit(HttpExchange exchange, String projectId) throws IOException {
@@ -2194,9 +2243,10 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         unreachedDynamicPaths.put(scope.scanId(), plan.unreachedPaths());
         scanExpandedProbes.put(scope.scanId(), List.copyOf(plan.probes()));
         ApiDtos.EntryDto entry = plan.primary();
-        int packageSeparator = entry.declaringClass().lastIndexOf('.');
-        String classPrefix = packageSeparator > 0
-                ? entry.declaringClass().substring(0, packageSeparator) : entry.declaringClass();
+        // Prefer common app package across scan entries so Service/Util/Repository hops
+        // are instrumented under FORCED (not only the primary entry's leaf .controller package).
+        String classPrefix = com.aq.jvmsentinel.worker.InstrumentationClassPrefix.resolve(
+                entry, scan.dto().entries());
         ExternalArtifactTaskExecutor.ProbeTarget primaryProbe = ProbePlanService.probeTargetFor(entry);
         return new ExternalArtifactTaskExecutor.ArtifactRegistration(
                 scope.projectId(), scope.artifactDigest(), path, artifact.sizeBytes(), true,
@@ -2967,9 +3017,14 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
             }
             primaryFindings.add(finding);
         }
+        Map<String, com.aq.jvmsentinel.domain.pathdebug.PathTrace> findingTraceIndex =
+                pathTracesByPathRunId(dto.projectId(), dto.artifactDigest(), dto.scanId());
         List<Object> findings = new ArrayList<>();
         for (ApiDtos.FindingDto finding : com.aq.jvmsentinel.analysis.FindingRanker.rank(primaryFindings)) {
-            findings.add(findingMap(finding));
+            FindingRuntimeEnricher.Enrichment enrichment = FindingRuntimeEnricher.enrich(
+                    finding, dto.entries(), pathRuns, findingTraceIndex,
+                    ControlPlaneServer::sinkCategoryLabel);
+            findings.add(FindingRuntimeEnricher.applyToWire(findingMap(finding), enrichment));
         }
         int authGapSinkCount = 0;
         for (ApiDtos.SinkDto sink : dto.sinks()) {
@@ -3038,15 +3093,17 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         body.put("paths", paths);
         body.put("pathRuns", pathRunMaps);
         List<Object> pathDebugSummaries = new ArrayList<>();
-        Map<String, com.aq.jvmsentinel.domain.pathdebug.PathTrace> traceIndex = pathTracesByPathRunId(
-                dto.projectId(), dto.artifactDigest(), dto.scanId());
+        Map<String, com.aq.jvmsentinel.domain.pathdebug.PathTrace> traceIndex = findingTraceIndex;
         for (ApiDtos.EntryDto entry : dto.entries()) {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("entryId", entry.id());
             row.put("route", entry.route());
             List<Map<String, Object>> tracks = new ArrayList<>();
             for (ApiDtos.PathRunDto run : pathRuns) {
-                if (!run.entrypointRef().contains(entry.id()) && !run.entrypointRef().contains(entry.route())) {
+                if (!EntryRefResolver.refsEquivalent(dto.entries(), EntryRefResolver.canonicalRef(entry),
+                        run.entrypointRef())
+                        && !EntryRefResolver.refsEquivalent(dto.entries(),
+                        EntryRefResolver.methodRouteRef(entry), run.entrypointRef())) {
                     continue;
                 }
                 com.aq.jvmsentinel.domain.pathdebug.PathTrace trace = traceIndex.get(run.pathRunId());
@@ -3386,7 +3443,6 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
                 StaticFactSnapshot.fromBytecodeIndex(factIndex, artifactUniverse);
         SecurityHypothesisProjector.Result projected = buildFindings(
                 projectId, descriptor, scanId, entries, dependencies, sinks, evidence, factIndex.taintPaths());
-        List<ApiDtos.FindingDto> findings = projected.findings();
         DetectorContext detectorContext = new DetectorContext(
                 scanId,
                 artifactUniverse,
@@ -3406,6 +3462,9 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         }
         List<SecurityHypothesis> hypotheses =
                 SecurityHypothesisProjector.mergeWithDetectors(projected.hypotheses(), detected);
+        // High-signal non-taint detector hyps (e.g. rememberMe cipher) → findings STATIC_INFERRED.
+        List<ApiDtos.FindingDto> findings = SecurityHypothesisProjector.mergeFindingsWithDetectorHypotheses(
+                projectId, descriptor.sha256(), scanId, projected.findings(), hypotheses, dependencies);
         List<ApiDtos.PathDto> paths = buildPaths(
                 projectId, descriptor, scanId, entries, sinks, evidence);
         List<String> allEvidence = new ArrayList<>(evidence.keySet());
@@ -3599,12 +3658,20 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
             case "COMMAND_EXECUTION", "RCE", "COMMAND" -> "命令执行";
             case "SQL_INJECTION", "SQLi", "SQL" -> "SQL 注入";
             case "JNDI" -> "JNDI 注入";
-            case "XXE" -> "XML 外部实体";
-            case "PATH_TRAVERSAL", "FILE" -> "文件路径穿越";
+            case "XXE", "XML", "XSLT" -> "XML/XSLT 风险";
+            case "PATH_TRAVERSAL", "FILE", "FILE_READ", "FILE_WRITE", "FILE_DELETE" -> "文件路径穿越";
             case "EXPRESSION", "SSTI", "TEMPLATE" -> "表达式/模板注入";
-            case "REFLECTION", "CLASSLOADER" -> "反射/类加载";
+            case "REFLECTION", "CLASSLOADER", "CLASS_LOADING" -> "反射/类加载";
             case "JWT" -> "JWT/令牌处理";
+            case "BPMN_DEPLOY" -> "BPMN/流程部署";
+            case "BPMN_EXEC" -> "BPMN/流程执行";
             case "AUTH", "AUTH_GAP" -> "鉴权缺口";
+            case "LDAP" -> "LDAP 注入";
+            case "NOSQL" -> "NoSQL 注入";
+            case "XPATH" -> "XPath 注入";
+            case "NATIVE_CODE" -> "本地代码加载";
+            case "REDIRECT" -> "开放重定向";
+            case "ARCHIVE" -> "归档解压";
             default -> category;
         };
     }
@@ -3851,6 +3918,24 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         result.put("modelVersion", dto.modelVersion()); result.put("snapshotRef", dto.snapshotRef());
         result.put("dependencyMode", dto.dependencyMode());
         return result;
+    }
+
+    private Map<String, Object> enrichedFindingMap(ApiDtos.FindingDto dto) {
+        Map<String, Object> base = findingMap(dto);
+        if (dto == null || dto.scanId() == null || dto.scanId().isBlank()) {
+            return base;
+        }
+        ControlPlaneStore.ScanRecord scan = store.scan(dto.scanId());
+        if (scan == null) {
+            return base;
+        }
+        List<ApiDtos.PathRunDto> pathRuns = store.loadPathRunsForScan(
+                scan.dto().projectId(), scan.dto().artifactDigest(), scan.dto().scanId());
+        Map<String, com.aq.jvmsentinel.domain.pathdebug.PathTrace> traces = pathTracesByPathRunId(
+                scan.dto().projectId(), scan.dto().artifactDigest(), scan.dto().scanId());
+        FindingRuntimeEnricher.Enrichment enrichment = FindingRuntimeEnricher.enrich(
+                dto, scan.dto().entries(), pathRuns, traces, ControlPlaneServer::sinkCategoryLabel);
+        return FindingRuntimeEnricher.applyToWire(base, enrichment);
     }
 
     private static Map<String, Object> findingMap(ApiDtos.FindingDto dto) {

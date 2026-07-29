@@ -52,10 +52,15 @@ public final class PathTraceProjectionBridge {
                     List.of()));
             parameterFlow.add(new PathTrace.ParameterFlowStep("request", run.entrypointRef(), "", ""));
         }
-        for (AgentJsonlTraceConverter.AgentEvent event : windowEvents == null ? List.<AgentJsonlTraceConverter.AgentEvent>of() : windowEvents) {
-            if (event == null) continue;
-            summaries.addAll(summariesForAgentEvent(event));
+        // Keep chronological order. Drop CLASS_LOAD flood and duplicate GUARD noise so the
+        // TRACE budget retains Controller→Service→Util→Repository→Guard→Effect before failure.
+        List<PathTraceProjector.EventSummary> windowSummaries = new ArrayList<>();
+        for (AgentJsonlTraceConverter.AgentEvent event :
+                windowEvents == null ? List.<AgentJsonlTraceConverter.AgentEvent>of() : windowEvents) {
+            if (event == null || isClassLoadNoise(event)) continue;
+            windowSummaries.addAll(summariesForAgentEvent(event));
         }
+        summaries.addAll(downsampleGuards(windowSummaries));
         for (ApiDtos.SqlEventDto sql : run.sqlEvents() == null ? List.<ApiDtos.SqlEventDto>of() : run.sqlEvents()) {
             if (sql == null) continue;
             boolean effect = sql.maliciousFragmentPresent()
@@ -162,6 +167,15 @@ public final class PathTraceProjectionBridge {
                     false,
                     List.of()));
         }
+        if ("TRACE_BUDGET_EXHAUSTED".equals(pathDebugKind)) {
+            return List.of(new PathTraceProjector.EventSummary(
+                    TraceEventKind.TRACE_TRUNCATED,
+                    "agent maxEvents/maxBytes exhausted — later FORCED hops may be missing",
+                    symbol,
+                    "TRACE_BUDGET_EXHAUSTED",
+                    false,
+                    List.of()));
+        }
         return switch (event.eventType()) {
             case "HTTP" -> {
                 if ("true".equals(detail.get("entryHit"))) {
@@ -205,13 +219,16 @@ public final class PathTraceProjectionBridge {
                     detail.getOrDefault("failureClass", "DEPENDENCY_UNAVAILABLE"),
                     false,
                     List.of()));
-            case "PROCESS", "FILE", "HTTP_CLIENT" -> List.of(new PathTraceProjector.EventSummary(
-                    TraceEventKind.EFFECT_TRIGGERED,
-                    event.eventType() + " at " + symbol,
-                    symbol,
-                    "EFFECT:" + event.eventType(),
-                    false,
-                    List.of("EFFECT:" + event.eventType())));
+            case "PROCESS", "FILE", "HTTP_CLIENT", "JNDI" -> {
+                String effect = detail.getOrDefault("effectKind", event.eventType());
+                yield List.of(new PathTraceProjector.EventSummary(
+                        TraceEventKind.EFFECT_TRIGGERED,
+                        effect + " at " + symbol,
+                        symbol,
+                        "EFFECT:" + effect,
+                        false,
+                        List.of("EFFECT:" + effect)));
+            }
             case "CLASS_LOAD", "INSTRUMENTATION_CAPABILITY", "INSTRUMENTATION_ERROR" -> List.of(
                     new PathTraceProjector.EventSummary(
                             TraceEventKind.METHOD_HOP,
@@ -236,5 +253,48 @@ public final class PathTraceProjectionBridge {
     private static String truncate(String value, int max) {
         if (value == null) return "";
         return value.length() <= max ? value : value.substring(0, max);
+    }
+
+    static boolean isClassLoadNoise(AgentJsonlTraceConverter.AgentEvent event) {
+        if (event == null) return true;
+        if ("CLASS_LOAD".equals(event.eventType())
+                || "INSTRUMENTATION_CAPABILITY".equals(event.eventType())
+                || "INSTRUMENTATION_ERROR".equals(event.eventType())) {
+            Map<String, String> detail = event.detail();
+            String kind = detail == null ? "" : detail.getOrDefault("pathDebugKind", "");
+            // Keep only if sensor explicitly tagged a path-debug kind other than METHOD_HOP noise.
+            return kind.isBlank() || "METHOD_HOP".equals(kind);
+        }
+        return false;
+    }
+
+    /** Keep forced guards + first unique subjects; drop repetitive Shiro ENTER noise. */
+    static List<PathTraceProjector.EventSummary> downsampleGuards(
+            List<PathTraceProjector.EventSummary> summaries) {
+        if (summaries == null || summaries.isEmpty()) return List.of();
+        List<PathTraceProjector.EventSummary> out = new ArrayList<>();
+        java.util.LinkedHashSet<String> seenGuards = new java.util.LinkedHashSet<>();
+        int plainGuards = 0;
+        final int maxPlainGuards = 12;
+        for (PathTraceProjector.EventSummary summary : summaries) {
+            if (summary == null) continue;
+            if (summary.kind() != TraceEventKind.GUARD_DECISION) {
+                out.add(summary);
+                continue;
+            }
+            if (summary.forced() || "FORCED_ALLOW".equalsIgnoreCase(summary.detailCode())) {
+                String key = summary.subjectRef() + "|" + summary.detailCode();
+                if (seenGuards.add(key)) {
+                    out.add(summary);
+                }
+                continue;
+            }
+            String key = summary.subjectRef();
+            if (!seenGuards.add(key)) continue;
+            if (plainGuards >= maxPlainGuards) continue;
+            plainGuards++;
+            out.add(summary);
+        }
+        return List.copyOf(out);
     }
 }

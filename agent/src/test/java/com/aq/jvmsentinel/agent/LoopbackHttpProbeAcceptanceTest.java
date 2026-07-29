@@ -149,14 +149,27 @@ public final class LoopbackHttpProbeAcceptanceTest {
         for (int i = 101; i <= 120; i++) {
             timedOut.add(timeoutAttempt("USER", i));
         }
+        // FORCED is wire-tracked as ADMIN but must beat ordinary ADMIN in retry rank.
+        for (int i = 121; i <= 130; i++) {
+            timedOut.add(timeoutAttemptForced("ADMIN", i));
+        }
         List<LoopbackHttpProbe.ProbeAttempt> selected =
                 LoopbackHttpProbe.selectSlowRetryTargets(timedOut, 64);
         check(selected.size() == 64, "slow retry must honor cap");
-        long unauth = selected.stream().filter(a -> "UNAUTH".equals(a.target.track)).count();
+        long forced = selected.stream()
+                .filter(a -> a.target.experimentPlanId != null
+                        && a.target.experimentPlanId.toUpperCase().contains("FORCED"))
+                .count();
+        long unauth = selected.stream().filter(a -> "UNAUTH".equals(a.target.track)
+                && (a.target.experimentPlanId == null || a.target.experimentPlanId.isBlank()))
+                .count();
         long user = selected.stream().filter(a -> "USER".equals(a.target.track)).count();
-        long admin = selected.stream().filter(a -> "ADMIN".equals(a.target.track)).count();
-        check(unauth == 60, "all UNAUTH timeouts should be taken before other tracks");
-        check(user == 4 && admin == 0, "USER fills remainder before ADMIN");
+        long admin = selected.stream().filter(a -> "ADMIN".equals(a.target.track)
+                && (a.target.experimentPlanId == null
+                || !a.target.experimentPlanId.toUpperCase().contains("FORCED"))).count();
+        check(forced == 10, "all FORCED timeouts should be taken first");
+        check(unauth == 54, "UNAUTH fills after FORCED before USER/ADMIN");
+        check(user == 0 && admin == 0, "USER/ADMIN wait behind FORCED+UNAUTH under cap");
         List<LoopbackHttpProbe.ProbeAttempt> tiny =
                 LoopbackHttpProbe.selectSlowRetryTargets(timedOut.subList(0, 3), 128);
         check(tiny.size() == 3, "cap must not invent retries");
@@ -173,7 +186,8 @@ public final class LoopbackHttpProbeAcceptanceTest {
         });
         server.createContext("/slow", exchange -> {
             try {
-                Thread.sleep(1_200);
+                // Must exceed FAST_READ_TIMEOUT_MS (1500) so wave-2 recovery stays covered.
+                Thread.sleep(1_800);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
@@ -268,6 +282,14 @@ public final class LoopbackHttpProbeAcceptanceTest {
     private static LoopbackHttpProbe.ProbeAttempt timeoutAttempt(String track, int ordinal) {
         LoopbackHttpProbe.ProbeTarget target = new LoopbackHttpProbe.ProbeTarget(
                 "GET", "/r" + ordinal, "", track, "", ordinal);
+        return new LoopbackHttpProbe.ProbeAttempt(target, -1, "SocketTimeoutException",
+                "/r" + ordinal, 800, 800);
+    }
+
+    private static LoopbackHttpProbe.ProbeAttempt timeoutAttemptForced(String track, int ordinal) {
+        LoopbackHttpProbe.ProbeTarget target = new LoopbackHttpProbe.ProbeTarget(
+                "GET", "/r" + ordinal, "", track, "", "",
+                "plan:posture:entry-" + ordinal + ":forced_reachability", "", ordinal);
         return new LoopbackHttpProbe.ProbeAttempt(target, -1, "SocketTimeoutException",
                 "/r" + ordinal, 800, 800);
     }

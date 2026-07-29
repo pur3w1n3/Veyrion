@@ -569,6 +569,11 @@ public final class AutomaticInstrumentation {
         @Advice.OnMethodEnter(suppress = Throwable.class)
         public static void enter(@Advice.Origin("#t") String className,
                                  @Advice.Origin("#m") String methodName) {
+            // Drop XSS/CGLIB flood (kvf HTMLFilter alone burned ~8k events / maxEvents)
+            // so FORCED PathTraces retain Controller→Service→Repository hops.
+            if (!AgentRuntime.shouldRecordMethodHop(className, methodName)) {
+                return;
+            }
             AgentRuntime.recordTransformedDetail("HTTP", className, methodName,
                     PathDebugDetail.methodHop("APPLICATION_METHOD"));
         }
@@ -855,6 +860,11 @@ public final class AutomaticInstrumentation {
             }
             if (("javax/script/ScriptEngine".equals(owner) || "jakarta/script/ScriptEngine".equals(owner))
                     && "eval".equals(methodName)) {
+                return "PROCESS";
+            }
+            // QLExpress (kvf GenServiceImpl CheckCode) — expression injection sink.
+            if ("com/ql/util/express/ExpressRunner".equals(owner)
+                    && ("execute".equals(methodName) || "executeExt".equals(methodName))) {
                 return "PROCESS";
             }
             if ("java/lang/ProcessBuilder".equals(owner) && "start".equals(methodName)

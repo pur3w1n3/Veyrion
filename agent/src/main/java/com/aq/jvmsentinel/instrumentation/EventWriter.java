@@ -76,6 +76,7 @@ final class EventWriter implements AutoCloseable {
                 + "}\n";
         byte[] encoded = line.getBytes(StandardCharsets.UTF_8);
         if (sequence >= maxEvents || encoded.length > maxBytes - bytesWritten) {
+            writeBudgetExhaustedOnce();
             stopped.set(true);
             return false;
         }
@@ -90,6 +91,42 @@ final class EventWriter implements AutoCloseable {
             stopped.set(true);
             closeQuietly();
             return false;
+        }
+    }
+
+    /** One visible gap event so control-plane / AI do not invent "no instrumentation". */
+    private void writeBudgetExhaustedOnce() {
+        if (stopped.get()) {
+            return;
+        }
+        String line = "{"
+                + "\"schemaVersion\":1,"
+                + "\"sequence\":" + sequence + ","
+                + "\"eventType\":\"INSTRUMENTATION_CAPABILITY\","
+                + "\"provenanceKind\":\"AGENT_INSTRUMENTED\","
+                + "\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                + "\"class\":\"com.aq.jvmsentinel.instrumentation.EventWriter\","
+                + "\"method\":\"write\","
+                + "\"timestamp\":\"" + Instant.now() + "\","
+                + "\"thread\":\"" + json(sanitize(Thread.currentThread().getName(), MAX_METHOD_LENGTH)) + "\","
+                + "\"detail\":{\"pathDebugKind\":\"TRACE_BUDGET_EXHAUSTED\","
+                + "\"captureMode\":\"AGENT_BUDGET\",\"maxEvents\":\"" + maxEvents + "\","
+                + "\"maxBytes\":\"" + maxBytes + "\"}"
+                + "}\n";
+        byte[] encoded = line.getBytes(StandardCharsets.UTF_8);
+        if (encoded.length > maxBytes - bytesWritten) {
+            return;
+        }
+        try {
+            ByteBuffer buffer = ByteBuffer.wrap(encoded);
+            while (buffer.hasRemaining()) {
+                channel.write(buffer);
+            }
+            channel.force(false);
+            bytesWritten += encoded.length;
+            sequence++;
+        } catch (IOException ignored) {
+            // Fail-closed; caller still stops the writer.
         }
     }
 

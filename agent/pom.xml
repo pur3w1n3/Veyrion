@@ -126,6 +126,15 @@
                             <mainClass>com.aq.jvmsentinel.instrumentation.ForcedReachabilityGuardAcceptanceTest</mainClass>
                         </configuration>
                     </execution>
+                    <execution>
+                        <id>method-hop-budget-acceptance</id>
+                        <phase>test</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>com.aq.jvmsentinel.instrumentation.MethodHopBudgetAcceptanceTest</mainClass>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>

@@ -23,6 +23,13 @@ public final class AgentRuntime {
             ThreadLocal.withInitial(() -> "");
     private static final ThreadLocal<Integer> REQUEST_CORRELATION_DEPTH =
             ThreadLocal.withInitial(() -> 0);
+    /**
+     * Per-request METHOD_HOP budget. XSS wrappers (HTMLFilter) otherwise flood maxEvents
+     * before FORCED probes record Controller→Service hops.
+     */
+    private static final ThreadLocal<Integer> METHOD_HOP_COUNT =
+            ThreadLocal.withInitial(() -> 0);
+    static final int MAX_METHOD_HOPS_PER_REQUEST = 64;
 
     private AgentRuntime() {
     }
@@ -55,13 +62,88 @@ public final class AgentRuntime {
                                               String instructionOrdinal) {
         Map<String, String> detail = new LinkedHashMap<>();
         detail.put("captureMode", "APPLICATION_CALL_SITE");
-        detail.put("targetClass", targetClass);
-        detail.put("targetMethod", targetMethod);
+        detail.put("targetClass", targetClass == null ? "" : targetClass);
+        detail.put("targetMethod", targetMethod == null ? "" : targetMethod);
         detail.put("instructionOrdinal", instructionOrdinal);
-        if ("PROCESS".equals(eventType) || "FILE".equals(eventType) || "HTTP_CLIENT".equals(eventType)) {
-            detail.putAll(PathDebugDetail.effectTriggered(eventType));
+        String effectKind = primaryEffectKind(eventType, targetClass, targetMethod);
+        if (effectKind != null) {
+            detail.putAll(PathDebugDetail.effectTriggered(effectKind));
+            String secondary = secondaryEffectKinds(targetClass, targetMethod);
+            if (secondary != null && !secondary.isBlank()) {
+                detail.put("secondaryEffectKinds", secondary);
+            }
         }
         recordInstrumented(eventType, callerClass, callerMethod, detail);
+    }
+
+    /**
+     * Maps instrumented call sites to PathDebug effectKind while keeping top-level
+     * eventType inside the agent-jsonl whitelist.
+     */
+    static String primaryEffectKind(String eventType, String targetClass, String targetMethod) {
+        String owner = targetClass == null ? "" : targetClass;
+        String method = targetMethod == null ? "" : targetMethod;
+        if ("java.sql.DriverManager".equals(owner) && "getConnection".equals(method)
+                || "java.sql.Driver".equals(owner) && "connect".equals(method)) {
+            return "SSRF";
+        }
+        if (("javax.naming.InitialContext".equals(owner) || "javax.naming.Context".equals(owner)
+                || "javax.naming.directory.InitialDirContext".equals(owner))
+                && ("lookup".equals(method) || "doLookup".equals(method))) {
+            return "JNDI";
+        }
+        if ("java.lang.Class".equals(owner) && ("forName".equals(method) || "newInstance".equals(method))) {
+            return "CLASS_LOADING";
+        }
+        if ("java.net.URLClassLoader".equals(owner)) {
+            return "CLASS_LOADING";
+        }
+        if ("java.io.ObjectInputStream".equals(owner)
+                && ("readObject".equals(method) || "readUnshared".equals(method))) {
+            return "DESERIALIZATION";
+        }
+        if (("javax.script.ScriptEngine".equals(owner) || "jakarta.script.ScriptEngine".equals(owner))
+                && "eval".equals(method)) {
+            return "EXPRESSION";
+        }
+        if ("com.ql.util.express.ExpressRunner".equals(owner)
+                && ("execute".equals(method) || "executeExt".equals(method))) {
+            return "EXPRESSION";
+        }
+        return switch (eventType == null ? "" : eventType) {
+            case "HTTP_CLIENT" -> "SSRF";
+            case "PROCESS" -> "PROCESS";
+            case "FILE" -> "FILE";
+            case "JDBC" -> "SQL";
+            case "JNDI" -> "JNDI";
+            case "CLASS_LOAD" -> "CLASS_LOADING";
+            default -> null;
+        };
+    }
+
+    static String secondaryEffectKinds(String targetClass, String targetMethod) {
+        String owner = targetClass == null ? "" : targetClass;
+        String method = targetMethod == null ? "" : targetMethod;
+        if ("java.sql.DriverManager".equals(owner) && "getConnection".equals(method)
+                || "java.sql.Driver".equals(owner) && "connect".equals(method)) {
+            return "COMMAND,CLASS_LOADING";
+        }
+        if (("javax.naming.InitialContext".equals(owner) || "javax.naming.Context".equals(owner))
+                && ("lookup".equals(method) || "doLookup".equals(method))) {
+            return "CLASS_LOADING,DESERIALIZATION";
+        }
+        if ("java.net.URLClassLoader".equals(owner)) {
+            return "SSRF";
+        }
+        if (("javax.script.ScriptEngine".equals(owner) || "jakarta.script.ScriptEngine".equals(owner))
+                && "eval".equals(method)) {
+            return "COMMAND";
+        }
+        if ("com.ql.util.express.ExpressRunner".equals(owner)
+                && ("execute".equals(method) || "executeExt".equals(method))) {
+            return "COMMAND";
+        }
+        return null;
     }
 
     public static void recordTransformedMethod(String eventType, String className, String methodName,
@@ -83,8 +165,41 @@ public final class AgentRuntime {
     public static boolean beginCoverageRequest() {
         if (!coverageEnabled) return false;
         CoverageState state = COVERAGE_STATE.get();
-        if (state.depth == 0) state.hits.clear();
+        if (state.depth == 0) {
+            state.hits.clear();
+            METHOD_HOP_COUNT.set(0);
+        }
         state.depth++;
+        return true;
+    }
+
+    /**
+     * Whether an application METHOD_HOP should be recorded. Drops XSS/CGLIB noise and
+     * enforces a per-request hop cap so FORCED PathTraces keep meaningful business hops.
+     */
+    public static boolean shouldRecordMethodHop(String className, String methodName) {
+        if (className == null || className.isBlank()) {
+            return false;
+        }
+        String name = className;
+        if (name.contains("$$FastClassBy") || name.contains("$$EnhancerBy")
+                || name.contains("$$SpringCGLIB$$") || name.contains("$FastClassBy")) {
+            return false;
+        }
+        String lower = name.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains(".xss.")
+                || lower.endsWith("htmlfilter")
+                || lower.endsWith("xsshttprequestwrapper")
+                || lower.endsWith("xsshttpservletrequestwrapper")
+                || lower.endsWith("xssfilter")) {
+            return false;
+        }
+        // Keep filter/guard surfaces for GUARD_DECISION; MethodHopAdvice is application-only.
+        int count = METHOD_HOP_COUNT.get();
+        if (count >= MAX_METHOD_HOPS_PER_REQUEST) {
+            return false;
+        }
+        METHOD_HOP_COUNT.set(count + 1);
         return true;
     }
 
@@ -92,7 +207,11 @@ public final class AgentRuntime {
     public static void bindRequestCorrelation(String correlationId) {
         // Every HTTP Advice enter owns one balanced scope, even if that layer cannot
         // access the request header. Otherwise a blank nested view clears the outer id.
-        REQUEST_CORRELATION_DEPTH.set(REQUEST_CORRELATION_DEPTH.get() + 1);
+        int prior = REQUEST_CORRELATION_DEPTH.get();
+        REQUEST_CORRELATION_DEPTH.set(prior + 1);
+        if (prior == 0) {
+            METHOD_HOP_COUNT.set(0);
+        }
         if (correlationId == null) return;
         String trimmed = correlationId.trim();
         if (trimmed.isEmpty() || trimmed.length() > 64) return;
@@ -112,6 +231,7 @@ public final class AgentRuntime {
         if (depth <= 0) {
             REQUEST_CORRELATION.remove();
             REQUEST_CORRELATION_DEPTH.remove();
+            METHOD_HOP_COUNT.remove();
             return;
         }
         REQUEST_CORRELATION_DEPTH.set(depth);
@@ -147,6 +267,7 @@ public final class AgentRuntime {
             }
         } finally {
             COVERAGE_STATE.remove();
+            METHOD_HOP_COUNT.remove();
         }
     }
 

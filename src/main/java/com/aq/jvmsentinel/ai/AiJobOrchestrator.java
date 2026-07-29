@@ -13,6 +13,7 @@ import com.aq.jvmsentinel.analysis.CoverageGapProjector;
 import com.aq.jvmsentinel.analysis.coverage.CoverageMatrixProjector;
 import com.aq.jvmsentinel.analysis.TaintGraph;
 import com.aq.jvmsentinel.domain.coverage.CoverageMatrix;
+import com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis;
 import com.aq.jvmsentinel.analysis.TaintGraphProjector;
 import com.aq.jvmsentinel.analysis.contrast.ContrastLedger;
 import com.aq.jvmsentinel.analysis.contrast.LedgerDiff;
@@ -22,6 +23,7 @@ import com.aq.jvmsentinel.analysis.fuzz.FuzzStrategyRegistry;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.ai.tool.ToolExecutionContext;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
+import com.aq.jvmsentinel.control.JsonCodec;
 import com.aq.jvmsentinel.control.StaticFactSnapshot;
 import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
 import com.aq.jvmsentinel.model.AuthBypassCandidate;
@@ -563,10 +565,17 @@ public final class AiJobOrchestrator implements AutoCloseable {
                 conclusion = annotateNextExperiments(initial, summary, conclusion);
                 conclusion = annotateEffectiveProbeCount(conclusion, sandboxProbeCount);
             }
+            if (initial.role() == AgentRole.PATH_EXPLORATION) {
+                conclusion = annotateFindingBindings(initial, summary, conclusion, outputLanguage);
+            }
             if (initial.role() == AgentRole.VULNERABILITY_TRIAGE) {
                 attachTriageFindingIfPresent(initial, conclusion, actorId);
             }
             if (initial.role() == AgentRole.REPORT_GENERATION) {
+                ReportBindingsEnforced bindingsEnforced = enforceReportFindingBindings(
+                        initial, summary, conclusion, outputLanguage);
+                summary = bindingsEnforced.summary();
+                conclusion = bindingsEnforced.conclusionJson();
                 ReportLedgerEnforced enforced = enforceReportContrastLedger(
                         initial, summary, conclusion, outputLanguage);
                 summary = enforced.summary();
@@ -577,6 +586,13 @@ public final class AiJobOrchestrator implements AutoCloseable {
                             ContrastLedger.EVENT_INCOMPLETE
                                     + " missingRows=" + enforced.missingRowIds().size()
                                     + " appendedByServer=true",
+                            null);
+                }
+                if (bindingsEnforced.appendedByServer()) {
+                    appendEvent(initial, "FINDING_BINDINGS_ENFORCED", "COMPLETED", null, null,
+                            null, null, null,
+                            "FINDING_BINDINGS_ENFORCED appendedByServer=true localeRepaired="
+                                    + bindingsEnforced.localeRepaired(),
                             null);
                 }
             }
@@ -615,9 +631,12 @@ public final class AiJobOrchestrator implements AutoCloseable {
 
     private static String languageInstruction(AiOutputLanguage language) {
         return language == AiOutputLanguage.ZH_CN
-                ? "所有面向分析师的内容必须使用简体中文；类名、方法、路由、证据 ID 和状态枚举保持原文。\n"
-                : "Write all analyst-facing content in English; preserve class names, methods, routes, evidence IDs, "
-                + "and status enums verbatim.\n";
+                ? "所有面向分析师的内容必须使用简体中文（locale-pure）；章节标题、说明、PoC 步骤不得夹杂英文 Markdown 标题"
+                + "（禁止 ## Vulnerabilities / ## Summary / ## Findings 等英文专章）。"
+                + "类名、方法、路由、证据 ID、状态枚举与 JSON 字段名保持原文。\n"
+                : "Write all analyst-facing content in English only (locale-pure); section titles, narration, and PoC "
+                + "steps must not mix Chinese Markdown headers (forbidden: ## 漏洞相关 / ## 执行摘要 / ## 修复建议). "
+                + "Preserve class names, methods, routes, evidence IDs, status enums, and JSON field names verbatim.\n";
     }
 
     private static String finalInstruction(AiOutputLanguage language) {
@@ -645,9 +664,12 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         消费 FRAMEWORK_ADAPTER_CONTEXT 与 PARAMETER_CONSTRAINT_HINTS：适配器信号仅为 HINT，
                         不得当作已提取密钥的 FACT；用参数约束精化 authorizationHeader / claims / query / bodyHint。
                         必须先调用 code_query 从授权制品中收获 JWT sign-key、skip-url、@PreAuth、TokenFilter、
-                        Secure/Jwt 类等材料，再写 bypassPoCs，并用 code_query 证据 ID 填 evidenceRefs。
+                        Secure/Jwt 类、RememberMe/COOKIE_MATERIAL 等材料，再写 bypassPoCs，并用 code_query 证据 ID 填 evidenceRefs。
                         不得假设全局硬编码商业密钥为 FACT；仅当 code_query 回报 jwtSecretMaterialFound/
                         secretCandidates.mintable=true 时才可提出 DEFAULT_SECRET_HS256 并引用证据。
+                        若存在 HARDCODED_REMEMBER_ME_CIPHER_KEY / COOKIE_MATERIAL / rememberMeCipherMaterialFound，
+                        优先引用这些 FACT 与 hyp-rmc 假设，禁止凭空猜测 kPH+ 字典密钥；METHOD_VIEW SLICE_EMPTY
+                        不能当作「未发现 cipherKey」。Cookie 通道可用 REMEMBER_ME_COOKIE / CUSTOM_POC（非 JWT）。
                         无密钥材料时优先 MISSING_AUTH / EMPTY_BEARER / ALG_NONE 等不依赖密钥的技术。
                         必须通过 plan_propose 或最终回答中的 bypassPoCs/bypassCandidates JSON 给出条目：
                         entryRef、techniqueId、track、rationale、evidenceRefs、confidence，以及你研判需要的
@@ -671,8 +693,21 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         每条链路必须写明入口、身份轨、实际请求与响应、数据/状态转换、可能触发点、证据引用、
                         反证、置信度和停止条件；不得把未执行的候选写成事实。
                         可对 MATCHED/PARTIAL 建可探针 nextExperiments；STATIC_ONLY 只标「静态候选/未动态触及」，
-                        不得升为已绕过/已确认。结论必须包含 nextExperiments[]：每项含 entryRef、objective、track、
+                        不得升为已绕过/已确认。FORCED_REACHABILITY 且 HTTP 2xx + ENTRY_HIT 表示
+                        有运行时路径材料（INSTRUMENTATION_REACHABILITY / 测试工具绕行），禁止写「无运行时确认」
+                        或「无一动态证据」；仍禁止写成匿名可利用或已确认利用，不得升 VERIFIED；
+                        FORCED 单独不得升 DYNAMIC_CONFIRMED / VERIFIED（ADR-0004）。
+                        若 PathRun 存在 FORCED 轨 HTTP 2xx，禁止把 UNAUTH/ADMIN 的 302 写成「全局无绕过/
+                        no bypass found」——必须区分鉴权墙（UNAUTH）与强达门禁通过（FORCED）。
+                        结论必须包含 nextExperiments[]：每项含 entryRef、objective、track、
                         可选 techniqueId/candidateInputs/pathRunRefs；禁止只综述 AUTH_GAP。
+                        结论还必须包含 findingBindings[]（供 REPORT_GENERATION 写入 Markdown「漏洞相关」）：
+                        对每个 finding/hypothesis（含 STATIC_INFERRED）给出
+                        findingId|hypothesisId、title、severity、status、
+                        api:{method,route,entryRef}、poc:{kind,steps[],provenance}；
+                        poc.kind 取 STATIC_HINT|AUTH_POC|EXPERIMENT_HINT|RUNTIME_OBSERVED；
+                        STATIC_INFERRED 可给静态/鉴权 PoC 或实验提示，必须诚实标注 provenance；
+                        材料缺失时写「暂无 PoC」，禁止编造 VERIFIED 利用或从 FORCED-only 宣称已确认。
                         工具白名单含 sandbox_probe：仅可对明确 coverage gap 调用；必填 track、objective，
                         gaps 非空时必填 coverageGapRef；expectedSignal/stopCondition 仅为标签；
                         禁止指定命令、镜像、挂载、网络、UID 或预算。只能消费服务端返回并成功投影的动态事实。
@@ -695,6 +730,10 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         与 CONTRAST_LEDGER / STATIC_CONTRAST，再查询 SCAN 与 DYNAMIC_EVIDENCE。
                         漏洞候选必须经过本地授权沙箱的动态调试闭环：若没有入口命中、参数绑定、触发点执行和可重放结果，
                         只能标记为推测/证据不足，不能标记为存在或 VERIFIED。STATIC_ONLY 对照行不得升为已绕过/已确认。
+                        FORCED_REACHABILITY 且 HTTP 2xx + ENTRY_HIT 是有运行时路径材料（须引用
+                        INSTRUMENTATION_REACHABILITY / 测试工具绕行），禁止写「无运行时确认」或「无一动态证据」；
+                        仍禁止写成匿名可利用、已确认利用或 VERIFIED；FORCED 单独不得升 DYNAMIC_CONFIRMED。
+                        禁止用 UNAUTH/COVERAGE 的 302 否定已存在的 FORCED 2xx（不得写「Shiro 全局无绕过」）。
                         DYNAMIC_CONFIRMED 仅服务端 SQL 门禁可写。列出前置条件、证据、反证/缺口、影响和下一步验证。
                         结论必须包含 nextExperiments[]（可被 sandbox_probe 消费的入口×轨步骤）；组合链仅在共享
                         资源/身份/文件 PathRun 证据上候选；禁止 AUTH_GAP 综述替代下一步实验。
@@ -702,21 +741,7 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         affectedComponent,cweId,fixSuggestion}；按 ROOT_CAUSE_TEMPLATE 填形；每个 attackPath step
                         的 evidenceRefs 不可空；cweId 优先采用 CWE_MAPPING_HINTS。
                         """;
-                case REPORT_GENERATION -> """
-                        先查询 SCAN、ENTRY、SINK、EVIDENCE、PathRun、PathTrace（facts_search kind=PATH_TRACE）、
-                        STATIC_CONTRAST 与 DYNAMIC_EVIDENCE。按入口引用 PathTrace evidence refs 说明最深路径、
-                        参数流、sink/effect、退出原因与 World/Posture/强达限制，禁止只凭 HTTP 500 或模型文本下结论。
-                        输出完整中文 Markdown 报告，至少包含：# 审计报告；## 执行摘要与结论边界；
-                        ## 入口—身份轨—PathRun 矩阵；## 按入口路径调试（三轨 outcome）；## 静态·动态对照账本（须覆盖
-                        CONTRAST_LEDGER 中全部 STATIC_ONLY / 未匹配行摘要，不得省略）；## 攻击路径（Attack Path，
-                        Mermaid flowchart，至少 3 步）；## 迭代对比（Iteration Summary，消费 LEDGER_DIFF_SUMMARY）；
-                        ## 修复建议（消费 FIX_SUGGESTION_CONTEXT / rootCause.fixSuggestion 与 CWE）；## 多条推测链路；
-                        ## 组合漏洞可能性；## 动态证据与覆盖；## 发现与风险分级；## 未覆盖区域、限制与下一步验证。
-                        STATIC_ONLY 只能写「静态候选/未动态确认」，不得写成已绕过或已确认。FORCED_REACHABILITY /
-                        MOCK / SCAN_AUTH_POSTURE 不得写成匿名利用或 VERIFIED。证据不足时明确写“证据不足”，不得编造
-                        sink、链路或漏洞。严格保留 STATIC_INFERRED、DYNAMIC_SUSPECTED、DYNAMIC_CONFIRMED、VERIFIED、
-                        UNREACHED；不得把 DYNAMIC_CONFIRMED 宣传为生产实库已证实。
-                        """;
+                case REPORT_GENERATION -> reportRoleInstruction(AiOutputLanguage.ZH_CN);
             };
         }
         return switch (role) {
@@ -731,10 +756,14 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     From static facts and PRE_ANALYSIS hypotheses, build the auth model and emit structured
                     bypass-feasibility PoCs (hypotheses, not verified). FRAMEWORK_ADAPTER_CONTEXT signals are
                     HINTS only — never treat them as harvested FACT keys. Call code_query first to harvest JWT
-                    sign-key material, skip-url patterns, @PreAuth, TokenFilter, and Secure/Jwt classes from the
-                    authorized artifact; cite code_query evidence IDs in evidenceRefs. Do not assume a global
-                    hardcoded commercial key is FACT; propose DEFAULT_SECRET_HS256 only when code_query reports
-                    jwtSecretMaterialFound / secretCandidates.mintable=true. Without harvested secrets prefer
+                    sign-key material, skip-url patterns, @PreAuth, TokenFilter, Secure/Jwt classes, and
+                    RememberMe/COOKIE_MATERIAL from the authorized artifact; cite code_query evidence IDs in
+                    evidenceRefs. Do not assume a global hardcoded commercial key is FACT; propose
+                    DEFAULT_SECRET_HS256 only when code_query reports jwtSecretMaterialFound /
+                    secretCandidates.mintable=true. When HARDCODED_REMEMBER_ME_CIPHER_KEY / COOKIE_MATERIAL /
+                    rememberMeCipherMaterialFound exists, cite those FACT/hyp-rmc hypotheses — do not guess
+                    kPH+ dictionary keys; METHOD_VIEW SLICE_EMPTY does not mean cipherKey was missed. Cookie
+                    channel may use REMEMBER_ME_COOKIE / CUSTOM_POC (not JWT). Without harvested secrets prefer
                     MISSING_AUTH / EMPTY_BEARER / ALG_NONE. Use PARAMETER_CONSTRAINT_HINTS to refine
                     authorizationHeader/claims/query/bodyHint. Use plan_propose and/or a final
                     bypassPoCs/bypassCandidates JSON with entryRef, techniqueId, track, rationale, evidenceRefs,
@@ -757,10 +786,20 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     Model multiple distinct paths with track/posture, actual requests, responses, data/state
                     transitions, triggers, evidence, counterevidence, confidence, and stop conditions. Prefer
                     MATCHED/PARTIAL for probeable nextExperiments; STATIC_ONLY is static-candidate / not
-                    dynamically touched — never elevate to bypassed/confirmed. Never turn an unexecuted candidate
-                    into fact. Emit nextExperiments[] with entryRef, objective, track, optional
+                    dynamically touched — never elevate to bypassed/confirmed. FORCED_REACHABILITY with HTTP 2xx
+                    + ENTRY_HIT is runtime path material (cite INSTRUMENTATION_REACHABILITY / test-tool bypass);
+                    never write "no runtime confirmation" or "zero dynamic evidence"; still never claim anonymous
+                    exploitability or confirmed exploit / VERIFIED; FORCED alone must not become DYNAMIC_CONFIRMED
+                    or VERIFIED (ADR-0004). Never turn an unexecuted candidate into fact.
+                    Emit nextExperiments[] with entryRef, objective, track, optional
                     techniqueId/candidateInputs/pathRunRefs — steps must be sandbox_probe-consumable, not AUTH_GAP
-                    essays. Allowlist includes sandbox_probe: probe only an explicit coverage gap; required track,
+                    essays. Also emit findingBindings[] for REPORT_GENERATION Markdown "Vulnerabilities" section:
+                    for each finding/hypothesis (including STATIC_INFERRED) provide
+                    findingId|hypothesisId, title, severity, status, api:{method,route,entryRef},
+                    poc:{kind,steps[],provenance}; poc.kind is STATIC_HINT|AUTH_POC|EXPERIMENT_HINT|RUNTIME_OBSERVED;
+                    STATIC_INFERRED may use static/auth PoC or experiment hints with honest provenance;
+                    write "No PoC yet" when absent — never invent VERIFIED exploits or elevate from FORCED-only.
+                    Allowlist includes sandbox_probe: probe only an explicit coverage gap; required track,
                     objective, and coverageGapRef when gaps exist; expectedSignal/stopCondition are labels only;
                     never choose command, image, mount, network, UID, budget, or forcedReachability. Consume only
                     server-returned, successfully projected dynamic facts. FORCED_REACHABILITY /
@@ -785,28 +824,200 @@ public final class AiJobOrchestrator implements AutoCloseable {
                     entry hit, parameter binding, trigger execution, and replay evidence. Otherwise keep it as
                     hypothesis or insufficient evidence; never claim VERIFIED without replay evidence.
                     STATIC_ONLY contrast rows must not be elevated to bypassed/confirmed.
+                    FORCED_REACHABILITY with HTTP 2xx + ENTRY_HIT is runtime path material — cite
+                    INSTRUMENTATION_REACHABILITY / test-tool bypass; never write "no runtime confirmation" or
+                    "zero dynamic evidence"; still never claim anonymous exploitability, confirmed exploit, or
+                    VERIFIED; FORCED alone must not become DYNAMIC_CONFIRMED.
                     DYNAMIC_CONFIRMED is server-gated for SQL only. Emit nextExperiments[] consumable by sandbox_probe;
                     combination chains only when PathRuns share identity/resource/file evidence — not AUTH_GAP essays.
                     Conclusion JSON must include rootCause shaped like ROOT_CAUSE_TEMPLATE, with attackPath steps
                     that each carry non-empty evidenceRefs; prefer CWE_MAPPING_HINTS for cweId.
                     """;
-            case REPORT_GENERATION -> """
-                    Query SCAN, ENTRY, SINK, EVIDENCE, PathRun, PathTrace (facts_search kind=PATH_TRACE),
-                    STATIC_CONTRAST, and DYNAMIC_EVIDENCE first. Per entry cite PathTrace evidence refs for deepest
-                    path, parameterFlow, sink/effect, exitReason, and World/Posture/forced limits — never explain
-                    findings from HTTP 500 or model text alone. Produce a complete English Markdown report with:
-                    Executive Summary and Evidence Boundary; Entrypoint-Track-PathRun Matrix; per-entry Path Debug
-                    (tri-track outcomes); Static-Dynamic Contrast Ledger (must cover every STATIC_ONLY /
-                    unmatched CONTRAST_LEDGER row); Attack Path (Mermaid flowchart, >=3 steps); Iteration Summary
-                    (consume LEDGER_DIFF_SUMMARY); Remediation / Fix Suggestions (consume FIX_SUGGESTION_CONTEXT /
-                    rootCause.fixSuggestion and CWE); Multiple Hypothesized Paths; Combined Vulnerability Possibilities;
-                    Dynamic Evidence and Coverage; Findings and Severity; Gaps, Limitations, and Next Validation Steps.
-                    STATIC_ONLY may only be described as static-candidate / not dynamically confirmed — never bypassed.
-                    FORCED_REACHABILITY / MOCK / SCAN_AUTH_POSTURE must not be written as anonymous exploit or VERIFIED.
-                    Preserve STATIC_INFERRED / DYNAMIC_SUSPECTED / DYNAMIC_CONFIRMED / VERIFIED / UNREACHED.
-                    Do not market DYNAMIC_CONFIRMED as production-database proof.
-                    """;
+            case REPORT_GENERATION -> reportRoleInstruction(AiOutputLanguage.EN);
         };
+    }
+
+    /**
+     * REPORT_GENERATION role contract: locale-pure Markdown outline + fill-in skeleton.
+     * Server still enforces {@link FindingBindings#enforceReportSection} for the lead chapter.
+     */
+    private static String reportRoleInstruction(AiOutputLanguage language) {
+        if (language == AiOutputLanguage.ZH_CN) {
+            return """
+                    先查询 SCAN、ENTRY、SINK、EVIDENCE、PathRun、PathTrace（facts_search kind=PATH_TRACE）、
+                    STATIC_CONTRAST 与 DYNAMIC_EVIDENCE。优先消费 FINDING_BINDINGS_FACTS 与 PRIOR_ROLE_INFERENCE
+                    中 PATH_EXPLORATION 的 findingBindings（接口+PoC+reportRole），不得由前端或本角色凭空编造接口/PoC。
+                    按入口引用 PathTrace evidence refs 说明最深路径、参数流、sink/effect、退出原因与
+                    World/Posture/强达限制，禁止只凭 HTTP 500 或模型文本下结论。
+                    漏洞信息只写在 Markdown「漏洞相关 / 风险点」内；证据/业务逻辑/路径叙事一律放在其后。
+                    不要单独展开「证据图」或「覆盖矩阵」专章。
+
+                    【硬性规则】
+                    - locale-pure 简体中文：禁止英文专章标题（## Vulnerabilities / ## Risk Points / ## Executive Summary 等）。
+                    - 不得编造 VERIFIED；不得把 FORCED_REACHABILITY 写成 DYNAMIC_CONFIRMED / VERIFIED / 匿名可利用（ADR-0004）。
+                    - FORCED 2xx+ENTRY_HIT 是 INSTRUMENTATION_REACHABILITY 路径材料，不是已确认利用。
+                    - PoC/复现步骤只能来自 FINDING_BINDINGS_FACTS / findingBindings / 已投影 PathRun·PathTrace；无材料写「暂无 PoC」。
+                    - STATIC_ONLY 只能写「静态候选/未动态确认」；证据不足必须写明，不得编造 sink/链路。
+                    - 严格保留验证状态枚举原文：STATIC_INFERRED、DYNAMIC_SUSPECTED、DYNAMIC_CONFIRMED、VERIFIED、UNREACHED。
+                    - 不得把 DYNAMIC_CONFIRMED 宣传为生产实库已证实；MOCK / SCAN_AUTH_POSTURE 不得写成匿名利用。
+                    - 排序门禁：顶部「漏洞相关」只放高置信、有攻击配合链或可达 RCE/等价影响证据的项（reportRole=PRIMARY）。
+                    - 默认未授权/鉴权缺口、无后续配合链、且无可达 RCE 证据的入口必须放入文末「风险点」
+                      （reportRole=RISK_POINT），标注为风险点而非主漏洞，禁止夸大成已确认 RCE。
+
+                    【必填章节】（顺序固定）
+                    1. # 审计报告
+                    2. ## 漏洞相关 — 仅 PRIMARY；每条含标题、严重度/状态、接口 method+route/entryRef、描述、PoC/复现、provenance、pathRunRefs（若有）
+                    3. ## 风险点 — 仅 RISK_POINT（无材料可写「无」一行）；明确「风险点（非主漏洞）」
+                    4. ## 执行摘要与结论边界
+                    5. ## 入口—身份轨—PathRun 矩阵
+                    6. ## 静态·动态对照账本 — 须覆盖 CONTRAST_LEDGER 全部 STATIC_ONLY / 未匹配行摘要
+                    7. ## 未覆盖区域、限制与下一步验证
+
+                    【选填章节】（有材料时按序插入；无材料可省略，禁止空话填充）
+                    - ## 按入口路径调试（三轨 outcome）
+                    - ## 攻击路径（Mermaid flowchart，至少 3 步）
+                    - ## 迭代对比（消费 LEDGER_DIFF_SUMMARY）
+                    - ## 修复建议（消费 FIX_SUGGESTION_CONTEXT / rootCause.fixSuggestion 与 CWE）
+                    - ## 多条推测链路
+                    - ## 组合漏洞可能性
+                    - ## 动态证据、业务路径叙事与姿态说明
+
+                    【Markdown 骨架 — 按事实填空；占位符勿原样保留】
+                    # 审计报告
+
+                    ## 漏洞相关
+
+                    ### 漏洞 1: {PRIMARY title}
+                    - **严重度/状态**: {severity} / {status}
+                    - **接口**: {METHOD} {route} (`{entryRef}`)
+                    - **描述**: {description from findingBindings}
+                    - **PoC / 复现**:
+                      1. {step from findingBindings.poc.steps OR 暂无 PoC}
+                    - **provenance**: {INSTRUMENTATION_REACHABILITY|STATIC_INFERRED|...} (kind={...})
+                    - pathRunRefs: `{pathRunId}`
+
+                    ## 风险点
+
+                    > 默认未授权可达但无后续配合链、且无可达 RCE 证据的入口，仅作风险标注。
+
+                    ### 风险点 1: {RISK_POINT title}
+                    - **标注**: 风险点（非主漏洞）
+                    - **严重度/状态**: {severity} / {status}
+                    - **接口**: {METHOD} {route} (`{entryRef}`)
+                    - **描述**: {description}
+                    - **PoC / 复现**:
+                      1. {暂无 PoC 或静态提示}
+                    - **provenance**: STATIC_INFERRED (kind=STATIC_HINT)
+
+                    ## 执行摘要与结论边界
+                    {最高验证状态、证据边界、FORCED/MOCK 限制一句话}
+
+                    ## 入口—身份轨—PathRun 矩阵
+                    | 入口 | UNAUTH | COVERAGE | FORCED | 说明 |
+                    | --- | --- | --- | --- | --- |
+                    | {entryRef} | {outcome} | {outcome} | {outcome} | {INSTRUMENTATION_REACHABILITY 等} |
+
+                    ## 静态·动态对照账本
+                    - STATIC_ONLY: {entry/sink} — 静态候选/未动态确认
+                    - MATCHED/PARTIAL: {摘要 + evidence refs}
+
+                    ## 未覆盖区域、限制与下一步验证
+                    - {coverage gap / IDENTITY_UNAVAILABLE / 预算耗尽}
+                    - 下一步: {可引用 nextExperiments，非空话}
+                    """;
+        }
+        return """
+                Query SCAN, ENTRY, SINK, EVIDENCE, PathRun, PathTrace (facts_search kind=PATH_TRACE),
+                STATIC_CONTRAST, and DYNAMIC_EVIDENCE first. Prefer FINDING_BINDINGS_FACTS and
+                PATH_EXPLORATION findingBindings (API + PoC + reportRole) from PRIOR_ROLE_INFERENCE —
+                do not invent interface/PoC in this role. Per entry cite PathTrace evidence refs for
+                deepest path, parameterFlow, sink/effect, exitReason, and World/Posture/forced limits —
+                never explain findings from HTTP 500 or model text alone. Vulnerability info lives only
+                inside Markdown "## Vulnerabilities" / "## Risk Points"; narrative sections come after.
+                Do not add dedicated Evidence Graph or Coverage Matrix chapters.
+
+                [Hard rules]
+                - locale-pure English: do not mix Chinese section headers (## 漏洞相关 / ## 风险点 / ## 执行摘要).
+                - Never invent VERIFIED; FORCED_REACHABILITY must not be written as DYNAMIC_CONFIRMED / VERIFIED /
+                  anonymous exploitability (ADR-0004).
+                - FORCED 2xx+ENTRY_HIT is INSTRUMENTATION_REACHABILITY path material, not confirmed exploit.
+                - PoC/reproduction steps only from FINDING_BINDINGS_FACTS / findingBindings / projected
+                  PathRun·PathTrace; write "No PoC yet" when absent.
+                - STATIC_ONLY may only be "static-candidate / not dynamically confirmed"; state insufficient
+                  evidence explicitly — never invent sinks or chains.
+                - Preserve verification status enums verbatim: STATIC_INFERRED, DYNAMIC_SUSPECTED,
+                  DYNAMIC_CONFIRMED, VERIFIED, UNREACHED.
+                - Do not market DYNAMIC_CONFIRMED as production-database proof; MOCK / SCAN_AUTH_POSTURE
+                  must not be written as anonymous exploit.
+                - Ordering gate: top "## Vulnerabilities" holds only high-confidence items with attack
+                  cooperation chains or reachable RCE/equivalent impact evidence (reportRole=PRIMARY).
+                - Default unauthenticated / auth-gap endpoints without follow-on cooperation and without
+                  reachable RCE evidence MUST go in trailing "## Risk Points" (reportRole=RISK_POINT);
+                  label as risk only — do not oversell as confirmed RCE.
+
+                [Required sections] (fixed order)
+                1. # Audit Report
+                2. ## Vulnerabilities — PRIMARY only; each item: title, severity/status,
+                   API method+route/entryRef, description, PoC/reproduction, provenance, pathRunRefs (if any)
+                3. ## Risk Points — RISK_POINT only (one-line "none" when empty); label "risk point (not primary)"
+                4. ## Executive Summary and Evidence Boundary
+                5. ## Entrypoint-Track-PathRun Matrix
+                6. ## Static-Dynamic Contrast Ledger — cover every STATIC_ONLY / unmatched CONTRAST_LEDGER row
+                7. ## Gaps, Limitations, and Next Validation Steps
+
+                [Optional sections] (insert in order when materials exist; omit rather than pad)
+                - ## per-entry Path Debug (tri-track outcomes)
+                - ## Attack Path (Mermaid flowchart, >=3 steps)
+                - ## Iteration Summary (consume LEDGER_DIFF_SUMMARY)
+                - ## Remediation / Fix Suggestions (FIX_SUGGESTION_CONTEXT / rootCause.fixSuggestion + CWE)
+                - ## Multiple Hypothesized Paths
+                - ## Combined Vulnerability Possibilities
+                - ## Dynamic Evidence, Business-Path Narrative, and Posture Notes
+
+                [Markdown skeleton — fill from facts; do not leave placeholders]
+                # Audit Report
+
+                ## Vulnerabilities
+
+                ### Finding 1: {PRIMARY title}
+                - **Severity/Status**: {severity} / {status}
+                - **API**: {METHOD} {route} (`{entryRef}`)
+                - **Description**: {description from findingBindings}
+                - **PoC / Reproduction**:
+                  1. {step from findingBindings.poc.steps OR No PoC yet}
+                - **provenance**: {INSTRUMENTATION_REACHABILITY|STATIC_INFERRED|...} (kind={...})
+                - pathRunRefs: `{pathRunId}`
+
+                ## Risk Points
+
+                > Default unauthenticated endpoints without follow-on cooperation and without reachable
+                > RCE evidence are risk annotations only.
+
+                ### Risk Point 1: {RISK_POINT title}
+                - **Label**: risk point (not primary)
+                - **Severity/Status**: {severity} / {status}
+                - **API**: {METHOD} {route} (`{entryRef}`)
+                - **Description**: {description}
+                - **PoC / Reproduction**:
+                  1. {No PoC yet or static hint}
+                - **provenance**: STATIC_INFERRED (kind=STATIC_HINT)
+
+                ## Executive Summary and Evidence Boundary
+                {highest status, evidence boundary, FORCED/MOCK limits in one short paragraph}
+
+                ## Entrypoint-Track-PathRun Matrix
+                | Entry | UNAUTH | COVERAGE | FORCED | Notes |
+                | --- | --- | --- | --- | --- |
+                | {entryRef} | {outcome} | {outcome} | {outcome} | {INSTRUMENTATION_REACHABILITY etc.} |
+
+                ## Static-Dynamic Contrast Ledger
+                - STATIC_ONLY: {entry/sink} — static-candidate / not dynamically confirmed
+                - MATCHED/PARTIAL: {summary + evidence refs}
+
+                ## Gaps, Limitations, and Next Validation Steps
+                - {coverage gap / IDENTITY_UNAVAILABLE / budget exhausted}
+                - Next: {cite nextExperiments; no filler}
+                """;
     }
 
     private SQLiteControlPlanePersistence.AiJobData transition(
@@ -881,6 +1092,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
                 .append(rolePrompt(job, language));
         String authSurface = authSurfacePromptContext(job, language);
         if (!authSurface.isBlank()) prompt.append('\n').append(authSurface);
+        String configHyps = authConfigHypothesisContext(job, language);
+        if (!configHyps.isBlank()) prompt.append('\n').append(configHyps);
         String frameworkAdapter = frameworkAdapterContext(job, language);
         if (!frameworkAdapter.isBlank()) prompt.append('\n').append(frameworkAdapter);
         String parameterHints = parameterConstraintHintsContext(job, language);
@@ -920,6 +1133,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
         if (!coverageMatrixGaps.isBlank()) prompt.append('\n').append(coverageMatrixGaps);
         String fixSuggestion = fixSuggestionContext(job, language);
         if (!fixSuggestion.isBlank()) prompt.append('\n').append(fixSuggestion);
+        String findingBindings = findingBindingsContext(job, language);
+        if (!findingBindings.isBlank()) prompt.append('\n').append(findingBindings);
         String prior = priorInferenceContext(job, language);
         if (!prior.isBlank()) prompt.append('\n').append(prior);
         return prompt.toString();
@@ -1399,6 +1614,208 @@ public final class AiJobOrchestrator implements AutoCloseable {
             summary = summary == null ? "" : summary;
             conclusionJson = conclusionJson == null ? "" : conclusionJson;
             missingRowIds = List.copyOf(missingRowIds == null ? List.of() : missingRowIds);
+        }
+    }
+
+    private record ReportBindingsEnforced(
+            String summary, String conclusionJson, boolean appendedByServer, boolean localeRepaired) {
+        private ReportBindingsEnforced {
+            summary = summary == null ? "" : summary;
+            conclusionJson = conclusionJson == null ? "" : conclusionJson;
+        }
+    }
+
+    /** PATH: merge AI findingBindings with server assembly from findings×PathRun/PathTrace. */
+    private String annotateFindingBindings(
+            SQLiteControlPlanePersistence.AiJobData job,
+            String summary,
+            String conclusionJson,
+            AiOutputLanguage language) {
+        List<FindingBindings.Binding> server = assembleFindingBindings(job, language);
+        List<FindingBindings.Binding> ai = FindingBindings.parseFromConclusion(
+                conclusionJson + "\n" + (summary == null ? "" : summary));
+        List<FindingBindings.Binding> merged = FindingBindings.mergePreferringServer(ai, server);
+        try {
+            ObjectNode node;
+            try {
+                node = (ObjectNode) JSON.readTree(conclusionJson);
+            } catch (Exception ignored) {
+                node = JSON.createObjectNode();
+                node.put("schemaVersion", 1);
+                node.put("classification", "INFERENCE");
+                node.put("summary", summary == null ? "" : summary);
+            }
+            node.set("findingBindings", FindingBindings.toJsonArray(merged));
+            node.put("findingBindingsSource", "SERVER_GATED");
+            node.put("findingBindingsCount", merged.size());
+            return node.toString();
+        } catch (Exception failure) {
+            return conclusionJson;
+        }
+    }
+
+    private ReportBindingsEnforced enforceReportFindingBindings(
+            SQLiteControlPlanePersistence.AiJobData job,
+            String summary,
+            String conclusionJson,
+            AiOutputLanguage language) {
+        List<FindingBindings.Binding> bindings = loadPathFindingBindings(job, language);
+        if (bindings.isEmpty()) {
+            bindings = assembleFindingBindings(job, language);
+        }
+        FindingBindings.EnforceResult enforced = FindingBindings.enforceReportSection(
+                summary, bindings, language);
+        String conclusion = conclusionJson;
+        try {
+            ObjectNode node;
+            try {
+                node = (ObjectNode) JSON.readTree(conclusionJson);
+            } catch (Exception ignored) {
+                node = JSON.createObjectNode();
+                node.put("schemaVersion", 1);
+                node.put("classification", "INFERENCE");
+            }
+            node.put("summary", enforced.summary());
+            node.set("findingBindings", FindingBindings.toJsonArray(bindings));
+            node.put("findingBindingsEnforced", enforced.appendedByServer());
+            node.put("findingBindingsLocaleRepaired", enforced.localeRepaired());
+            conclusion = node.toString();
+        } catch (Exception ignored) {
+            // Keep prior conclusion JSON if patching fails.
+        }
+        return new ReportBindingsEnforced(
+                enforced.summary(), conclusion, enforced.appendedByServer(), enforced.localeRepaired());
+    }
+
+    private String findingBindingsContext(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job.scanId() == null) return "";
+        if (job.role() != AgentRole.PATH_EXPLORATION
+                && job.role() != AgentRole.REPORT_GENERATION
+                && job.role() != AgentRole.VULNERABILITY_TRIAGE) {
+            return "";
+        }
+        List<FindingBindings.Binding> bindings;
+        if (job.role() == AgentRole.REPORT_GENERATION) {
+            bindings = loadPathFindingBindings(job, language);
+            if (bindings.isEmpty()) {
+                bindings = assembleFindingBindings(job, language);
+            }
+        } else {
+            bindings = assembleFindingBindings(job, language);
+        }
+        if (bindings.isEmpty()) return "";
+        return FindingBindings.formatFactsBlock(bindings, language);
+    }
+
+    private List<FindingBindings.Binding> loadPathFindingBindings(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job == null || job.scanId() == null) return List.of();
+        try {
+            Optional<SQLiteControlPlanePersistence.AiJobData> pathJob = store.aiJobs(job.projectId()).stream()
+                    .filter(item -> job.scanId().equals(item.scanId())
+                            && item.role() == AgentRole.PATH_EXPLORATION
+                            && "COMPLETED".equals(item.status())
+                            && item.conclusionJson() != null)
+                    .sorted((left, right) -> right.createdAt().compareTo(left.createdAt()))
+                    .findFirst();
+            if (pathJob.isPresent()) {
+                List<FindingBindings.Binding> parsed =
+                        FindingBindings.parseFromConclusion(pathJob.get().conclusionJson());
+                if (!parsed.isEmpty()) return parsed;
+            }
+        } catch (RuntimeException ignored) {
+            // fall through to assemble
+        }
+        return assembleFindingBindings(job, language);
+    }
+
+    private List<FindingBindings.Binding> assembleFindingBindings(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job == null || job.scanId() == null) return List.of();
+        try {
+            ControlPlaneStore.ScanRecord scan = store.requireScan(job.scanId());
+            List<ApiDtos.PathRunDto> runs = loadPathRuns(job);
+            Map<String, com.aq.jvmsentinel.domain.pathdebug.PathTrace> traces =
+                    loadPathTracesByPathRunId(job);
+            return FindingBindings.assemble(
+                    scan.dto().findings(),
+                    scan.dto().entries(),
+                    runs,
+                    traces,
+                    language);
+        } catch (RuntimeException ignored) {
+            return List.of();
+        }
+    }
+
+    private Map<String, com.aq.jvmsentinel.domain.pathdebug.PathTrace> loadPathTracesByPathRunId(
+            SQLiteControlPlanePersistence.AiJobData job) {
+        Map<String, com.aq.jvmsentinel.domain.pathdebug.PathTrace> byRun = new LinkedHashMap<>();
+        if (job == null || job.scanId() == null) return byRun;
+        try {
+            for (SQLiteControlPlanePersistence.PathTraceData row : store.loadPathTracesForScan(
+                    job.projectId(), job.artifactDigest(), job.scanId())) {
+                com.aq.jvmsentinel.domain.pathdebug.PathTrace cached =
+                        store.pathTraceForPathRun(row.pathRunId());
+                if (cached != null) {
+                    byRun.put(row.pathRunId(), cached);
+                    continue;
+                }
+                try {
+                    byRun.put(row.pathRunId(),
+                            com.aq.jvmsentinel.domain.pathdebug.PathTrace.fromMap(
+                                    JsonCodec.parseObject(row.payloadJson())));
+                } catch (Exception ignored) {
+                    // skip malformed
+                }
+            }
+        } catch (RuntimeException ignored) {
+            return byRun;
+        }
+        return byRun;
+    }
+
+    /**
+     * Surfaces CONFIG rememberMe / cipher-key hypotheses so AUTH does not treat SLICE_EMPTY as a miss.
+     */
+    private String authConfigHypothesisContext(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job.role() != AgentRole.AUTH_ANALYSIS || job.scanId() == null) return "";
+        try {
+            List<SecurityHypothesis> hyps = store.hypotheses(job.scanId());
+            List<SecurityHypothesis> selected = hyps.stream()
+                    .filter(h -> h != null
+                            && ("HARDCODED_REMEMBER_ME_CIPHER_KEY".equals(h.securityProperty())
+                            || ("UNSAFE_DESERIALIZATION_SURFACE".equals(h.securityProperty())
+                            && h.detectorVersion() != null
+                            && h.detectorVersion().startsWith("remember-me-cipher/"))))
+                    .limit(8)
+                    .toList();
+            if (selected.isEmpty()) return "";
+            StringBuilder block = new StringBuilder();
+            if (language == AiOutputLanguage.ZH_CN) {
+                block.append("AUTH_CONFIG_HYPOTHESES（服务端 CONFIG/TYPESTATE FACT 候选；STATIC_INFERRED；"
+                        + "优先引用，勿猜 kPH+；SLICE_EMPTY≠未发现）：\n");
+            } else {
+                block.append("AUTH_CONFIG_HYPOTHESES (server CONFIG/TYPESTATE FACT candidates; "
+                        + "STATIC_INFERRED; cite these over kPH+ guesses; SLICE_EMPTY≠miss):\n");
+            }
+            for (SecurityHypothesis hyp : selected) {
+                block.append("- hypothesisId=").append(hyp.hypothesisId())
+                        .append(" property=").append(hyp.securityProperty())
+                        .append(" family=").append(hyp.family().name());
+                if (hyp.source() != null && !hyp.source().isBlank()) {
+                    block.append(" source=").append(hyp.source());
+                }
+                if (hyp.effect() != null && !hyp.effect().isBlank()) {
+                    block.append(" effect=").append(hyp.effect());
+                }
+                block.append('\n');
+            }
+            return block.toString();
+        } catch (RuntimeException ignored) {
+            return "";
         }
     }
 
