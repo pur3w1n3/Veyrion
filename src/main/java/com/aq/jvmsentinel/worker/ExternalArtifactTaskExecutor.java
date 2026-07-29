@@ -656,10 +656,9 @@ public final class ExternalArtifactTaskExecutor {
                 // Use a fixed literal id (not AUTO / SYS_PROP).
                 + " -Dorg.quartz.scheduler.instanceName=veyrion-sandbox"
                 + " -Dorg.quartz.scheduler.instanceId=veyrion-sandbox"
+                // World Pack mode is -D only so older digest-pinned runtime Agent jars stay compatible.
                 + " -javaagent:" + AGENT_PATH + "=maxBytes=" + maxBytes + ",maxEvents=" + maxEvents
                 + ",dependencyMock=" + mockDependencies
-                + "," + "veyrion.worldPack.dependencyMode"
-                + "=" + worldPackMode
                 + ",veyrion.coverage.enabled=true"
                 + (registration.classPrefix().isEmpty()
                 ? "" : ",classPrefix=" + registration.classPrefix())

@@ -297,14 +297,18 @@ public final class ProbePlanService {
                     .orElse(null);
             if (entry == null) continue;
             String query = plan.query().isBlank() ? syntheticQuery(entry) : plan.query();
+            String method = plan.method() == null || plan.method().isBlank()
+                    || "UNKNOWN".equalsIgnoreCase(plan.method())
+                    ? "GET" : plan.method().toUpperCase(Locale.ROOT);
+            String safePlanId = sanitizeExperimentPlanId(plan.experimentPlanId());
             expanded.add(new ExternalArtifactTaskExecutor.ProbeTarget(
-                    plan.method(),
+                    method,
                     materializeRoute(plan.route()),
-                    query,
+                    sanitizeQuery(query),
                     plan.posture().identityTrackWire(),
                     "",
                     "",
-                    plan.experimentPlanId()));
+                    safePlanId));
         }
         expanded = rejectEmptyCoverageWithoutPlan(expanded);
         return new PostureExpansionResult(List.copyOf(expanded), List.copyOf(unreached));
@@ -842,6 +846,33 @@ public final class ProbePlanService {
             throw new IllegalArgumentException("materialized probe route is invalid");
         }
         return materialized;
+    }
+
+    /** Keep ProbeTarget.experimentPlanId within wire charset/length. */
+    static String sanitizeExperimentPlanId(String experimentPlanId) {
+        if (experimentPlanId == null || experimentPlanId.isBlank()) {
+            return "";
+        }
+        String safe = experimentPlanId.trim().replaceAll("[^A-Za-z0-9_.:/-]", "_");
+        if (safe.length() > 128) {
+            safe = safe.substring(0, 100) + "-" + Integer.toHexString(safe.hashCode());
+            if (safe.length() > 128) {
+                safe = safe.substring(0, 128);
+            }
+        }
+        return safe.matches("[A-Za-z0-9_.:/-]{1,128}") ? safe : "";
+    }
+
+    /** Keep ProbeTarget.query within wire charset/length. */
+    static String sanitizeQuery(String query) {
+        if (query == null || query.isBlank()) {
+            return "";
+        }
+        String safe = query.trim().replaceAll("[^A-Za-z0-9_=&%./{}:-]", "");
+        if (safe.length() > 256) {
+            safe = safe.substring(0, 256);
+        }
+        return safe.matches("[A-Za-z0-9_=&%./{}:-]{1,256}") ? safe : "";
     }
 
     /** Bounded synthetic query for discovered params (INFERENCE stimulus only). */

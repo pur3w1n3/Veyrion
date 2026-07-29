@@ -27,6 +27,7 @@ public final class TracePlanCompiler {
             List<String> unresolvedHints) {
         Objects.requireNonNull(entry, "entry");
         String method = entry.method() == null || entry.method().isBlank()
+                || "UNKNOWN".equalsIgnoreCase(entry.method())
                 ? "GET" : entry.method().trim().toUpperCase(Locale.ROOT);
         String route = entry.route() == null || entry.route().isBlank() ? "/" : entry.route().trim();
         String handler = entry.declaringClass() == null ? "" : entry.declaringClass().trim();
