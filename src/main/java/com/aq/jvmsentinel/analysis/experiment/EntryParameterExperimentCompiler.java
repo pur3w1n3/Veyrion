@@ -306,6 +306,7 @@ public final class EntryParameterExperimentCompiler {
     private static List<CompiledParameter> inferParameters(ApiDtos.EntryDto entry, String method) {
         List<CompiledParameter> parameters = new ArrayList<>();
         List<String> declared = entry.parameters();
+        String route = entry.route() == null ? "" : entry.route();
         if (declared == null || declared.isEmpty()) {
             parameters.add(new CompiledParameter(
                     "",
@@ -313,17 +314,27 @@ public final class EntryParameterExperimentCompiler {
                     "EMPTY_INPUT",
                     "",
                     true,
-                    "Empty query is legal for " + method + " " + entry.route()
+                    "Empty query is legal for " + method + " " + route
                             + "; record empty-input rationale and observe downstream effects."));
         } else {
             for (String raw : declared) {
                 if (raw == null || raw.isBlank()) continue;
-                String name = raw.contains("=") ? raw.substring(0, raw.indexOf('=')).trim() : raw.trim();
-                String sample = raw.contains("=") ? raw.substring(raw.indexOf('=') + 1).trim() : "";
+                String name = ProbeParameterHeuristics.resolveName(raw);
+                if (name.isBlank()) continue;
+                String declaredSample = ProbeParameterHeuristics.declaredSample(raw);
+                String sample = !declaredSample.isBlank()
+                        ? declaredSample
+                        : ProbeParameterHeuristics.sampleValueFor(name, route);
+                String provenance = !declaredSample.isBlank()
+                        ? "ENTRY_SIGNATURE"
+                        : (ProbeParameterHeuristics.looksExpression(
+                                name.toLowerCase(Locale.ROOT), route.toLowerCase(Locale.ROOT))
+                                ? "EXPRESSION_HEURISTIC"
+                                : "ENTRY_SIGNATURE");
                 parameters.add(new CompiledParameter(
                         name,
                         "QUERY",
-                        "ENTRY_SIGNATURE",
+                        provenance,
                         sample,
                         true,
                         "Empty value for parameter '" + name + "' remains a legal exploration input."));

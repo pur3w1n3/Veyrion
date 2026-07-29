@@ -97,6 +97,7 @@ public final class LiveKvfForcedReachabilityDemo {
                 for (ExternalArtifactTaskExecutor.ProbeTarget probe : forcedHeavy) {
                     System.out.println("  " + probe.track() + " " + probe.method() + " "
                             + probe.route()
+                            + " query=" + (probe.query().isBlank() ? "-" : probe.query())
                             + " cookie=" + (probe.cookieHeader().isBlank() ? "-" : "yes")
                             + " auth=" + (probe.authHeader().isBlank() ? "-" : "yes")
                             + " plan=" + probe.experimentPlanId());
@@ -312,7 +313,10 @@ public final class LiveKvfForcedReachabilityDemo {
             int guards = 0;
             int forcedGuards = 0;
             int effects = 0;
+            int expressionEffects = 0;
             int entries = 0;
+            int parameterBound = 0;
+            List<String> effectKinds = new ArrayList<>();
             for (var event : trace.events()) {
                 if (event == null || event.kind() == null) continue;
                 switch (event.kind().name()) {
@@ -321,8 +325,24 @@ public final class LiveKvfForcedReachabilityDemo {
                         guards++;
                         if (event.forced()) forcedGuards++;
                     }
-                    case "EFFECT_TRIGGERED" -> effects++;
+                    case "EFFECT_TRIGGERED" -> {
+                        effects++;
+                        String detail = (event.summary() == null ? "" : event.summary())
+                                + " " + (event.subjectRef() == null ? "" : event.subjectRef())
+                                + " " + (event.detailCode() == null ? "" : event.detailCode())
+                                + " " + String.valueOf(event.attributes());
+                        if (detail.toUpperCase(Locale.ROOT).contains("EXPRESSION")
+                                || detail.contains("ExpressRunner")) {
+                            expressionEffects++;
+                        }
+                        if (event.detailCode() != null && !event.detailCode().isBlank()) {
+                            effectKinds.add(event.detailCode());
+                        } else if (event.summary() != null && !event.summary().isBlank()) {
+                            effectKinds.add(event.summary());
+                        }
+                    }
                     case "ENTRY_HIT" -> entries++;
+                    case "PARAMETER_BOUND" -> parameterBound++;
                     default -> {
                     }
                 }
@@ -338,16 +358,21 @@ public final class LiveKvfForcedReachabilityDemo {
                     + " posture=" + posture
                     + " events=" + trace.events().size()
                     + " ENTRY_HIT=" + entries
+                    + " PARAMETER_BOUND=" + parameterBound
                     + " METHOD_HOP=" + hops
                     + " GUARD=" + guards
                     + " FORCED_ALLOW=" + forcedGuards
                     + " EFFECT=" + effects
+                    + " EXPRESSION_EFFECT=" + expressionEffects
+                    + " effectKinds=" + effectKinds
                     + " lastHop=" + trace.lastBusinessHop());
         }
         System.out.println("forcedWithMethodHops=" + forcedWithHops
                 + " forcedEmptyTraces=" + forcedEmpty
                 + " forcedWithFORCED_ALLOW=" + forcedGuardAllow
                 + " forcedWithEffect=" + forcedEffect);
+        System.out.println("NOTE: FORCED 2xx / METHOD_HOP is INSTRUMENTATION_REACHABILITY, "
+                + "not Shiro 'no bypass' and not DYNAMIC_CONFIRMED / VERIFIED.");
     }
 
     private static Object first(Map<String, Object> run, String... keys) {

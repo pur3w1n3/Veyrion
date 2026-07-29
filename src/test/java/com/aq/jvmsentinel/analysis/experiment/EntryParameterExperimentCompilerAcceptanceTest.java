@@ -18,6 +18,7 @@ public final class EntryParameterExperimentCompilerAcceptanceTest {
         ASSERTIONS.set(0);
         emptyEntryProducesRationale();
         declaredParametersCompileQuery();
+        legacyEncodingBindsExpressionParam();
         unifyDynamicProbeAndAuthPoc();
         System.out.println("EntryParameterExperimentCompilerAcceptanceTest: PASS ("
                 + Math.max(ASSERTIONS.get(), AcceptanceAssertions.get()) + " assertions)");
@@ -52,6 +53,28 @@ public final class EntryParameterExperimentCompilerAcceptanceTest {
         check(plan.query().contains("q=test"), "query includes declared sample");
         check("MISSING_IDENTITY".equals(plan.readiness()), "AUTH precondition → MISSING_IDENTITY");
         check(plan.parameters().stream().anyMatch(p -> "q".equals(p.name())), "parameter q present");
+    }
+
+    private static void legacyEncodingBindsExpressionParam() {
+        ApiDtos.EntryDto entry = new ApiDtos.EntryDto(
+                ApiDtos.SCHEMA_VERSION, "project-ep", "b".repeat(64), "scan-ep",
+                "entry-check-code", "HTTP", "POST", "/generator/check/code",
+                "com.kalvin.kvf.modules.generator.controller.GenController", "generator",
+                List.of("name=code, type=string [LEGACY]"), List.of(),
+                ApiDtos.STATIC_INFERRED, 0.5, 0, List.of());
+        List<EntryParameterExperimentCompiler.CompiledExperiment> plans =
+                EntryParameterExperimentCompiler.compile(List.of(entry), List.of(), 8);
+        check(!plans.isEmpty(), "expression entry compiled");
+        EntryParameterExperimentCompiler.CompiledExperiment plan = plans.get(0);
+        check(plan.query().contains("code=1"),
+                "legacy name=code encoding binds code=1, not name=… garbage: " + plan.query());
+        check(plan.parameters().stream().anyMatch(p -> "code".equals(p.name())
+                        && "EXPRESSION_HEURISTIC".equals(p.provenance())),
+                "code parameter uses EXPRESSION_HEURISTIC provenance");
+        String preferred = ProbeParameterHeuristics.preferHonestQuery(
+                "name=codetype=stringLEGACY", "code=1", entry.parameters());
+        check("code=1".equals(preferred),
+                "preferHonestQuery rejects misparsed legacy query: " + preferred);
     }
 
     private static void unifyDynamicProbeAndAuthPoc() {

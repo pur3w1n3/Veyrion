@@ -4,6 +4,7 @@ import com.aq.jvmsentinel.analysis.entry.NonHttpEntryProtocol;
 import com.aq.jvmsentinel.analysis.experiment.EntryParameterExperimentCompiler;
 import com.aq.jvmsentinel.analysis.experiment.GuardSurfaceCatalog;
 import com.aq.jvmsentinel.analysis.experiment.PostureExperimentCompiler;
+import com.aq.jvmsentinel.analysis.experiment.ProbeParameterHeuristics;
 import com.aq.jvmsentinel.analysis.experiment.RuntimePostureOrchestrator;
 import com.aq.jvmsentinel.analysis.experiment.TracePlanCompiler;
 import com.aq.jvmsentinel.analysis.experiment.WorldPackPlanner;
@@ -331,7 +332,9 @@ public final class ProbePlanService {
                     .findFirst()
                     .orElse(null);
             if (entry == null) continue;
-            String query = plan.query().isBlank() ? syntheticQuery(entry) : plan.query();
+            String synthetic = syntheticQuery(entry);
+            String query = ProbeParameterHeuristics.preferHonestQuery(
+                    plan.query(), synthetic, entry.parameters());
             String method = plan.method() == null || plan.method().isBlank()
                     || "UNKNOWN".equalsIgnoreCase(plan.method())
                     ? "GET" : plan.method().toUpperCase(Locale.ROOT);
@@ -650,11 +653,8 @@ public final class ProbePlanService {
     }
 
     private static String parameterName(String parameter) {
-        if (parameter == null) return null;
-        int nameAt = parameter.indexOf("name=");
-        if (nameAt < 0) return null;
-        String name = parameter.substring(nameAt + 5).split("[,\\s]", 2)[0].trim();
-        return name.matches("[A-Za-z][A-Za-z0-9_]{0,63}") ? name : null;
+        String name = ProbeParameterHeuristics.resolveName(parameter);
+        return name.isBlank() ? null : name;
     }
 
     public record ProbePlan(ApiDtos.EntryDto primary,
@@ -1035,23 +1035,10 @@ public final class ProbePlanService {
 
     /** Bounded synthetic query for discovered params (INFERENCE stimulus only). */
     static String syntheticQuery(ApiDtos.EntryDto entry) {
-        if (entry.parameters() == null || entry.parameters().isEmpty()) return "";
-        List<String> parts = new ArrayList<>();
-        for (String parameter : entry.parameters()) {
-            if (parameter == null || parts.size() >= 12) continue;
-            int nameAt = parameter.indexOf("name=");
-            if (nameAt < 0) continue;
-            String name = parameter.substring(nameAt + 5).split("[,\\s]", 2)[0].trim();
-            if (!name.matches("[A-Za-z][A-Za-z0-9_]{0,63}")) continue;
-            String lower = name.toLowerCase(Locale.ROOT);
-            if ("businessId".equals(name) || lower.endsWith("id") || lower.endsWith("ids")) {
-                parts.add(name + "=1");
-            } else {
-                parts.add(name + "=synthetic");
-            }
+        if (entry == null || entry.parameters() == null || entry.parameters().isEmpty()) {
+            return "";
         }
-        String joined = String.join("&", parts);
-        return joined.length() <= 256 ? joined : joined.substring(0, 256);
+        return ProbeParameterHeuristics.buildSyntheticQuery(entry.parameters(), entry.route());
     }
 
     /** Untrusted PATH_EXPLORATION conclusion text used only to prioritize probe order. */
