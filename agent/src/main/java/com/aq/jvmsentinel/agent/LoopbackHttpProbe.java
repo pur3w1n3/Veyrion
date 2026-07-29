@@ -153,7 +153,7 @@ public final class LoopbackHttpProbe {
         for (String line : lines) {
             if (line == null || line.isBlank() || line.startsWith("#")) continue;
             String[] parts = line.split("\t", -1);
-            if (parts.length < 2 || parts.length > 6) {
+            if (parts.length < 2 || parts.length > 7) {
                 throw new IllegalArgumentException("probe plan line is invalid");
             }
             ordinal++;
@@ -164,6 +164,7 @@ public final class LoopbackHttpProbe {
                     parts.length >= 4 && !parts[3].isBlank() ? parts[3].trim() : "UNAUTH",
                     parts.length >= 5 ? parts[4].trim() : "",
                     parts.length >= 6 ? parts[5].trim() : "",
+                    parts.length >= 7 ? parts[6].trim() : "",
                     ordinal));
         }
         if (targets.isEmpty()) throw new IllegalArgumentException("probe plan is empty");
@@ -387,7 +388,7 @@ public final class LoopbackHttpProbe {
                 + (attempt.error.isEmpty() ? "" : "; " + attempt.error));
         writeProbeEvent(method, attempt.target.route, lastBatchPort, attempt.status,
                 attempt.requestTarget, attempt.error, outcome, attempt.target.track,
-                attempt.correlationId);
+                attempt.correlationId, attempt.target.experimentPlanId);
     }
 
     /**
@@ -430,7 +431,8 @@ public final class LoopbackHttpProbe {
 
     private static synchronized void writeProbeEvent(String method, String route, int port, int status,
                                                      String requestTarget, String error, String outcomeClass,
-                                                     String track, String correlationId) {
+                                                     String track, String correlationId,
+                                                     String experimentPlanId) {
         try {
             String dir = System.getProperty("veyrion.sandbox.traceDir");
             if (dir == null || dir.isBlank()) {
@@ -455,6 +457,10 @@ public final class LoopbackHttpProbe {
                     .append("\"track\":\"").append(json(truncate(track == null ? "UNAUTH" : track, 32))).append("\"");
             if (correlationId != null && !correlationId.isBlank()) {
                 detail.append(",\"correlationId\":\"").append(json(truncate(correlationId, 64))).append("\"");
+            }
+            if (experimentPlanId != null && !experimentPlanId.isBlank()) {
+                detail.append(",\"experimentPlanId\":\"")
+                        .append(json(truncate(experimentPlanId, 128))).append("\"");
             }
             if (entryHit != null) {
                 detail.append(",\"entryHit\":\"").append(entryHit ? "true" : "false").append("\"");
@@ -554,21 +560,28 @@ public final class LoopbackHttpProbe {
         final String track;
         final String authHeader;
         final String bladeAuthHeader;
+        final String experimentPlanId;
         final int ordinal;
 
         ProbeTarget(String method, String route, String query, String track,
                     String authHeader, int ordinal) {
-            this(method, route, query, track, authHeader, "", ordinal);
+            this(method, route, query, track, authHeader, "", "", ordinal);
         }
 
         ProbeTarget(String method, String route, String query, String track,
                     String authHeader, String bladeAuthHeader, int ordinal) {
+            this(method, route, query, track, authHeader, bladeAuthHeader, "", ordinal);
+        }
+
+        ProbeTarget(String method, String route, String query, String track,
+                    String authHeader, String bladeAuthHeader, String experimentPlanId, int ordinal) {
             this.method = method;
             this.route = route;
             this.query = query;
             this.track = track;
             this.authHeader = authHeader == null ? "" : authHeader;
             this.bladeAuthHeader = bladeAuthHeader == null ? "" : bladeAuthHeader;
+            this.experimentPlanId = experimentPlanId == null ? "" : experimentPlanId;
             this.ordinal = ordinal;
         }
     }

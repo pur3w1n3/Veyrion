@@ -18,6 +18,7 @@ public final class EntryParameterExperimentCompilerAcceptanceTest {
         ASSERTIONS.set(0);
         emptyEntryProducesRationale();
         declaredParametersCompileQuery();
+        unifyDynamicProbeAndAuthPoc();
         System.out.println("EntryParameterExperimentCompilerAcceptanceTest: PASS ("
                 + Math.max(ASSERTIONS.get(), AcceptanceAssertions.get()) + " assertions)");
     }
@@ -51,6 +52,28 @@ public final class EntryParameterExperimentCompilerAcceptanceTest {
         check(plan.query().contains("q=test"), "query includes declared sample");
         check("MISSING_IDENTITY".equals(plan.readiness()), "AUTH precondition → MISSING_IDENTITY");
         check(plan.parameters().stream().anyMatch(p -> "q".equals(p.name())), "parameter q present");
+    }
+
+    private static void unifyDynamicProbeAndAuthPoc() {
+        ApiDtos.EntryDto entry = new ApiDtos.EntryDto(
+                ApiDtos.SCHEMA_VERSION, "project-ep", "b".repeat(64), "scan-ep",
+                "entry-admin", "HTTP", "GET", "/api/admin", "demo.AdminController", "demo",
+                List.of(), List.of(), ApiDtos.STATIC_INFERRED, 0.5, 0, List.of());
+        var dynamic = new com.aq.jvmsentinel.model.ExperimentPlan(
+                "plan-dyn-1", "GET /api/admin",
+                com.aq.jvmsentinel.model.IdentityTrack.UNAUTH,
+                "GET", "application/json", List.of(), false, "200", "", 2);
+        List<EntryParameterExperimentCompiler.CompiledExperiment> plans =
+                EntryParameterExperimentCompiler.compileUnified(
+                        List.of(entry), List.of(), List.of(dynamic),
+                        List.of("entry-admin"), 16);
+        check(plans.stream().anyMatch(p -> "plan-dyn-1".equals(p.experimentPlanId())),
+                "DynamicProbe plan retained");
+        check(plans.stream().anyMatch(p -> p.experimentPlanId().startsWith("plan:auth-poc:")),
+                "AUTH PoC compiled");
+        var probe = EntryParameterExperimentCompiler.toProbeTarget(plans.get(0));
+        check(probe.experimentPlanId() != null && !probe.experimentPlanId().isBlank(),
+                "ProbeTarget carries experimentPlanId");
     }
 
     private static void check(boolean condition, String message) {

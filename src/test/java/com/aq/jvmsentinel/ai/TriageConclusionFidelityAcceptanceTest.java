@@ -33,6 +33,7 @@ public final class TriageConclusionFidelityAcceptanceTest {
         parseRetainsRootCauseAndEvidenceRefs();
         parseMarksInsufficientWhenRequiredMissing();
         copyRootCauseWhitelistsCounterevidence();
+        triageClassificationsSupportedContradictedUnreached();
         triageJobConclusionRetainsRootCause();
         System.out.println("TriageConclusionFidelityAcceptanceTest: PASS ("
                 + ASSERTIONS.get() + " assertions)");
@@ -84,6 +85,56 @@ public final class TriageConclusionFidelityAcceptanceTest {
                 "TRIAGE node does not use AUTH bypassPoCs shape");
         check(!node.path("rootCause").isMissingNode() && !node.path("rootCause").isEmpty(),
                 "rootCause not emptied by serialization");
+        check(TriageConclusion.SUPPORTED.equals(node.path("classification").asText()),
+                "valid TRIAGE classification is SUPPORTED");
+    }
+
+    private static void triageClassificationsSupportedContradictedUnreached() throws Exception {
+        String contradicted = """
+                ```json
+                {
+                  "classification": "CONTRADICTED",
+                  "evidenceRefs": ["pathrun:pr-1"],
+                  "counterevidence": ["pathrun:deny-block"],
+                  "rootCause": {
+                    "attackPath": [
+                      {"layer":"HTTP","label":"GET /admin","evidenceRefs":["entry:e1"]}
+                    ],
+                    "rootCauseStatement":"guard denied synthetic identity",
+                    "cweId":"CWE-862",
+                    "fixSuggestion":"keep deny"
+                  }
+                }
+                ```
+                """;
+        TriageConclusion.ParseResult contra = TriageConclusion.parseAndValidate(contradicted);
+        JsonNode contraNode = TriageConclusion.toConclusionNode(contradicted, contra);
+        check(TriageConclusion.CONTRADICTED.equals(contraNode.path("classification").asText()),
+                "explicit CONTRADICTED retained");
+
+        String unreached = """
+                ```json
+                {
+                  "classification": "UNREACHED",
+                  "evidenceRefs": ["coverage:unreached-entry-1"],
+                  "counterevidence": [],
+                  "rootCause": {
+                    "attackPath": [
+                      {"layer":"HTTP","label":"GET /missing","evidenceRefs":["coverage:unreached-entry-1"]}
+                    ],
+                    "rootCauseStatement":"entry never reached under budget",
+                    "fixSuggestion":"expand probe budget"
+                  }
+                }
+                ```
+                """;
+        TriageConclusion.ParseResult unreachedParsed = TriageConclusion.parseAndValidate(unreached);
+        JsonNode unreachedNode = TriageConclusion.toConclusionNode(unreached, unreachedParsed);
+        check(TriageConclusion.UNREACHED.equals(unreachedNode.path("classification").asText()),
+                "explicit UNREACHED retained");
+        check(TriageConclusion.SUPPORTED.equals(
+                        TriageConclusion.resolveClassification("INFERENCE", List.of(), List.of("e1"), false)),
+                "legacy INFERENCE aliases to SUPPORTED");
     }
 
     private static void parseMarksInsufficientWhenRequiredMissing() {
@@ -208,8 +259,9 @@ public final class TriageConclusionFidelityAcceptanceTest {
             check(!"INSUFFICIENT_EVIDENCE".equals(conclusion.path("classification").asText())
                             || conclusion.path("evidenceRefs").size() > 0,
                     "valid TRIAGE not fail-closed incorrectly");
-            check("INFERENCE".equals(conclusion.path("classification").asText()),
-                    "valid TRIAGE classification=INFERENCE");
+            check(TriageConclusion.SUPPORTED.equals(conclusion.path("classification").asText())
+                            || "INFERENCE".equals(conclusion.path("classification").asText()),
+                    "valid TRIAGE classification=SUPPORTED (INFERENCE alias accepted)");
             check(!conclusion.has("bypassPoCs")
                             || (conclusion.path("bypassPoCs").isArray()
                             && conclusion.path("bypassPoCs").isEmpty()),

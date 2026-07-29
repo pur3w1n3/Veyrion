@@ -1,6 +1,7 @@
 package com.aq.jvmsentinel.control.service;
 
 import com.aq.jvmsentinel.analysis.entry.NonHttpEntryProtocol;
+import com.aq.jvmsentinel.analysis.experiment.EntryParameterExperimentCompiler;
 import com.aq.jvmsentinel.analysis.framework.FrameworkAdapterRegistry;
 import com.aq.jvmsentinel.analysis.identity.SyntheticIdentityService;
 import com.aq.jvmsentinel.control.ApiDtos;
@@ -8,6 +9,7 @@ import com.aq.jvmsentinel.control.ControlPlaneStore;
 import com.aq.jvmsentinel.model.ArtifactDescriptor;
 import com.aq.jvmsentinel.model.AuthBypassCandidate;
 import com.aq.jvmsentinel.model.AuthBypassTechnique;
+import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.aq.jvmsentinel.model.IdentityTrack;
 import com.aq.jvmsentinel.worker.ExternalArtifactTaskExecutor;
 import com.aq.jvmsentinel.worker.TaskSnapshot;
@@ -164,7 +166,7 @@ public final class ProbePlanService {
         }
         IdentityExpansionResult expansion = expandProbesByIdentityTracksDetailed(
                 scan, httpEntries, effectiveProbes, maxProbes);
-        effectiveProbes = expansion.probes();
+        effectiveProbes = stampExperimentPlanIds(scan, httpEntries, expansion.probes());
         List<ApiDtos.PathDto> unreached = new ArrayList<>(expansion.identityUnreached());
         for (ApiDtos.EntryDto entry : httpEntries) {
             if (selectedIds.contains(entry.id())) continue;
@@ -178,6 +180,44 @@ public final class ProbePlanService {
                             "超出本次断网探针预算，未动态刺激", "entry", "blocked", entry.evidenceRefs()))));
         }
         return new ProbePlan(primary, List.copyOf(effectiveProbes), List.copyOf(unreached));
+    }
+
+    /**
+     * P0-18/P0-19: stamp server-compiled experimentPlanId onto flood probes so PathRun
+     * projection can correlate entry × parameter space without inventing client plans.
+     */
+    private List<ExternalArtifactTaskExecutor.ProbeTarget> stampExperimentPlanIds(
+            ControlPlaneStore.ScanRecord scan,
+            List<ApiDtos.EntryDto> httpEntries,
+            List<ExternalArtifactTaskExecutor.ProbeTarget> probes) {
+        if (probes == null || probes.isEmpty()) return List.of();
+        List<EntryParameterExperimentCompiler.CompiledExperiment> compiled =
+                EntryParameterExperimentCompiler.compileUnified(
+                        httpEntries,
+                        store.hypotheses(scan.dto().scanId()),
+                        List.<ExperimentPlan>of(),
+                        List.of(),
+                        Math.max(probes.size(), 16));
+        Map<String, String> planByKey = new LinkedHashMap<>();
+        for (EntryParameterExperimentCompiler.CompiledExperiment item : compiled) {
+            if (item == null) continue;
+            String key = item.method().toUpperCase(Locale.ROOT) + " " + item.route();
+            planByKey.putIfAbsent(key, item.experimentPlanId());
+        }
+        List<ExternalArtifactTaskExecutor.ProbeTarget> stamped = new ArrayList<>(probes.size());
+        for (ExternalArtifactTaskExecutor.ProbeTarget probe : probes) {
+            if (probe == null) continue;
+            if (probe.experimentPlanId() != null && !probe.experimentPlanId().isBlank()) {
+                stamped.add(probe);
+                continue;
+            }
+            String key = probe.method().toUpperCase(Locale.ROOT) + " " + probe.route();
+            String planId = planByKey.getOrDefault(key, "");
+            stamped.add(new ExternalArtifactTaskExecutor.ProbeTarget(
+                    probe.method(), probe.route(), probe.query(), probe.track(),
+                    probe.authHeader(), probe.bladeAuthHeader(), planId));
+        }
+        return List.copyOf(stamped);
     }
 
     /** Converts only bounded name=value hints into URL query data for the selected entry. */

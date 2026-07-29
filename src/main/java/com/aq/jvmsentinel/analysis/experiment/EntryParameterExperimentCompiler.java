@@ -7,7 +7,9 @@ import com.aq.jvmsentinel.domain.experiment.HypothesisExperimentPlan;
 import com.aq.jvmsentinel.domain.hypothesis.HypothesisFamily;
 import com.aq.jvmsentinel.domain.hypothesis.HypothesisLifecycle;
 import com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis;
+import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.aq.jvmsentinel.model.IdentityTrack;
+import com.aq.jvmsentinel.worker.ExternalArtifactTaskExecutor;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -101,6 +103,121 @@ public final class EntryParameterExperimentCompiler {
             map.put("counterSignals", counterSignals.stream().map(ExperimentSignal::code).toList());
             return map;
         }
+    }
+
+    /**
+     * Unify entry signatures, hypothesis families, DynamicProbe ExperimentPlans and AUTH PoC
+     * entry hints into server-owned compiled experiments (P0-18).
+     */
+    public static List<CompiledExperiment> compileUnified(
+            List<ApiDtos.EntryDto> entries,
+            List<SecurityHypothesis> hypotheses,
+            List<ExperimentPlan> dynamicPlans,
+            List<String> authPocEntryRefs,
+            int maxPlans) {
+        List<CompiledExperiment> out = new ArrayList<>(compile(entries, hypotheses, maxPlans));
+        int limit = Math.max(1, Math.min(maxPlans <= 0 ? 64 : maxPlans, 256));
+        if (dynamicPlans != null) {
+            for (ExperimentPlan plan : dynamicPlans) {
+                if (out.size() >= limit || plan == null) continue;
+                out.add(fromDynamicPlan(plan));
+            }
+        }
+        if (authPocEntryRefs != null && entries != null) {
+            for (String ref : authPocEntryRefs) {
+                if (out.size() >= limit || ref == null || ref.isBlank()) continue;
+                for (ApiDtos.EntryDto entry : entries) {
+                    if (entry == null) continue;
+                    if (ref.contains(entry.id()) || ref.contains(entry.route())) {
+                        CompiledExperiment compiled = compileOne(
+                                entry,
+                                entry.method() == null || entry.method().isBlank()
+                                        ? "GET" : entry.method().toUpperCase(Locale.ROOT),
+                                null,
+                                ExperimentPlanKind.GUARD_DIFF);
+                        out.add(new CompiledExperiment(
+                                "plan:auth-poc:" + entry.id(),
+                                compiled.entryId(),
+                                compiled.method(),
+                                compiled.route(),
+                                IdentityTrack.ADMIN,
+                                ExperimentPlanKind.GUARD_DIFF,
+                                compiled.parameters(),
+                                compiled.query(),
+                                compiled.body(),
+                                compiled.emptyInputRationale(),
+                                expectedFor(ExperimentPlanKind.GUARD_DIFF),
+                                counterFor(ExperimentPlanKind.GUARD_DIFF),
+                                "MISSING_IDENTITY".equals(compiled.readiness())
+                                        ? "MISSING_IDENTITY" : "EXECUTABLE",
+                                compiled.hypothesisId()));
+                        break;
+                    }
+                }
+            }
+        }
+        return List.copyOf(out.stream().limit(limit).toList());
+    }
+
+    public static ExternalArtifactTaskExecutor.ProbeTarget toProbeTarget(CompiledExperiment compiled) {
+        Objects.requireNonNull(compiled, "compiled");
+        return new ExternalArtifactTaskExecutor.ProbeTarget(
+                compiled.method(),
+                compiled.route(),
+                compiled.query(),
+                compiled.track() == null ? "UNAUTH" : compiled.track().name(),
+                "",
+                "",
+                compiled.experimentPlanId());
+    }
+
+    public static CompiledExperiment fromDynamicPlan(ExperimentPlan plan) {
+        Objects.requireNonNull(plan, "plan");
+        String method = plan.method() == null || plan.method().isBlank()
+                ? "GET" : plan.method().toUpperCase(Locale.ROOT);
+        String route = plan.entrypointRef() == null ? "/" : plan.entrypointRef().trim();
+        if (route.contains(" ")) {
+            String[] parts = route.split("\\s+", 2);
+            if (parts.length == 2 && parts[0].matches("[A-Z]+")) {
+                method = parts[0];
+                route = parts[1];
+            }
+        }
+        if (!route.startsWith("/")) route = "/" + route;
+        List<CompiledParameter> parameters = new ArrayList<>();
+        if (plan.requiredParameters() == null || plan.requiredParameters().isEmpty()) {
+            parameters.add(new CompiledParameter(
+                    "", "QUERY", "EMPTY_INPUT", "", true,
+                    "DynamicProbe plan accepts empty query/body; observe downstream effects."));
+        } else {
+            for (String name : plan.requiredParameters()) {
+                if (name == null || name.isBlank()) continue;
+                parameters.add(new CompiledParameter(
+                        name, "QUERY", "DYNAMIC_PROBE", "", true,
+                        "Empty value remains legal for DynamicProbe parameter '" + name + "'."));
+            }
+        }
+        String emptyRationale = parameters.stream().allMatch(p -> p.sampleValue().isBlank())
+                ? "Provider DynamicProbe empty-input shape; do not flood arbitrary payloads."
+                : "";
+        return new CompiledExperiment(
+                plan.planId() == null || plan.planId().isBlank()
+                        ? "plan:dynamic:" + method + ":" + route
+                        : plan.planId(),
+                "entry:" + method + ":" + route,
+                method,
+                route,
+                plan.track() == null ? IdentityTrack.UNAUTH : plan.track(),
+                ExperimentPlanKind.REACHABILITY,
+                parameters,
+                "",
+                "",
+                emptyRationale,
+                expectedFor(ExperimentPlanKind.REACHABILITY),
+                counterFor(ExperimentPlanKind.REACHABILITY),
+                plan.authRequired() ? "MISSING_IDENTITY" : "EXECUTABLE",
+                ""
+        );
     }
 
     public static List<CompiledExperiment> compile(

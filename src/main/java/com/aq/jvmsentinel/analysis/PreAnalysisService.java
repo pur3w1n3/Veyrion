@@ -124,6 +124,15 @@ public final class PreAnalysisService {
                         List.of(evidenceId), VerificationStatus.STATIC_INFERRED));
             }
         }
+        BootPortCandidateHarvester.Harvest portHarvest =
+                BootPortCandidateHarvester.harvest(input.configurationLines());
+        if (!portHarvest.candidateHttpPorts().isEmpty()) {
+            String id = "cfg-ports-" + (++index);
+            evidence.add(new Evidence(id, ProvenanceKind.FACT, "configuration-http-ports", 1.0,
+                    "candidateHttpPorts=" + portHarvest.candidateHttpPorts()
+                            + "; rejectedDependencyPorts=" + portHarvest.rejectedDependencyPorts()
+                            + "; provenance=" + portHarvest.provenance()));
+        }
         for (String line : input.configurationLines()) {
             if (line == null || line.isBlank()) continue;
             String lower = line.toLowerCase(Locale.ROOT);

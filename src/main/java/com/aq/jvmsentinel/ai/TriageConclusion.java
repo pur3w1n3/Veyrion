@@ -23,7 +23,11 @@ public final class TriageConclusion {
     private static final Pattern FENCED_JSON = Pattern.compile(
             "(?is)```(?:json)?\\s*(\\{.*?\"rootCause\".*?})\\s*```");
     public static final String INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE";
+    /** @deprecated P0-20: prefer {@link #SUPPORTED}; retained as wire alias. */
     public static final String CLASSIFICATION_INFERENCE = "INFERENCE";
+    public static final String SUPPORTED = "SUPPORTED";
+    public static final String CONTRADICTED = "CONTRADICTED";
+    public static final String UNREACHED = "UNREACHED";
     private static final int MAX_EVIDENCE_REFS = 64;
     private static final int MAX_COUNTEREVIDENCE = 32;
     private static final int MAX_ATTACK_STEPS = 16;
@@ -35,12 +39,24 @@ public final class TriageConclusion {
             List<String> evidenceRefs,
             List<String> counterevidence,
             List<String> rejected,
-            boolean insufficientEvidence
+            boolean insufficientEvidence,
+            String classification
     ) {
+        public ParseResult(
+                RootCauseAnalysis rootCause,
+                List<String> evidenceRefs,
+                List<String> counterevidence,
+                List<String> rejected,
+                boolean insufficientEvidence) {
+            this(rootCause, evidenceRefs, counterevidence, rejected, insufficientEvidence,
+                    insufficientEvidence ? INSUFFICIENT_EVIDENCE : SUPPORTED);
+        }
+
         public ParseResult {
             evidenceRefs = List.copyOf(evidenceRefs == null ? List.of() : evidenceRefs);
             counterevidence = List.copyOf(counterevidence == null ? List.of() : counterevidence);
             rejected = List.copyOf(rejected == null ? List.of() : rejected);
+            classification = normalizeClassification(classification, insufficientEvidence);
         }
     }
 
@@ -128,7 +144,9 @@ public final class TriageConclusion {
         }
 
         RootCauseAnalysis analysis = new RootCauseAnalysis(steps, statement, affected, cweId, fix);
-        return new ParseResult(analysis, evidenceRefs, counterevidence, rejected, false);
+        String requested = text(root, "classification");
+        String classification = resolveClassification(requested, counterevidence, evidenceRefs, false);
+        return new ParseResult(analysis, evidenceRefs, counterevidence, rejected, false, classification);
     }
 
     public static ObjectNode toConclusionNode(String summary, ParseResult parsed) {
@@ -137,7 +155,14 @@ public final class TriageConclusion {
         boolean insufficient = parsed == null || parsed.insufficientEvidence()
                 || parsed.rootCause() == null
                 || parsed.evidenceRefs().isEmpty();
-        node.put("classification", insufficient ? INSUFFICIENT_EVIDENCE : CLASSIFICATION_INFERENCE);
+        String classification = insufficient
+                ? INSUFFICIENT_EVIDENCE
+                : (parsed == null ? SUPPORTED : parsed.classification());
+        // Keep INFERENCE as a deprecated alias only when explicitly present on older payloads.
+        if (CLASSIFICATION_INFERENCE.equals(classification)) {
+            classification = SUPPORTED;
+        }
+        node.put("classification", classification);
         node.put("summary", summary == null ? "" : summary);
         ArrayNode refs = node.putArray("evidenceRefs");
         if (parsed != null) {
@@ -156,9 +181,57 @@ public final class TriageConclusion {
         if (insufficient) {
             node.put("emptyReason", INSUFFICIENT_EVIDENCE);
         }
-        node.put("verificationStatus", insufficient ? INSUFFICIENT_EVIDENCE : CLASSIFICATION_INFERENCE);
+        node.put("verificationStatus", classification);
         node.put("conclusionKind", "VULNERABILITY_TRIAGE");
         return node;
+    }
+
+    static String resolveClassification(String requested,
+                                        List<String> counterevidence,
+                                        List<String> evidenceRefs,
+                                        boolean insufficient) {
+        if (insufficient) return INSUFFICIENT_EVIDENCE;
+        String normalized = requested == null ? "" : requested.trim().toUpperCase();
+        if (CLASSIFICATION_INFERENCE.equals(normalized)) {
+            normalized = SUPPORTED;
+        }
+        if (UNREACHED.equals(normalized)
+                || CONTRADICTED.equals(normalized)
+                || SUPPORTED.equals(normalized)
+                || INSUFFICIENT_EVIDENCE.equals(normalized)) {
+            return normalized;
+        }
+        boolean unreachedSignal = evidenceRefs != null && evidenceRefs.stream()
+                .anyMatch(ref -> ref != null && ref.toUpperCase().contains("UNREACHED"));
+        if (unreachedSignal && (counterevidence == null || counterevidence.isEmpty())) {
+            return UNREACHED;
+        }
+        if (counterevidence != null && !counterevidence.isEmpty()
+                && (evidenceRefs == null || evidenceRefs.isEmpty())) {
+            return CONTRADICTED;
+        }
+        if (counterevidence != null && !counterevidence.isEmpty()
+                && looksLikeContradiction(counterevidence)) {
+            return CONTRADICTED;
+        }
+        return SUPPORTED;
+    }
+
+    private static boolean looksLikeContradiction(List<String> counterevidence) {
+        for (String item : counterevidence) {
+            if (item == null) continue;
+            String upper = item.toUpperCase();
+            if (upper.contains("CONTRADICT") || upper.contains("DENY")
+                    || upper.contains("BLOCK") || upper.contains("NO_EFFECT")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String normalizeClassification(String classification, boolean insufficient) {
+        if (insufficient) return INSUFFICIENT_EVIDENCE;
+        return resolveClassification(classification, List.of(), List.of(), false);
     }
 
     /** Wire-safe map for FindingDto.rootCause (includes optional counterevidence). */
@@ -201,7 +274,8 @@ public final class TriageConclusion {
             List<String> evidenceRefs,
             List<String> counterevidence,
             List<String> rejected) {
-        return new ParseResult(rootCause, evidenceRefs, counterevidence, rejected, true);
+        return new ParseResult(rootCause, evidenceRefs, counterevidence, rejected, true,
+                INSUFFICIENT_EVIDENCE);
     }
 
     private static void writeRootCause(ObjectNode node, RootCauseAnalysis analysis) {

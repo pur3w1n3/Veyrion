@@ -285,7 +285,7 @@ public final class TraceProjectionService {
         PathRun provisional = new PathRun(
                 "pathrun-" + snapshot.scope().taskId() + "-task",
                 snapshot.scope().scanId(), entryRef, IdentityTrack.UNAUTH, "attempt-task",
-                experimentPlanIdForTask(snapshot.scope().taskId()),
+                Objects.requireNonNullElse(experimentPlanIdForTask(snapshot.scope().taskId()), ""),
                 "GET", "application/json", summary, outcome, -1, null, null,
                 sqlCopy, stop, verificationStatus,
                 List.copyOf(evidenceRefs), ApiDtos.MOCK, "no credentials");
@@ -327,9 +327,17 @@ public final class TraceProjectionService {
         String attemptId = !correlation.isBlank() ? correlation : "attempt-" + attempt;
         String entryRef = "entry:" + normalizedMethod + ":" + route;
         List<SqlEvent> sqlCopy = List.copyOf(jdbcSql);
+        String planFromDetail = detail.getOrDefault("experimentPlanId", "").trim();
+        String boundPlan = experimentPlanIdForTask(snapshot.scope().taskId());
+        String experimentPlanId = !planFromDetail.isBlank()
+                ? planFromDetail
+                : (boundPlan == null ? "" : boundPlan);
         String requestSummary = normalizedMethod + " " + route + " track=" + track.name();
         if (!correlation.isBlank()) {
             requestSummary = requestSummary + " correlationId=" + correlation;
+        }
+        if (!experimentPlanId.isBlank()) {
+            requestSummary = requestSummary + " experimentPlanId=" + experimentPlanId;
         }
         if (parameterBound == null) {
             requestSummary = requestSummary + " parameterBound=unknown";
@@ -341,7 +349,7 @@ public final class TraceProjectionService {
         PathRun provisional = new PathRun(
                 "pathrun-" + snapshot.scope().taskId() + "-" + attempt,
                 snapshot.scope().scanId(), entryRef, track, attemptId,
-                experimentPlanIdForTask(snapshot.scope().taskId()),
+                experimentPlanId,
                 normalizedMethod,
                 "application/json",
                 requestSummary,

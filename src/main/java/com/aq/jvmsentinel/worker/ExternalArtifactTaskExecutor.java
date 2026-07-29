@@ -802,8 +802,11 @@ public final class ExternalArtifactTaskExecutor {
                     .append(target.query() == null ? "" : target.query()).append('\t')
                     .append(target.track() == null ? "UNAUTH" : target.track()).append('\t')
                     .append(target.authHeader() == null ? "" : target.authHeader()).append('\t')
-                    .append(target.bladeAuthHeader() == null ? "" : target.bladeAuthHeader())
-                    .append('\n');
+                    .append(target.bladeAuthHeader() == null ? "" : target.bladeAuthHeader());
+            if (target.experimentPlanId() != null && !target.experimentPlanId().isBlank()) {
+                text.append('\t').append(target.experimentPlanId());
+            }
+            text.append('\n');
         }
         byte[] bytes = text.toString().getBytes(StandardCharsets.UTF_8);
         if (bytes.length == 0 || bytes.length > MAX_PROBE_PLAN_UPLOAD_BYTES) {
@@ -830,6 +833,9 @@ public final class ExternalArtifactTaskExecutor {
             total += auth.getBytes(StandardCharsets.UTF_8).length + 1;
             String blade = target.bladeAuthHeader() == null ? "" : target.bladeAuthHeader();
             total += blade.getBytes(StandardCharsets.UTF_8).length + 1;
+            if (target.experimentPlanId() != null && !target.experimentPlanId().isBlank()) {
+                total += target.experimentPlanId().getBytes(StandardCharsets.UTF_8).length + 1;
+            }
         }
         return total;
     }
@@ -1189,18 +1195,23 @@ public final class ExternalArtifactTaskExecutor {
 
     /** One bounded HTTP stimulus inside the deny-all container. */
     public record ProbeTarget(String method, String route, String query, String track,
-                              String authHeader, String bladeAuthHeader) {
+                              String authHeader, String bladeAuthHeader, String experimentPlanId) {
         public ProbeTarget(String method, String route) {
-            this(method, route, "", "UNAUTH", "", "");
+            this(method, route, "", "UNAUTH", "", "", "");
         }
 
         public ProbeTarget(String method, String route, String query) {
-            this(method, route, query, "UNAUTH", "", "");
+            this(method, route, query, "UNAUTH", "", "", "");
         }
 
         /** Auth-only constructor; Blade-Auth stays empty (channels are independent). */
         public ProbeTarget(String method, String route, String query, String track, String authHeader) {
-            this(method, route, query, track, authHeader, "");
+            this(method, route, query, track, authHeader, "", "");
+        }
+
+        public ProbeTarget(String method, String route, String query, String track,
+                           String authHeader, String bladeAuthHeader) {
+            this(method, route, query, track, authHeader, bladeAuthHeader, "");
         }
 
         public ProbeTarget {
@@ -1209,6 +1220,7 @@ public final class ExternalArtifactTaskExecutor {
             track = track == null || track.isBlank() ? "UNAUTH" : track;
             authHeader = authHeader == null ? "" : authHeader;
             bladeAuthHeader = bladeAuthHeader == null ? "" : bladeAuthHeader;
+            experimentPlanId = experimentPlanId == null ? "" : experimentPlanId.trim();
             if (!Set.of("GET", "POST", "PUT", "PATCH", "DELETE").contains(method)
                     || route == null
                     || !route.matches("/[A-Za-z0-9_./{}:-]{0,1023}")
@@ -1217,7 +1229,10 @@ public final class ExternalArtifactTaskExecutor {
                     || authHeader.length() > 2048
                     || authHeader.chars().anyMatch(c -> c < 0x20 || c == 0x7f)
                     || bladeAuthHeader.length() > 2048
-                    || bladeAuthHeader.chars().anyMatch(c -> c < 0x20 || c == 0x7f)) {
+                    || bladeAuthHeader.chars().anyMatch(c -> c < 0x20 || c == 0x7f)
+                    || experimentPlanId.length() > 128
+                    || (!experimentPlanId.isEmpty()
+                    && !experimentPlanId.matches("[A-Za-z0-9_.:/-]{1,128}"))) {
                 throw new IllegalArgumentException("artifact probe target is invalid");
             }
         }
