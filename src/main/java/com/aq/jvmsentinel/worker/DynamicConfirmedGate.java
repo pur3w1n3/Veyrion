@@ -23,6 +23,8 @@ import java.util.Set;
  * {@code EFFECT_TRIGGERED}，且入口命中、证据可引用时，可升 {@code DYNAMIC_CONFIRMED}。
  * <b>观测细、确认严</b>：Agent 出 EFFECT ≠ 自动确认；仅 HTTP 200 / 仅入口 /
  * 仅 FORCED / 仅 {@code FILE_READ} / 仅 {@code DNS_LOOKUP} → 不得升确认。
+ * 框架鉴权自用 SpEL（如 Blade {@code AuthAspect#handleAuth}、Spring Method Security
+ * 表达式求值）保留观测，但不得单独升确认或生成「SpEL 注入」孤儿绑定。
  *
  * <p>P2 family fail-closed：Guard / State / Typestate 等非数据流 family
  * 上限为 {@code DYNAMIC_SUSPECTED}，直至独立 family 审计落地。模型不能调用此升级。
@@ -41,6 +43,25 @@ public final class DynamicConfirmedGate {
             "EXPRESSION", "COMMAND", "SQL", "JDBC", "SSRF", "JNDI",
             "DESERIALIZATION", "CLASS_LOADING", "FILE", "FILE_WRITE", "FILE_READ",
             "FILE_DELETE", "PROCESS", "HTTP_CLIENT", "DNS_LOOKUP");
+
+    /**
+     * 鉴权/方法安全框架对注解表达式的自用求值（非用户输入注入）。
+     * 匹配 callerRef / summary「via …」/ subjectRef。
+     */
+    private static final String[] FRAMEWORK_AUTH_EXPRESSION_MARKERS = {
+            "authaspect",
+            "methodsecurityinterceptor",
+            "prepostadvice",
+            "preauthorizeauthorizationmanager",
+            "postauthorizeauthorizationmanager",
+            "methodsecurityexpressionhandler",
+            "methodsecurityexpressionroot",
+            "securityexpressionroot",
+            "org.springframework.security.access.expression",
+            "org.springframework.security.authorization.method",
+            "org.springblade.core.secure.aspect",
+            "org.springblade.core.secure.utils"
+    };
 
     private DynamicConfirmedGate() { }
 
@@ -110,7 +131,8 @@ public final class DynamicConfirmedGate {
         if (!Boolean.TRUE.equals(run.entryHit()) && !traceHasEntry(trace)) {
             return VerificationStatus.DYNAMIC_SUSPECTED;
         }
-        Set<String> observed = effectKindsOf(trace);
+        // 确认用「可确认 kind」：框架鉴权自用 SpEL 等噪声从确认面剔除，观测仍见 effectKindsOf。
+        Set<String> observed = confirmableEffectKinds(trace);
         if (observed.isEmpty()) {
             return VerificationStatus.DYNAMIC_SUSPECTED;
         }
@@ -202,6 +224,90 @@ public final class DynamicConfirmedGate {
             }
         }
         return Set.copyOf(kinds);
+    }
+
+    /**
+     * H4 确认面 kind：在 {@link #effectKindsOf} 基础上剔除不可单独确认的噪声。
+     * 当前：仅框架鉴权/方法安全自用 SpEL，或裸 {@code Expression#getValue} 引擎事件
+     * → 去掉 EXPRESSION（观测保留，确认与 orphan 绑定不再升）。
+     */
+    public static Set<String> confirmableEffectKinds(PathTrace trace) {
+        Set<String> kinds = new LinkedHashSet<>(effectKindsOf(trace));
+        if (kinds.contains("EXPRESSION") && !hasConfirmableExpressionEffect(trace)) {
+            kinds.remove("EXPRESSION");
+        }
+        return Set.copyOf(kinds);
+    }
+
+    /**
+     * 是否存在可确认为「表达式注入」的 EFFECT：应用侧求值（QLExpress/OGNL/Script 等），
+     * 而非 AuthAspect / Method Security 注解 SpEL，也非孤立的 Spring Expression API。
+     */
+    static boolean hasConfirmableExpressionEffect(PathTrace trace) {
+        if (trace == null || trace.events() == null) return false;
+        for (TraceEvent event : trace.events()) {
+            if (event == null || event.kind() != TraceEventKind.EFFECT_TRIGGERED) continue;
+            if (!"EXPRESSION".equals(normalizeEffectToken(event.detailCode()))
+                    && !"EXPRESSION".equals(normalizeEffectToken(event.summary()))) {
+                continue;
+            }
+            if (isConfirmableExpressionSite(event)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isConfirmableExpressionSite(TraceEvent event) {
+        String caller = expressionCallerOf(event);
+        String subject = event.subjectRef() == null ? "" : event.subjectRef().trim();
+        if (isFrameworkAuthExpressionSite(caller) || isFrameworkAuthExpressionSite(subject)) {
+            return false;
+        }
+        // 裸 Spring Expression/SpEL API：无应用侧 caller/subject 时只算观测。
+        if (isSpringExpressionEngine(subject)
+                && (caller.isBlank() || isSpringExpressionEngine(caller))) {
+            return false;
+        }
+        if (caller.isBlank() && subject.isBlank()) {
+            return false;
+        }
+        // 应用侧求值器（QLExpress/OGNL/ScriptEngine/业务类）或带非框架 caller 的 SpEL。
+        return true;
+    }
+
+    private static String expressionCallerOf(TraceEvent event) {
+        if (event == null) return "";
+        Object attr = event.attributes() == null ? null : event.attributes().get("callerRef");
+        if (attr != null && !attr.toString().isBlank()) {
+            return attr.toString().trim();
+        }
+        String summary = event.summary() == null ? "" : event.summary();
+        int via = summary.toLowerCase(Locale.ROOT).lastIndexOf(" via ");
+        if (via >= 0 && via + 5 < summary.length()) {
+            return summary.substring(via + 5).trim();
+        }
+        return "";
+    }
+
+    static boolean isFrameworkAuthExpressionSite(String symbol) {
+        if (symbol == null || symbol.isBlank()) return false;
+        String lower = symbol.toLowerCase(Locale.ROOT);
+        for (String marker : FRAMEWORK_AUTH_EXPRESSION_MARKERS) {
+            if (lower.contains(marker)) return true;
+        }
+        return false;
+    }
+
+    private static boolean isSpringExpressionEngine(String symbol) {
+        if (symbol == null || symbol.isBlank()) return false;
+        String lower = symbol.toLowerCase(Locale.ROOT);
+        return lower.contains("org.springframework.expression.")
+                || lower.contains("org.springframework.expression.spel")
+                || lower.startsWith("spelExpression#".toLowerCase(Locale.ROOT))
+                || lower.equals("expression#getvalue")
+                || lower.endsWith(".expression#getvalue")
+                || lower.endsWith("spelexpression#getvalue");
     }
 
     /**

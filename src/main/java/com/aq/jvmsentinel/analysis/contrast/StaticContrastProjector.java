@@ -25,8 +25,12 @@ import java.util.regex.Pattern;
  * <p>True reverse BFS from sinks is intentionally out of scope for this MVP slice.
  */
 public final class StaticContrastProjector {
-    /** Soft cap for ledger rows before truncation; hard-tested in acceptance. */
-    public static final int MAX_ROWS = 64;
+    /**
+     * 交付账本行安全阀（非 prompt 预算）。原 64 会导致报告丢 STATIC_ONLY；
+     * 抬高后默认完整交付；超限仍标 truncated + LEDGER_ROW_BUDGET_EXHAUSTED。
+     * Prompt 内联另见 {@link ContrastLedger#MAX_PROMPT_ROWS}。
+     */
+    public static final int MAX_ROWS = 4096;
     public static final String STOP_BUDGET = "LEDGER_ROW_BUDGET_EXHAUSTED";
     public static final String STOP_UNBOUND = "UNBOUND_SINK";
     public static final String STOP_TAINT_PROJECTED = "TAINT_PATH_PROJECTED";

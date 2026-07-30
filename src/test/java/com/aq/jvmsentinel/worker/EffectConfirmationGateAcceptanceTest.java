@@ -28,6 +28,8 @@ public final class EffectConfirmationGateAcceptanceTest {
 
         forcedOnlyMustNotConfirm();
         expressionEffectConfirmsWithPrivilege();
+        frameworkAuthSpelDoesNotConfirm();
+        bareSpelApiDoesNotConfirmWithoutAppCaller();
         jdbcEffectConfirms();
         fileWriteEffectConfirms();
         fileReadObservedButDoesNotConfirmTraversal();
@@ -86,6 +88,90 @@ public final class EffectConfirmationGateAcceptanceTest {
                 RequiredPrivilege.codeFor(applied, trace, false), true);
         check(label.contains("管理员") || label.contains("强达"),
                 "confirmed forced path labels admin-equivalent privilege: " + label);
+    }
+
+    private static void frameworkAuthSpelDoesNotConfirm() {
+        PathRun run = baseRun(IdentityTrack.ADMIN, "plan:posture:x:forced_reachability");
+        PathRun nullEntry = new PathRun(
+                run.pathRunId(), run.scanId(), "entry:GET:/blade-develop/code/detail", run.track(),
+                run.attemptId(), run.experimentPlanId(), "GET", "application/json",
+                "GET /blade-develop/code/detail", PathOutcomeClass.DEPENDENCY_MOCK_GAP, 500,
+                null, null, List.of(), "DEPENDENCY_MOCK_GAP", "DYNAMIC_SUSPECTED",
+                List.of("evidence-auth-spel"), "MOCK", "synthetic");
+        PathTrace trace = PathTraceProjector.project(new PathTraceProjector.ProjectionInput(
+                "pathtrace:auth-spel", nullEntry.pathRunId(), nullEntry.attemptId(),
+                nullEntry.experimentPlanId(), "", nullEntry.entrypointRef(), nullEntry.track().name(),
+                RuntimePosture.forced(List.of("GUARD:AUTH:LoginFilter")),
+                "worldpack:mock", "corr-auth-spel", 1,
+                List.of(
+                        new PathTraceProjector.EventSummary(
+                                TraceEventKind.ENTRY_HIT, "GET entry", nullEntry.entrypointRef(),
+                                "", false, List.of()),
+                        new PathTraceProjector.EventSummary(
+                                TraceEventKind.EFFECT_TRIGGERED,
+                                "EXPRESSION at org.springframework.expression.Expression#getValue"
+                                        + " via org.springblade.core.secure.aspect.AuthAspect#handleAuth",
+                                "org.springframework.expression.Expression#getValue",
+                                "EFFECT:EXPRESSION", false, List.of("EFFECT:EXPRESSION"),
+                                Map.of(
+                                        "effectKind", "EXPRESSION",
+                                        "callerRef",
+                                        "org.springblade.core.secure.aspect.AuthAspect#handleAuth("
+                                                + "Lorg/aspectj/lang/ProceedingJoinPoint;)Z",
+                                        "targetClass", "org.springframework.expression.Expression",
+                                        "targetMethod", "getValue")),
+                        new PathTraceProjector.EventSummary(
+                                TraceEventKind.EFFECT_TRIGGERED,
+                                "EXPRESSION at org.springframework.expression.spel.standard.SpelExpression#getValue",
+                                "org.springframework.expression.spel.standard.SpelExpression#getValue",
+                                "EFFECT:EXPRESSION", false, List.of("EFFECT:EXPRESSION"),
+                                Map.of(
+                                        "effectKind", "EXPRESSION",
+                                        "callerRef",
+                                        "org.springframework.expression.spel.standard.SpelExpression#getValue",
+                                        "targetClass",
+                                        "org.springframework.expression.spel.standard.SpelExpression",
+                                        "targetMethod", "getValue"))),
+                List.of(), 64, "DEPENDENCY_UNAVAILABLE"));
+        check(DynamicConfirmedGate.effectKindsOf(trace).contains("EXPRESSION"),
+                "AuthAspect SpEL remains observable as EXPRESSION");
+        check(!DynamicConfirmedGate.hasConfirmableExpressionEffect(trace),
+                "AuthAspect SpEL is not a confirmable expression injection site");
+        check(DynamicConfirmedGate.evaluateEffect(nullEntry, trace, "")
+                        == VerificationStatus.DYNAMIC_SUSPECTED,
+                "blank-property H4 must not confirm framework auth SpEL");
+        check(DynamicConfirmedGate.evaluateEffect(nullEntry, trace, "EXPRESSION")
+                        == VerificationStatus.DYNAMIC_SUSPECTED,
+                "EXPRESSION property must not confirm AuthAspect annotation SpEL");
+        check(VerificationStatus.DYNAMIC_SUSPECTED.name().equals(
+                        DynamicConfirmedGate.applyEffect(nullEntry, trace, "")
+                                .verificationStatus()),
+                "applyEffect must not upgrade PathRun for framework auth SpEL");
+    }
+
+    private static void bareSpelApiDoesNotConfirmWithoutAppCaller() {
+        PathRun run = baseRun(IdentityTrack.UNAUTH, "plan:posture:x:unauth");
+        PathTrace trace = PathTraceProjector.project(new PathTraceProjector.ProjectionInput(
+                "pathtrace:bare-spel", run.pathRunId(), run.attemptId(), run.experimentPlanId(),
+                "", run.entrypointRef(), run.track().name(),
+                RuntimePosture.unauth(),
+                "worldpack:mock", "corr-bare", 1,
+                List.of(
+                        new PathTraceProjector.EventSummary(
+                                TraceEventKind.ENTRY_HIT, "POST entry", run.entrypointRef(),
+                                "", false, List.of()),
+                        new PathTraceProjector.EventSummary(
+                                TraceEventKind.EFFECT_TRIGGERED,
+                                "EXPRESSION at org.springframework.expression.spel.standard.SpelExpression#getValue",
+                                "org.springframework.expression.spel.standard.SpelExpression#getValue",
+                                "EFFECT:EXPRESSION", false, List.of("EFFECT:EXPRESSION"))),
+                List.of(), 64, ""));
+        check(DynamicConfirmedGate.evaluateEffect(run, trace, "EXPRESSION")
+                        == VerificationStatus.DYNAMIC_SUSPECTED,
+                "bare SpelExpression#getValue without app caller must not confirm");
+        check(DynamicConfirmedGate.evaluateEffect(run, trace, "")
+                        == VerificationStatus.DYNAMIC_SUSPECTED,
+                "bare SpEL must not strong-confirm blank property");
     }
 
     private static void jdbcEffectConfirms() {

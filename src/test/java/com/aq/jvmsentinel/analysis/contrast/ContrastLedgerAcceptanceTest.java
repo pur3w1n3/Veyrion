@@ -13,12 +13,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 验收：REPORT CONTRAST_LEDGER 强制所有 STATIC_ONLY summary 行（有界）。
+ * 验收：REPORT CONTRAST_LEDGER 强制所有 STATIC_ONLY summary 行（交付完整；prompt 另有界）。
  */
 public final class ContrastLedgerAcceptanceTest {
     public static void main(String[] args) {
         forcesStaticOnlyIntoReport();
-        truncationIsExplicit();
+        deliveryForcesAllStaticOnlyWithoutMaxForcedCap();
+        promptTruncationRemainsBounded();
         noSeventhAgentRole();
         System.out.println("ContrastLedgerAcceptanceTest: PASS");
     }
@@ -79,9 +80,10 @@ public final class ContrastLedgerAcceptanceTest {
         check(!complete.incomplete(), "covered ledger is complete");
     }
 
-    private static void truncationIsExplicit() {
+    private static void deliveryForcesAllStaticOnlyWithoutMaxForcedCap() {
+        int count = 50; // 高于历史 maxForced=40，验证交付不再硬截断
         List<StaticContrastRow> many = new ArrayList<>();
-        for (int i = 0; i < ContrastLedger.MAX_FORCED_STATIC_ONLY + 10; i++) {
+        for (int i = 0; i < count; i++) {
             many.add(new StaticContrastRow(
                     "contrast-" + i, "sink-" + i, "FILE", "sym",
                     List.of("entry:e" + i), "", "", ContrastStatus.STATIC_ONLY,
@@ -93,11 +95,30 @@ public final class ContrastLedgerAcceptanceTest {
         check(enforced.incomplete(), "empty report incomplete");
         long forcedLines = enforced.summary().lines()
                 .filter(line -> line.startsWith("- contrast-")).count();
-        check(forcedLines <= ContrastLedger.MAX_FORCED_STATIC_ONLY,
-                "forced STATIC_ONLY capped at MAX_FORCED_STATIC_ONLY");
-        check(enforced.summary().contains("maxForced=")
-                        || enforced.summary().contains("truncation"),
-                "truncation strategy visible in appendix");
+        check(forcedLines == count,
+                "deliverable appendix forces all STATIC_ONLY rows (no maxForced cap)");
+        check(!enforced.summary().contains("maxForced="),
+                "delivery appendix no longer cites maxForced hard cap");
+        check(enforced.summary().contains("upstreamLedgerTruncated=true"),
+                "upstream projector truncation remains visible when ledger.truncated");
+    }
+
+    private static void promptTruncationRemainsBounded() {
+        List<StaticContrastRow> many = new ArrayList<>();
+        for (int i = 0; i < ContrastLedger.MAX_PROMPT_ROWS + 8; i++) {
+            many.add(new StaticContrastRow(
+                    "contrast-p-" + i, "sink-p-" + i, "FILE", "sym",
+                    List.of("entry:e" + i), "", "", ContrastStatus.STATIC_ONLY,
+                    List.of(), StaticDynamicContraster.STOP_NO_PATHRUN, false));
+        }
+        ContrastLedger.Ledger ledger = new ContrastLedger.Ledger(many, many.size(), false, "");
+        String prompt = ContrastLedger.formatForPrompt(ledger, false);
+        long promptRows = prompt.lines()
+                .filter(line -> line.startsWith("- contrast-p-")).count();
+        check(promptRows == ContrastLedger.MAX_PROMPT_ROWS,
+                "prompt CONTRAST_LEDGER still bounded by MAX_PROMPT_ROWS");
+        check(prompt.contains("另有") || prompt.contains("facts_search"),
+                "prompt marks omitted rows + facts_search continuation");
     }
 
     private static void noSeventhAgentRole() {

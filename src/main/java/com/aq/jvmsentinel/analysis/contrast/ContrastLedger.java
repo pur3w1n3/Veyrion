@@ -23,9 +23,14 @@ public final class ContrastLedger {
     public static final String EVENT_INCOMPLETE = "REPORT_LEDGER_INCOMPLETE";
     public static final String SECTION_ZH = "## 静态·动态对照账本（服务端）";
     public static final String SECTION_EN = "## Static-Dynamic Contrast Ledger (server)";
-    /** Max STATIC_ONLY summary lines forced into the report body. */
+    /**
+     * 历史强制附录上限（已废弃）。交付报告不再应用此硬顶；
+     * {@link #enforceReport} 写入账本内全部 STATIC_ONLY / DYNAMIC_ONLY 行。
+     * Prompt 内联仍用 {@link #MAX_PROMPT_ROWS}。
+     */
+    @Deprecated
     public static final int MAX_FORCED_STATIC_ONLY = 40;
-    /** Max rows inlined into the user prompt. */
+    /** Max rows inlined into the user prompt（与交付分离；超限标省略 + facts_search）。 */
     public static final int MAX_PROMPT_ROWS = 32;
 
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -263,15 +268,13 @@ public final class ContrastLedger {
         if (ledger == null) {
             return new EnforceResult(summaryMarkdown == null ? "" : summaryMarkdown, false, List.of());
         }
+        // 交付完整：强制附录写入账本内全部 STATIC_ONLY / DYNAMIC_ONLY，不再 maxForced 硬顶。
         List<StaticContrastRow> required = new ArrayList<>();
         for (StaticContrastRow row : ledger.rows()) {
             if (row.contrastStatus() == ContrastStatus.STATIC_ONLY
                     || row.contrastStatus() == ContrastStatus.DYNAMIC_ONLY) {
                 required.add(row);
             }
-        }
-        if (required.size() > MAX_FORCED_STATIC_ONLY) {
-            required = required.subList(0, MAX_FORCED_STATIC_ONLY);
         }
         String body = summaryMarkdown == null ? "" : summaryMarkdown;
         List<String> missing = new ArrayList<>();
@@ -285,10 +288,12 @@ public final class ContrastLedger {
         appendix.append('\n').append(english ? SECTION_EN : SECTION_ZH).append('\n');
         if (english) {
             appendix.append("Server appended because the model omitted STATIC_ONLY / unmatched rows. ")
-                    .append("These remain static candidates without pass-gate confirmation.\n");
+                    .append("These remain static candidates without pass-gate confirmation. ")
+                    .append("Deliverable appendix is complete for all ledger rows available.\n");
         } else {
             appendix.append("以下由服务端补写（模型未完整覆盖 STATIC_ONLY / 未匹配行）。")
-                    .append("仅表示静态候选未获动态过闸确认，不是绕过结论。\n");
+                    .append("仅表示静态候选未获动态过闸确认，不是绕过结论。")
+                    .append("交付附录列出账本内全部可用行，不再因 maxForced 截断。\n");
         }
         for (StaticContrastRow row : required) {
             if (!missing.contains(row.rowId()) && bodyContainsRow(body, row)) continue;
@@ -302,10 +307,12 @@ public final class ContrastLedger {
                     .append(" | ").append(row.stopReason())
                     .append('\n');
         }
-        if (ledger.truncated() || required.size() >= MAX_FORCED_STATIC_ONLY) {
+        if (ledger.truncated()) {
             appendix.append(english
-                    ? "- truncation applied; maxForced=" + MAX_FORCED_STATIC_ONLY + "\n"
-                    : "- 已截断；maxForced=" + MAX_FORCED_STATIC_ONLY + "\n");
+                    ? "- upstreamLedgerTruncated=true stopReason=" + ledger.stopReason()
+                    + " (projector budget); delivery lists all rows present in this ledger.\n"
+                    : "- upstreamLedgerTruncated=true stopReason=" + ledger.stopReason()
+                    + "（投影预算）；交付列出本账本内全部行。\n");
         }
         return new EnforceResult(body + appendix, true, List.copyOf(missing));
     }

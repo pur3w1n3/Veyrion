@@ -43,12 +43,13 @@ public final class AiReportEnforcer {
             }
             node.put("summary", enforced.summary());
             com.fasterxml.jackson.databind.node.ArrayNode ledgerNode = node.putArray("contrastLedger");
+            // 交付 JSON 写入账本全部 STATIC_ONLY 行，不再按 maxForced 截断。
             for (var row : ledger.staticOnlyRows()) {
-                if (ledgerNode.size() >= ContrastLedger.MAX_FORCED_STATIC_ONLY) break;
                 ledgerNode.add(ContrastLedger.toFactNode(row));
             }
             node.put("contrastLedgerIncomplete", enforced.incomplete());
             node.put("contrastLedgerTruncated", ledger.truncated());
+            node.put("contrastLedgerCount", ledgerNode.size());
             conclusion = node.toString();
         } catch (Exception ignored) {
             // 补丁失败时保留原 conclusion JSON。
@@ -131,6 +132,7 @@ public final class AiReportEnforcer {
             node.set("findingBindings", FindingBindings.toJsonArray(bindings));
             node.put("findingBindingsEnforced", enforced.appendedByServer());
             node.put("findingBindingsLocaleRepaired", enforced.localeRepaired());
+            node.put("findingBindingsCount", bindings.size());
             conclusion = node.toString();
         } catch (Exception ignored) {
             // 补丁失败时保留原 conclusion JSON。

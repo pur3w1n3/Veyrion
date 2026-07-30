@@ -27,6 +27,7 @@ public final class AcceptanceTestRunner {
             "com.aq.jvmsentinel.P2DetectorEntryAcceptanceTest",
             "com.aq.jvmsentinel.CoverageMatrixAcceptanceTest",
             "com.aq.jvmsentinel.ArtifactUniverseAcceptanceTest",
+            "com.aq.jvmsentinel.NestedClasspathMetadataAcceptanceTest",
             "com.aq.jvmsentinel.EvidenceGraphAcceptanceTest",
             "com.aq.jvmsentinel.ControlPlaneDecoupleAcceptanceTest",
             "com.aq.jvmsentinel.ProviderSpiAcceptanceTest",
@@ -107,7 +108,8 @@ public final class AcceptanceTestRunner {
             "com.aq.jvmsentinel.sandbox.SandboxHardeningAcceptanceTest",
             "com.aq.jvmsentinel.verification.VerifiedGateAcceptanceTest",
             "com.aq.jvmsentinel.desktop.DesktopPackagingAcceptanceTest",
-            "com.aq.jvmsentinel.analysis.framework.WarServletFrameworkAdapterAcceptanceTest"
+            "com.aq.jvmsentinel.analysis.framework.WarServletFrameworkAdapterAcceptanceTest",
+            "com.aq.jvmsentinel.analysis.executor.ExecutorCallbackEntryAcceptanceTest"
     );
 
     public record Result(int executed, int assertions, List<String> failures) {

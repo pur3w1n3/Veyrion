@@ -38,6 +38,7 @@ public final class FindingBindingsAcceptanceTest {
         incidentalDeserialDoesNotConfirmUnrelatedFinding();
         maxBindingsPrefersForcedMaterialsOverStaticAuthGap();
         orphanSpelEffectBecomesConfirmedBinding();
+        frameworkAuthSpelDoesNotBecomeOrphanBinding();
         nullEntryHitForcedFillsMidLogicFromHops();
         orphanSpelNotBlockedByAuthGapOnSameEntry();
         orphanCapLeavesRoomForHighImpactFindings();
@@ -288,7 +289,8 @@ public final class FindingBindingsAcceptanceTest {
         java.util.ArrayList<ApiDtos.FindingDto> findings = new java.util.ArrayList<>();
         java.util.ArrayList<ApiDtos.EntryDto> entries = new java.util.ArrayList<>();
         // 前部塞满 AUTH_GAP，模拟 scan 原始顺序把高影响 finding 排在末尾。
-        for (int i = 1; i <= FindingBindings.MAX_BINDINGS + 5; i++) {
+        int authGapCount = FindingBindings.MAX_PROMPT_BINDINGS + 5;
+        for (int i = 1; i <= authGapCount; i++) {
             String entryId = "entry-gap-" + i;
             entries.add(entry(entryId, "GET", "/gap/" + i));
             findings.add(findingWithSeverity(
@@ -309,30 +311,49 @@ public final class FindingBindingsAcceptanceTest {
                 "java.lang.Runtime#exec", "none", List.of("none"), List.of("ev-c"), 1, 0.9,
                 ApiDtos.MOCK, null, "hyp-c", "COMMAND"));
 
-        List<FindingBindings.Binding> bindings = FindingBindings.assemble(
+        FindingBindings.AssembleResult assembled = FindingBindings.assembleDetailed(
                 findings, entries, List.of(), Map.of(), AiOutputLanguage.ZH_CN);
-        check(bindings.size() == FindingBindings.MAX_BINDINGS,
-                "assemble still respects MAX_BINDINGS");
+        List<FindingBindings.Binding> bindings = assembled.bindings();
+        check(bindings.size() == findings.size(),
+                "deliverable assemble keeps all findings (no MAX_BINDINGS hard cap)");
+        check(!assembled.truncated(),
+                "deliverable assemble is complete when orphans are not over-capped");
         java.util.Set<String> ids = bindings.stream()
                 .map(FindingBindings.Binding::findingId)
                 .collect(java.util.stream.Collectors.toSet());
         check(ids.contains("finding-shiro-high"),
-                "MAX_BINDINGS must keep trailing high-severity RememberMe finding");
+                "delivery must keep trailing high-severity RememberMe finding");
         check(ids.contains("finding-cmd-med"),
-                "MAX_BINDINGS must keep COMMAND finding over AUTH_GAP noise");
+                "delivery must keep COMMAND finding");
         check(ids.contains("finding-confirmed"),
-                "MAX_BINDINGS must keep DYNAMIC_CONFIRMED finding");
+                "delivery must keep DYNAMIC_CONFIRMED finding");
+        check(ids.contains("finding-gap-1") && ids.contains("finding-gap-" + authGapCount),
+                "delivery must keep AUTH_GAP noise findings too (complete report)");
         FindingBindings.Binding confirmed = bindings.stream()
                 .filter(b -> "finding-confirmed".equals(b.findingId())).findFirst().orElseThrow();
         check(ApiDtos.DYNAMIC_CONFIRMED.equals(confirmed.status()),
                 "binding must not demote DYNAMIC_CONFIRMED");
 
+        String promptFacts = FindingBindings.formatFactsBlock(assembled, AiOutputLanguage.ZH_CN);
+        check(promptFacts.contains("truncated=true"),
+                "prompt FINDING_BINDINGS_FACTS marks truncated when > MAX_PROMPT_BINDINGS");
+        check(promptFacts.contains("maxPromptBindings=" + FindingBindings.MAX_PROMPT_BINDINGS),
+                "prompt truncation names maxPromptBindings");
+        check(promptFacts.contains("finding-confirmed")
+                        || promptFacts.contains("finding-shiro-high"),
+                "prompt window still prioritizes confirmed/high-impact bindings");
+
         String md = FindingBindings.renderMarkdownSection(bindings, AiOutputLanguage.ZH_CN);
         check(md.contains("RememberMe") || md.contains("硬编码"),
-                "report markdown surfaces RememberMe after priority truncate");
+                "report markdown surfaces RememberMe without delivery truncate");
         check(md.contains("已动态确认") || md.contains("DYNAMIC_CONFIRMED"),
                 "report surfaces confirmed verification status");
         check(md.contains("高危"), "severity grouping still renders 高危");
+        // AUTH_GAP 噪声 + RememberMe + COMMAND 均为静态；confirmed 单独计入已动态确认。
+        check(md.contains("仅静态信号**: " + (authGapCount + 2)),
+                "executive summary counts all static findings in complete delivery");
+        check(md.contains("已动态确认/已验证**: 1"),
+                "executive summary counts DYNAMIC_CONFIRMED in complete delivery");
     }
 
     private static void effectConfirmedBindingSurfacesDynamicConfirmed() {
@@ -425,15 +446,26 @@ public final class FindingBindingsAcceptanceTest {
         java.util.Set<String> ids = bindings.stream()
                 .map(FindingBindings.Binding::findingId)
                 .collect(java.util.stream.Collectors.toSet());
+        check(bindings.size() == findings.size(),
+                "deliverable assemble keeps all AUTH_GAP findings including forced");
         check(ids.contains("finding-forced-auth"),
-                "MAX_BINDINGS must keep AUTH_GAP that has FORCED PathRun materials");
+                "delivery must keep AUTH_GAP that has FORCED PathRun materials");
         FindingBindings.Binding forcedBinding = bindings.stream()
                 .filter(b -> "finding-forced-auth".equals(b.findingId())).findFirst().orElseThrow();
         check(forcedBinding.pathRunRefs().contains("pr-forced-dash"),
-                "forced AUTH_GAP keeps pathRunRefs after truncate");
+                "forced AUTH_GAP keeps pathRunRefs in complete delivery");
         check(forcedBinding.title().contains("强达") || forcedBinding.poc().steps().stream()
                         .anyMatch(s -> s.contains("授权沙箱") || s.contains("HTTP")),
                 "forced materials surface in title or PoC");
+        String promptFacts = FindingBindings.formatFactsBlock(
+                FindingBindings.assembleDetailed(
+                        findings, entries, runs, traces, AiOutputLanguage.ZH_CN),
+                AiOutputLanguage.ZH_CN);
+        check(promptFacts.contains("truncated=true") || bindings.size() <= FindingBindings.MAX_PROMPT_BINDINGS,
+                "prompt facts mark truncated when over prompt window");
+        check(promptFacts.contains("finding-forced-auth")
+                        || promptFacts.contains("/blade-desk/dashboard/activities"),
+                "prompt window prioritizes forced-material AUTH_GAP");
     }
 
     private static void orphanSpelEffectBecomesConfirmedBinding() {
@@ -448,7 +480,7 @@ public final class FindingBindingsAcceptanceTest {
         PathTrace trace = effectTrace(
                 "pr-spel", "entry:POST:/blade-resource/sms/enable",
                 "EFFECT:EXPRESSION",
-                "org.springframework.expression.spel.standard.SpelExpression#getValue");
+                "com.ql.util.express.ExpressRunner#execute");
         java.util.ArrayList<ApiDtos.FindingDto> noise = new java.util.ArrayList<>();
         java.util.ArrayList<ApiDtos.EntryDto> entries = new java.util.ArrayList<>();
         entries.add(entry);
@@ -465,7 +497,7 @@ public final class FindingBindingsAcceptanceTest {
         check(bindings.stream().anyMatch(b ->
                         ApiDtos.DYNAMIC_CONFIRMED.equals(b.status())
                                 && "EXPRESSION".equals(b.securityProperty())),
-                "orphan EXPRESSION must win a MAX_BINDINGS slot over static AUTH_GAP noise");
+                "orphan EXPRESSION must appear in complete delivery alongside AUTH_GAP noise");
         FindingBindings.Binding orphan = bindings.stream()
                 .filter(b -> "EXPRESSION".equals(b.securityProperty())).findFirst().orElseThrow();
         check(orphan.title().contains("SpEL") || orphan.title().contains("表达式"),
@@ -474,6 +506,53 @@ public final class FindingBindingsAcceptanceTest {
         String md = FindingBindings.renderMarkdownSection(bindings, AiOutputLanguage.ZH_CN);
         check(md.contains("已动态确认") || md.contains("DYNAMIC_CONFIRMED"),
                 "report surfaces orphan SpEL as confirmed, not all-static");
+    }
+
+    private static void frameworkAuthSpelDoesNotBecomeOrphanBinding() {
+        ApiDtos.EntryDto entry = entry("entry-detail", "GET", "/blade-develop/code/detail");
+        ApiDtos.PathRunDto run = new ApiDtos.PathRunDto(
+                ApiDtos.SCHEMA_VERSION, "pr-auth-spel", "scan-a",
+                "entry:GET:/blade-develop/code/detail", "ADMIN", "attempt-1",
+                "plan:posture:entry-detail:forced_reachability", "GET", "application/json",
+                "GET /blade-develop/code/detail track=ADMIN", "DEPENDENCY_MOCK_GAP",
+                500, null, null, List.of(), "DEPENDENCY_MOCK_GAP",
+                ApiDtos.DYNAMIC_SUSPECTED, List.of("ev-auth-spel"), "MOCK", "");
+        List<TraceEvent> events = List.of(
+                new TraceEvent(1, TraceEventKind.ENTRY_HIT, "entry",
+                        "entry:GET:/blade-develop/code/detail", "", false, Map.of(), ""),
+                new TraceEvent(2, TraceEventKind.EFFECT_TRIGGERED,
+                        "EXPRESSION at org.springframework.expression.Expression#getValue"
+                                + " via org.springblade.core.secure.aspect.AuthAspect#handleAuth",
+                        "org.springframework.expression.Expression#getValue",
+                        "EFFECT:EXPRESSION", false,
+                        Map.of("callerRef",
+                                "org.springblade.core.secure.aspect.AuthAspect#handleAuth("
+                                        + "Lorg/aspectj/lang/ProceedingJoinPoint;)Z",
+                                "effectKind", "EXPRESSION"),
+                        ""),
+                new TraceEvent(3, TraceEventKind.EFFECT_TRIGGERED,
+                        "EXPRESSION at org.springframework.expression.spel.standard.SpelExpression#getValue",
+                        "org.springframework.expression.spel.standard.SpelExpression#getValue",
+                        "EFFECT:EXPRESSION", false,
+                        Map.of("effectKind", "EXPRESSION"), ""));
+        PathTrace trace = new PathTrace(
+                PathTrace.SCHEMA_VERSION, "pathtrace:pr-auth-spel", "pr-auth-spel",
+                "probe-1", "plan:posture:entry-detail:forced_reachability", "traceplan-1",
+                "entry:GET:/blade-develop/code/detail", "ADMIN",
+                RuntimePosture.forced(List.of("GUARD:AUTH:LoginFilter")),
+                "world-1", "corr-1", 1, events, List.of(),
+                TraceExitReason.DEPENDENCY_UNAVAILABLE, "",
+                List.of("EFFECT:EXPRESSION",
+                        "org.springframework.expression.Expression#getValue",
+                        "org.springframework.expression.spel.standard.SpelExpression#getValue"),
+                false);
+        List<FindingBindings.Binding> bindings = FindingBindings.assemble(
+                List.of(), List.of(entry), List.of(run),
+                Map.of("pr-auth-spel", trace), AiOutputLanguage.ZH_CN);
+        check(bindings.stream().noneMatch(b ->
+                        "EXPRESSION".equals(b.securityProperty())
+                                && ApiDtos.DYNAMIC_CONFIRMED.equals(b.status())),
+                "AuthAspect framework SpEL must not become DYNAMIC_CONFIRMED orphan binding");
     }
 
     private static void orphanSpelNotBlockedByAuthGapOnSameEntry() {
@@ -491,7 +570,7 @@ public final class FindingBindingsAcceptanceTest {
         PathTrace trace = effectTrace(
                 "pr-spel-auth", "entry:POST:/blade-resource/sms/enable",
                 "EFFECT:EXPRESSION",
-                "org.springframework.expression.spel.standard.SpelExpression#getValue");
+                "com.ql.util.express.ExpressRunner#execute");
         List<FindingBindings.Binding> bindings = FindingBindings.assemble(
                 List.of(authGap), List.of(entry), List.of(run),
                 Map.of("pr-spel-auth", trace), AiOutputLanguage.ZH_CN);
@@ -521,7 +600,7 @@ public final class FindingBindingsAcceptanceTest {
                     401, true, null, List.of(), "AUTH_CHALLENGE",
                     ApiDtos.DYNAMIC_CONFIRMED, List.of("ev-" + pr), "MOCK", ""));
             traces.put(pr, effectTrace(pr, "entry:POST:" + route, "EFFECT:EXPRESSION",
-                    "org.springframework.expression.spel.standard.SpelExpression#getValue"));
+                    "com.ql.util.express.ExpressRunner#execute"));
         }
         entries.add(entry("entry-jwt", "GET", "/blade-auth/oauth/token"));
         findings.add(findingWithSeverity(

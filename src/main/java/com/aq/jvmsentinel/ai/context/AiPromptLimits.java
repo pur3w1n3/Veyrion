@@ -13,6 +13,12 @@ public final class AiPromptLimits {
     public static final int MAX_COVERAGE_GAP_PROMPT_ROWS = 20;
     /** PATH/TRIAGE「计划 vs 实际」内联行数；过大易顶破 chat user text 128KiB 上限。 */
     public static final int MAX_TRACE_PLAN_DIFF_PROMPT_ROWS = 8;
+    /**
+     * FINDING_BINDINGS_FACTS prompt 内联上限（与交付报告分离）。
+     * 交付全集见 {@link com.aq.jvmsentinel.ai.FindingBindings#assembleDetailed}。
+     */
+    public static final int MAX_FINDING_BINDINGS_PROMPT_ROWS =
+            com.aq.jvmsentinel.ai.FindingBindings.MAX_PROMPT_BINDINGS;
     /** 现编 TracePlan 上限（无持久化计划时）。 */
     public static final int MAX_TRACE_PLAN_COMPILE_FOR_PROMPT = 24;
 

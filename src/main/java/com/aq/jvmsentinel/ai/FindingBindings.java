@@ -40,7 +40,13 @@ import java.util.Set;
  * 服务端 enricher 投影（findings 表可能仍为 STATIC_INFERRED）。</p>
  */
 public final class FindingBindings {
+    /**
+     * Prompt 内联 FINDING_BINDINGS_FACTS 窗口（非交付硬顶）。
+     * 交付 Markdown / conclusion findingBindings 默认装配全集；超出本窗口须标 truncated 并用 facts_search 续取。
+     */
     public static final int MAX_BINDINGS = 48;
+    /** 与 {@link #MAX_BINDINGS} 同义；强调仅约束 AI prompt 内联。 */
+    public static final int MAX_PROMPT_BINDINGS = MAX_BINDINGS;
     /** 孤儿 EFFECT 占位上限，避免全站 SpEL/RememberMe 噪声挤掉 BPMN/JWT/强达 finding。 */
     public static final int MAX_ORPHAN_BINDINGS = 12;
     public static final int MAX_POC_STEPS = 8;
@@ -227,10 +233,11 @@ public final class FindingBindings {
         }
         ranked.sort(enrichedSelectionOrder());
         // 孤儿强危险 EFFECT（无静态 finding）优先占位，但有上限，避免挤掉高价值 finding。
+        // 交付侧不再用 MAX_BINDINGS 硬截断：全集进入报告 / conclusion JSON；prompt 另有界。
         List<Binding> orphans = orphanEffectBindings(source, catalog, runs, traces, zh);
         List<Binding> out = new ArrayList<>();
         LinkedHashSet<String> orphanKeys = new LinkedHashSet<>();
-        int orphanSlots = Math.min(MAX_ORPHAN_BINDINGS, MAX_BINDINGS);
+        int orphanSlots = MAX_ORPHAN_BINDINGS;
         for (Binding orphan : orphans) {
             if (out.size() >= orphanSlots) break;
             out.add(orphan);
@@ -240,7 +247,6 @@ public final class FindingBindings {
             }
         }
         for (EnrichedFinding item : ranked) {
-            if (out.size() >= MAX_BINDINGS) break;
             Binding binding = bindOne(item.finding(), item.enrichment(), catalog, runs, traces, zh);
             String key = binding.securityProperty() + "|" + binding.api().method()
                     + "|" + binding.api().route();
@@ -248,7 +254,10 @@ public final class FindingBindings {
             out.add(binding);
         }
         out.sort(bindingDeliverableOrder());
-        return new AssembleResult(out, ranked.size() + orphans.size());
+        // 交付含全部 finding；仅孤儿 EFFECT 仍有 MAX_ORPHAN_BINDINGS 上限（超限则 truncated）。
+        // Prompt 内联另见 formatFactsBlock / MAX_PROMPT_BINDINGS。
+        int totalCandidates = ranked.size() + orphans.size();
+        return new AssembleResult(out, Math.max(totalCandidates, out.size()));
     }
 
     private record EnrichedFinding(
@@ -258,7 +267,7 @@ public final class FindingBindings {
     private static Comparator<EnrichedFinding> enrichedSelectionOrder() {
         return Comparator
                 .comparingInt((EnrichedFinding e) -> statusRank(e.enrichment().verificationStatus()))
-                // 有 PathRun/强达材料的 finding 优先于纯静态高影响噪声，避免 MAX_BINDINGS 截掉强达。
+                // 有 PathRun/强达材料的 finding 优先，便于 prompt 窗口（MAX_PROMPT_BINDINGS）保留强达。
                 .thenComparingInt(e -> e.enrichment().pathRunRefs().isEmpty() ? 1 : 0)
                 .thenComparingInt(e -> selectionImpactRank(e.finding()))
                 .thenComparingInt(e -> severityRank(e.finding().severity()))
@@ -732,7 +741,7 @@ public final class FindingBindings {
                     != VerificationStatus.DYNAMIC_CONFIRMED) {
                 continue;
             }
-            Set<String> kinds = DynamicConfirmedGate.effectKindsOf(trace);
+            Set<String> kinds = DynamicConfirmedGate.confirmableEffectKinds(trace);
             String property = primaryOrphanProperty(kinds);
             if (property.isBlank()) continue;
             // 仅当同入口 finding 的 securityProperty 能经 H4 吸收该 EFFECT 时才算已覆盖。
@@ -1090,9 +1099,9 @@ public final class FindingBindings {
             block.append(zh ? "- （空）\n" : "- (empty)\n");
             return block.toString();
         }
-        int i = 0;
-        for (Binding binding : bindings) {
-            if (i++ >= MAX_BINDINGS) break;
+        // Prompt 内联有界：按当前交付序取前 MAX_PROMPT_BINDINGS（PRIMARY/确认/高危优先）。
+        List<Binding> promptWindow = promptWindow(bindings);
+        for (Binding binding : promptWindow) {
             block.append("- findingId=").append(binding.findingId())
                     .append(" reportRole=").append(binding.reportRole())
                     .append(" status=").append(binding.status())
@@ -1107,18 +1116,26 @@ public final class FindingBindings {
                 block.append("  · ").append(step).append('\n');
             }
         }
-        int shown = Math.min(bindings.size(), MAX_BINDINGS);
-        int total = Math.max(totalCandidates, shown);
+        int shown = promptWindow.size();
+        int total = Math.max(totalCandidates, bindings.size());
         if (total > shown) {
             block.append(zh
                     ? "- truncated=true shown=" + shown + " totalCandidates=" + total
-                    + " maxBindings=" + MAX_BINDINGS
-                    + "；其余请用 facts_search kind=FINDING（offset 续页）或 evidence_get finding:<id>。\n"
+                    + " maxPromptBindings=" + MAX_PROMPT_BINDINGS
+                    + "；交付报告/落库 findingBindings 为全集，其余请用 facts_search kind=FINDING（offset 续页）或 evidence_get finding:<id>。\n"
                     : "- truncated=true shown=" + shown + " totalCandidates=" + total
-                    + " maxBindings=" + MAX_BINDINGS
-                    + "; fetch remainder with facts_search kind=FINDING (offset) or evidence_get finding:<id>.\n");
+                    + " maxPromptBindings=" + MAX_PROMPT_BINDINGS
+                    + "; deliverable report/persisted findingBindings are complete; "
+                    + "fetch remainder with facts_search kind=FINDING (offset) or evidence_get finding:<id>.\n");
         }
         return block.toString();
+    }
+
+    /** Prompt 内联窗口：保留交付序前缀，不改变交付全集。 */
+    static List<Binding> promptWindow(List<Binding> bindings) {
+        if (bindings == null || bindings.isEmpty()) return List.of();
+        if (bindings.size() <= MAX_PROMPT_BINDINGS) return List.copyOf(bindings);
+        return List.copyOf(bindings.subList(0, MAX_PROMPT_BINDINGS));
     }
 
     public static String renderMarkdownSection(List<Binding> bindings, AiOutputLanguage language) {
@@ -1660,9 +1677,7 @@ public final class FindingBindings {
                         text(item, "securityProperty")));
             }
             out.sort(bindingDeliverableOrder());
-            if (out.size() > MAX_BINDINGS) {
-                return List.copyOf(out.subList(0, MAX_BINDINGS));
-            }
+            // 交付 JSON 不截断；prompt 预算仅作用于 formatFactsBlock。
             return List.copyOf(out);
         } catch (Exception ignored) {
             return List.of();
@@ -1913,9 +1928,7 @@ public final class FindingBindings {
         }
         List<Binding> merged = new ArrayList<>(byId.values());
         merged.sort(bindingDeliverableOrder());
-        if (merged.size() > MAX_BINDINGS) {
-            return List.copyOf(merged.subList(0, MAX_BINDINGS));
-        }
+        // 交付合并不截断；prompt 预算仅作用于 formatFactsBlock。
         return List.copyOf(merged);
     }
 
@@ -1936,7 +1949,7 @@ public final class FindingBindings {
                 .thenComparing(Binding::findingId);
     }
 
-    /** 数值越小越优先保留进 MAX_BINDINGS 窗口。 */
+    /** 数值越小越优先出现在交付序前部（兼作 prompt 窗口保留优先级）。 */
     private static int selectionImpactRank(ApiDtos.FindingDto finding) {
         if (finding == null) return 9;
         String prop = finding.securityProperty() == null ? "" : finding.securityProperty().trim();

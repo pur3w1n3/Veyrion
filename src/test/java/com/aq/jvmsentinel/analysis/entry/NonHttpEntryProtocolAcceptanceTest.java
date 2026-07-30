@@ -17,6 +17,12 @@ public final class NonHttpEntryProtocolAcceptanceTest {
         check("UNREACHED".equals(unknown.coverageStatus()), "unknown UNREACHED");
         check("UNKNOWN_PROTOCOL".equals(unknown.reasonCode()), "unknown reason");
 
+        var job = NonHttpEntryProtocol.classify("JOB");
+        check(!job.httpProbeEligible(), "JOB not HTTP-probe eligible");
+        check("NON_HTTP_ADAPTER_STUB".equals(job.reasonCode()), "JOB stub reason");
+        var scheduled = NonHttpEntryProtocol.classify("SCHEDULED");
+        check(!scheduled.httpProbeEligible(), "SCHEDULED not HTTP-probe eligible");
+
         try {
             NonHttpEntryProtocol.requireHttpOrThrow("WS");
             throw new AssertionError("WS must throw");

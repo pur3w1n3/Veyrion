@@ -180,10 +180,16 @@ public final class AiDataSurfaceCorrectnessAcceptanceTest {
         FindingBindings.AssembleResult assembled = FindingBindings.assembleDetailed(
                 findings, List.of(), List.of(), Map.of(),
                 com.aq.jvmsentinel.provider.AiOutputLanguage.ZH_CN);
-        check(assembled.truncated(), "assembleDetailed truncated when > MAX_BINDINGS");
+        check(assembled.bindings().size() == findings.size(),
+                "deliverable assembleDetailed keeps all findings (no hard cap)");
+        check(!assembled.truncated(),
+                "deliverable assembleDetailed is complete for finding-only input");
         String block = FindingBindings.formatFactsBlock(assembled,
                 com.aq.jvmsentinel.provider.AiOutputLanguage.ZH_CN);
-        check(block.contains("truncated=true"), "FINDING_BINDINGS_FACTS marks truncated");
+        check(block.contains("truncated=true"),
+                "FINDING_BINDINGS_FACTS prompt marks truncated when > MAX_PROMPT_BINDINGS");
+        check(block.contains("maxPromptBindings=") || block.contains("maxBindings="),
+                "prompt truncation names prompt budget");
         check(block.contains("facts_search kind=FINDING"), "truncation hint names FINDING tool");
     }
 

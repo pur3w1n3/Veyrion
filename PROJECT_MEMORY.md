@@ -72,7 +72,7 @@ React GUI + Java Control Plane + SQLite 服务当前 JVM 切片。多语言 = �
 | 范围 | 能力 | 诚实边界 |
 |------|------|----------|
 | 制品 | JAR/WAR/CLASS 有界；分块上传 | 动态主路径仅 Boot JAR |
-| 静态 | Spring 入口/边/sink/GuardSurface/detectors | 反射/代理/完整 IFDS 不保证 |
+| 静态 | Spring 入口/边/sink/GuardSurface/detectors；通用 executor 回调入口（XXL 完整，Actuator/ElasticJob 骨架） | 反射/代理/完整 IFDS 不保证；非 MVC 回调仍证据驱动扩展 |
 | 控制面 | REST/SSE、SQLite、PAT、AI Job、hypothesis/EG | 单节点；非企业多租户 |
 | 动态 | Agent + 四姿态 + PathTrace；IR2 重算；有界 OBS 回环 | TRUSTED_DOCKER；World Pack 弱 |
 | AI | 六角色、共享记忆 v1、双语 prompt snapshot | 外网 Provider 未验收 |
@@ -92,8 +92,11 @@ React GUI + Java Control Plane + SQLite 服务当前 JVM 切片。多语言 = �
 - **2026-07-30**：文档分轨——as-built 主读路径 vs 产品意图 archive；IR2/OBS 回环/AUTH 跳过/静态续跑/TracePlan enrich/共享记忆 v1 视为已落地。  
 - **2026-07-30**：用户推翻「FORCED ≠ 可利用证明」对外读法——改为「无危险 sink 效果不得确认；有效果可 DYNAMIC_CONFIRMED + requiredPrivilege」；修订 ADR-0004 / FindingRuntimeEnricher / DynamicConfirmedGate H4。
 - **2026-07-30**：AI 数据面契约——内联可有界，但不得静默当全集；截断须 `truncated`/省略标记，并用 `facts_search`（page meta + offset / FINDING / PATH_TRACE eventsOffset）或 `evidence_get` 按 id 续取；agent 预算耗尽须显式 `TRACE_BUDGET_EXHAUSTED`（见 OPEN_GAPS P1-G）。
+- **2026-07-30**：交付报告与 prompt 预算分离——落库/`reportSummary`/下载 Markdown 与 `findingBindings`/`contrastLedger` 强制附录默认完整（不再用 `MAX_BINDINGS=48` / 历史 `maxForced=40` 砍交付）；AI prompt 内联仍可有界并标 truncated + 工具续取。
 - **2026-07-30**：沙箱轨迹 tmpfs = `maxTraceBytes + 32MiB`（上限 96MiB，disk 跟随抬升）；`/tmp` ≥128MiB 且不低于轨迹侧——避免轨迹写满后日志/并发刷盘 ENOSPC。
 - **2026-07-30**：本地 Docker worker / 保留沙箱按 UI 工作区（`projectId`）配额——默认全局并发 3、每 project 并发 1；保留会话全局 8、每 project 2。驱逐只在同 project 内 LRU；全局硬顶无法腾挪则拒绝新保留（不跨 project 踢会话）。配置：`VEYRION_WORKER_GLOBAL_CONCURRENCY` / `VEYRION_WORKER_PER_PROJECT_CONCURRENCY` / `VEYRION_RETAINED_SANDBOX_GLOBAL_MAX` / `VEYRION_RETAINED_SANDBOX_PER_PROJECT_MAX`（或对应 `veyrion.worker.*` / `veyrion.sandbox.*` 系统属性）。
+- **2026-07-30**：通用 executor / 运行时回调入口——`ExecutorEntryAdapter` 注册表（非仅 XXL）；静态写入 EntryCatalog，HTTP 回调可进 TracePlan/探针；XXL-JOB 为首个完整适配器，Actuator/ElasticJob 为证据驱动骨架（见 OPEN_GAPS P0-I）。
+- **2026-07-30**：`ArtifactMetadataReader` 完整运行类路径——外层 `.class` + `BOOT-INF/classes`/`WEB-INF/classes`，并一层流式展开 `BOOT-INF/lib`/`WEB-INF/lib` 内 `.class`（不递归 fat-in-fat）；同 FQCN 先到优先（应用类优先于 lib）；嵌套预算软停。
 
 ## 6. 文档职责
 

@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.analysis;
 
+import com.aq.jvmsentinel.analysis.executor.ExecutorCallbackEntryDiscoverer;
 import com.aq.jvmsentinel.analysis.spi.ProviderRegistry;
 import com.aq.jvmsentinel.model.*;
 
@@ -132,6 +133,22 @@ public final class PreAnalysisService {
                         "class-name rule; JWT utility presence only, no bypass proof", 0.60,
                         List.of(evidenceId), VerificationStatus.STATIC_INFERRED));
             }
+        }
+        // 通用 RuntimeCallback / Executor 入口：XXL-JOB 等非典型 MVC 回调面。
+        // 写入 EntryCatalog，避免「0 Spring mappings → 跳过动态」。
+        Set<String> existingEntryKeys = new LinkedHashSet<>();
+        for (Entrypoint existing : entries) {
+            existingEntryKeys.add(ExecutorCallbackEntryDiscoverer.entryKey(
+                    existing.protocol(), existing.method(), existing.route(),
+                    existing.declaringClass()));
+        }
+        ExecutorCallbackEntryDiscoverer.Discovery callbackDiscovery =
+                ExecutorCallbackEntryDiscoverer.discover(input, existingEntryKeys, index);
+        entries.addAll(callbackDiscovery.entries());
+        evidence.addAll(callbackDiscovery.evidence());
+        index = callbackDiscovery.nextIndex();
+        if (entries.size() > MAX_DISCOVERED_ENTRIES) {
+            throw new IllegalArgumentException("executor callback adapters produced too many entrypoints");
         }
         BootPortCandidateHarvester.Harvest portHarvest =
                 BootPortCandidateHarvester.harvest(input.configurationLines());

@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.analysis.framework;
 
+import com.aq.jvmsentinel.analysis.executor.ExecutorEntryAdapterRegistry;
 import com.aq.jvmsentinel.analysis.identity.AuthCodeQueryService;
 
 import java.nio.file.Path;
@@ -100,6 +101,10 @@ public final class FrameworkAdapterRegistry {
             for (String signal : adapter.highValueClassSignals()) {
                 if (lower.contains(signal.toLowerCase(Locale.ROOT))) return true;
             }
+        }
+        // Executor / runtime-callback 高价值信号（/run /beat /actuator …）。
+        if (ExecutorEntryAdapterRegistry.containsHighValueSignal(lower)) {
+            return true;
         }
         // 保留 ProbePlanService 先前使用的 generic 高价值 token。
         return lower.contains("admin") || lower.contains("upload") || lower.contains("deploy")
