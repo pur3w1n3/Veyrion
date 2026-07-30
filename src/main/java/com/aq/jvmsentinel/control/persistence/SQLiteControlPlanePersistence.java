@@ -38,6 +38,8 @@ public final class SQLiteControlPlanePersistence {
         Path secured = PersistenceSupport.controlledDatabasePath(databasePath, allowedRoot);
         this.support = new PersistenceSupport(secured);
         new MigrationSupport(support).migrate();
+        // 迁移后、业务流量前：有显著 freelist 时独占 VACUUM，失败不阻断启动。
+        support.vacuumOnStartupIfNeeded();
         this.scans = new ScanProjectArtifactPersistence(support);
         this.aiManagement = new AiManagementPersistence(support);
         this.paths = new PathExperimentPersistence(support);

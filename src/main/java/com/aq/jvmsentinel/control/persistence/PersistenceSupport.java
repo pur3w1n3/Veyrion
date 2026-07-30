@@ -13,6 +13,7 @@ import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Instant;
@@ -20,12 +21,18 @@ import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * SQLite 连接、事务与 JSON 编解码的共享基础设施。
  */
 final class PersistenceSupport {
     static final int BUSY_TIMEOUT_MILLIS = 5_000;
+    /** 启动时仅当 freelist 页数达到该阈值才 VACUUM，避免空库每次空转。 */
+    static final long STARTUP_VACUUM_FREELIST_THRESHOLD = 1L;
+
+    private static final Logger LOG = Logger.getLogger(PersistenceSupport.class.getName());
 
     private final Path databasePath;
     private final String jdbcUrl;
@@ -64,6 +71,49 @@ final class PersistenceSupport {
             if (!configured) {
                 connection.close();
             }
+        }
+    }
+
+    /**
+     * 控制面启动独占窗口：仅当 freelist 显著时执行一次 {@code VACUUM}，回收删除扫描后的空闲页。
+     * 失败只记警告，不阻断启动；勿在 scan delete 热路径调用。
+     */
+    void vacuumOnStartupIfNeeded() {
+        long startedAt = System.nanoTime();
+        try (Connection connection = open(); Statement statement = connection.createStatement()) {
+            long freelistCount = pragmaLong(statement, "freelist_count");
+            long pageCount = pragmaLong(statement, "page_count");
+            if (freelistCount < STARTUP_VACUUM_FREELIST_THRESHOLD) {
+                LOG.info(() -> "Control Plane SQLite VACUUM skipped (freelist_count="
+                        + freelistCount + ", page_count=" + pageCount
+                        + ", threshold=" + STARTUP_VACUUM_FREELIST_THRESHOLD + ")");
+                return;
+            }
+            System.out.println("Control Plane SQLite VACUUM starting (freelist_count="
+                    + freelistCount + ", page_count=" + pageCount + ", db="
+                    + databasePath.toAbsolutePath().normalize() + ")");
+            statement.execute("VACUUM");
+            long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L;
+            long freelistAfter = pragmaLong(statement, "freelist_count");
+            long pageCountAfter = pragmaLong(statement, "page_count");
+            System.out.println("Control Plane SQLite VACUUM finished in " + elapsedMs
+                    + "ms (freelist_count=" + freelistAfter + ", page_count=" + pageCountAfter + ")");
+        } catch (Exception failure) {
+            long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L;
+            String detail = failure.getMessage() == null ? failure.getClass().getSimpleName()
+                    : failure.getMessage();
+            System.err.println("Control Plane SQLite VACUUM failed after " + elapsedMs
+                    + "ms (continuing startup): " + detail);
+            LOG.log(Level.WARNING, "Control Plane SQLite VACUUM failed; startup continues", failure);
+        }
+    }
+
+    private static long pragmaLong(Statement statement, String name) throws SQLException {
+        try (ResultSet result = statement.executeQuery("PRAGMA " + name)) {
+            if (!result.next()) {
+                throw new SQLException("PRAGMA " + name + " returned no rows");
+            }
+            return result.getLong(1);
         }
     }
 

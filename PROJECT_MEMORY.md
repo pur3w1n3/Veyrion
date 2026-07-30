@@ -98,6 +98,7 @@ React GUI + Java Control Plane + SQLite 服务当前 JVM 切片。多语言 = �
 - **2026-07-30**：通用 executor / 运行时回调入口——`ExecutorEntryAdapter` 注册表（非仅 XXL）；静态写入 EntryCatalog，HTTP 回调可进 TracePlan/探针；XXL-JOB 为首个完整适配器，Actuator/ElasticJob 为证据驱动骨架（见 OPEN_GAPS P0-I）。
 - **2026-07-30**：`ArtifactMetadataReader` 完整运行类路径——外层 `.class` + `BOOT-INF/classes`/`WEB-INF/classes`，并一层流式展开 `BOOT-INF/lib`/`WEB-INF/lib` 内 `.class`（不递归 fat-in-fat）；同 FQCN 先到优先（应用类优先于 lib）；嵌套预算软停。
 - **2026-07-30**：P0-I 加深——嵌套 lib `EmbedServer` 字节码确认；Actuator `management.server.port`/`base-path`/`exposure`；ElasticJob 无 HTTP 证据不硬造；`NettyGrpcExecutorEntryAdapter`；entry `listenPort`/`contextPath` + `ProbeTarget.listenPort` 使探针可打独立 executor/management 端口（见 OPEN_GAPS P0-I）。
+- **2026-07-30**：控制面 SQLite 仅在启动（migrate 后）于独占窗口按需 `VACUUM`（`freelist_count` 达阈值才执行；失败不阻断）；勿在 scan delete 热路径 vacuum。
 
 ## 6. 文档职责
 

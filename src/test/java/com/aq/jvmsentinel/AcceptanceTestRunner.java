@@ -20,6 +20,7 @@ public final class AcceptanceTestRunner {
             "com.aq.jvmsentinel.CiGateAcceptanceTest",
             "com.aq.jvmsentinel.AuditPipelineCoordinatorAcceptanceTest",
             "com.aq.jvmsentinel.ControlPlanePersistenceAcceptanceTest",
+            "com.aq.jvmsentinel.SqliteStartupVacuumAcceptanceTest",
             "com.aq.jvmsentinel.StaticFactPersistenceAcceptanceTest",
             "com.aq.jvmsentinel.CrossMethodFindingBindAcceptanceTest",
             "com.aq.jvmsentinel.SecurityHypothesisAcceptanceTest",
