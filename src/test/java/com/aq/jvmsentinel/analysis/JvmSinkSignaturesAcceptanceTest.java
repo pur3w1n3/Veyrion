@@ -117,6 +117,13 @@ public final class JvmSinkSignaturesAcceptanceTest {
         check(hikari != null && hikari.kinds().containsAll(Set.of("SSRF", "COMMAND", "CLASS_LOADING")),
                 "Hikari setJdbcUrl must share JDBC URL multi-kind set: " + hikari.kinds());
 
+        JvmSinkSignatures.Match fileUtilsWrite = JvmSinkSignatures.match(edge(
+                "app.Controller", "handler",
+                new Target("org.apache.commons.io.FileUtils", "copyFile",
+                        "(Ljava/io/File;Ljava/io/File;)V"), ++ordinal));
+        check(fileUtilsWrite != null && "FILE_WRITE".equals(fileUtilsWrite.category()),
+                "FileUtils.copyFile must be FILE_WRITE: " + fileUtilsWrite);
+
         check(JvmSinkSignatures.match(edge("app.Controller", "handler",
                         new Target("java.lang.String", "parse", "(Ljava/lang/String;)Ljava/lang/String;"), 100)) == null,
                 "generic parse method must not match");

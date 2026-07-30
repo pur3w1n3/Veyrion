@@ -144,8 +144,8 @@ public final class PathExplorationContractAcceptanceTest {
                 AgentRole.REPORT_GENERATION, AiOutputLanguage.ZH_CN);
         String reportEn = AiRolePrompts.roleInstruction(
                 AgentRole.REPORT_GENERATION, AiOutputLanguage.EN);
-        check(reportZh.contains("## 漏洞相关") && reportZh.contains("findingBindings"),
-                "ZH REPORT Markdown leads with ## 漏洞相关 from PATH findingBindings");
+        check(reportZh.contains("## 关键发现") && reportZh.contains("findingBindings"),
+                "ZH REPORT Markdown uses ## 关键发现 from PATH findingBindings");
         check(reportZh.contains("FINDING_BINDINGS_FACTS") || reportZh.contains("findingBindings"),
                 "ZH REPORT consumes FINDING_BINDINGS_FACTS");
         check(reportZh.contains("locale-pure") || reportZh.contains("禁止英文专章"),
@@ -155,8 +155,10 @@ public final class PathExplorationContractAcceptanceTest {
         check(reportZh.contains("【必填章节】") && reportZh.contains("【选填章节】")
                         && reportZh.contains("【Markdown 骨架"),
                 "ZH REPORT has required/optional outline + Markdown skeleton");
-        check(reportEn.contains("## Vulnerabilities") && reportEn.contains("findingBindings"),
-                "EN REPORT Markdown leads with ## Vulnerabilities from PATH findingBindings");
+        check(reportZh.contains("## 附录：技术细节") && reportZh.contains("## 执行摘要"),
+                "ZH REPORT deliverable structure includes summary + appendix");
+        check(reportEn.contains("## Key Findings") && reportEn.contains("findingBindings"),
+                "EN REPORT Markdown uses ## Key Findings from PATH findingBindings");
         check(reportEn.contains("FINDING_BINDINGS_FACTS") || reportEn.contains("findingBindings"),
                 "EN REPORT consumes FINDING_BINDINGS_FACTS");
         check(reportEn.contains("locale-pure") || reportEn.contains("must not mix"),
@@ -166,6 +168,9 @@ public final class PathExplorationContractAcceptanceTest {
         check(reportEn.contains("[Required sections]") && reportEn.contains("[Optional sections]")
                         && reportEn.contains("[Markdown skeleton"),
                 "EN REPORT has required/optional outline + Markdown skeleton");
+        check(reportEn.contains("## Appendix: Technical Details")
+                        && reportEn.contains("## Executive Summary"),
+                "EN REPORT deliverable structure includes summary + appendix");
 
         String system = AiSystemPrompt.SYSTEM_PROMPT;
         check(system.contains("PATH_EXPLORATION"), "SYSTEM_PROMPT mentions PATH_EXPLORATION");

@@ -35,7 +35,7 @@ export function FinalReportView({
       <div className="results-view__head">
         <div>
           <p className="eyebrow">{english ? 'FINAL REPORT' : '最终报告'}</p>
-          <h2>{english ? 'Audit conclusion' : '审计结论'}</h2>
+          <h2>{english ? 'Deliverable audit report' : '可交付审计报告'}</h2>
         </div>
         <div className="button-row">
           <span className="inference-badge">{english ? 'MODEL INFERENCE' : '模型推断'}</span>

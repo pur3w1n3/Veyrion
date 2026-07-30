@@ -107,6 +107,12 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
     }
 
     @Override
+    public FactSearchPage searchFactsPage(ToolExecutionContext.Scope scope, String kind,
+                                          String query, int limit, int offset) {
+        return factsSearch.searchFactsPage(scope, kind, query, limit, offset);
+    }
+
+    @Override
     public Optional<FactRecord> findEvidence(ToolExecutionContext.Scope scope, String evidenceRef) {
         return factsSearch.findEvidence(scope, evidenceRef);
     }

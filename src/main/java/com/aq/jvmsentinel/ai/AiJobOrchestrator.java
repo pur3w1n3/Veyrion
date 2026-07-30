@@ -8,6 +8,7 @@ import com.aq.jvmsentinel.ai.conclusion.AiDynamicProbeSupport;
 import com.aq.jvmsentinel.ai.conclusion.AiReportEnforcer;
 import com.aq.jvmsentinel.ai.conclusion.AiReportEnforcer.ReportBindingsEnforced;
 import com.aq.jvmsentinel.ai.conclusion.AiReportEnforcer.ReportLedgerEnforced;
+import com.aq.jvmsentinel.ai.context.AiPromptText;
 import com.aq.jvmsentinel.ai.context.AiUserPromptBuilder;
 import com.aq.jvmsentinel.ai.context.AuthContextBuilder;
 import com.aq.jvmsentinel.ai.context.ContrastContextBuilder;
@@ -334,7 +335,9 @@ public final class AiJobOrchestrator implements AutoCloseable {
                         clock.instant().plus(JOB_TIMEOUT)));
         state.context = context;
         AiOutputLanguage outputLanguage = parseOutputLanguage(initial);
-        String userPrompt = userPromptBuilder.buildUserPrompt(initial, outputLanguage);
+        // PATH/TRIAGE 等注入 TracePlan 差分、对照表后易超过 chat user 128KiB → UserTurn 抛 invalid。
+        String userPrompt = AiPromptText.fitChatUserText(
+                userPromptBuilder.buildUserPrompt(initial, outputLanguage));
         appendEvent(initial, "PROMPT_SYSTEM", "RUNNING", null, null, null, null, null,
                 AiPromptSanitizer.sanitizeSummary(AiSystemPrompt.SYSTEM_PROMPT), null);
         appendEvent(initial, "PROMPT_USER", "RUNNING", null, null, null, null, null,

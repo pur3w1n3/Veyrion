@@ -161,8 +161,8 @@ export const DEFAULT_ROLE_PROMPTS: Record<AiRole, { zh: string; en: string }> = 
     en: 'Consume only pre-analysis, auth analysis, dynamic verification, and persisted PathRuns to model distinct data and state paths. Separate facts, counterevidence, and gaps; never turn an unexecuted candidate into fact.'
   },
   VULNERABILITY_TRIAGE: {
-    zh: '基于前置建模、鉴权分析、动态验证和路径探索研判风险。只有入口命中、参数绑定、触发点执行和可重放动态调试全部闭环，才可标记漏洞存在；否则保持推测或证据不足。DYNAMIC_CONFIRMED 仅服务端 SQL 门禁可写。',
-    en: 'Assess risk from pre-analysis, auth analysis, dynamic verification, and path exploration. Mark a vulnerability present only when entry hit, parameter binding, trigger execution, and replayable dynamic debugging are closed; otherwise keep hypothesis or insufficient evidence. DYNAMIC_CONFIRMED is server-gated for SQL only.'
+    zh: '基于前置建模、鉴权分析、动态验证和路径探索研判风险。只有入口命中、参数绑定、危险 sink 触发与可重放动态调试闭环，才可标记漏洞存在并标注所需权限；仅 FORCED/2xx/入口不得确认。DYNAMIC_CONFIRMED 仅服务端 H3/H4 门禁可写。',
+    en: 'Assess risk from pre-analysis, auth analysis, dynamic verification, and path exploration. Mark a vulnerability present only when entry hit, parameter binding, dangerous sink effect, and replayable debugging close — with required privilege; FORCED/2xx/entry alone must not confirm. DYNAMIC_CONFIRMED is server-gated (H3/H4) only.'
   },
   REPORT_GENERATION: {
     zh: '汇总各角色的证据、PathRun、动态覆盖、限制和未覆盖区域，严格区分 STATIC_INFERRED、DYNAMIC_SUSPECTED、DYNAMIC_CONFIRMED 与 VERIFIED，不得升级结论，不得把 DYNAMIC_CONFIRMED 宣传为生产实库已证实。',

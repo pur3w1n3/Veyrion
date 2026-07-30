@@ -135,6 +135,51 @@
                             <mainClass>com.aq.jvmsentinel.instrumentation.MethodHopBudgetAcceptanceTest</mainClass>
                         </configuration>
                     </execution>
+                    <execution>
+                        <id>jdbc-datasource-ssrf-acceptance</id>
+                        <phase>test</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>com.aq.jvmsentinel.instrumentation.JdbcDataSourceSsrfAcceptanceTest</mainClass>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>multipart-file-transfer-acceptance</id>
+                        <phase>test</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>com.aq.jvmsentinel.instrumentation.MultipartFileTransferAcceptanceTest</mainClass>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>agent-effect-surface-coverage-acceptance</id>
+                        <phase>test</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>com.aq.jvmsentinel.instrumentation.AgentEffectSurfaceCoverageAcceptanceTest</mainClass>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>jdk-convergence-acceptance</id>
+                        <phase>test</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>com.aq.jvmsentinel.instrumentation.JdkConvergenceAcceptanceTest</mainClass>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>event-writer-budget-fair-share-acceptance</id>
+                        <phase>test</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>com.aq.jvmsentinel.instrumentation.EventWriterBudgetFairShareAcceptanceTest</mainClass>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>

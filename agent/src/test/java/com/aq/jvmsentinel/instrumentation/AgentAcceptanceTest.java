@@ -41,6 +41,7 @@ public final class AgentAcceptanceTest {
         verifyBranchCoverage(agentJar, work.resolve("coverage"));
         verifyExplicitProbeProvenance(agentJar, work.resolve("explicit"));
         verifyBudgetStop(agentJar, work.resolve("budget"));
+        verifyMaxEventsBounds(work.resolve("max-events-bounds"));
         verifyMalformedArgumentsFailClosed(agentJar, work.resolve("malformed"));
         verifyMissingAuthorizationFailsClosed(agentJar, work.resolve("unauthorized"));
 
@@ -140,6 +141,53 @@ public final class AgentAcceptanceTest {
         check(!all.contains("line1\\r") && !all.contains("line1\\n"), "control characters were not sanitized");
         check(all.contains("x".repeat(256)) && !all.contains("x".repeat(257)), "detail value limit was not enforced");
         check(!all.contains("\"key14\""), "detail entry count limit was not enforced");
+    }
+
+    private static void verifyMaxEventsBounds(Path work) throws Exception {
+        Files.createDirectories(work);
+        Path authorized = work.resolve("authorized");
+        Files.createDirectory(authorized);
+        String previousDir = System.getProperty(AgentConfig.TRACE_DIR_PROPERTY);
+        String previousAuth = System.getProperty(AgentConfig.TRACE_DIR_AUTHORIZED_PROPERTY);
+        System.setProperty(AgentConfig.TRACE_DIR_PROPERTY, authorized.toString());
+        System.setProperty(AgentConfig.TRACE_DIR_AUTHORIZED_PROPERTY, "true");
+        try {
+            AgentConfig min = AgentConfig.parse("maxEvents=" + AgentConfig.MIN_MAX_EVENTS + ",maxBytes=4096");
+            check(min.maxEvents == AgentConfig.MIN_MAX_EVENTS, "min maxEvents must be accepted");
+            AgentConfig max = AgentConfig.parse("maxEvents=" + AgentConfig.MAX_MAX_EVENTS + ",maxBytes=65536");
+            check(max.maxEvents == AgentConfig.MAX_MAX_EVENTS, "max maxEvents must be accepted");
+            expectOutsideLimits("maxEvents=0,maxBytes=4096");
+            expectOutsideLimits("maxEvents=" + (AgentConfig.MAX_MAX_EVENTS + 1) + ",maxBytes=4096");
+            // 控制面抬升后的合法上界：500000 不得被误判为越界。
+            AgentConfig raisedCap = AgentConfig.parse(
+                    "maxEvents=" + AgentConfig.MAX_MAX_EVENTS + ",maxBytes=1048576");
+            check(raisedCap.maxEvents == AgentConfig.MAX_MAX_EVENTS,
+                    "probe-raised agent max must remain legal");
+            check(AgentConfig.MAX_MAX_EVENTS == 500_000,
+                    "agent MAX_MAX_EVENTS must stay synced with control-plane AGENT_MAX_EVENTS");
+        } finally {
+            restoreProperty(AgentConfig.TRACE_DIR_PROPERTY, previousDir);
+            restoreProperty(AgentConfig.TRACE_DIR_AUTHORIZED_PROPERTY, previousAuth);
+        }
+    }
+
+    private static void expectOutsideLimits(String arguments) {
+        try {
+            AgentConfig.parse(arguments);
+            throw new AssertionError("expected outside limits for " + arguments);
+        } catch (IllegalArgumentException exception) {
+            check(exception.getMessage() != null
+                            && exception.getMessage().contains("maxEvents is outside limits"),
+                    "unexpected parse failure for " + arguments + ": " + exception);
+        }
+    }
+
+    private static void restoreProperty(String key, String previous) {
+        if (previous == null) {
+            System.clearProperty(key);
+        } else {
+            System.setProperty(key, previous);
+        }
     }
 
     private static void verifyBudgetStop(Path agentJar, Path traceDirectory) throws Exception {

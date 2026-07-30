@@ -21,8 +21,13 @@
    - `FORCED_REACHABILITY`：默认开启、仅 Docker 沙箱内，对已识别 auth/role/permission/license/feature guard 强达，以观察下游路径。
 3. **Agent** 收敛为 Sensor：记录 entry、参数、方法 hop、guard、effect、dependency、exception 和 exit；新增鉴权/License/中间件 fail-open 特例视为反模式。
 4. **World Pack** 负责 profile/env/license/files/schema/seed/dependency stubs；依赖不可达时输出 `WORLD_GAP` / `DEPENDENCY_UNAVAILABLE`，并保留失败前路径。
-5. `FORCED_REACHABILITY` 只能由服务端固定策略启用，不能绕过 sanitizer、SQL 参数化、文件类型校验、金额/审批/状态机不变量；其结果必须标 `INSTRUMENTATION_REACHABILITY`，不能单独升 `DYNAMIC_CONFIRMED` / `VERIFIED`。
-6. JWT/Blade mint 降为可选 `IdentityMaterial` 来源，不再叙述为覆盖全部鉴权形态的主策略。
+5. `FORCED_REACHABILITY` 只能由服务端固定策略启用，不能绕过 sanitizer、SQL 参数化、文件类型校验、金额/审批/状态机不变量；其结果必须标 `INSTRUMENTATION_REACHABILITY`。
+6. **确认语义（2026-07-30 修订，推翻「FORCED 永不可确认」的对外读法）**：
+   - 仅 HTTP 2xx / 仅入口到达 / 仅 FORCED 改控制流但**未触发危险 sink 或无可观察利用效果** → **不得**升 `DYNAMIC_CONFIRMED` / `VERIFIED`。
+   - 当动态证据表明危险 sink **被实际触发**且参数/效果满足利用条件（H3 SQL marker 或 H4 `EFFECT_TRIGGERED`：表达式执行 / JDBC connect / 反序列化等）→ 可升 `DYNAMIC_CONFIRMED`，并标注 `requiredPrivilege` / `authContext`（未认证 / cookie-only / 低权用户 / 管理员 / 需先注册 / 强达等价身份等）。
+   - FORCED/COVERAGE 只是到达业务路径的**手段**；确认看的是 sink 效果，不是 posture 本身。
+   - `VERIFIED` 本阶段仍关闭。
+7. JWT/Blade mint 降为可选 `IdentityMaterial` 来源；RememberMe cipher harvest 可在沙箱内 mint cookie 以闭合反序列化观测（不得回退宿主）。
 
 细节、As-Is/To-Be 对照见设计简报，不在本 ADR 重复实现清单。
 
@@ -48,6 +53,7 @@
 - 姿态与强达仅在授权断网 Docker 或后续 hardened sandbox 内启用；不得影响宿主。
 - 强达轨默认开启，但必须由服务端固定策略限定 guard refs、预算和可改写范围；AI/前端不能提供策略。
 - 结论强制 `postureKind` / `postureProvenance` / `forcedGuardRefs`；禁止仅凭 Posture 或强达升 `VERIFIED`。
+- 升 `DYNAMIC_CONFIRMED` 必须附可引用 evidence + 危险 sink 效果（或 H3 SQL）；并投影 `requiredPrivilege`，不得把「管理员强达可达」写成「匿名可利用」。
 - 沙箱失败仍不得回退宿主。
 
 ## Compatibility

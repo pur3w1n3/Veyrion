@@ -66,6 +66,23 @@ public final class ProbeParameterHeuristics {
             // 数字 literal：charset-safe，QLExpress / SpEL / Aviator / MVEL 可接受。
             return "1";
         }
+        if (looksJdbcUrl(lower, route)) {
+            // 命中沙箱 LoopbackMysqlStub / WorldPack MOCK（勿用 synthetic 伪 URL）。
+            return "jdbc:mysql://127.0.0.1:3306/veyrion";
+        }
+        if (looksJdbcDriver(lower)) {
+            return "com.mysql.cj.jdbc.Driver";
+        }
+        if (looksJdbcCredential(lower)) {
+            return "veyrion";
+        }
+        if (looksUploadPath(lower, route)) {
+            // wire-safe path traversal sample（ProbeTarget query charset 允许 . /）。
+            return "../veyrion-upload.bin";
+        }
+        if (looksHttpUrl(lower, route)) {
+            return "http://127.0.0.1:9/veyrion-ssrf";
+        }
         if ("businessId".equals(name) || lower.endsWith("id") || lower.endsWith("ids")) {
             return "1";
         }
@@ -74,6 +91,78 @@ public final class ProbeParameterHeuristics {
             return "1";
         }
         return "synthetic";
+    }
+
+    /** 上传路径 / originalFilename / dest 类参数：给 multipart/transferTo 可观测穿越样本。 */
+    public static boolean looksUploadPath(String lowerName, String routeHint) {
+        if (lowerName == null || lowerName.isBlank()) {
+            return false;
+        }
+        if ("filename".equals(lowerName) || "originalfilename".equals(lowerName)
+                || "filepath".equals(lowerName) || "savepath".equals(lowerName)
+                || "dest".equals(lowerName) || "destination".equals(lowerName)
+                || "path".equals(lowerName) || lowerName.endsWith("filepath")
+                || lowerName.endsWith("filename") || lowerName.endsWith("pathname")) {
+            return true;
+        }
+        String route = routeHint == null ? "" : routeHint.toLowerCase(Locale.ROOT);
+        if (route.contains("upload") || route.contains("fileupload") || route.contains("multipart")) {
+            return "name".equals(lowerName) || "pathname".equals(lowerName);
+        }
+        return false;
+    }
+
+    /** SSRF URL 参数启发式（非 JDBC URL）。 */
+    public static boolean looksHttpUrl(String lowerName, String routeHint) {
+        if (lowerName == null || lowerName.isBlank()) {
+            return false;
+        }
+        if (looksJdbcUrl(lowerName, routeHint)) {
+            return false;
+        }
+        if ("url".equals(lowerName) || "uri".equals(lowerName) || "href".equals(lowerName)
+                || "endpoint".equals(lowerName) || "targeturl".equals(lowerName)
+                || "requesturl".equals(lowerName) || "callback".equals(lowerName)
+                || "webhook".equals(lowerName) || lowerName.endsWith("url")
+                        && !lowerName.contains("jdbc")) {
+            return true;
+        }
+        String route = routeHint == null ? "" : routeHint.toLowerCase(Locale.ROOT);
+        return route.contains("ssrf") || route.contains("fetch") || route.contains("proxy")
+                || route.contains("webhook") || route.contains("http-client");
+    }
+
+    public static boolean looksJdbcUrl(String lowerName, String routeHint) {
+        if (lowerName == null || lowerName.isBlank()) {
+            return false;
+        }
+        if (lowerName.contains("jdbcurl") || lowerName.equals("jdbc_url")
+                || lowerName.endsWith("jdbcurl") || lowerName.equals("jdbc")) {
+            return true;
+        }
+        if (!"url".equals(lowerName)) {
+            return false;
+        }
+        String route = routeHint == null ? "" : routeHint.toLowerCase(Locale.ROOT);
+        return route.contains("test-connection") || route.contains("testconnection")
+                || route.contains("db-connect") || route.contains("datasource");
+    }
+
+    public static boolean looksJdbcDriver(String lowerName) {
+        if (lowerName == null || lowerName.isBlank()) {
+            return false;
+        }
+        return lowerName.contains("driverclass") || lowerName.equals("driver")
+                || lowerName.equals("driver_class") || lowerName.contains("driverclassname");
+    }
+
+    public static boolean looksJdbcCredential(String lowerName) {
+        if (lowerName == null || lowerName.isBlank()) {
+            return false;
+        }
+        return lowerName.equals("username") || lowerName.equals("user")
+                || lowerName.equals("password") || lowerName.equals("passwd")
+                || lowerName.equals("jdbcuser") || lowerName.equals("jdbcpassword");
     }
 
     public static boolean looksExpression(String lowerName, String routeHint) {

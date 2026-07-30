@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import type { EntryDto, FocusEntryProbeDto, PathRunDto } from '../api'
+import { useListPagination } from '../hooks/useListPagination'
 import { outcomeClassLabel } from '../labels'
+import { ListPagination } from './ListPagination'
 import { Notice, StatusPill } from './Common'
 
 function resolveEntryId(run: PathRunDto, entries: EntryDto[]): string | undefined {
@@ -90,9 +92,11 @@ export function PathRunPanel({
     return true
   }), [pathRuns, track, outcome, entryFilter, entries])
 
+  const pagination = useListPagination(filtered, track, outcome, entryFilter)
+
   const grouped = useMemo(() => {
     const groups = new Map<string, PathRunDto[]>()
-    for (const run of filtered) {
+    for (const run of pagination.pageItems) {
       const key = `${resolveEntryId(run, entries) ?? run.entrypointRef}\u0000${run.track}`
       const bucket = groups.get(key) ?? []
       bucket.push(run)
@@ -102,7 +106,7 @@ export function PathRunPanel({
       const [entryKey, trackKey] = key.split('\u0000')
       return { entryKey, trackKey, runs }
     })
-  }, [filtered, entries])
+  }, [pagination.pageItems, entries])
 
   const selected = filtered.find((run) => run.pathRunId === selectedId) ?? filtered[0]
   const selectedEntryId = selected ? resolveEntryId(selected, entries) : undefined
@@ -186,6 +190,21 @@ export function PathRunPanel({
         {filtered.length === 0 && <p className="empty-state">
           {english ? 'No PathRun sessions yet for this scan.' : '当前扫描尚无 PathRun 会话。'}
         </p>}
+        <ListPagination
+          english={english}
+          ariaLabel={english ? 'PathRun pagination' : 'PathRun 分页'}
+          page={pagination.page}
+          totalPages={pagination.totalPages}
+          pageSize={pagination.pageSize}
+          onPageSizeChange={pagination.setPageSize}
+          rangeStart={pagination.rangeStart}
+          rangeEnd={pagination.rangeEnd}
+          total={pagination.total}
+          onPrev={pagination.goPrev}
+          onNext={pagination.goNext}
+          canPrev={pagination.canPrev}
+          canNext={pagination.canNext}
+        />
       </div>
       <div className="evidence-detail">
         {selected ? <>

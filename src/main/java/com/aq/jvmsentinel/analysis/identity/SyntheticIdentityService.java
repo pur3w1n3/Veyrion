@@ -27,8 +27,7 @@ import java.util.Optional;
 public final class SyntheticIdentityService {
 
     /**
-     * 仅 harvest rememberMe cipher key（encrypted payload 不在 scope）；
-     * 本轮 out of scope：rememberMe payload mint。
+     * Fallback marker when AES mint fails；优先 {@link RememberMePayloadMinter}。
      */
     public static final String COOKIE_MATERIAL_MARKER = "veyrion-cipher-key-harvested";
 
@@ -188,11 +187,18 @@ public final class SyntheticIdentityService {
         if (cookie.isPresent()) {
             IdentityMaterial material = cookie.get();
             String cookieName = material.name().isBlank() ? "rememberMe" : material.name();
-            String cookieHeader = cookieName + "=" + COOKIE_MATERIAL_MARKER;
+            String key = material.value().orElse("");
+            String minted = key.isBlank() ? "" : RememberMePayloadMinter.cookieHeader(cookieName, key);
+            String cookieHeader = minted.isBlank()
+                    ? cookieName + "=" + COOKIE_MATERIAL_MARKER
+                    : minted;
             String provenance = material.valueProvenance().isBlank()
                     ? "RULE_GENERATED" : material.valueProvenance();
+            String mintNote = minted.isBlank()
+                    ? "rememberMe payload mint failed; marker cookie only"
+                    : "rememberMe AES payload minted for sandbox deserialization observation";
             String precondition = "synthetic " + track.name() + " Cookie channel via " + provenance
-                    + "; cipher/session material harvested; rememberMe payload not minted; "
+                    + "; cipher/session material harvested; " + mintNote + "; "
                     + String.join("; ", materials.notes());
             return new SyntheticIdentity(track, "", provenance, precondition, true, cookieHeader);
         }

@@ -12,7 +12,9 @@ import {
   type SecurityHypothesisDto,
   type SqlExperimentCardDto
 } from '../../api'
+import { useListPagination } from '../../hooks/useListPagination'
 import { hypothesisFamilyBlurb, hypothesisFamilyLabel } from '../../labels'
+import { ListPagination } from '../ListPagination'
 import { Notice, StatusPill } from '../Common'
 import {
   familyOfFinding,
@@ -94,6 +96,14 @@ export function FindingsView({
     }))
   }, [findings, findingQuery, findingStatus, findingFamily, showAuthGap, hypothesisById])
 
+  const pagination = useListPagination(
+    filteredFindings,
+    findingQuery,
+    findingStatus,
+    findingFamily,
+    showAuthGap
+  )
+
   const selectedFinding = filteredFindings.find((finding) => finding.id === selectedFindingId)
     ?? filteredFindings[0]
   const selectedStep = selectedPath?.steps[Math.min(selectedStepIndex, Math.max(0, (selectedPath?.steps.length ?? 1) - 1))]
@@ -158,7 +168,7 @@ export function FindingsView({
       </div>
 
       <div className="results-table-list">
-        {filteredFindings.map((finding) => (
+        {pagination.pageItems.map((finding) => (
           <button
             type="button"
             key={finding.id}
@@ -176,6 +186,21 @@ export function FindingsView({
         {filteredFindings.length === 0 && (
           <p className="empty-state">{english ? 'No findings match the filter.' : '没有符合筛选条件的发现。'}</p>
         )}
+        <ListPagination
+          english={english}
+          ariaLabel={english ? 'Findings pagination' : '发现分页'}
+          page={pagination.page}
+          totalPages={pagination.totalPages}
+          pageSize={pagination.pageSize}
+          onPageSizeChange={pagination.setPageSize}
+          rangeStart={pagination.rangeStart}
+          rangeEnd={pagination.rangeEnd}
+          total={pagination.total}
+          onPrev={pagination.goPrev}
+          onNext={pagination.goNext}
+          canPrev={pagination.canPrev}
+          canNext={pagination.canNext}
+        />
       </div>
 
       {selectedFinding && (() => {

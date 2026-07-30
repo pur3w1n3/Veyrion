@@ -11,6 +11,10 @@ public final class AiPromptLimits {
     public static final int MAX_TAINT_PATH_SUMMARY_ROWS = 8;
     public static final int MAX_FUZZ_CATEGORY_PROMPT_ROWS = 6;
     public static final int MAX_COVERAGE_GAP_PROMPT_ROWS = 20;
+    /** PATH/TRIAGE「计划 vs 实际」内联行数；过大易顶破 chat user text 128KiB 上限。 */
+    public static final int MAX_TRACE_PLAN_DIFF_PROMPT_ROWS = 8;
+    /** 现编 TracePlan 上限（无持久化计划时）。 */
+    public static final int MAX_TRACE_PLAN_COMPILE_FOR_PROMPT = 24;
 
     private AiPromptLimits() {
     }

@@ -22,7 +22,17 @@ public final class AgentConfig {
     private static final long DEFAULT_MAX_BYTES = 8L * 1024 * 1024;
     private static final long MAX_MAX_BYTES = 64L * 1024 * 1024;
     private static final int DEFAULT_MAX_EVENTS = 10_000;
-    private static final int MAX_MAX_EVENTS = 100_000;
+    /**
+     * maxEvents 合法上界。控制面 {@code SandboxLaunchCommandBuilder.AGENT_MAX_EVENTS}
+     * 必须与此同步；越界时 {@link #parse} fail-closed，premain 不会启动应用。
+     *
+     * <p>500_000 ≈ 200 探针 × 2500 事件/探针，且约 48MiB JSONL（~96B/事件）仍落在
+     * {@link #MAX_MAX_BYTES}/沙箱 tmpfs 64MiB 内。更大探针计划仍共享进程级池，靠
+     * {@code EventWriter} per-correlation 软分片与耗尽后有界续写兜底。</p>
+     */
+    public static final int MAX_MAX_EVENTS = 500_000;
+    /** maxEvents 合法下界（与控制面 {@code SandboxLaunchCommandBuilder.AGENT_MIN_EVENTS} 同步）。 */
+    public static final int MIN_MAX_EVENTS = 1;
     /**
      * 永不重写这些前缀内的 call site / 分支 coverage。HTTP 面
      *（Servlet/Filter/Interceptor）仍经 {@code isHttpObservabilityType} 匹配并仅接收 HTTP advice。
@@ -99,7 +109,8 @@ public final class AgentConfig {
 
         Map<String, String> values = parseArguments(arguments);
         long maxBytes = parseLong(values.get("maxBytes"), DEFAULT_MAX_BYTES, 256, MAX_MAX_BYTES, "maxBytes");
-        int maxEvents = (int) parseLong(values.get("maxEvents"), DEFAULT_MAX_EVENTS, 1, MAX_MAX_EVENTS, "maxEvents");
+        int maxEvents = (int) parseLong(values.get("maxEvents"), DEFAULT_MAX_EVENTS,
+                MIN_MAX_EVENTS, MAX_MAX_EVENTS, "maxEvents");
         String classPrefix = values.getOrDefault("classPrefix", "").replace('.', '/');
         if (!classPrefix.isEmpty() && (classPrefix.length() > 200 || !CLASS_PREFIX.matcher(classPrefix).matches())) {
             throw new IllegalArgumentException("invalid classPrefix");

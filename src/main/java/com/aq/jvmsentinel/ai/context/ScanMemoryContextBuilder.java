@@ -46,11 +46,15 @@ public final class ScanMemoryContextBuilder {
                 runs = List.of();
             }
             Map<String, String> priors = new LinkedHashMap<>();
-            for (AgentRole role : AgentRole.values()) {
-                String summary = history.latestConclusionSummary(job.projectId(), job.scanId(), role);
-                if (summary != null && !summary.isBlank()) {
-                    priors.put(role.name(), summary);
+            try {
+                for (AgentRole role : AgentRole.values()) {
+                    String summary = history.latestConclusionSummary(job.projectId(), job.scanId(), role);
+                    if (summary != null && !summary.isBlank()) {
+                        priors.put(role.name(), summary);
+                    }
                 }
+            } catch (RuntimeException ignored) {
+                // priors 可选；失败时仍注入 FACTS/WORK counts，避免整段 SCAN_MEMORY_INDEX 静默为空。
             }
             Map<String, Object> full = com.aq.jvmsentinel.ai.memory.ScanMemoryBuilder.build(
                     store, job.scanId(), runs, priors);

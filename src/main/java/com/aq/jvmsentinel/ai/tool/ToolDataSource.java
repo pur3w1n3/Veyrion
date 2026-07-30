@@ -16,6 +16,25 @@ public interface ToolDataSource {
             throws Exception;
 
     /**
+     * 带 offset 的 facts 分页。默认实现无 totalMatched 精确值时退化为
+     * {@link #searchFacts} + 本地切片（totalMatched=returned+offset，可能低估）。
+     * Control Plane 实现应返回真实 totalMatched / truncated / hasMore。
+     */
+    default FactSearchPage searchFactsPage(ToolExecutionContext.Scope scope, String kind,
+                                           String query, int limit, int offset) throws Exception {
+        int cappedLimit = Math.max(1, Math.min(100, limit));
+        int cappedOffset = Math.max(0, offset);
+        List<FactRecord> wider = searchFacts(scope, kind, query,
+                Math.min(100, cappedOffset + cappedLimit));
+        if (cappedOffset >= wider.size()) {
+            return new FactSearchPage(List.of(), wider.size(), cappedOffset, cappedLimit, false);
+        }
+        List<FactRecord> page = wider.subList(cappedOffset,
+                Math.min(wider.size(), cappedOffset + cappedLimit));
+        return new FactSearchPage(List.copyOf(page), wider.size(), cappedOffset, cappedLimit, false);
+    }
+
+    /**
      * 对已注册制品的有界 auth/config/code 事实查询。
      * 默认空；Control Plane 可扫描已授权 JAR 中的
      * JWT 默认值、skip-url 模式与 auth 相关类名。绝不
@@ -165,6 +184,32 @@ public interface ToolDataSource {
                 throw new IllegalArgumentException("reference is invalid");
             }
             Objects.requireNonNull(value, "value");
+        }
+    }
+
+    /**
+     * facts_search 分页结果。{@code truncated}/{@code hasMore} 为真时模型须用
+     * offset=nextOffset 或按 id 续取，不得把本页当全集。
+     */
+    record FactSearchPage(List<FactRecord> records, int totalMatched, int offset, int limit,
+                          boolean totalCapped) {
+        public FactSearchPage {
+            records = List.copyOf(records == null ? List.of() : records);
+            if (totalMatched < 0 || offset < 0 || limit < 1) {
+                throw new IllegalArgumentException("invalid fact search page");
+            }
+        }
+
+        public boolean hasMore() {
+            return offset + records.size() < totalMatched || totalCapped;
+        }
+
+        public boolean truncated() {
+            return offset > 0 || hasMore();
+        }
+
+        public int nextOffset() {
+            return offset + records.size();
         }
     }
 }

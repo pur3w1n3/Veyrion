@@ -50,7 +50,9 @@ public final class PathDebugSensorAcceptanceTest {
         check(all.contains("\"pathDebugKind\":\"METHOD_HOP\""), "METHOD_HOP marker present");
         check(all.contains("\"pathDebugKind\":\"EFFECT_TRIGGERED\""), "EFFECT_TRIGGERED marker present");
         check(all.contains("\"effectKind\":\"PROCESS\"")
+                        || all.contains("\"effectKind\":\"COMMAND\"")
                         || all.contains("\"effectKind\":\"FILE\"")
+                        || all.contains("\"effectKind\":\"FILE_WRITE\"")
                         || all.contains("\"effectKind\":\"SSRF\""),
                 "effectKind detail present");
         check(all.contains("\"effectKind\":\"SSRF\"") || all.contains("\"eventType\":\"HTTP_CLIENT\""),

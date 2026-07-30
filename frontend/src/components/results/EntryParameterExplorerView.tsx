@@ -1,4 +1,6 @@
 import type { Entry, ExperimentPlanDto } from '../../api'
+import { useListPagination } from '../../hooks/useListPagination'
+import { ListPagination } from '../ListPagination'
 import { StatusPill } from '../Common'
 
 export function EntryParameterExplorerView({
@@ -14,6 +16,9 @@ export function EntryParameterExplorerView({
   selectedEntryId?: string
   onSelectEntry: (entry: Entry) => void
 }) {
+  const entryPagination = useListPagination(entries)
+  const planPagination = useListPagination(experimentPlans)
+
   const readinessLabel = (entry: Entry): string => {
     if (entry.status === 'UNREACHED') {
       return english ? 'Unreachable / blocked' : '未覆盖 / 阻断'
@@ -50,7 +55,7 @@ export function EntryParameterExplorerView({
           </tr>
         </thead>
         <tbody>
-          {entries.map((entry) => {
+          {entryPagination.pageItems.map((entry) => {
             const paramCount = entry.parameters?.length ?? 0
             const paramSummary = paramCount === 0
               ? (english ? '0 params · empty-input valid' : '0 参数 · 空输入合法')
@@ -75,6 +80,21 @@ export function EntryParameterExplorerView({
       {entries.length === 0 && (
         <p className="empty-state">{english ? 'No entries; does not imply empty attack surface.' : '暂无入口；不表示攻击面为空。'}</p>
       )}
+      <ListPagination
+        english={english}
+        ariaLabel={english ? 'Entries pagination' : '入口分页'}
+        page={entryPagination.page}
+        totalPages={entryPagination.totalPages}
+        pageSize={entryPagination.pageSize}
+        onPageSizeChange={entryPagination.setPageSize}
+        rangeStart={entryPagination.rangeStart}
+        rangeEnd={entryPagination.rangeEnd}
+        total={entryPagination.total}
+        onPrev={entryPagination.goPrev}
+        onNext={entryPagination.goNext}
+        canPrev={entryPagination.canPrev}
+        canNext={entryPagination.canNext}
+      />
 
       <div className="section-gap">
         <p className="eyebrow">{english ? 'PARAMETER MATRIX (placeholder)' : '参数矩阵（占位）'}</p>
@@ -85,13 +105,28 @@ export function EntryParameterExplorerView({
         </p>
         {experimentPlans.length > 0 ? (
           <div className="results-table-list">
-            {experimentPlans.slice(0, 12).map((plan) => (
+            {planPagination.pageItems.map((plan) => (
               <div className="results-row" key={plan.planId}>
                 <strong>{plan.planId}</strong>
                 <small className="veyrion-long-text">{plan.method} {plan.entrypointRef} · {plan.track}</small>
                 <span>{plan.fuzzStrategy ? 'fuzz' : '—'}</span>
               </div>
             ))}
+            <ListPagination
+              english={english}
+              ariaLabel={english ? 'Experiment plans pagination' : '实验计划分页'}
+              page={planPagination.page}
+              totalPages={planPagination.totalPages}
+              pageSize={planPagination.pageSize}
+              onPageSizeChange={planPagination.setPageSize}
+              rangeStart={planPagination.rangeStart}
+              rangeEnd={planPagination.rangeEnd}
+              total={planPagination.total}
+              onPrev={planPagination.goPrev}
+              onNext={planPagination.goNext}
+              canPrev={planPagination.canPrev}
+              canNext={planPagination.canNext}
+            />
           </div>
         ) : (
           <p className="empty-state">{english ? 'No accepted experiment plans yet.' : '尚无已接受实验计划。'}</p>

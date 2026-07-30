@@ -189,19 +189,30 @@ public final class AiToolRegistry {
     }
 
     private RegisteredTool factsSearch() {
-        ToolSchema schema = new ToolSchema(
-                Map.of("kind", Field.string(64), "query", Field.string(1024), "limit", Field.integer(1, 100)),
-                Set.of("kind"));
+        Map<String, Field> fields = new LinkedHashMap<>();
+        fields.put("kind", Field.string(64));
+        fields.put("query", Field.string(1024));
+        fields.put("limit", Field.integer(1, 100));
+        fields.put("offset", Field.integer(0, 100_000));
+        ToolSchema schema = new ToolSchema(Map.copyOf(fields), Set.of("kind"));
         ToolDefinition definition = new ToolDefinition("facts_search",
                 "Search already-indexed, read-only facts in the server-bound project. "
                         + "Prefer scan_memory_get section=FACTS (or INDEX only if not already injected) before flooding. "
-                        + "Kinds: SCAN, ENTRY, DEPENDENCY, SINK, EVIDENCE, DYNAMIC_EVIDENCE, PATH_RUN, PATH_TRACE, "
-                        + "STATIC_CONTRAST, ANY. "
+                        + "Kinds: SCAN, ENTRY, DEPENDENCY, SINK, FINDING, EVIDENCE, DYNAMIC_EVIDENCE, PATH_RUN, "
+                        + "PATH_TRACE, STATIC_CONTRAST, ANY. "
+                        + "kind=ANY samples across kinds (does not fill the whole limit from ENTRY alone); "
+                        + "prefer a specific kind when deepening. "
                         + "Omit query or use \"\" to list up to limit; never use \"*\" or a lone space (substring miss → empty). "
+                        + "Use offset for continuation when the page meta fact facts_search:page has truncated/hasMore=true "
+                        + "(never treat a single page as the full set). "
                         + "For PRE_ANALYSIS, query ENTRY with entry ids, routes, controller/class names, HTTP methods, "
                         + "or English enum keywords; do not rely only on translated prose. "
+                        + "FINDING returns findingId/title/status/sink/entry for bindings beyond prompt MAX_BINDINGS. "
                         + "PATH_RUN returns persisted HTTP status, outcomeClass, and SQL event detail. "
-                        + "PATH_TRACE returns parameter flow, last business hop, effects, and exit reason. "
+                        + "PATH_TRACE returns events (windowed; EFFECT attributes include effectKind/targetClass/targetMethod), "
+                        + "parameter flow, last business hop, effectRefs (EFFECT:FILE_WRITE|SSRF|… + sink symbol), exit reason; "
+                        + "when eventsTruncated=true continue with query eventsOffset=N (or evidence_get "
+                        + "pathtrace:<id>?eventsOffset=N). "
                         + "Policy override fields (command/image/mount/network/uid/budget/forcedReachability) are rejected. "
                         + "STATIC_CONTRAST returns sink-perspective static↔PathRun contrast rows "
                         + "(MATCHED/PARTIAL/STATIC_ONLY/DYNAMIC_ONLY); STATIC_ONLY is never bypass-confirmed.",
@@ -211,10 +222,31 @@ public final class AiToolRegistry {
             String kind = args.get("kind").asText();
             String query = args.has("query") ? args.get("query").asText() : "";
             int limit = args.has("limit") ? args.get("limit").asInt() : 50;
-            List<ToolDataSource.FactRecord> records = source.searchFacts(context.scope(), kind, query, limit);
-            if (records == null || records.size() > limit) throw new IllegalStateException("invalid data source result");
+            int offset = args.has("offset") ? args.get("offset").asInt() : 0;
+            ToolDataSource.FactSearchPage page =
+                    source.searchFactsPage(context.scope(), kind, query, limit, offset);
+            if (page == null || page.records().size() > Math.max(1, Math.min(100, limit))) {
+                throw new IllegalStateException("invalid data source result");
+            }
             List<ToolOutput> outputs = new ArrayList<>();
-            for (ToolDataSource.FactRecord record : records) {
+            ObjectNode meta = JSON.createObjectNode();
+            meta.put("kind", "FACTS_SEARCH_PAGE");
+            meta.put("searchKind", kind);
+            meta.put("totalMatched", page.totalMatched());
+            meta.put("offset", page.offset());
+            meta.put("limit", page.limit());
+            meta.put("returned", page.records().size());
+            meta.put("truncated", page.truncated());
+            meta.put("hasMore", page.hasMore());
+            meta.put("totalCapped", page.totalCapped());
+            meta.put("nextOffset", page.nextOffset());
+            if (page.truncated()) {
+                meta.put("continueHint",
+                        "Re-call facts_search with same kind/query and offset=" + page.nextOffset()
+                                + "; or evidence_get / query by id. Do not treat this page as complete.");
+            }
+            outputs.add(new ToolOutput(OutputKind.FACT, "facts_search:page", meta));
+            for (ToolDataSource.FactRecord record : page.records()) {
                 requireScope(context, record);
                 outputs.add(new ToolOutput(OutputKind.FACT, record.reference(), record.value()));
             }

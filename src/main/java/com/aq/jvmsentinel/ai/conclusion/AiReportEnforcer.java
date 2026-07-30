@@ -108,9 +108,12 @@ public final class AiReportEnforcer {
             String summary,
             String conclusionJson,
             AiOutputLanguage language) {
-        List<FindingBindings.Binding> bindings = findingBindingsContext.loadPathFindingBindings(job, language);
+        // 始终按当前 PathRun/PathTrace 重算（含 H4 enricher），不得沿用 PATH 阶段
+        // 落库的 STATIC_INFERRED bindings 导致报告计数全为静态。
+        List<FindingBindings.Binding> bindings =
+                findingBindingsContext.assembleFindingBindings(job, language);
         if (bindings.isEmpty()) {
-            bindings = findingBindingsContext.assembleFindingBindings(job, language);
+            bindings = findingBindingsContext.loadPathFindingBindings(job, language);
         }
         FindingBindings.EnforceResult enforced = FindingBindings.enforceReportSection(
                 summary, bindings, language);

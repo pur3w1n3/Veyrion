@@ -19,6 +19,18 @@ final class EventWriter implements AutoCloseable {
     private static final int MAX_DETAIL_ENTRIES = 16;
     private static final int MAX_DETAIL_KEY_LENGTH = 64;
     private static final int MAX_DETAIL_VALUE_LENGTH = 256;
+    /**
+     * 全局池内单 correlation 软上限（与控制面 {@code EVENTS_PER_PROBE=2500} 对齐）。
+     * 聊天/XSS 洪泛不得在耗尽全局 maxEvents 前饿死后半程探针。
+     */
+    static final int SOFT_CAP_EVENTS_PER_CORRELATION = 2_500;
+    /**
+     * 全局 maxEvents 耗尽后，每个 correlationId 仍允许少量非 EFFECT 事件，
+     * 避免后期探针只剩 ENTRY_HIT、业务 hop 全被饿死。
+     */
+    static final int POST_BUDGET_EVENTS_PER_CORRELATION = 128;
+    /** 与 {@code MAX_PROBE_PLAN_ENTRIES=512} 对齐，覆盖满探针计划的后续续写。 */
+    static final int POST_BUDGET_CORRELATION_CAP = 512;
     private static final Set<String> SENSITIVE_FRAGMENTS = Set.of(
             "authorization", "password", "passwd", "secret", "token", "cookie",
             "credential", "apikey", "api_key", "session");
@@ -27,6 +39,8 @@ final class EventWriter implements AutoCloseable {
     private final long maxBytes;
     private final int maxEvents;
     private final AtomicBoolean stopped = new AtomicBoolean();
+    private final Map<String, Integer> correlationUsed = new LinkedHashMap<>();
+    private final Map<String, Integer> postBudgetUsed = new LinkedHashMap<>();
     private long bytesWritten;
     private long sequence;
 
@@ -60,7 +74,16 @@ final class EventWriter implements AutoCloseable {
 
     private synchronized boolean write(String eventType, String provenanceKind, String className,
                                        String methodName, Map<String, String> detail) {
-        if (stopped.get()) return false;
+        boolean criticalEffect = isCriticalEffect(eventType, detail);
+        String correlationId = detail == null ? "" : detail.getOrDefault("correlationId", "");
+        // 软分片：全局耗尽前，单 correlation 不得垄断池。
+        if (!criticalEffect && !stopped.get() && exceedsSoftCap(correlationId)) {
+            return false;
+        }
+        // 软停：洪泛耗尽 maxEvents 后仍保留危险 sink EFFECT；另按 correlation 保留有界 hop。
+        if (stopped.get() && !criticalEffect && !allowPostBudget(correlationId)) {
+            return false;
+        }
         Map<String, String> sanitizedDetail = sanitizeDetail(detail);
         String line = "{"
                 + "\"schemaVersion\":1,"
@@ -75,9 +98,15 @@ final class EventWriter implements AutoCloseable {
                 + "\"detail\":" + detailJson(sanitizedDetail)
                 + "}\n";
         byte[] encoded = line.getBytes(StandardCharsets.UTF_8);
-        if (sequence >= maxEvents || encoded.length > maxBytes - bytesWritten) {
+        if (!criticalEffect && !stopped.get()
+                && (sequence >= maxEvents || encoded.length > maxBytes - bytesWritten)) {
             writeBudgetExhaustedOnce();
             stopped.set(true);
+            if (!allowPostBudget(correlationId)) {
+                return false;
+            }
+        }
+        if (encoded.length > maxBytes - bytesWritten) {
             return false;
         }
         try {
@@ -86,12 +115,60 @@ final class EventWriter implements AutoCloseable {
             channel.force(false);
             bytesWritten += encoded.length;
             sequence++;
+            if (!criticalEffect) {
+                consumeSoftCap(correlationId);
+                if (stopped.get()) {
+                    consumePostBudget(correlationId);
+                }
+            }
             return true;
         } catch (IOException exception) {
             stopped.set(true);
             closeQuietly();
             return false;
         }
+    }
+
+    /** 全局池内：单 correlation 已达软上限则让路（无 correlation 不软限，靠全局计数）。 */
+    private boolean exceedsSoftCap(String correlationId) {
+        if (correlationId == null || correlationId.isBlank()) {
+            return false;
+        }
+        if (correlationUsed.size() >= POST_BUDGET_CORRELATION_CAP
+                && !correlationUsed.containsKey(correlationId)) {
+            return true;
+        }
+        return correlationUsed.getOrDefault(correlationId, 0) >= SOFT_CAP_EVENTS_PER_CORRELATION;
+    }
+
+    private void consumeSoftCap(String correlationId) {
+        if (correlationId == null || correlationId.isBlank()) {
+            return;
+        }
+        if (correlationUsed.size() >= POST_BUDGET_CORRELATION_CAP
+                && !correlationUsed.containsKey(correlationId)) {
+            return;
+        }
+        correlationUsed.put(correlationId, correlationUsed.getOrDefault(correlationId, 0) + 1);
+    }
+
+    /** 预算耗尽后按 correlation 的有界续写配额（无 correlation 不放行）。 */
+    private boolean allowPostBudget(String correlationId) {
+        if (correlationId == null || correlationId.isBlank()) {
+            return false;
+        }
+        if (postBudgetUsed.size() >= POST_BUDGET_CORRELATION_CAP
+                && !postBudgetUsed.containsKey(correlationId)) {
+            return false;
+        }
+        return postBudgetUsed.getOrDefault(correlationId, 0) < POST_BUDGET_EVENTS_PER_CORRELATION;
+    }
+
+    private void consumePostBudget(String correlationId) {
+        if (correlationId == null || correlationId.isBlank()) {
+            return;
+        }
+        postBudgetUsed.put(correlationId, postBudgetUsed.getOrDefault(correlationId, 0) + 1);
     }
 
     /** 一条可见 gap 事件，以免 control-plane / AI 捏造「无插桩」。 */
@@ -111,7 +188,9 @@ final class EventWriter implements AutoCloseable {
                 + "\"thread\":\"" + json(sanitize(Thread.currentThread().getName(), MAX_METHOD_LENGTH)) + "\","
                 + "\"detail\":{\"pathDebugKind\":\"TRACE_BUDGET_EXHAUSTED\","
                 + "\"captureMode\":\"AGENT_BUDGET\",\"maxEvents\":\"" + maxEvents + "\","
-                + "\"maxBytes\":\"" + maxBytes + "\"}"
+                + "\"maxBytes\":\"" + maxBytes + "\","
+                + "\"softCapPerCorrelation\":\"" + SOFT_CAP_EVENTS_PER_CORRELATION + "\","
+                + "\"postBudgetPerCorrelation\":\"" + POST_BUDGET_EVENTS_PER_CORRELATION + "\"}"
                 + "}\n";
         byte[] encoded = line.getBytes(StandardCharsets.UTF_8);
         if (encoded.length > maxBytes - bytesWritten) {
@@ -132,6 +211,35 @@ final class EventWriter implements AutoCloseable {
 
     boolean isStopped() {
         return stopped.get();
+    }
+
+    /**
+     * 危险 sink 效果：预算耗尽后仍允许写入，避免 FORCED 后半程探针
+     * 仅剩 LOOPBACK HTTP、丢失 ExpressRunner/反序列化观测。
+     * 仅 {@code pathDebugKind=EFFECT_TRIGGERED}（及同细节的 JDBC 语句）——
+     * 普通 PROCESS/HTTP 洪泛不得绕过 maxEvents。
+     */
+    static boolean isCriticalEffect(String eventType, Map<String, String> detail) {
+        if (detail == null) {
+            return false;
+        }
+        if ("EFFECT_TRIGGERED".equals(detail.getOrDefault("pathDebugKind", ""))) {
+            return true;
+        }
+        String type = eventType == null ? "" : eventType;
+        if ("JDBC".equals(type)) {
+            String capture = detail.getOrDefault("captureMode", "");
+            String sql = detail.getOrDefault("sql", "");
+            // 真实语句/connect；协议 listen meta 不保留。
+            return ("DEPENDENCY_MOCK".equals(capture) || "IMPLEMENTATION_METHOD".equals(capture)
+                    || "APPLICATION_CALL_SITE".equals(capture)
+                    || "DATASOURCE_METHOD".equals(capture))
+                    && (!sql.isBlank() || detail.containsKey("url")
+                    || "connect".equalsIgnoreCase(detail.getOrDefault("operation", ""))
+                    || "setUrl".equalsIgnoreCase(detail.getOrDefault("operation", ""))
+                    || "getConnection".equalsIgnoreCase(detail.getOrDefault("operation", "")));
+        }
+        return false;
     }
 
     @Override

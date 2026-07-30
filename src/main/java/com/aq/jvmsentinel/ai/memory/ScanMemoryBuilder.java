@@ -12,11 +12,13 @@ import com.aq.jvmsentinel.provider.AgentRole;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 构建同 scan 共享 memory 快照，供 AI 角色与 GUI 调试视图。
@@ -26,6 +28,10 @@ public final class ScanMemoryBuilder {
     public static final int SCHEMA_VERSION = 1;
     private static final int MAX_INDEX = 48;
     private static final int MAX_INFERENCE = 8;
+    /** 与 FindingBindings 高影响面一致：截断前优先保留危险 sink。 */
+    private static final Set<String> HIGH_IMPACT_SINK_CATEGORIES = Set.of(
+            "COMMAND", "SQL", "JDBC", "EXPRESSION", "DESERIALIZATION", "DESERIAL",
+            "JNDI", "SSRF", "XXE", "FILE", "FILE_WRITE", "FILE_READ", "FILE_DELETE", "SCRIPT");
 
     private ScanMemoryBuilder() {
     }
@@ -146,9 +152,19 @@ public final class ScanMemoryBuilder {
             entryIndex.add(row);
         }
 
-        List<Map<String, Object>> sinkIndex = new ArrayList<>();
+        // 先按危险类别排序再截断，避免大量低信号 sink 挤掉 COMMAND/SQL/DESERIAL。
+        List<ApiDtos.SinkDto> rankedSinks = new ArrayList<>();
         for (ApiDtos.SinkDto sink : dto.sinks()) {
-            if (sink == null || sinkIndex.size() >= MAX_INDEX) {
+            if (sink != null) {
+                rankedSinks.add(sink);
+            }
+        }
+        rankedSinks.sort(Comparator
+                .comparingInt(ScanMemoryBuilder::sinkSelectionRank)
+                .thenComparing(s -> s.id() == null ? "" : s.id()));
+        List<Map<String, Object>> sinkIndex = new ArrayList<>();
+        for (ApiDtos.SinkDto sink : rankedSinks) {
+            if (sinkIndex.size() >= MAX_INDEX) {
                 break;
             }
             Map<String, Object> row = new LinkedHashMap<>();
@@ -191,6 +207,10 @@ public final class ScanMemoryBuilder {
         Map<String, Object> facts = new LinkedHashMap<>();
         facts.put("entryIndex", entryIndex);
         facts.put("sinkIndex", sinkIndex);
+        facts.put("entryIndexTotal", dto.entries().size());
+        facts.put("sinkIndexTotal", dto.sinks().size());
+        facts.put("entryIndexTruncated", dto.entries().size() > MAX_INDEX);
+        facts.put("sinkIndexTruncated", dto.sinks().size() > MAX_INDEX);
         facts.put("authWallEntries", authWalls);
         facts.put("gatePassEntries", gatePasses);
         facts.put("knownEffects", knownEffects);
@@ -243,9 +263,10 @@ public final class ScanMemoryBuilder {
         }
         index.put("howToDeepen", List.of(
                 "scan_memory_get section=FACTS|WORK|INFERENCE|TOOLS_CATALOG|ROLE_SLICE",
-                "facts_search kind=PATH_RUN|PATH_TRACE|STATIC_CONTRAST|SINK|ENTRY",
+                "facts_search kind=PATH_RUN|PATH_TRACE|STATIC_CONTRAST|SINK|ENTRY|FINDING；"
+                        + "page meta truncated/hasMore 时用 offset 续页；PATH_TRACE eventsOffset 续 hop",
                 "code_query kind=METHOD_VIEW|GUARD_QUERY|DATAFLOW_SLICE|AUTH",
-                "evidence_get evidenceRef=...",
+                "evidence_get evidenceRef=...（含 finding:<id> / pathtrace:<id>?eventsOffset=N）",
                 "sandbox_probe 仅 DYNAMIC/PATH/TRIAGE 角色且服务端闸门"));
         return index;
     }
@@ -284,13 +305,15 @@ public final class ScanMemoryBuilder {
                 "索引、事实层、工作层、推断层、工具说明、角色切片",
                 "全部六个角色"));
         tools.add(tool("facts_search",
-                "在已索引事实中搜索",
-                "kind=SCAN|ENTRY|DEPENDENCY|SINK|…；query 用 entryId/route/class（勿用 * 或单空格；空 query=列表）；limit",
-                "入口/依赖/sink/证据/PathRun 摘要/PathTrace 参数流与 effect/对照行",
+                "在已索引事实中搜索（返回 facts_search:page 元数据；truncated 时须 offset 续取）",
+                "kind=SCAN|ENTRY|DEPENDENCY|SINK|FINDING|PATH_RUN|PATH_TRACE|…；"
+                        + "query 用 entryId/route/class（勿用 * 或单空格；空 query=列表）；"
+                        + "limit+offset；PATH_TRACE 可用 eventsOffset=",
+                "入口/依赖/sink/finding/证据/PathRun 摘要/PathTrace events+参数流与 effect/对照行",
                 "全部角色（按白名单）"));
         tools.add(tool("evidence_get",
                 "按证据引用读一条证据",
-                "evidenceRef=",
+                "evidenceRef=（含 finding:<id>、pathtrace:<id>?eventsOffset=N）",
                 "单条证据正文与 provenance",
                 "全部角色"));
         tools.add(tool("code_query",
@@ -310,8 +333,8 @@ public final class ScanMemoryBuilder {
                 "DYNAMIC/PATH/TRIAGE"));
         tools.add(tool("fuzz_strategy_get",
                 "读取服务端模糊/验证策略提示",
-                "无或少量参数",
-                "动态验证策略说明",
+                "sinkId=（必填，须匹配已索引 SINK）；sinkCategory=可选（须与事实类别一致）",
+                "ProbeTemplates（inputHint/expectedSignal）；RULE_GENERATED，不执行探针",
                 "DYNAMIC_VERIFICATION"));
         return tools;
     }
@@ -327,7 +350,9 @@ public final class ScanMemoryBuilder {
         hints.put(AgentRole.PATH_EXPLORATION.name(),
                 "必读：staticOnlyGaps/candidateHypotheses/knownEffects；定向 sandbox_probe；FORCED 仅 INSTRUMENTATION。");
         hints.put(AgentRole.VULNERABILITY_TRIAGE.name(),
-                "必读：supported+candidate、对照缺口、knownEffects；延迟组链；仅 SQL H3 可 DYNAMIC_CONFIRMED。");
+                "必读：supported+candidate、对照缺口、knownEffects；延迟组链；"
+                        + "危险 sink 效果实测（H3 SQL / H4 EFFECT_TRIGGERED）可由服务端升 DYNAMIC_CONFIRMED+privilege；"
+                        + "FORCED/2xx/入口 alone 不得确认。");
         hints.put(AgentRole.REPORT_GENERATION.name(),
                 "必读：counts、staticOnlyGaps、knownEffects、inference；主漏洞在上、风险点在下；勿堆工具原始 JSON。");
         return hints;
@@ -354,6 +379,40 @@ public final class ScanMemoryBuilder {
         row.put("outcomeClass", run.outcomeClass());
         row.put("entryHit", run.entryHit());
         return row;
+    }
+
+    /** 数值越小越优先进入 sinkIndex 窗口。 */
+    private static int sinkSelectionRank(ApiDtos.SinkDto sink) {
+        if (sink == null) {
+            return 9;
+        }
+        String category = sink.category() == null ? "" : sink.category().trim().toUpperCase(Locale.ROOT);
+        String symbol = sink.symbol() == null ? "" : sink.symbol().toUpperCase(Locale.ROOT);
+        if (HIGH_IMPACT_SINK_CATEGORIES.contains(category)
+                || symbolContainsHighImpact(symbol)) {
+            return 0;
+        }
+        if ("AUTH".equals(category) || "GUARD".equals(category) || category.contains("AUTH")) {
+            return 2;
+        }
+        return 1;
+    }
+
+    private static boolean symbolContainsHighImpact(String symbol) {
+        if (symbol == null || symbol.isBlank()) {
+            return false;
+        }
+        return symbol.contains("RUNTIME.EXEC")
+                || symbol.contains("PROCESSBUILDER")
+                || symbol.contains("JDBC")
+                || symbol.contains("STATEMENT")
+                || symbol.contains("OBJECTINPUTSTREAM")
+                || symbol.contains("READOBJECT")
+                || symbol.contains("SPEL")
+                || symbol.contains("OGNL")
+                || symbol.contains("SCRIPTENGINE")
+                || symbol.contains("INITIALCONTEXT")
+                || symbol.contains("SHIRO");
     }
 
     private static String trim(String value, int max) {

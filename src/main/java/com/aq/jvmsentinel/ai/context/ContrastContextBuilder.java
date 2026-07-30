@@ -120,7 +120,7 @@ public final class ContrastContextBuilder {
                     }
                     plans.add(TracePlanCompiler.compileFromStaticIr(
                             entry, scan.dto().sinks(), scan.evidence(), taintPaths, List.of()));
-                    if (plans.size() >= 48) {
+                    if (plans.size() >= AiPromptLimits.MAX_TRACE_PLAN_COMPILE_FOR_PROMPT) {
                         break;
                     }
                 }
@@ -128,8 +128,10 @@ public final class ContrastContextBuilder {
             List<PathTrace> traces = new ArrayList<>(loadPathTracesByPathRunId(job).values());
             List<TracePlanObservationDiff.Diff> diffs = TracePlanObservationDiff.prioritizeGaps(
                     TracePlanObservationDiff.diffAll(plans, traces));
+            // 行数硬顶：缺口优先后只内联少量行，避免撑爆 user text 128KiB。
             return TracePlanObservationDiff.formatForPrompt(
-                    diffs, language == AiOutputLanguage.EN, 16);
+                    diffs, language == AiOutputLanguage.EN,
+                    AiPromptLimits.MAX_TRACE_PLAN_DIFF_PROMPT_ROWS);
         } catch (RuntimeException ignored) {
             return "";
         }

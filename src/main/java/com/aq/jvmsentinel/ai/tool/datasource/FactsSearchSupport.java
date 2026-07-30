@@ -4,6 +4,7 @@ import com.aq.jvmsentinel.analysis.contrast.ContrastLedger;
 import com.aq.jvmsentinel.analysis.experiment.RuntimePostureOrchestrator;
 import com.aq.jvmsentinel.ai.tool.EntryRefResolver;
 import com.aq.jvmsentinel.ai.tool.ToolDataSource.FactRecord;
+import com.aq.jvmsentinel.ai.tool.ToolDataSource.FactSearchPage;
 import com.aq.jvmsentinel.ai.tool.ToolExecutionContext;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.ControlPlaneStore;
@@ -11,6 +12,7 @@ import com.aq.jvmsentinel.control.StaticFactSnapshot;
 import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
 import com.aq.jvmsentinel.model.StaticContrastRow;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -24,6 +26,13 @@ import java.util.Optional;
  * facts_search / evidence_get 事实检索与匹配辅助。
  */
 public final class FactsSearchSupport {
+    /** kind=ANY 时按桶采样，避免 ENTRY 等前序种类吃满 limit 后 PATH_RUN/SINK 静默为 0。 */
+    private static final List<String> ANY_KIND_BUCKETS = List.of(
+            "SCAN", "ENTRY", "DEPENDENCY", "SINK", "FINDING", "PATH_RUN", "PATH_TRACE",
+            "STATIC_CONTRAST", "EVIDENCE");
+    /** 单次扫描匹配上限；触顶时 totalCapped=true，模型须收窄 query。 */
+    private static final int MAX_MATCH_SCAN = 2_000;
+
     private final DatasourceScope datasourceScope;
     private final ControlPlaneStore store;
     private final String scanId;
@@ -36,46 +45,124 @@ public final class FactsSearchSupport {
 
     public List<FactRecord> searchFacts(ToolExecutionContext.Scope scope, String kind,
                                         String query, int limit) {
+        return searchFactsPage(scope, kind, query, limit, 0).records();
+    }
+
+    public FactSearchPage searchFactsPage(ToolExecutionContext.Scope scope, String kind,
+                                          String query, int limit, int offset) {
         rejectPathTracePolicyOverrides(query);
         ControlPlaneStore.ScanRecord scan = datasourceScope.scopedScan(scope);
-        String requested = kind.toUpperCase(Locale.ROOT);
-        String needle = query == null ? "" : query.toLowerCase(Locale.ROOT);
-        List<FactRecord> result = new ArrayList<>();
-        if ("SCAN".equals(requested) || "METADATA".equals(requested) || "ANY".equals(requested)) {
+        String requested = kind == null ? "" : kind.toUpperCase(Locale.ROOT);
+        QueryOptions options = QueryOptions.parse(query);
+        int cappedLimit = Math.max(1, Math.min(100, limit));
+        int cappedOffset = Math.max(0, Math.min(100_000, offset));
+        List<FactRecord> matched = new ArrayList<>();
+        if ("ANY".equals(requested)) {
+            matched.addAll(searchAny(scope, scan, options,
+                    Math.min(MAX_MATCH_SCAN, cappedOffset + cappedLimit)));
+        } else {
+            appendKind(matched, scope, scan, requested, options, MAX_MATCH_SCAN);
+        }
+        boolean totalCapped = matched.size() >= MAX_MATCH_SCAN;
+        int total = matched.size();
+        int from = Math.min(cappedOffset, total);
+        int to = Math.min(from + cappedLimit, total);
+        return new FactSearchPage(matched.subList(from, to), total, cappedOffset, cappedLimit, totalCapped);
+    }
+
+    /**
+     * 跨种类采样：每桶最多 ceil(limit/buckets) 条，再按桶顺序合并至 limit。
+     * 保证在有数据时 SINK / PATH_RUN 等不会被前序 ENTRY 挤出。
+     */
+    private List<FactRecord> searchAny(ToolExecutionContext.Scope scope,
+                                       ControlPlaneStore.ScanRecord scan,
+                                       QueryOptions options,
+                                       int limit) {
+        int perKind = Math.max(1, (limit + ANY_KIND_BUCKETS.size() - 1) / ANY_KIND_BUCKETS.size());
+        List<FactRecord> merged = new ArrayList<>();
+        for (String bucket : ANY_KIND_BUCKETS) {
+            if (merged.size() >= limit) {
+                break;
+            }
+            List<FactRecord> bucketHits = new ArrayList<>();
+            appendKind(bucketHits, scope, scan, bucket, options, perKind);
+            for (FactRecord hit : bucketHits) {
+                if (merged.size() >= limit) {
+                    break;
+                }
+                merged.add(hit);
+            }
+        }
+        if (merged.size() < limit) {
+            List<FactRecord> refill = new ArrayList<>();
+            for (String bucket : ANY_KIND_BUCKETS) {
+                appendKind(refill, scope, scan, bucket, options, limit);
+            }
+            for (FactRecord hit : refill) {
+                if (merged.size() >= limit) {
+                    break;
+                }
+                boolean exists = false;
+                for (FactRecord already : merged) {
+                    if (already.reference().equals(hit.reference())) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (!exists) {
+                    merged.add(hit);
+                }
+            }
+        }
+        return List.copyOf(merged);
+    }
+
+    private void appendKind(List<FactRecord> result, ToolExecutionContext.Scope scope,
+                            ControlPlaneStore.ScanRecord scan, String requested,
+                            QueryOptions options, int limit) {
+        String needle = options.needle();
+        if ("SCAN".equals(requested) || "METADATA".equals(requested)) {
             addIfMatching(result, scope, "scan:" + scan.dto().scanId(),
                     DatasourceJson.JSON.valueToTree(scan.dto()), needle, limit);
         }
-        if ("ENTRY".equals(requested) || "ENTRYPOINT".equals(requested) || "ANY".equals(requested)) {
+        if ("ENTRY".equals(requested) || "ENTRYPOINT".equals(requested)) {
             for (ApiDtos.EntryDto value : scan.dto().entries()) {
                 addIfMatching(result, scope, "entry:" + value.id(),
                         DatasourceJson.JSON.valueToTree(value), needle, limit);
             }
         }
-        if ("DEPENDENCY".equals(requested) || "ANY".equals(requested)) {
+        if ("DEPENDENCY".equals(requested)) {
             for (ApiDtos.DependencyDto value : scan.dto().dependencies()) {
                 addIfMatching(result, scope, "dependency:" + value.id(),
                         DatasourceJson.JSON.valueToTree(value), needle, limit);
             }
         }
-        if ("SINK".equals(requested) || "ANY".equals(requested)) {
+        if ("SINK".equals(requested)) {
             for (ApiDtos.SinkDto value : scan.dto().sinks()) {
                 addIfMatching(result, scope, "sink:" + value.id(),
                         DatasourceJson.JSON.valueToTree(value), needle, limit);
             }
         }
-        if ("PATH_RUN".equals(requested) || "PATHRUN".equals(requested) || "ANY".equals(requested)) {
+        if ("FINDING".equals(requested) || "FINDINGS".equals(requested)) {
+            for (ApiDtos.FindingDto value : scan.dto().findings()) {
+                addIfMatching(result, scope, "finding:" + value.findingId(),
+                        findingFact(value), needle, limit);
+            }
+        }
+        if ("PATH_RUN".equals(requested) || "PATHRUN".equals(requested)) {
             for (ApiDtos.PathRunDto value : datasourceScope.pathRuns(scan)) {
                 addIfMatching(result, scope, "pathrun:" + value.pathRunId(),
                         PathRunFactSupport.pathRunFact(value), needle, limit);
             }
         }
-        if ("PATH_TRACE".equals(requested) || "PATHTRACE".equals(requested) || "ANY".equals(requested)) {
+        if ("PATH_TRACE".equals(requested) || "PATHTRACE".equals(requested)) {
             for (PathTrace trace : datasourceScope.pathTraces(scan)) {
                 addIfMatching(result, scope, "pathtrace:" + trace.pathTraceId(),
-                        PathRunFactSupport.pathTraceFact(trace), needle, limit);
+                        PathRunFactSupport.pathTraceFact(trace, options.eventsOffset(), options.eventsLimit()),
+                        needle, limit);
             }
         }
-        if ("STATIC_CONTRAST".equals(requested) || "CONTRAST".equals(requested) || "ANY".equals(requested)) {
+        if ("STATIC_CONTRAST".equals(requested) || "CONTRAST".equals(requested)) {
             ContrastLedger.Ledger ledger = ContrastLedger.build(
                     scan.dto().entries(), scan.dto().sinks(), scan.evidence(), datasourceScope.pathRuns(scan),
                     StaticFactSnapshot.resolveContrastTaintPaths(
@@ -85,7 +172,7 @@ public final class FactsSearchSupport {
                         ContrastLedger.toFactNode(row), needle, limit);
             }
         }
-        if ("EVIDENCE".equals(requested) || "FACT".equals(requested) || "ANY".equals(requested)) {
+        if ("EVIDENCE".equals(requested) || "FACT".equals(requested)) {
             for (ApiDtos.EvidenceDto value : scan.evidence().values()) {
                 addIfMatching(result, scope, value.evidenceId(),
                         PathRunFactSupport.safeEvidence(value), needle, limit);
@@ -101,7 +188,6 @@ public final class FactsSearchSupport {
                         PathRunFactSupport.safeEvidence(value), needle, limit);
             }
         }
-        return List.copyOf(result);
     }
 
     public Optional<FactRecord> findEvidence(ToolExecutionContext.Scope scope, String evidenceRef) {
@@ -127,8 +213,20 @@ public final class FactsSearchSupport {
         }
         if (evidenceRef != null && evidenceRef.startsWith("pathtrace:")) {
             String id = evidenceRef.substring("pathtrace:".length());
-            return datasourceScope.pathTraces(scan).stream().filter(trace -> trace.pathTraceId().equals(id)).findFirst()
-                    .map(trace -> new FactRecord(scope, evidenceRef, PathRunFactSupport.pathTraceFact(trace)));
+            int q = id.indexOf('?');
+            QueryOptions options = QueryOptions.parse(q >= 0 ? id.substring(q + 1) : "");
+            String traceId = q >= 0 ? id.substring(0, q) : id;
+            return datasourceScope.pathTraces(scan).stream()
+                    .filter(trace -> trace.pathTraceId().equals(traceId)).findFirst()
+                    .map(trace -> new FactRecord(scope, "pathtrace:" + traceId,
+                            PathRunFactSupport.pathTraceFact(trace, options.eventsOffset(), options.eventsLimit())));
+        }
+        if (evidenceRef != null && evidenceRef.startsWith("finding:")) {
+            String id = evidenceRef.substring("finding:".length());
+            return scan.dto().findings().stream()
+                    .filter(finding -> finding.findingId().equals(id))
+                    .findFirst()
+                    .map(finding -> new FactRecord(scope, evidenceRef, findingFact(finding)));
         }
         return Optional.empty();
     }
@@ -160,6 +258,24 @@ public final class FactsSearchSupport {
         }
     }
 
+    private static JsonNode findingFact(ApiDtos.FindingDto value) {
+        ObjectNode node = DatasourceJson.JSON.createObjectNode();
+        node.put("kind", "FINDING");
+        node.put("findingId", value.findingId());
+        node.put("title", value.title() == null ? "" : value.title());
+        node.put("severity", value.severity() == null ? "" : value.severity());
+        node.put("verificationStatus", value.verificationStatus() == null ? "" : value.verificationStatus());
+        node.put("entrypointId", value.entrypointId() == null ? "" : value.entrypointId());
+        node.put("entry", value.entry() == null ? "" : value.entry());
+        node.put("sinkId", value.sinkId() == null ? "" : value.sinkId());
+        node.put("sink", value.sink() == null ? "" : value.sink());
+        node.put("hypothesisId", value.hypothesisId() == null ? "" : value.hypothesisId());
+        node.put("securityProperty", value.securityProperty() == null ? "" : value.securityProperty());
+        node.put("confidence", value.confidence());
+        node.put("dependencyMode", value.dependencyMode() == null ? "" : value.dependencyMode());
+        return node;
+    }
+
     private static void addIfMatching(List<FactRecord> result, ToolExecutionContext.Scope scope,
                                       String reference, JsonNode value, String needle, int limit) {
         if (result.size() >= limit) {
@@ -168,6 +284,50 @@ public final class FactsSearchSupport {
         String searchable = value.toString().toLowerCase(Locale.ROOT);
         if (needle.isEmpty() || searchable.contains(needle)) {
             result.add(new FactRecord(scope, reference, value));
+        }
+    }
+
+    /** 从 query 剥离续取参数，剩余部分作子串 needle。 */
+    record QueryOptions(String needle, int eventsOffset, int eventsLimit) {
+        static QueryOptions parse(String query) {
+            if (query == null || query.isBlank()) {
+                return new QueryOptions("", 0, PathRunFactSupport.DEFAULT_EVENTS_LIMIT);
+            }
+            int eventsOffset = 0;
+            int eventsLimit = PathRunFactSupport.DEFAULT_EVENTS_LIMIT;
+            StringBuilder needleParts = new StringBuilder();
+            for (String token : query.split("[\\s;&]+")) {
+                if (token.isBlank()) {
+                    continue;
+                }
+                int eq = token.indexOf('=');
+                if (eq > 0) {
+                    String key = token.substring(0, eq).trim().toLowerCase(Locale.ROOT);
+                    String raw = token.substring(eq + 1).trim();
+                    if ("eventsoffset".equals(key) || "events_offset".equals(key)) {
+                        eventsOffset = parseNonNegative(raw, 0);
+                        continue;
+                    }
+                    if ("eventslimit".equals(key) || "events_limit".equals(key)) {
+                        eventsLimit = Math.max(1, Math.min(PathRunFactSupport.MAX_EVENTS_LIMIT,
+                                parseNonNegative(raw, PathRunFactSupport.DEFAULT_EVENTS_LIMIT)));
+                        continue;
+                    }
+                }
+                if (needleParts.length() > 0) {
+                    needleParts.append(' ');
+                }
+                needleParts.append(token);
+            }
+            return new QueryOptions(needleParts.toString().toLowerCase(Locale.ROOT), eventsOffset, eventsLimit);
+        }
+
+        private static int parseNonNegative(String raw, int fallback) {
+            try {
+                return Math.max(0, Integer.parseInt(raw));
+            } catch (NumberFormatException ignored) {
+                return fallback;
+            }
         }
     }
 }

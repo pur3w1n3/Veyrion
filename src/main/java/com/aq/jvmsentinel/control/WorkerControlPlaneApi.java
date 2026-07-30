@@ -59,7 +59,8 @@ public final class WorkerControlPlaneApi implements HttpHandler {
     private static final long DEFAULT_CPU_MILLIS = 300_000;
     private static final long DEFAULT_MEMORY_BYTES = 2L * 1024 * 1024 * 1024;
     private static final long DEFAULT_DISK_BYTES = 512L * 1024 * 1024;
-    private static final long DEFAULT_TRACE_BYTES = 16L * 1024 * 1024;
+    /** 默认轨迹预算：约覆盖 200 探针 × 2500 事件 × ~96B；仍 ≤ MAX_TRACE_BYTES 64MiB。 */
+    private static final long DEFAULT_TRACE_BYTES = 48L * 1024 * 1024;
 
     private final String token;
     private final Clock clock;

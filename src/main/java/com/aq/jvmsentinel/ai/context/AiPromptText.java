@@ -1,7 +1,9 @@
 package com.aq.jvmsentinel.ai.context;
 
 import com.aq.jvmsentinel.control.ApiDtos;
+import com.aq.jvmsentinel.provider.chat.ProviderChatContracts;
 
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -9,6 +11,44 @@ import java.util.Map;
 /** Prompt 摘要 JSON 与字符串截断辅助。 */
 public final class AiPromptText {
     private AiPromptText() {
+    }
+
+    /**
+     * 使文本满足 {@link ProviderChatContracts.UserTurn} 上限，避免 PATH 等大上下文直接
+     * {@code IllegalArgumentException: user text is invalid}。
+     * 去掉 NUL；超限时按 UTF-8 字节安全截断并附加说明。
+     */
+    public static String fitChatUserText(String text) {
+        String cleaned = text == null ? "" : text.replace("\0", "");
+        if (cleaned.isBlank()) {
+            return "(empty user prompt)";
+        }
+        int maxBytes = ProviderChatContracts.MAX_TEXT_BYTES;
+        byte[] raw = cleaned.getBytes(StandardCharsets.UTF_8);
+        if (raw.length <= maxBytes) {
+            return cleaned;
+        }
+        String trailer = "\n\n[PROMPT_TRUNCATED originalBytes=" + raw.length
+                + " maxBytes=" + maxBytes
+                + "; 上下文已截断，请用 scan_memory_get / facts_search / code_query 深挖]\n";
+        int trailerBytes = trailer.getBytes(StandardCharsets.UTF_8).length;
+        int budget = Math.max(256, maxBytes - trailerBytes);
+        return truncateUtf8(cleaned, budget) + trailer;
+    }
+
+    private static String truncateUtf8(String value, int maxBytes) {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length <= maxBytes) {
+            return value;
+        }
+        int end = maxBytes;
+        while (end > 0 && (bytes[end] & 0xC0) == 0x80) {
+            end--;
+        }
+        if (end == 0) {
+            return "";
+        }
+        return new String(bytes, 0, end, StandardCharsets.UTF_8);
     }
 
     public static Map<String, Object> scanPromptSummary(ApiDtos.ScanDto value) {

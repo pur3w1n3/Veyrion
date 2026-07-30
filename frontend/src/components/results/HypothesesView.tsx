@@ -5,7 +5,9 @@ import {
   type HypothesisFamily,
   type SecurityHypothesisDto
 } from '../../api'
+import { useListPagination } from '../../hooks/useListPagination'
 import { hypothesisFamilyBlurb, hypothesisFamilyLabel } from '../../labels'
+import { ListPagination } from '../ListPagination'
 
 export function HypothesesView({
   hypotheses,
@@ -30,6 +32,9 @@ export function HypothesesView({
     }
     return buckets
   }, [hypotheses])
+
+  const pagination = useListPagination(hypotheses)
+  const pageOffset = (pagination.page - 1) * pagination.pageSize
 
   return (
     <div className="results-view results-view--hypotheses">
@@ -87,14 +92,14 @@ export function HypothesesView({
               <span>{english ? 'Evidence' : '证据'}</span>
               <span>{english ? 'Property' : '说明'}</span>
             </div>
-            {hypotheses.map((item, index) => (
+            {pagination.pageItems.map((item, index) => (
               <button
                 type="button"
                 className={`results-row results-row--hyp ${item.hypothesisId === selectedHypothesisId ? 'selected' : ''}`}
                 key={item.hypothesisId}
                 onClick={() => onSelectHypothesis?.(item)}
               >
-                <span className="results-row__num">H{index + 1}</span>
+                <span className="results-row__num">H{pageOffset + index + 1}</span>
                 <span className="results-row__kind">
                   {hypothesisFamilyLabel(item.family, english)}
                   <span className="term-chip">{item.family}</span>
@@ -103,6 +108,21 @@ export function HypothesesView({
                 <span className="results-row__blurb veyrion-long-text">{item.securityProperty}</span>
               </button>
             ))}
+            <ListPagination
+              english={english}
+              ariaLabel={english ? 'Hypotheses pagination' : '安全假设分页'}
+              page={pagination.page}
+              totalPages={pagination.totalPages}
+              pageSize={pagination.pageSize}
+              onPageSizeChange={pagination.setPageSize}
+              rangeStart={pagination.rangeStart}
+              rangeEnd={pagination.rangeEnd}
+              total={pagination.total}
+              onPrev={pagination.goPrev}
+              onNext={pagination.goNext}
+              canPrev={pagination.canPrev}
+              canNext={pagination.canNext}
+            />
           </div>
         </div>
       )}

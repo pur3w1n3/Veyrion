@@ -159,8 +159,13 @@ public final class IdentityMaterialAcceptanceTest {
         check(admin.available(), "ADMIN available via Cookie channel without JWT");
         check(admin.authorizationHeader().isBlank(), "no fake Bearer when only Cookie material");
         check(admin.cookieHeader().startsWith("rememberMe="), "Cookie header present for ADMIN");
-        check(admin.cookieHeader().contains(SyntheticIdentityService.COOKIE_MATERIAL_MARKER),
-                "honest marker cookie (payload not minted)");
+        String cookieValue = admin.cookieHeader().substring("rememberMe=".length());
+        check(!cookieValue.isBlank()
+                        && !cookieValue.equals(SyntheticIdentityService.COOKIE_MATERIAL_MARKER),
+                "rememberMe AES payload minted for sandbox observation");
+        check(admin.precondition().contains("rememberMe AES payload minted")
+                        || admin.precondition().contains("minted"),
+                "precondition notes rememberMe mint");
     }
 
     private static void probePlanEncodesCookieHeader(Path jar) {

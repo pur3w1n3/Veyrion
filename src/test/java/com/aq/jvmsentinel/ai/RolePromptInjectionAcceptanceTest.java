@@ -122,10 +122,10 @@ public final class RolePromptInjectionAcceptanceTest {
         assertPrompt(store, AgentRole.VULNERABILITY_TRIAGE, AiOutputLanguage.ZH_CN,
                 List.of("ROOT_CAUSE_TEMPLATE", "CWE_MAPPING_HINTS", "rootCause"));
         assertPrompt(store, AgentRole.REPORT_GENERATION, AiOutputLanguage.ZH_CN,
-                List.of("## 漏洞相关", "findingBindings", "## 修复建议", "FIX_SUGGESTION_CONTEXT",
+                List.of("## 关键发现", "findingBindings", "## 修复建议", "FIX_SUGGESTION_CONTEXT",
                         "use PreparedStatement"));
         assertPrompt(store, AgentRole.REPORT_GENERATION, AiOutputLanguage.EN,
-                List.of("## Vulnerabilities", "findingBindings",
+                List.of("## Key Findings", "findingBindings",
                         "Remediation / Fix Suggestions", "FIX_SUGGESTION_CONTEXT"));
         assertPrompt(store, AgentRole.PRE_ANALYSIS, AiOutputLanguage.EN,
                 List.of("RANKED_SINK_CATALOG", "TAINT_GRAPH_SUMMARY", "BRANCH_CONSTRAINT_FACTS",

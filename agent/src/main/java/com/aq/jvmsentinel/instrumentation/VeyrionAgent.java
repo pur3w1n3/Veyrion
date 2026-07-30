@@ -34,18 +34,24 @@ public final class VeyrionAgent {
                             "bootstrapTransform", "false"))) {
                 throw new IllegalStateException("agent output budget cannot hold startup event");
             }
-            writer.writeObserved("INSTRUMENTATION_CAPABILITY", VeyrionAgent.class.getName(), entryPoint,
-                    Map.of("springServlet", "CONDITIONAL_NON_BOOTSTRAP_METHOD",
-                            "jdbc", config.dependencyMock ? "MOCK_DRIVER_OR_LOOPBACK_MYSQL_CLASSIC" : "NON_BOOTSTRAP_IMPLEMENTATION_METHOD",
-                            "redis", config.dependencyMock ? "LOOPBACK_RESP2_RESP3_SUBSET" : "UNSUPPORTED",
-                            "networkRequests", "APPLICATION_CALL_SITE",
-                            "dnsLookups", "APPLICATION_CALL_SITE",
-                            "jdkHttpClient", "APPLICATION_CALL_SITE",
-                            "fileWrite", "APPLICATION_CALL_SITE",
-                            "process", "APPLICATION_CALL_SITE",
-                            "branchCoverage", config.coverageEnabled
-                                    ? "REQUEST_SCOPED_BRANCH_SITE_HITS" : "DISABLED",
-                            "bootstrapClasses", "UNSUPPORTED_FAIL_EXPLICIT"));
+            java.util.LinkedHashMap<String, String> caps = new java.util.LinkedHashMap<>();
+            caps.put("springServlet", "CONDITIONAL_NON_BOOTSTRAP_METHOD");
+            caps.put("jdbc", config.dependencyMock
+                    ? "MOCK_DRIVER_OR_LOOPBACK_MYSQL_CLASSIC" : "NON_BOOTSTRAP_IMPLEMENTATION_METHOD");
+            caps.put("redis", config.dependencyMock ? "LOOPBACK_RESP2_RESP3_SUBSET" : "UNSUPPORTED");
+            caps.put("networkRequests", "APPLICATION_CALL_SITE_URL_HTTPURLCONNECTION");
+            caps.put("dnsLookups", "APPLICATION_CALL_SITE_GATED");
+            caps.put("socketConnect", "NOT_HOOKED_TOO_COARSE");
+            caps.put("jdkHttpClient", "APPLICATION_CALL_SITE");
+            caps.put("fileWrite", "APPLICATION_CALL_SITE_FILE_WRITE");
+            caps.put("fileRead", "APPLICATION_CALL_SITE_FILE_READ_GATED");
+            caps.put("deserialization", "APPLICATION_CALL_SITE_OBJECT_INPUT");
+            caps.put("process", "APPLICATION_CALL_SITE");
+            caps.put("branchCoverage", config.coverageEnabled
+                    ? "REQUEST_SCOPED_BRANCH_SITE_HITS" : "DISABLED");
+            caps.put("bootstrapClasses", "UNSUPPORTED_FAIL_EXPLICIT");
+            writer.writeObserved("INSTRUMENTATION_CAPABILITY", VeyrionAgent.class.getName(),
+                    entryPoint, caps);
             DependencyMockBootstrap.install(instrumentation, config.dependencyMock, config.worldPackDependencyMode);
             instrumentation.addTransformer(new ObservationTransformer(config), false);
             AutomaticInstrumentation.install(instrumentation, config, writer);

@@ -1,12 +1,17 @@
 package com.aq.jvmsentinel.worker;
 
 import com.aq.jvmsentinel.domain.hypothesis.HypothesisFamily;
+import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
+import com.aq.jvmsentinel.domain.pathdebug.TraceEvent;
+import com.aq.jvmsentinel.domain.pathdebug.TraceEventKind;
 import com.aq.jvmsentinel.model.PathRun;
 import com.aq.jvmsentinel.model.SqlEvent;
 import com.aq.jvmsentinel.model.VerificationStatus;
 
+import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 仅服务端验证门禁。
@@ -14,15 +19,34 @@ import java.util.Objects;
  * <p>H3（SQL 数据流）：当恶意片段出现在实际 JDBC/mock SQL 且未参数化时，
  * 可将 {@code DYNAMIC_SUSPECTED → DYNAMIC_CONFIRMED} 升级。
  *
- * <p>P2 family fail-closed：Guard / State / Typestate / 其他非 SQL 数据流 family
+ * <p>H4（危险 sink 效果）：当 PathTrace 观测到与 finding/securityProperty 匹配的
+ * {@code EFFECT_TRIGGERED}，且入口命中、证据可引用时，可升 {@code DYNAMIC_CONFIRMED}。
+ * <b>观测细、确认严</b>：Agent 出 EFFECT ≠ 自动确认；仅 HTTP 200 / 仅入口 /
+ * 仅 FORCED / 仅 {@code FILE_READ} / 仅 {@code DNS_LOOKUP} → 不得升确认。
+ *
+ * <p>P2 family fail-closed：Guard / State / Typestate 等非数据流 family
  * 上限为 {@code DYNAMIC_SUSPECTED}，直至独立 family 审计落地。模型不能调用此升级。
  */
 public final class DynamicConfirmedGate {
+    /**
+     * 无 securityProperty 时允许确认的强危险 kind。
+     * 故意排除 FILE_READ / FILE_DELETE / DNS_LOOKUP / HTTP_CLIENT（弱或过粗）。
+     */
+    private static final Set<String> STRONG_CONFIRMABLE_KINDS = Set.of(
+            "EXPRESSION", "COMMAND", "SQL", "JDBC", "SSRF", "JNDI",
+            "DESERIALIZATION", "FILE_WRITE", "FILE", "PROCESS");
+
+    /** 可出现在 effectKindsOf 归一化结果中的全部 kind（含仅观测）。 */
+    private static final Set<String> KNOWN_EFFECT_KINDS = Set.of(
+            "EXPRESSION", "COMMAND", "SQL", "JDBC", "SSRF", "JNDI",
+            "DESERIALIZATION", "CLASS_LOADING", "FILE", "FILE_WRITE", "FILE_READ",
+            "FILE_DELETE", "PROCESS", "HTTP_CLIENT", "DNS_LOOKUP");
+
     private DynamicConfirmedGate() { }
 
     /**
      * SQL 数据流 H3 路径（默认）。等价于
-     * {@link #evaluate(PathRun, String, HypothesisFamily)} 且 {@link HypothesisFamily#DATAFLOW}。
+     * {@link #evaluate(PathRun, String, HypothesisFamily)} 且 {@link HypothesisFamily#DATAFLOW}.
      */
     public static VerificationStatus evaluate(PathRun run, String probeMarker) {
         return evaluate(run, probeMarker, HypothesisFamily.DATAFLOW);
@@ -67,6 +91,45 @@ public final class DynamicConfirmedGate {
         return VerificationStatus.DYNAMIC_CONFIRMED;
     }
 
+    /**
+     * H4：危险 sink 效果确认。FORCED/COVERAGE 仅作路径手段；必须观测到匹配的
+     * EFFECT_TRIGGERED，不能仅凭 2xx / ENTRY_HIT / INSTRUMENTATION_REACHABILITY。
+     *
+     * @param securityProperty finding 的 securityProperty（如 EXPRESSION、DESERIALIZATION）
+     */
+    public static VerificationStatus evaluateEffect(
+            PathRun run, PathTrace trace, String securityProperty) {
+        Objects.requireNonNull(run, "run");
+        if (run.evidenceRefs() == null || run.evidenceRefs().isEmpty()) {
+            return VerificationStatus.DYNAMIC_SUSPECTED;
+        }
+        if (Boolean.FALSE.equals(run.entryHit())) {
+            return VerificationStatus.DYNAMIC_SUSPECTED;
+        }
+        // 无 HTTP 入口命中时，仍允许 entryHit=null 但 trace 含 ENTRY_HIT+EFFECT 的窗口。
+        if (!Boolean.TRUE.equals(run.entryHit()) && !traceHasEntry(trace)) {
+            return VerificationStatus.DYNAMIC_SUSPECTED;
+        }
+        Set<String> observed = effectKindsOf(trace);
+        if (observed.isEmpty()) {
+            return VerificationStatus.DYNAMIC_SUSPECTED;
+        }
+        String property = securityProperty == null ? "" : securityProperty.trim().toUpperCase(Locale.ROOT);
+        if (property.isBlank()) {
+            // 无 property：仅强危险 effect 可确认 PathRun；FILE_READ/DNS 不得升。
+            for (String kind : observed) {
+                if (STRONG_CONFIRMABLE_KINDS.contains(kind)) {
+                    return VerificationStatus.DYNAMIC_CONFIRMED;
+                }
+            }
+            return VerificationStatus.DYNAMIC_SUSPECTED;
+        }
+        if (matchesProperty(property, observed)) {
+            return VerificationStatus.DYNAMIC_CONFIRMED;
+        }
+        return VerificationStatus.DYNAMIC_SUSPECTED;
+    }
+
     public static PathRun apply(PathRun run, String probeMarker) {
         return apply(run, probeMarker, HypothesisFamily.DATAFLOW);
     }
@@ -74,17 +137,24 @@ public final class DynamicConfirmedGate {
     public static PathRun apply(PathRun run, String probeMarker, HypothesisFamily family) {
         VerificationStatus status = evaluate(run, probeMarker, family);
         if (status != VerificationStatus.DYNAMIC_CONFIRMED) return run;
-        return new PathRun(
-                run.pathRunId(), run.scanId(), run.entrypointRef(), run.track(), run.attemptId(),
-                run.experimentPlanId(), run.method(), run.contentType(), run.requestSummary(),
-                run.outcomeClass(), run.httpStatus(), run.entryHit(), run.parameterBound(),
-                run.sqlEvents(), run.stopReason(), status.name(), run.evidenceRefs(),
-                run.identityProvenance(), run.identityPrecondition(), run.branchHitMap());
+        return withStatus(run, status);
+    }
+
+    public static PathRun applyEffect(PathRun run, PathTrace trace, String securityProperty) {
+        VerificationStatus status = evaluateEffect(run, trace, securityProperty);
+        if (status != VerificationStatus.DYNAMIC_CONFIRMED) return run;
+        if (VerificationStatus.DYNAMIC_CONFIRMED.name().equals(run.verificationStatus())) {
+            return run;
+        }
+        return withStatus(run, status);
     }
 
     /**
      * 为 hypothesis family 钳制提议状态。非 SQL 数据流 family 不能超过
      * {@link VerificationStatus#DYNAMIC_SUSPECTED}；{@code VERIFIED} 全局关闭。
+     *
+     * <p>说明：H4 effect 确认走 {@link #evaluateEffect}，不经 family cap
+     *（效果观测独立于 hypothesis family 脚手架）。
      */
     public static VerificationStatus capForFamily(VerificationStatus proposed,
                                                   HypothesisFamily family) {
@@ -102,10 +172,137 @@ public final class DynamicConfirmedGate {
 
     /**
      * 在独立 Guard/State/Typestate（及其他非 SQL）family 审计完成前，
-     * 仅 SQL 数据流 H3 路径可达 {@code DYNAMIC_CONFIRMED}。
+     * 仅 SQL 数据流 H3 路径经 family 门可达 {@code DYNAMIC_CONFIRMED}。
+     * H4 effect 确认不经过本方法。
      */
     public static boolean allowsDynamicConfirmed(HypothesisFamily family) {
         return family == HypothesisFamily.DATAFLOW;
+    }
+
+    public static Set<String> effectKindsOf(PathTrace trace) {
+        LinkedHashSet<String> kinds = new LinkedHashSet<>();
+        if (trace == null) return Set.of();
+        if (trace.effectRefs() != null) {
+            for (String ref : trace.effectRefs()) {
+                String kind = normalizeEffectToken(ref);
+                if (!kind.isBlank()) kinds.add(kind);
+            }
+        }
+        if (trace.events() != null) {
+            for (TraceEvent event : trace.events()) {
+                if (event == null || event.kind() != TraceEventKind.EFFECT_TRIGGERED) continue;
+                String fromDetail = normalizeEffectToken(event.detailCode());
+                if (!fromDetail.isBlank()) kinds.add(fromDetail);
+                String fromSummary = normalizeEffectToken(event.summary());
+                if (!fromSummary.isBlank()) kinds.add(fromSummary);
+                String fromSubject = normalizeEffectToken(event.subjectRef());
+                if (!fromSubject.isBlank() && KNOWN_EFFECT_KINDS.contains(fromSubject)) {
+                    kinds.add(fromSubject);
+                }
+            }
+        }
+        return Set.copyOf(kinds);
+    }
+
+    /**
+     * securityProperty ↔ 观测 effectKind 严匹配。
+     * FILE_READ 不得确认 FILE_WRITE/PATH_TRAVERSAL；DNS_LOOKUP 不得确认 SSRF。
+     */
+    static boolean matchesProperty(String propertyUpper, Set<String> observedKinds) {
+        if (propertyUpper.contains("EXPRESSION") || propertyUpper.contains("TEMPLATE")
+                || propertyUpper.contains("SSTI")) {
+            return observedKinds.contains("EXPRESSION") || observedKinds.contains("COMMAND");
+        }
+        if (propertyUpper.contains("DESERIAL") || propertyUpper.contains("REMEMBER_ME")
+                || propertyUpper.contains("UNSAFE_DESER")) {
+            return observedKinds.contains("DESERIALIZATION");
+        }
+        if (propertyUpper.contains("SQL") || propertyUpper.contains("JDBC")) {
+            return observedKinds.contains("SQL") || observedKinds.contains("JDBC");
+        }
+        if (propertyUpper.contains("COMMAND") || propertyUpper.contains("RCE")) {
+            return observedKinds.contains("COMMAND") || observedKinds.contains("EXPRESSION");
+        }
+        if (propertyUpper.contains("SSRF")) {
+            // 仅 SSRF（URL/HttpClient/RestTemplate/JDBC URL）；DNS_LOOKUP / 裸 HTTP_CLIENT 不够。
+            return observedKinds.contains("SSRF") || observedKinds.contains("JDBC");
+        }
+        if (propertyUpper.contains("HTTP_CLIENT")) {
+            return observedKinds.contains("SSRF") || observedKinds.contains("HTTP_CLIENT");
+        }
+        if (propertyUpper.contains("JNDI")) {
+            return observedKinds.contains("JNDI");
+        }
+        if (propertyUpper.contains("CLASS_LOAD") || propertyUpper.contains("CLASSLOADING")) {
+            return observedKinds.contains("CLASS_LOADING");
+        }
+        if (propertyUpper.contains("FILE_READ") || propertyUpper.equals("READ")) {
+            return observedKinds.contains("FILE_READ");
+        }
+        if (propertyUpper.contains("FILE_WRITE") || propertyUpper.contains("FILE_UPLOAD")) {
+            return observedKinds.contains("FILE_WRITE") || observedKinds.contains("FILE");
+        }
+        if (propertyUpper.contains("FILE_DELETE")) {
+            return observedKinds.contains("FILE_DELETE");
+        }
+        // PATH_TRAVERSAL：写穿越可确认；仅读不足以确认（观测保留 FILE_READ）。
+        if (propertyUpper.contains("PATH_TRAVERSAL") || propertyUpper.contains("TRAVERSAL")
+                || propertyUpper.equals("PATH")) {
+            return observedKinds.contains("FILE_WRITE") || observedKinds.contains("FILE");
+        }
+        if (propertyUpper.contains("FILE")) {
+            // 泛化 FILE：写或遗留 FILE；不含纯读。
+            return observedKinds.contains("FILE_WRITE") || observedKinds.contains("FILE");
+        }
+        // 精确 kind 命中（禁止用 contains 反向把弱信号抬升）
+        return observedKinds.contains(propertyUpper);
+    }
+
+    private static boolean traceHasEntry(PathTrace trace) {
+        if (trace == null || trace.events() == null) return false;
+        return trace.events().stream()
+                .anyMatch(e -> e != null && e.kind() == TraceEventKind.ENTRY_HIT);
+    }
+
+    private static String normalizeEffectToken(String raw) {
+        if (raw == null || raw.isBlank()) return "";
+        String upper = raw.trim().toUpperCase(Locale.ROOT);
+        if (upper.startsWith("EFFECT:")) {
+            upper = upper.substring("EFFECT:".length());
+        }
+        if (upper.contains("EXPRESSION")) return "EXPRESSION";
+        if (upper.contains("DESERIAL")) return "DESERIALIZATION";
+        if (upper.contains("CLASS_LOAD")) return "CLASS_LOADING";
+        if (upper.contains("DNS")) return "DNS_LOOKUP";
+        if (upper.equals("SSRF") || upper.endsWith(":SSRF") || upper.contains("SSRF")) {
+            return "SSRF";
+        }
+        if (upper.contains("HTTP_CLIENT")) return "HTTP_CLIENT";
+        if (upper.contains("JDBC") || upper.equals("SQL") || upper.contains("SQL_EFFECT")) {
+            return upper.contains("JDBC") ? "JDBC" : "SQL";
+        }
+        if (upper.contains("COMMAND")) return "COMMAND";
+        if (upper.contains("JNDI")) return "JNDI";
+        if (upper.contains("FILE_WRITE") || upper.equals("FILEWRITE")) return "FILE_WRITE";
+        if (upper.contains("FILE_READ") || upper.equals("FILEREAD")) return "FILE_READ";
+        if (upper.contains("FILE_DELETE") || upper.equals("FILEDELETE")) return "FILE_DELETE";
+        // 遗留糊成 FILE 的写面（Multipart 旧事件）仍归一为 FILE，确认时按写处理。
+        if (upper.equals("FILE") || upper.endsWith(":FILE")) return "FILE";
+        if (upper.contains("PROCESS")) return "PROCESS";
+        int colon = upper.lastIndexOf(':');
+        if (colon >= 0 && colon + 1 < upper.length()) {
+            return upper.substring(colon + 1).trim();
+        }
+        return upper;
+    }
+
+    private static PathRun withStatus(PathRun run, VerificationStatus status) {
+        return new PathRun(
+                run.pathRunId(), run.scanId(), run.entrypointRef(), run.track(), run.attemptId(),
+                run.experimentPlanId(), run.method(), run.contentType(), run.requestSummary(),
+                run.outcomeClass(), run.httpStatus(), run.entryHit(), run.parameterBound(),
+                run.sqlEvents(), run.stopReason(), status.name(), run.evidenceRefs(),
+                run.identityProvenance(), run.identityPrecondition(), run.branchHitMap());
     }
 
     private static boolean isStatementEvidence(SqlEvent event) {

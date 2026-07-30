@@ -21,8 +21,8 @@ export function DownloadsView({
       id: DOWNLOAD_ARTIFACTS.reportMarkdown.id,
       title: english ? DOWNLOAD_ARTIFACTS.reportMarkdown.en : DOWNLOAD_ARTIFACTS.reportMarkdown.zh,
       desc: english
-        ? 'REPORT_GENERATION markdown body — audit conclusion narrative.'
-        : 'REPORT_GENERATION 最终 Markdown — 审计结论文本。',
+        ? 'REPORT_GENERATION deliverable Markdown — cover, executive summary, severity-grouped key findings, exploit chains, appendix.'
+        : 'REPORT_GENERATION 可交付 Markdown — 封面/执行摘要/按严重度分组的关键发现/利用链/附录。',
       enabled: hasReport,
       onClick: onDownloadReport
     },

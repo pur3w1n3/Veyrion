@@ -57,7 +57,8 @@ public final class PathTraceProjector {
             String subjectRef,
             String detailCode,
             boolean forced,
-            List<String> effectRefs
+            List<String> effectRefs,
+            Map<String, Object> attributes
     ) {
         public EventSummary {
             Objects.requireNonNull(kind, "kind");
@@ -65,6 +66,18 @@ public final class PathTraceProjector {
             subjectRef = subjectRef == null ? "" : subjectRef;
             detailCode = detailCode == null ? "" : detailCode;
             effectRefs = effectRefs == null ? List.of() : List.copyOf(effectRefs);
+            attributes = attributes == null ? Map.of() : Map.copyOf(attributes);
+        }
+
+        /** 兼容无 attributes 的既有调用点。 */
+        public EventSummary(
+                TraceEventKind kind,
+                String summary,
+                String subjectRef,
+                String detailCode,
+                boolean forced,
+                List<String> effectRefs) {
+            this(kind, summary, subjectRef, detailCode, forced, effectRefs, Map.of());
         }
     }
 
@@ -98,7 +111,7 @@ public final class PathTraceProjector {
                     summary.subjectRef(),
                     summary.detailCode(),
                     summary.forced(),
-                    Map.of(),
+                    summary.attributes(),
                     ""));
             if (summary.kind() == TraceEventKind.METHOD_HOP && !summary.subjectRef().isBlank()) {
                 lastBusinessHop = summary.subjectRef();

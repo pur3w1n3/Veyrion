@@ -18,6 +18,9 @@ import java.util.Map;
 public final class PathRunFactSupport {
     private static final int MAX_SQL_EVENTS_IN_FACT = 8;
     private static final int MAX_SQL_TEXT = 240;
+    /** PathTrace events 默认内联窗口；超出用 eventsOffset 续取。 */
+    public static final int DEFAULT_EVENTS_LIMIT = 32;
+    public static final int MAX_EVENTS_LIMIT = 100;
 
     private PathRunFactSupport() {
     }
@@ -37,6 +40,14 @@ public final class PathRunFactSupport {
     }
 
     public static JsonNode pathTraceFact(PathTrace trace) {
+        return pathTraceFact(trace, 0, DEFAULT_EVENTS_LIMIT);
+    }
+
+    /**
+     * PathTrace 事实：含有序 events 窗口。超出默认窗口时
+     * {@code eventsTruncated=true}，用 {@code eventsOffset}/{@code eventsLimit} 续取。
+     */
+    public static JsonNode pathTraceFact(PathTrace trace, int eventsOffset, int eventsLimit) {
         ObjectNode node = DatasourceJson.JSON.createObjectNode();
         node.put("kind", "PATH_TRACE");
         node.put("pathTraceId", trace.pathTraceId());
@@ -61,6 +72,30 @@ public final class PathRunFactSupport {
             row.put("boundTo", step.boundTo());
             row.put("flowedTo", step.flowedTo());
             row.put("effectRef", step.effectRef());
+        }
+        int offset = Math.max(0, eventsOffset);
+        int limit = Math.max(1, Math.min(MAX_EVENTS_LIMIT,
+                eventsLimit <= 0 ? DEFAULT_EVENTS_LIMIT : eventsLimit));
+        List<com.aq.jvmsentinel.domain.pathdebug.TraceEvent> all = trace.events();
+        int total = all.size();
+        node.put("eventCount", total);
+        node.put("eventsOffset", offset);
+        node.put("eventsLimit", limit);
+        ArrayNode events = node.putArray("events");
+        int emitted = 0;
+        for (int i = offset; i < total && emitted < limit; i++) {
+            events.add(DatasourceJson.JSON.valueToTree(all.get(i).toMap()));
+            emitted++;
+        }
+        boolean truncated = offset > 0 || offset + emitted < total;
+        node.put("eventsTruncated", truncated);
+        node.put("eventsHasMore", offset + emitted < total);
+        if (truncated) {
+            node.put("eventsNextOffset", offset + emitted);
+            node.put("eventsContinueHint",
+                    "facts_search kind=PATH_TRACE query=\"<pathTraceId> eventsOffset="
+                            + (offset + emitted) + "\" or evidence_get pathtrace:<id>?eventsOffset="
+                            + (offset + emitted));
         }
         ArrayNode suggestions = node.putArray("nextExperimentSuggestions");
         for (PathTraceGapAdvisor.Suggestion suggestion : PathTraceGapAdvisor.suggest(trace)) {

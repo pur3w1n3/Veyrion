@@ -135,9 +135,19 @@ public final class ProviderChatContracts {
     static String boundedText(String value, String field, int maximumBytes, boolean allowNewlines) {
         Objects.requireNonNull(value, field);
         int bytes = value.getBytes(StandardCharsets.UTF_8).length;
-        if (value.isBlank() || bytes > maximumBytes || value.indexOf('\0') >= 0
-                || (!allowNewlines && value.chars().anyMatch(Character::isISOControl))) {
-            throw new IllegalArgumentException(field + " is invalid");
+        if (value.isBlank()) {
+            throw new IllegalArgumentException(field + " is invalid: blank");
+        }
+        if (value.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException(field + " is invalid: contains NUL");
+        }
+        if (bytes > maximumBytes) {
+            throw new IllegalArgumentException(field + " is invalid: " + bytes
+                    + " bytes exceeds max " + maximumBytes
+                    + " (truncate via AiPromptText.fitChatUserText before UserTurn)");
+        }
+        if (!allowNewlines && value.chars().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException(field + " is invalid: control characters");
         }
         return value;
     }

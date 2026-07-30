@@ -29,7 +29,7 @@ public final class LocalArtifactWorkerLoop implements AutoCloseable {
                 Objects.requireNonNull(workerToken, "workerToken"), REQUEST_TIMEOUT);
         AgentJsonlTraceConverter converter = new AgentJsonlTraceConverter(
                 Clock.systemUTC(), 64L * 1024 * 1024, 64 * 1024,
-                100_000, WorkerContracts.MAX_TRACE_PAYLOAD_BYTES);
+                500_000, WorkerContracts.MAX_TRACE_PAYLOAD_BYTES);
         this.sandbox = Objects.requireNonNull(sandbox, "sandbox");
         this.executor = new ExternalArtifactTaskExecutor(
                 control, sandbox, Objects.requireNonNull(catalog, "catalog"),

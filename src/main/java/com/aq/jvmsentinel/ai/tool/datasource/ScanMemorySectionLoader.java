@@ -43,20 +43,25 @@ public final class ScanMemorySectionLoader {
             runs = List.of();
         }
         Map<String, String> priors = new LinkedHashMap<>();
-        for (var job : store.aiJobs(scan.dto().projectId())) {
-            if (job == null || !scan.dto().scanId().equals(job.scanId())
-                    || !"COMPLETED".equals(job.status()) || job.conclusionJson() == null) {
-                continue;
-            }
-            try {
-                String summary = DatasourceJson.JSON.readTree(job.conclusionJson()).path("summary").asText("");
-                if (!summary.isBlank()) {
-                    priors.putIfAbsent(job.role().name(), summary.length() > 800
-                            ? summary.substring(0, 800) : summary);
+        try {
+            for (var job : store.aiJobs(scan.dto().projectId())) {
+                if (job == null || !scan.dto().scanId().equals(job.scanId())
+                        || !"COMPLETED".equals(job.status()) || job.conclusionJson() == null) {
+                    continue;
                 }
-            } catch (Exception ignored) {
-                // 跳过格式错误的 conclusion
+                try {
+                    String summary = DatasourceJson.JSON.readTree(job.conclusionJson()).path("summary").asText("");
+                    if (!summary.isBlank()) {
+                        priors.putIfAbsent(job.role().name(), summary.length() > 800
+                                ? summary.substring(0, 800) : summary);
+                    }
+                } catch (Exception ignored) {
+                    // 跳过格式错误的 conclusion
+                }
             }
+        } catch (RuntimeException ignored) {
+            // 与 pathRuns 一致：无 SQLite management / 瞬态失败时降级为空 INFERENCE，
+            // 不得让整个 scan_memory_get 变成 TOOL_EXECUTION_FAILED。
         }
         Map<String, Object> full = com.aq.jvmsentinel.ai.memory.ScanMemoryBuilder.build(
                 store, scan.dto().scanId(), runs, priors);
@@ -67,8 +72,12 @@ public final class ScanMemorySectionLoader {
                 body = com.aq.jvmsentinel.ai.memory.ScanMemoryBuilder.roleSlice(
                         full, com.aq.jvmsentinel.provider.AgentRole.valueOf(role.trim().toUpperCase()));
             } catch (IllegalArgumentException badRole) {
-                body = com.aq.jvmsentinel.ai.memory.ScanMemoryBuilder.section(full, "INDEX");
+                // 不得静默回落 INDEX：模型以为拿到 ROLE_SLICE，实际是另一分区。
+                throw new IllegalArgumentException("SCAN_MEMORY_ROLE_INVALID");
             }
+        } else if ("ROLE_SLICE".equalsIgnoreCase(sec)) {
+            // role 空时仍按当前任务不可知；返回全量 roleSlices 目录而非假装 INDEX。
+            body = com.aq.jvmsentinel.ai.memory.ScanMemoryBuilder.section(full, "ROLE_SLICE");
         } else {
             body = com.aq.jvmsentinel.ai.memory.ScanMemoryBuilder.section(full, sec);
         }

@@ -52,8 +52,9 @@ public final class LoopbackHttpProbe {
     private static final int MAX_SLOW_RETRIES = 128;
     private static final int DEFAULT_BATCH_THREADS = 8;
     private static final int MAX_BATCH_THREADS = 16;
-    private static final byte[] SYNTHETIC_BODY =
+    private static final byte[] SYNTHETIC_JSON_BODY =
             "{\"marker\":\"synthetic-http-entry-v1\"}".getBytes(StandardCharsets.US_ASCII);
+    private static final String MULTIPART_BOUNDARY = "----veyrion-upload-boundary";
     /** probe-events.jsonl 内本地序号；worker 合并时重新编号。 */
     private static final AtomicLong PROBE_SEQUENCE = new AtomicLong();
     private static int writtenEvents;
@@ -328,9 +329,37 @@ public final class LoopbackHttpProbe {
             return new ProbeAttempt(target, -1, "InvalidTarget",
                     route == null ? "" : route, connectTimeoutMs, readTimeoutMs, "");
         }
-        String requestTarget = target.query.isEmpty() ? target.route : target.route + "?" + target.query;
-        byte[] body = Set.of("POST", "PUT", "PATCH").contains(method)
-                ? SYNTHETIC_BODY : new byte[0];
+        boolean fileRead = looksFileReadDownload(target.route, target.query);
+        boolean multipart = !fileRead && Set.of("POST", "PUT", "PATCH").contains(method)
+                && looksMultipartUpload(target.route, target.query);
+        boolean form = !multipart && Set.of("POST", "PUT", "PATCH").contains(method)
+                && (fileRead || looksFormUrlEncoded(target.route, target.query));
+        boolean xml = !multipart && !form && Set.of("POST", "PUT", "PATCH").contains(method)
+                && looksXmlBody(target.route, target.query);
+        // multipart/form：参数进 body；query 留空，避免绑定形态错位。
+        // 读/下载：GET 保留 query；POST 走 form body 携带 path/file。
+        String requestTarget = multipart || form || target.query.isEmpty()
+                ? target.route
+                : target.route + "?" + ensureTraversalReadQuery(target.query, fileRead);
+        byte[] body;
+        String contentType;
+        if (!Set.of("POST", "PUT", "PATCH").contains(method)) {
+            body = new byte[0];
+            contentType = "application/json";
+        } else if (multipart) {
+            body = buildMultipartBody(target.query);
+            contentType = "multipart/form-data; boundary=" + MULTIPART_BOUNDARY;
+        } else if (form) {
+            body = buildFormUrlEncodedBody(
+                    fileRead ? ensureTraversalReadQuery(target.query, true) : target.query);
+            contentType = "application/x-www-form-urlencoded";
+        } else if (xml) {
+            body = buildSyntheticXmlBody(target.query);
+            contentType = "application/xml";
+        } else {
+            body = SYNTHETIC_JSON_BODY;
+            contentType = "application/json";
+        }
         String correlationId = "req-" + target.ordinal + "-"
                 + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         int status = -1;
@@ -342,7 +371,7 @@ public final class LoopbackHttpProbe {
             OutputStream output = socket.getOutputStream();
             String headerBlock = buildRequestHeaders(method, requestTarget, body.length,
                     target.authHeader, target.bladeAuthHeader, correlationId,
-                    target.track, target.experimentPlanId, target.cookieHeader);
+                    target.track, target.experimentPlanId, target.cookieHeader, contentType);
             output.write(headerBlock.getBytes(StandardCharsets.US_ASCII));
             output.write(body);
             output.flush();
@@ -390,16 +419,25 @@ public final class LoopbackHttpProbe {
                                       String authHeader, String bladeAuthHeader, String correlationId,
                                       String track, String experimentPlanId) {
         return buildRequestHeaders(method, requestTarget, contentLength, authHeader, bladeAuthHeader,
-                correlationId, track, experimentPlanId, "");
+                correlationId, track, experimentPlanId, "", "application/json");
     }
 
     static String buildRequestHeaders(String method, String requestTarget, int contentLength,
                                       String authHeader, String bladeAuthHeader, String correlationId,
                                       String track, String experimentPlanId, String cookieHeader) {
+        return buildRequestHeaders(method, requestTarget, contentLength, authHeader, bladeAuthHeader,
+                correlationId, track, experimentPlanId, cookieHeader, "application/json");
+    }
+
+    static String buildRequestHeaders(String method, String requestTarget, int contentLength,
+                                      String authHeader, String bladeAuthHeader, String correlationId,
+                                      String track, String experimentPlanId, String cookieHeader,
+                                      String contentType) {
+        String type = contentType == null || contentType.isBlank() ? "application/json" : contentType;
         StringBuilder headers = new StringBuilder();
         headers.append(method).append(' ').append(requestTarget).append(" HTTP/1.1\r\n")
                 .append("Host: 127.0.0.1\r\nConnection: close\r\n")
-                .append("Content-Type: application/json\r\n")
+                .append("Content-Type: ").append(type).append("\r\n")
                 .append("Content-Length: ").append(contentLength).append("\r\n");
         if (correlationId != null && !correlationId.isBlank()) {
             headers.append("X-Veyrion-Correlation-Id: ").append(correlationId).append("\r\n");
@@ -419,6 +457,238 @@ public final class LoopbackHttpProbe {
         }
         headers.append("\r\n");
         return headers.toString();
+    }
+
+    /**
+     * 上传类入口：JSON POST 无法绑定 {@code MultipartFile}，须发 multipart。
+     * 路由含 upload/fileUpload，或 query 含 file=/multipartFile= 参数名。
+     * 读/下载面优先 {@link #looksFileReadDownload}，避免被 multipart 抢走。
+     */
+    static boolean looksMultipartUpload(String route, String query) {
+        if (looksFileReadDownload(route, query)) {
+            return false;
+        }
+        String r = route == null ? "" : route.toLowerCase(Locale.ROOT);
+        if (r.contains("upload") || r.contains("multipart") || r.contains("fileupload")) {
+            return true;
+        }
+        String q = query == null ? "" : query.toLowerCase(Locale.ROOT);
+        if (q.isBlank()) {
+            return false;
+        }
+        for (String pair : q.split("&", -1)) {
+            int eq = pair.indexOf('=');
+            String name = (eq < 0 ? pair : pair.substring(0, eq)).trim();
+            if ("file".equals(name) || "multipartfile".equals(name)
+                    || name.endsWith("file") && name.contains("upload")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 任意文件读取 / 下载入口：路由含 download/read/getFile/file/view，
+     * 或 query 含 path=/filepath=/filename=/name= 等读侧参数（非 multipart 上传）。
+     */
+    static boolean looksFileReadDownload(String route, String query) {
+        String r = route == null ? "" : route.toLowerCase(Locale.ROOT);
+        if (r.contains("download") || r.contains("/read") || r.contains("readfile")
+                || r.contains("getfile") || r.contains("file/get") || r.contains("/view/")
+                || r.contains("preview") || r.endsWith("/file") || r.contains("/files/")) {
+            // 明确上传路由除外
+            if (r.contains("upload") || r.contains("multipart")) {
+                return false;
+            }
+            return true;
+        }
+        String q = query == null ? "" : query.toLowerCase(Locale.ROOT);
+        if (q.isBlank()) {
+            return false;
+        }
+        if (r.contains("upload") || r.contains("multipart")) {
+            return false;
+        }
+        for (String pair : q.split("&", -1)) {
+            int eq = pair.indexOf('=');
+            String name = (eq < 0 ? pair : pair.substring(0, eq)).trim();
+            if ("path".equals(name) || "filepath".equals(name) || "filename".equals(name)
+                    || "file_path".equals(name) || "dir".equals(name) || "directory".equals(name)
+                    || "resource".equals(name) || "res".equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 读侧探针：保证至少有一个穿越 path 样本，便于 FILE_READ 观测。 */
+    static String ensureTraversalReadQuery(String query, boolean fileRead) {
+        if (!fileRead) {
+            return query == null ? "" : query;
+        }
+        String q = query == null ? "" : query.trim();
+        if (q.isBlank()) {
+            return "path=../veyrion-read.txt";
+        }
+        String lower = q.toLowerCase(Locale.ROOT);
+        if (lower.contains("path=") || lower.contains("filepath=") || lower.contains("filename=")
+                || lower.contains("file=") || lower.contains("name=") || lower.contains("dir=")) {
+            return q;
+        }
+        return q + "&path=../veyrion-read.txt";
+    }
+
+    /**
+     * Spring {@code @RequestParam} / form POST：JSON body 无法绑定，须发
+     * {@code application/x-www-form-urlencoded}。
+     * 路由含 login/save/submit/form，或 query 含典型表单字段且非 JDBC/JSON API。
+     */
+    static boolean looksFormUrlEncoded(String route, String query) {
+        String r = route == null ? "" : route.toLowerCase(Locale.ROOT);
+        if (r.contains("login") || r.contains("signin") || r.contains("/form")
+                || r.contains("submit") || r.endsWith("/save") || r.contains("/save/")
+                || r.contains("urlencoded") || r.contains("doLogin")) {
+            return true;
+        }
+        if (r.contains("json") || r.contains("graphql") || r.contains("api/v")) {
+            return false;
+        }
+        String q = query == null ? "" : query.toLowerCase(Locale.ROOT);
+        if (q.isBlank()) {
+            return false;
+        }
+        // JDBC test-connection 等保持 JSON+query（已有启发式样本）。
+        if (q.contains("jdbcurl=") || q.contains("driverclass") || q.contains("driver=")) {
+            return false;
+        }
+        for (String pair : q.split("&", -1)) {
+            int eq = pair.indexOf('=');
+            String name = (eq < 0 ? pair : pair.substring(0, eq)).trim();
+            if ("username".equals(name) || "password".equals(name) || "passwd".equals(name)
+                    || "csrf".equals(name) || "token".equals(name) || "rememberme".equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** XXE / XML 入口：路由或参数名暗示 XML/SOAP。 */
+    static boolean looksXmlBody(String route, String query) {
+        String r = route == null ? "" : route.toLowerCase(Locale.ROOT);
+        if (r.contains("/xml") || r.contains("soap") || r.contains("xxe")
+                || r.endsWith(".xml") || r.contains("/rss") || r.contains("atom")) {
+            return true;
+        }
+        String q = query == null ? "" : query.toLowerCase(Locale.ROOT);
+        if (q.isBlank()) {
+            return false;
+        }
+        for (String pair : q.split("&", -1)) {
+            int eq = pair.indexOf('=');
+            String name = (eq < 0 ? pair : pair.substring(0, eq)).trim();
+            if ("xml".equals(name) || "payload".equals(name) && r.contains("xml")
+                    || "document".equals(name) || "soap".equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static byte[] buildFormUrlEncodedBody(String query) {
+        String q = query == null ? "" : query.trim();
+        if (q.isBlank()) {
+            q = "marker=synthetic-http-entry-v1";
+        }
+        return q.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    static byte[] buildSyntheticXmlBody(String query) {
+        String marker = "synthetic-http-entry-v1";
+        if (query != null && !query.isBlank()) {
+            for (String pair : query.split("&", -1)) {
+                int eq = pair.indexOf('=');
+                String name = (eq < 0 ? pair : pair.substring(0, eq)).trim();
+                String value = eq < 0 ? "" : pair.substring(eq + 1).trim();
+                if (("xml".equalsIgnoreCase(name) || "payload".equalsIgnoreCase(name)
+                        || "document".equalsIgnoreCase(name)) && !value.isBlank()) {
+                    marker = value;
+                    break;
+                }
+            }
+        }
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><veyrion marker=\""
+                + marker + "\"/>";
+        return xml.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    /** 有界 multipart body：file 部件 + query 中其余字段。 */
+    static byte[] buildMultipartBody(String query) {
+        String filename = TRAVERSAL_UPLOAD_FILENAME;
+        // 先扫 filename，避免 file= 部件先于 filename= 写出默认名。
+        if (query != null && !query.isBlank()) {
+            for (String pair : query.split("&", -1)) {
+                int eq = pair.indexOf('=');
+                String name = (eq < 0 ? pair : pair.substring(0, eq)).trim().toLowerCase(Locale.ROOT);
+                String value = eq < 0 ? "" : pair.substring(eq + 1).trim();
+                if (("filename".equals(name) || "originalfilename".equals(name)
+                        || "filepath".equals(name) || "path".equals(name))
+                        && !value.isBlank()
+                        && value.matches("[A-Za-z0-9_./{}:-]{1,128}")) {
+                    filename = value;
+                    break;
+                }
+            }
+        }
+        StringBuilder body = new StringBuilder(256);
+        boolean sawFile = false;
+        if (query != null && !query.isBlank()) {
+            for (String pair : query.split("&", -1)) {
+                int eq = pair.indexOf('=');
+                String name = (eq < 0 ? pair : pair.substring(0, eq)).trim();
+                String value = eq < 0 ? "" : pair.substring(eq + 1).trim();
+                if (name.isBlank()) continue;
+                String lower = name.toLowerCase(Locale.ROOT);
+                if ("filename".equals(lower) || "originalfilename".equals(lower)
+                        || "filepath".equals(lower) || "path".equals(lower)) {
+                    appendMultipartTextPart(body, name, value.isBlank() ? filename : value);
+                    continue;
+                }
+                if ("file".equals(lower) || "multipartfile".equals(lower)) {
+                    sawFile = true;
+                    appendMultipartFilePart(body, name, filename);
+                } else {
+                    appendMultipartTextPart(body, name, value.isBlank() ? "synthetic" : value);
+                }
+            }
+        }
+        if (!sawFile) {
+            appendMultipartFilePart(body, "file", filename);
+        }
+        body.append("--").append(MULTIPART_BOUNDARY).append("--\r\n");
+        return body.toString().getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static final String TRAVERSAL_UPLOAD_FILENAME = "../veyrion-upload.bin";
+
+    private static void appendMultipartFilePart(StringBuilder body, String name) {
+        appendMultipartFilePart(body, name, TRAVERSAL_UPLOAD_FILENAME);
+    }
+
+    private static void appendMultipartFilePart(StringBuilder body, String name, String filename) {
+        String safeName = filename == null || filename.isBlank()
+                ? TRAVERSAL_UPLOAD_FILENAME : filename;
+        body.append("--").append(MULTIPART_BOUNDARY).append("\r\n")
+                .append("Content-Disposition: form-data; name=\"")
+                .append(name).append("\"; filename=\"").append(safeName).append("\"\r\n")
+                .append("Content-Type: application/octet-stream\r\n\r\n")
+                .append("synthetic-upload-v1\r\n");
+    }
+
+    private static void appendMultipartTextPart(StringBuilder body, String name, String value) {
+        body.append("--").append(MULTIPART_BOUNDARY).append("\r\n")
+                .append("Content-Disposition: form-data; name=\"")
+                .append(name).append("\"\r\n\r\n")
+                .append(value).append("\r\n");
     }
 
     static String postureHeaderForTrack(String track, String experimentPlanId) {

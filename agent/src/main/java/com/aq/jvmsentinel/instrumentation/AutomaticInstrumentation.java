@@ -34,8 +34,9 @@ import static net.bytebuddy.matcher.ElementMatchers.not;
 import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 /**
- * 仅启动期插桩。Bootstrap 类故意不转换；对选定 JDK
- * API 的调用改在非 bootstrap 应用 call site 观测。
+ * 仅启动期插桩。Bootstrap JDK 类故意不转换（UNSUPPORTED_FAIL_EXPLICIT）；
+ * 危险原语优先在应用 call-site 观测 JDK/标准库汇聚点；框架面（Multipart/
+ * RestTemplate/SpEL/DataSource）为补充。观测细、确认严——EFFECT ≠ DYNAMIC_CONFIRMED。
  */
 /** 公开以便内联到外部包的 Byte Buddy advice 可调用 helper/嵌套类型。 */
 public final class AutomaticInstrumentation {
@@ -55,7 +56,11 @@ public final class AutomaticInstrumentation {
         // CLASS_LOAD 保持 classPrefix 范围。Servlet/Filter/Interceptor HTTP 捕获须忽略
         // classPrefix，否则 auth 拒绝永不为目标 controller 产生 HTTP 证据。
         AgentBuilder.RawMatcher applicationTypes = (type, loader, module, redefining, domain) ->
-                loader != null && (isHttpObservabilityType(type) || config.includes(type.getName()));
+                loader != null && (isHttpObservabilityType(type) || isJdbcDataSourceEffectType(type)
+                        || isMultipartFileEffectType(type)
+                        || isHttpClientEffectType(type)
+                        || isExpressionEffectType(type)
+                        || config.includes(type.getName()));
 
         AgentBuilder.Listener listener = new AgentBuilder.Listener.Adapter() {
             @Override
@@ -76,10 +81,27 @@ public final class AutomaticInstrumentation {
                 .transform((builder0, type, loader, module, domain) -> {
                     boolean prefixed = config.includes(type.getName());
                     DynamicType.Builder<?> transformed;
-                    if (!prefixed && isHttpObservabilityType(type)) {
+                    if (!prefixed && isJdbcDataSourceEffectType(type)) {
+                        transformed = instrumentJdbcDataSourceSurface(builder0);
+                    } else if (!prefixed && isMultipartFileEffectType(type)) {
+                        transformed = instrumentMultipartFileSurface(builder0);
+                    } else if (!prefixed && isHttpClientEffectType(type)) {
+                        transformed = instrumentHttpClientSurface(builder0);
+                    } else if (!prefixed && isExpressionEffectType(type)) {
+                        transformed = instrumentExpressionSurface(builder0);
+                    } else if (!prefixed && isHttpObservabilityType(type)) {
                         transformed = instrumentHttpSurface(builder0, type);
                     } else {
                         transformed = instrumentApplicationCalls(builder0, type);
+                        if (prefixed && isMultipartFileEffectType(type)) {
+                            transformed = instrumentMultipartFileSurface(transformed);
+                        }
+                        if (prefixed && isHttpClientEffectType(type)) {
+                            transformed = instrumentHttpClientSurface(transformed);
+                        }
+                        if (prefixed && isExpressionEffectType(type)) {
+                            transformed = instrumentExpressionSurface(transformed);
+                        }
                     }
                     if (config.coverageEnabled && prefixed) {
                         transformed = transformed.visit(
@@ -98,7 +120,100 @@ public final class AutomaticInstrumentation {
         // Spring Boot fat JAR 常对 TypePool 隐藏 javax/jakarta.servlet，hasSuperType
         // 对 DispatcherServlet/Filter 返回 false，尽管它们是 HTTP surface。
         return shapedHttpServlet(type) || shapedHttpFilter(type) || shapedHttpInterceptor(type)
-                || shapedAccessControlDecision(type) || shapedMethodSecurityInterceptor(type);
+                || shapedAccessControlDecision(type) || shapedMethodSecurityInterceptor(type)
+                || shapedRememberMeManager(type);
+    }
+
+    /** Shiro rememberMe 反序列化面：classPrefix 外也要观测 DESERIALIZATION effect。 */
+    private static boolean shapedRememberMeManager(TypeDescription type) {
+        String name = type.getName();
+        return name.equals("org.apache.shiro.mgt.AbstractRememberMeManager")
+                || name.equals("org.apache.shiro.web.mgt.CookieRememberMeManager")
+                || name.endsWith("RememberMeManager")
+                || name.contains("shiro.mgt.AbstractRememberMeManager");
+    }
+
+    /**
+     * Spring/Druid/DBCP/Hikari URL 可配置 DataSource：classPrefix 外也要观测 JDBC/SSRF。
+     * kvf {@code CommonController#testDatabaseConnection} 调
+     * {@code DriverManagerDataSource#setUrl/getConnection}，真正的
+     * {@code DriverManager.getConnection} 在 spring-jdbc 内，仅靠应用 call site 会漏掉。
+     */
+    private static boolean isJdbcDataSourceEffectType(TypeDescription type) {
+        String name = type.getName();
+        return name.equals("org.springframework.jdbc.datasource.DriverManagerDataSource")
+                || name.equals("com.alibaba.druid.pool.DruidDataSource")
+                || name.equals("org.apache.commons.dbcp2.BasicDataSource")
+                || name.equals("org.apache.tomcat.dbcp.dbcp2.BasicDataSource")
+                || name.equals("com.zaxxer.hikari.HikariConfig")
+                || name.equals("com.zaxxer.hikari.HikariDataSource");
+    }
+
+    private static DynamicType.Builder<?> instrumentJdbcDataSourceSurface(
+            DynamicType.Builder<?> builder) {
+        return builder.visit(Advice.to(JdbcDataSourceAdvice.class).on(
+                isMethod().and(namedOneOf("setUrl", "setJdbcUrl", "getConnection"))
+                        .and(not(isAbstract()))));
+    }
+
+    /**
+     * RestTemplate：静态 SSRF sink 在 spring-web 内；仅靠应用 call site 时若经包装/
+     * 反射调用会漏。classPrefix 外织入 exchange/getForObject 等。
+     */
+    private static boolean isHttpClientEffectType(TypeDescription type) {
+        return "org.springframework.web.client.RestTemplate".equals(type.getName());
+    }
+
+    private static DynamicType.Builder<?> instrumentHttpClientSurface(
+            DynamicType.Builder<?> builder) {
+        return builder.visit(Advice.to(HttpClientSsrfAdvice.class).on(
+                isMethod().and(namedOneOf(
+                                "getForObject", "getForEntity", "postForObject", "postForEntity",
+                                "exchange", "execute"))
+                        .and(not(isAbstract()))));
+    }
+
+    /**
+     * SpEL Expression#getValue：实现类在 spring-expression，classPrefix 外也要观测。
+     */
+    private static boolean isExpressionEffectType(TypeDescription type) {
+        String name = type.getName();
+        return name.equals("org.springframework.expression.spel.standard.SpelExpression")
+                || name.equals("org.springframework.expression.spel.standard.SpelExpressionParser");
+    }
+
+    private static DynamicType.Builder<?> instrumentExpressionSurface(
+            DynamicType.Builder<?> builder) {
+        return builder.visit(Advice.to(ExpressionEvalAdvice.class).on(
+                isMethod().and(namedOneOf("getValue", "getValueType", "parseExpression"))
+                        .and(not(isAbstract()))));
+    }
+
+    /**
+     * Spring {@code MultipartFile#transferTo}：框架补充面（非唯一策略）。
+     * 优先仍靠 JDK {@code FileOutputStream}/{@code Files.write*} 应用 call-site；
+     * 库内写盘不经应用字节码时本 advice 补洞。effectKind={@code FILE_WRITE}。
+     */
+    private static boolean isMultipartFileEffectType(TypeDescription type) {
+        if (isInterface().matches(type)) {
+            return false;
+        }
+        String name = type.getName();
+        if (!(name.endsWith("MultipartFile")
+                || name.endsWith("$StandardMultipartFile")
+                || name.contains(".support.StandardMultipartFile")
+                || name.equals("org.springframework.web.multipart.commons.CommonsMultipartFile"))) {
+            return false;
+        }
+        return type.getDeclaredMethods()
+                .filter(isMethod().and(named("transferTo")).and(not(isAbstract())))
+                .size() > 0;
+    }
+
+    private static DynamicType.Builder<?> instrumentMultipartFileSurface(
+            DynamicType.Builder<?> builder) {
+        return builder.visit(Advice.to(MultipartFileTransferAdvice.class).on(
+                isMethod().and(named("transferTo")).and(not(isAbstract()))));
     }
 
     private static boolean hierarchyHttpSurface(TypeDescription type) {
@@ -206,7 +321,145 @@ public final class AutomaticInstrumentation {
             instrumented = instrumented.visit(Advice.to(MethodSecurityInterceptorAdvice.class).on(
                     isMethod().and(namedOneOf("invoke", "before")).and(not(isAbstract()))));
         }
+        if (shapedRememberMeManager(type)) {
+            instrumented = instrumented.visit(Advice.to(RememberMeDeserializeAdvice.class).on(
+                    isMethod().and(namedOneOf("deserialize", "convertBytesToPrincipals",
+                                    "getRememberedPrincipals", "getRememberedSerializedIdentity"))
+                            .and(not(isAbstract()))));
+        }
         return instrumented;
+    }
+
+    /**
+     * Shiro rememberMe 解密/反序列化入口：记录 DESERIALIZATION effect，
+     * 供 H4 动态确认（不表示 RCE 成功）。
+     */
+    public static final class RememberMeDeserializeAdvice {
+        private RememberMeDeserializeAdvice() {
+        }
+
+        @Advice.OnMethodEnter(suppress = Throwable.class)
+        public static void enter(@Advice.Origin("#t") String className,
+                                 @Advice.Origin("#m") String methodName) {
+            Map<String, String> detail = new LinkedHashMap<>();
+            detail.put("captureMode", "SHIRO_REMEMBER_ME");
+            detail.putAll(PathDebugDetail.effectTriggered("DESERIALIZATION"));
+            detail.put("secondaryEffectKinds", "CLASS_LOADING");
+            AgentRuntime.recordTransformedDetail("PROCESS", className, methodName, detail);
+        }
+    }
+
+    /**
+     * DataSource URL/connect 面：记录 JDBC + SSRF effect（与静态
+     * {@code DriverManagerDataSource#setUrl} sink 对齐）。
+     */
+    public static final class JdbcDataSourceAdvice {
+        private JdbcDataSourceAdvice() {
+        }
+
+        @Advice.OnMethodEnter(suppress = Throwable.class)
+        public static void enter(@Advice.Origin("#t") String className,
+                                 @Advice.Origin("#m") String methodName,
+                                 @Advice.AllArguments Object[] args) {
+            if (!AgentRuntime.isJdbcUrlSsrfSink(className, methodName)) {
+                return;
+            }
+            Map<String, String> detail = new LinkedHashMap<>();
+            detail.put("captureMode", "DATASOURCE_METHOD");
+            detail.put("operation", methodName == null ? "" : methodName);
+            detail.put("targetClass", className == null ? "" : className);
+            detail.put("targetMethod", methodName == null ? "" : methodName);
+            if (("setUrl".equals(methodName) || "setJdbcUrl".equals(methodName))
+                    && args != null && args.length > 0
+                    && args[0] instanceof String url && !url.isBlank()) {
+                detail.put("url", url.length() <= 256 ? url : url.substring(0, 256));
+            }
+            detail.putAll(PathDebugDetail.effectTriggered("SSRF"));
+            detail.put("secondaryEffectKinds", "COMMAND,CLASS_LOADING");
+            AgentRuntime.recordTransformedDetail("JDBC", className, methodName, detail);
+        }
+    }
+
+    /**
+     * RestTemplate SSRF 面：记录 HTTP_CLIENT + EFFECT_TRIGGERED SSRF。
+     */
+    public static final class HttpClientSsrfAdvice {
+        private HttpClientSsrfAdvice() {
+        }
+
+        @Advice.OnMethodEnter(suppress = Throwable.class)
+        public static void enter(@Advice.Origin("#t") String className,
+                                 @Advice.Origin("#m") String methodName) {
+            if (!AgentRuntime.isHttpClientSsrfSink(className, methodName)) {
+                return;
+            }
+            Map<String, String> detail = new LinkedHashMap<>();
+            detail.put("captureMode", "HTTP_CLIENT_METHOD");
+            detail.put("operation", methodName == null ? "" : methodName);
+            detail.put("targetClass", className == null ? "" : className);
+            detail.put("targetMethod", methodName == null ? "" : methodName);
+            detail.putAll(PathDebugDetail.effectTriggered("SSRF"));
+            AgentRuntime.recordTransformedDetail("HTTP_CLIENT", className, methodName, detail);
+        }
+    }
+
+    /**
+     * SpEL 表达式求值面：记录 PROCESS + EFFECT_TRIGGERED EXPRESSION。
+     */
+    public static final class ExpressionEvalAdvice {
+        private ExpressionEvalAdvice() {
+        }
+
+        @Advice.OnMethodEnter(suppress = Throwable.class)
+        public static void enter(@Advice.Origin("#t") String className,
+                                 @Advice.Origin("#m") String methodName) {
+            if (!AgentRuntime.isExpressionEvalSink(className, methodName)) {
+                return;
+            }
+            Map<String, String> detail = new LinkedHashMap<>();
+            detail.put("captureMode", "EXPRESSION_EVAL");
+            detail.put("operation", methodName == null ? "" : methodName);
+            detail.put("targetClass", className == null ? "" : className);
+            detail.put("targetMethod", methodName == null ? "" : methodName);
+            detail.putAll(PathDebugDetail.effectTriggered("EXPRESSION"));
+            detail.put("secondaryEffectKinds", "COMMAND");
+            AgentRuntime.recordTransformedDetail("PROCESS", className, methodName, detail);
+        }
+    }
+
+    /**
+     * MultipartFile 写盘面：记录 FILE_WRITE + EFFECT_TRIGGERED（框架补充）。
+     */
+    public static final class MultipartFileTransferAdvice {
+        private MultipartFileTransferAdvice() {
+        }
+
+        @Advice.OnMethodEnter(suppress = Throwable.class)
+        public static void enter(@Advice.Origin("#t") String className,
+                                 @Advice.Origin("#m") String methodName,
+                                 @Advice.AllArguments Object[] args) {
+            if (!"transferTo".equals(methodName)) {
+                return;
+            }
+            Map<String, String> detail = new LinkedHashMap<>();
+            detail.put("captureMode", "MULTIPART_TRANSFER");
+            detail.put("operation", "transferTo");
+            detail.put("effectOp", "write");
+            detail.put("targetClass", className == null ? "" : className);
+            detail.put("targetMethod", "transferTo");
+            detail.put("requestBound",
+                    AgentRuntime.currentRequestCorrelation().isEmpty() ? "false" : "true");
+            if (args != null && args.length > 0 && args[0] != null) {
+                String dest = String.valueOf(args[0]);
+                if (!dest.isBlank()) {
+                    String path = dest.length() <= 256 ? dest : dest.substring(0, 256);
+                    detail.put("path", path);
+                    detail.put("pathOrUrl", path);
+                }
+            }
+            detail.putAll(PathDebugDetail.effectTriggered("FILE_WRITE"));
+            AgentRuntime.recordTransformedDetail("FILE", className, methodName, detail);
+        }
     }
 
     private static boolean shapedMethodSecurityInterceptor(TypeDescription type) {
@@ -784,6 +1037,7 @@ public final class AutomaticInstrumentation {
                                                     String methodDescriptor, boolean isInterface) {
                             String eventType = eventType(owner, methodName);
                             if (eventType != null) {
+                                emitPathCapture(opcode, owner, methodName, methodDescriptor);
                                 super.visitLdcInsn(eventType);
                                 super.visitLdcInsn(callerClass);
                                 super.visitLdcInsn(name + descriptor);
@@ -801,9 +1055,69 @@ public final class AutomaticInstrumentation {
                             super.visitMethodInsn(opcode, owner, methodName, methodDescriptor, isInterface);
                         }
 
+                        /**
+                         * 高 ROI：构造器首参 / URL this / Files 单 Path 参数 → pathOrUrl 摘要。
+                         * 不改栈布局破坏原调用。
+                         */
+                        private void emitPathCapture(int opcode, String owner, String methodName,
+                                                     String methodDescriptor) {
+                            if (isFileCtorSinglePathArg(owner, methodName, methodDescriptor)) {
+                                // stack: [uninitThis, pathArg] → DUP pathArg
+                                super.visitInsn(Opcodes.DUP);
+                                super.visitMethodInsn(Opcodes.INVOKESTATIC,
+                                        "com/aq/jvmsentinel/instrumentation/AgentRuntime",
+                                        "captureEffectArg", "(Ljava/lang/Object;)V", false);
+                                return;
+                            }
+                            if (isFileCtorPathThenPrimitive(owner, methodName, methodDescriptor)) {
+                                // stack: [uninitThis, path, int/bool] → SWAP; DUP; capture; SWAP
+                                super.visitInsn(Opcodes.SWAP);
+                                super.visitInsn(Opcodes.DUP);
+                                super.visitMethodInsn(Opcodes.INVOKESTATIC,
+                                        "com/aq/jvmsentinel/instrumentation/AgentRuntime",
+                                        "captureEffectArg", "(Ljava/lang/Object;)V", false);
+                                super.visitInsn(Opcodes.SWAP);
+                                return;
+                            }
+                            if (("java/net/URL".equals(owner)
+                                    && ("openConnection".equals(methodName)
+                                    || "openStream".equals(methodName)))
+                                    || (("java/net/HttpURLConnection".equals(owner)
+                                    || owner.endsWith("/HttpURLConnection")
+                                    || owner.endsWith("/HttpsURLConnection"))
+                                    && ("connect".equals(methodName)
+                                    || "getInputStream".equals(methodName)
+                                    || "getOutputStream".equals(methodName)))) {
+                                // stack: [this]
+                                super.visitInsn(Opcodes.DUP);
+                                super.visitMethodInsn(Opcodes.INVOKESTATIC,
+                                        "com/aq/jvmsentinel/instrumentation/AgentRuntime",
+                                        "captureEffectArg", "(Ljava/lang/Object;)V", false);
+                                return;
+                            }
+                            if ("java/nio/file/Files".equals(owner)
+                                    && methodDescriptor != null
+                                    && methodDescriptor.startsWith("(Ljava/nio/file/Path;")) {
+                                // 仅当 Path 为唯一或可廉价 DUP 的栈顶附近参数：
+                                // write(Path,byte[],OpenOption[]) 等 Path 在栈底——跳过复杂重排，
+                                // 依赖 correlation + effectKind；单参 Files.delete(Path) 可 DUP。
+                                if ("(Ljava/nio/file/Path;)V".equals(methodDescriptor)
+                                        || "(Ljava/nio/file/Path;)Ljava/nio/file/Path;".equals(methodDescriptor)
+                                        || methodDescriptor.startsWith("(Ljava/nio/file/Path;)")) {
+                                    int argCount = countArgs(methodDescriptor);
+                                    if (argCount == 1) {
+                                        super.visitInsn(Opcodes.DUP);
+                                        super.visitMethodInsn(Opcodes.INVOKESTATIC,
+                                                "com/aq/jvmsentinel/instrumentation/AgentRuntime",
+                                                "captureEffectArg", "(Ljava/lang/Object;)V", false);
+                                    }
+                                }
+                            }
+                        }
+
                         @Override
                         public void visitMaxs(int maxStack, int maxLocals) {
-                            super.visitMaxs(maxStack + 6, maxLocals);
+                            super.visitMaxs(maxStack + 8, maxLocals);
                         }
                     };
                 }
@@ -820,18 +1134,22 @@ public final class AutomaticInstrumentation {
                     && ("send".equals(methodName) || "sendAsync".equals(methodName))) {
                 return "HTTP_CLIENT";
             }
-            // 将原 NETWORK_* / DNS_* attempt 标签重映射到 HTTP_CLIENT + effectKind=SSRF。
+            // DNS：可观测（门控+DNS_LOOKUP），不钩全部 Socket（过粗）。
             if ("java/net/InetAddress".equals(owner)
                     && ("getByName".equals(methodName) || "getAllByName".equals(methodName)
                     || "getCanonicalHostName".equals(methodName))) {
                 return "HTTP_CLIENT";
             }
-            if (("java/net/Socket".equals(owner) || "java/net/DatagramSocket".equals(owner))
-                    && ("connect".equals(methodName) || "send".equals(methodName))) {
-                return "HTTP_CLIENT";
-            }
+            // 故意不钩 java.net.Socket#connect / DatagramSocket——连接面过粗，洪范 JDBC/redis。
             if ("java/net/URL".equals(owner)
                     && ("openConnection".equals(methodName) || "openStream".equals(methodName))) {
+                return "HTTP_CLIENT";
+            }
+            if (("java/net/HttpURLConnection".equals(owner)
+                    || owner.endsWith("/HttpURLConnection")
+                    || owner.endsWith("/HttpsURLConnection"))
+                    && ("connect".equals(methodName) || "getInputStream".equals(methodName)
+                    || "getOutputStream".equals(methodName))) {
                 return "HTTP_CLIENT";
             }
             if (("javax/naming/InitialContext".equals(owner) || "javax/naming/Context".equals(owner)
@@ -843,6 +1161,22 @@ public final class AutomaticInstrumentation {
                 return "JDBC";
             }
             if ("java/sql/Driver".equals(owner) && "connect".equals(methodName)) {
+                return "JDBC";
+            }
+            if (("org/springframework/jdbc/datasource/DriverManagerDataSource".equals(owner)
+                    || "com/alibaba/druid/pool/DruidDataSource".equals(owner)
+                    || "org/apache/commons/dbcp2/BasicDataSource".equals(owner)
+                    || "org/apache/tomcat/dbcp/dbcp2/BasicDataSource".equals(owner))
+                    && "setUrl".equals(methodName)) {
+                return "JDBC";
+            }
+            if (("com/zaxxer/hikari/HikariConfig".equals(owner)
+                    || "com/zaxxer/hikari/HikariDataSource".equals(owner))
+                    && "setJdbcUrl".equals(methodName)) {
+                return "JDBC";
+            }
+            if ("org/springframework/jdbc/datasource/DriverManagerDataSource".equals(owner)
+                    && "getConnection".equals(methodName)) {
                 return "JDBC";
             }
             if ("java/lang/Class".equals(owner)
@@ -862,27 +1196,171 @@ public final class AutomaticInstrumentation {
                     && "eval".equals(methodName)) {
                 return "PROCESS";
             }
-            // QLExpress 表达式注入 sink（kvf GenServiceImpl CheckCode）。
             if ("com/ql/util/express/ExpressRunner".equals(owner)
                     && ("execute".equals(methodName) || "executeExt".equals(methodName))) {
+                return "PROCESS";
+            }
+            if (("org/springframework/expression/Expression".equals(owner)
+                    || "org/springframework/expression/spel/standard/SpelExpression".equals(owner))
+                    && ("getValue".equals(methodName) || "getValueType".equals(methodName))) {
+                return "PROCESS";
+            }
+            if ("org/springframework/expression/spel/standard/SpelExpressionParser".equals(owner)
+                    && "parseExpression".equals(methodName)) {
+                return "PROCESS";
+            }
+            if ("com/googlecode/aviator/AviatorEvaluator".equals(owner)
+                    && ("execute".equals(methodName) || "exec".equals(methodName))) {
+                return "PROCESS";
+            }
+            if ("ognl/Ognl".equals(owner)
+                    && ("getValue".equals(methodName) || "setValue".equals(methodName))) {
+                return "PROCESS";
+            }
+            if ("org/mvel2/MVEL".equals(owner)
+                    && ("eval".equals(methodName) || "evalToString".equals(methodName)
+                    || "executeExpression".equals(methodName))) {
+                return "PROCESS";
+            }
+            if ("freemarker/template/Template".equals(owner) && "process".equals(methodName)) {
                 return "PROCESS";
             }
             if ("java/lang/ProcessBuilder".equals(owner) && "start".equals(methodName)
                     || "java/lang/Runtime".equals(owner) && methodName.startsWith("exec")) {
                 return "PROCESS";
             }
+            if ("org/springframework/web/client/RestTemplate".equals(owner)
+                    && ("getForObject".equals(methodName) || "getForEntity".equals(methodName)
+                    || "postForObject".equals(methodName) || "postForEntity".equals(methodName)
+                    || "exchange".equals(methodName) || "execute".equals(methodName))) {
+                return "HTTP_CLIENT";
+            }
+            if (("org/apache/http/client/HttpClient".equals(owner)
+                    || "org/apache/http/impl/client/CloseableHttpClient".equals(owner))
+                    && "execute".equals(methodName)) {
+                return "HTTP_CLIENT";
+            }
+            if ("okhttp3/Call".equals(owner)
+                    && ("execute".equals(methodName) || "enqueue".equals(methodName))) {
+                return "HTTP_CLIENT";
+            }
             if ("java/nio/file/Files".equals(owner)
                     && (methodName.startsWith("write") || "newOutputStream".equals(methodName)
+                    || "newBufferedWriter".equals(methodName)
+                    || "copy".equals(methodName) || "move".equals(methodName)
                     || methodName.startsWith("read") || "newInputStream".equals(methodName)
-                    || "newBufferedReader".equals(methodName))) {
+                    || "newBufferedReader".equals(methodName) || "lines".equals(methodName)
+                    || "delete".equals(methodName) || "deleteIfExists".equals(methodName))) {
                 return "FILE";
             }
             if (("java/io/FileOutputStream".equals(owner) || "java/io/FileWriter".equals(owner)
-                    || "java/io/FileInputStream".equals(owner) || "java/io/FileReader".equals(owner))
+                    || "java/io/FileInputStream".equals(owner) || "java/io/FileReader".equals(owner)
+                    || "java/io/RandomAccessFile".equals(owner))
                     && "<init>".equals(methodName)) {
                 return "FILE";
             }
+            if ("java/io/File".equals(owner)
+                    && ("delete".equals(methodName) || "deleteOnExit".equals(methodName))) {
+                return "FILE";
+            }
+            if ("java/nio/channels/FileChannel".equals(owner) && "open".equals(methodName)) {
+                return "FILE";
+            }
+            if ("org/apache/commons/io/FileUtils".equals(owner)
+                    && ("write".equals(methodName) || "writeStringToFile".equals(methodName)
+                    || "writeByteArrayToFile".equals(methodName) || "copyFile".equals(methodName)
+                    || "copyFileToDirectory".equals(methodName) || "copyDirectory".equals(methodName)
+                    || "moveFile".equals(methodName) || "moveDirectory".equals(methodName)
+                    || "readFileToString".equals(methodName) || "readFileToByteArray".equals(methodName)
+                    || "openInputStream".equals(methodName)
+                    || "forceDelete".equals(methodName) || "deleteDirectory".equals(methodName)
+                    || "deleteQuietly".equals(methodName))) {
+                return "FILE";
+            }
+            if (("org/springframework/web/multipart/MultipartFile".equals(owner)
+                    || owner.endsWith("/MultipartFile")
+                    || owner.endsWith("MultipartFile"))
+                    && "transferTo".equals(methodName)) {
+                return "FILE";
+            }
+            if (("javax/xml/parsers/DocumentBuilder".equals(owner)
+                    || "javax/xml/parsers/SAXParser".equals(owner)
+                    || "org/xml/sax/XMLReader".equals(owner))
+                    && "parse".equals(methodName)) {
+                return "PROCESS";
+            }
+            if ("org/dom4j/io/SAXReader".equals(owner) && "read".equals(methodName)) {
+                return "PROCESS";
+            }
             return null;
+        }
+
+        private static boolean isFileIoCtorOwner(String owner) {
+            return "java/io/FileOutputStream".equals(owner)
+                    || "java/io/FileInputStream".equals(owner)
+                    || "java/io/FileWriter".equals(owner)
+                    || "java/io/FileReader".equals(owner)
+                    || "java/io/RandomAccessFile".equals(owner);
+        }
+
+        /** 单 path 参：栈顶即为 path。 */
+        private static boolean isFileCtorSinglePathArg(String owner, String methodName,
+                                                       String methodDescriptor) {
+            if (!"<init>".equals(methodName) || !isFileIoCtorOwner(owner)) {
+                return false;
+            }
+            return "(Ljava/lang/String;)V".equals(methodDescriptor)
+                    || "(Ljava/io/File;)V".equals(methodDescriptor)
+                    || "(Ljava/nio/file/Path;)V".equals(methodDescriptor);
+        }
+
+        /** path + boolean/int：栈顶为原始类型，需 SWAP 后捕获。 */
+        private static boolean isFileCtorPathThenPrimitive(String owner, String methodName,
+                                                           String methodDescriptor) {
+            if (!"<init>".equals(methodName) || !isFileIoCtorOwner(owner)) {
+                return false;
+            }
+            return "(Ljava/lang/String;Z)V".equals(methodDescriptor)
+                    || "(Ljava/io/File;Z)V".equals(methodDescriptor)
+                    || "(Ljava/lang/String;I)V".equals(methodDescriptor)
+                    || "(Ljava/io/File;I)V".equals(methodDescriptor);
+        }
+
+        private static int countArgs(String methodDescriptor) {
+            if (methodDescriptor == null || methodDescriptor.length() < 3) {
+                return 0;
+            }
+            int count = 0;
+            boolean inClass = false;
+            for (int i = 1; i < methodDescriptor.length(); i++) {
+                char c = methodDescriptor.charAt(i);
+                if (c == ')') {
+                    break;
+                }
+                if (inClass) {
+                    if (c == ';') {
+                        inClass = false;
+                    }
+                    continue;
+                }
+                if (c == 'L') {
+                    inClass = true;
+                    count++;
+                } else if (c == '[') {
+                    // array: skip to element type
+                    while (i + 1 < methodDescriptor.length() && methodDescriptor.charAt(i + 1) == '[') {
+                        i++;
+                    }
+                    if (i + 1 < methodDescriptor.length() && methodDescriptor.charAt(i + 1) == 'L') {
+                        inClass = true;
+                        i++;
+                    }
+                    count++;
+                } else {
+                    count++;
+                }
+            }
+            return count;
         }
     }
 }

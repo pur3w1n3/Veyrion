@@ -1,4 +1,6 @@
 import type { DashboardSnapshot, RankedSinkDto, VerifiedFindingDto } from '../../api'
+import { useListPagination } from '../../hooks/useListPagination'
+import { ListPagination } from '../ListPagination'
 import { StatusPill } from '../Common'
 import { formatCoverageDelta } from './resultsUtils'
 
@@ -55,7 +57,7 @@ export function ContrastView({
 }) {
   const rankedSinks = snapshot?.rankedSinks ?? []
   const ledgerDiff = snapshot?.ledgerDiff
-  const topRankedSinks = rankedSinks.slice(0, 12)
+  const pagination = useListPagination(rankedSinks)
 
   return (
     <div className="results-view results-view--contrast">
@@ -77,7 +79,7 @@ export function ContrastView({
           <span>{english ? 'Type' : '类型'}</span>
           <span>{english ? 'Score' : '评分'}</span>
         </div>
-        {topRankedSinks.map((sink) => (
+        {pagination.pageItems.map((sink) => (
           <button
             type="button"
             className={`results-row results-row--compact ${sink.sinkId === selectedSinkId ? 'selected' : ''}`}
@@ -92,6 +94,21 @@ export function ContrastView({
         {rankedSinks.length === 0 && (
           <p className="empty-state">{english ? 'No ranked sinks.' : '尚无 Sink 排序。'}</p>
         )}
+        <ListPagination
+          english={english}
+          ariaLabel={english ? 'Ranked sinks pagination' : 'Sink 排序分页'}
+          page={pagination.page}
+          totalPages={pagination.totalPages}
+          pageSize={pagination.pageSize}
+          onPageSizeChange={pagination.setPageSize}
+          rangeStart={pagination.rangeStart}
+          rangeEnd={pagination.rangeEnd}
+          total={pagination.total}
+          onPrev={pagination.goPrev}
+          onNext={pagination.goNext}
+          canPrev={pagination.canPrev}
+          canNext={pagination.canNext}
+        />
       </div>
 
       <div className="section-gap">

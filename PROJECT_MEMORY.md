@@ -23,7 +23,7 @@
 
 合成身份/状态种子探索时保留前置条件。不得把「管理员可达」写成「匿名可利用」。动态：有界 UNAUTH 撞墙 + COVERAGE 流通 + Docker-only FORCED + 候选 BYPASS；组链须证据（见 [PATH_EXPERIMENT_MODEL](docs/PATH_EXPERIMENT_MODEL.md)）。身份不可用 → `IDENTITY_UNAVAILABLE`。
 
-动态主路线（**ADR-0004 ACCEPTED**）：Docker 内路径调试器 = TracePlan + World Pack + Runtime Posture + Sensor Agent。强达标 `INSTRUMENTATION_REACHABILITY`，不得单独升 `DYNAMIC_CONFIRMED` / `VERIFIED`。禁止 Bypass Zoo。
+动态主路线（**ADR-0004 ACCEPTED**，2026-07-30 修订确认语义）：Docker 内路径调试器 = TracePlan + World Pack + Runtime Posture + Sensor Agent。强达标 `INSTRUMENTATION_REACHABILITY`；**仅 FORCED/2xx/入口到达不得确认**。危险 sink 效果实测（H3 SQL / H4 EFFECT）→ 可 `DYNAMIC_CONFIRMED` + `requiredPrivilege`。`VERIFIED` 仍关。禁止 Bypass Zoo。
 
 ### 2.3 证据分层
 
@@ -76,7 +76,7 @@ React GUI + Java Control Plane + SQLite 服务当前 JVM 切片。多语言 = �
 | 控制面 | REST/SSE、SQLite、PAT、AI Job、hypothesis/EG | 单节点；非企业多租户 |
 | 动态 | Agent + 四姿态 + PathTrace；IR2 重算；有界 OBS 回环 | TRUSTED_DOCKER；World Pack 弱 |
 | AI | 六角色、共享记忆 v1、双语 prompt snapshot | 外网 Provider 未验收 |
-| 验证 | SQL H3 → DYNAMIC_CONFIRMED（fixture）；VERIFIED 关 | 常用最高 DYNAMIC_SUSPECTED |
+| 验证 | H3 SQL / H4 sink-effect → DYNAMIC_CONFIRMED + privilege；VERIFIED 关 | 无效果时最高 DYNAMIC_SUSPECTED / 强达材料 |
 | GUI | React 结果工作台 + AI 记忆页 | 无生产会话/SSO |
 
 迁移已注册（以仓库为准，勿在本文件抄版本号流水账）。实战召回仍以静态 sink/effect 最可靠；动态/AI 为补证与路径调试。状态与开放项：[MVP_BACKLOG](docs/MVP_BACKLOG.md) · [OPEN_GAPS](docs/OPEN_GAPS.md)。
@@ -89,7 +89,9 @@ React GUI + Java Control Plane + SQLite 服务当前 JVM 切片。多语言 = �
 - **2026-07-27**：ContrastLedger 非第七角色；Security IR / 多检测器；多语言进程外合同（ADR-0001）。  
 - **2026-07-28**：ADR-0002 ACCEPTED（轻量 kernel）；VERIFIED/gVisor/SSO 延后。  
 - **2026-07-29**：动态路径调试器 + ADR-0004 ACCEPTED；FORCED = GuardSurface allowlist + DecisionShape；标 INSTRUMENTATION_REACHABILITY。  
-- **2026-07-30**：文档分轨——as-built 主读路径 vs 产品意图 archive；IR2/OBS 回环/AUTH 跳过/静态续跑/TracePlan enrich/共享记忆 v1 视为已落地。
+- **2026-07-30**：文档分轨——as-built 主读路径 vs 产品意图 archive；IR2/OBS 回环/AUTH 跳过/静态续跑/TracePlan enrich/共享记忆 v1 视为已落地。  
+- **2026-07-30**：用户推翻「FORCED ≠ 可利用证明」对外读法——改为「无危险 sink 效果不得确认；有效果可 DYNAMIC_CONFIRMED + requiredPrivilege」；修订 ADR-0004 / FindingRuntimeEnricher / DynamicConfirmedGate H4。
+- **2026-07-30**：AI 数据面契约——内联可有界，但不得静默当全集；截断须 `truncated`/省略标记，并用 `facts_search`（page meta + offset / FINDING / PATH_TRACE eventsOffset）或 `evidence_get` 按 id 续取；agent 预算耗尽须显式 `TRACE_BUDGET_EXHAUSTED`（见 OPEN_GAPS P1-G）。
 
 ## 6. 文档职责
 

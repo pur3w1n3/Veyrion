@@ -55,8 +55,12 @@ public final class AiRolePrompts {
                         仅当鉴权面为零时才允许空列表并写 emptyReason。服务端对有鉴权面却空列表会强制补写一次或填充 RULE_GENERATED 草案。
                         """;
                 case PATH_EXPLORATION -> """
-                        只能消费前置建模、鉴权分析、动态验证、沙箱 PathRun（HTTP/Agent/SQL）与
+                        只能消费前置建模、鉴权分析、动态验证、沙箱 PathRun（HTTP/Agent/SQL）、
+                        PathTrace（facts_search kind=PATH_TRACE）与
                         CONTRAST_LEDGER / STATIC_CONTRAST 结果，重新建立多条互相区分的路径模型。
+                        优先消费 PathTrace.effectRefs（EFFECT:FILE_WRITE|FILE_READ|FILE_DELETE|SSRF|EXPRESSION|…
+                        及 sink 符号；旧 EFFECT:FILE 仍表示写）与 EFFECT 事件 attributes 的
+                        targetClass/targetMethod，将运行时效果绑回静态 sink/finding。
                         优先消费 COVERAGE_GAP_FACTS：对每条 gap 生成可探针 nextExperiment；
                         需要污点子图时用 code_query kind=TAINT_GRAPH。
                         每条链路必须写明入口、身份轨、实际请求与响应、数据/状态转换、可能触发点、证据引用、
@@ -70,13 +74,13 @@ public final class AiRolePrompts {
                         no bypass found」——必须区分鉴权墙（UNAUTH）与强达门禁通过（FORCED）。
                         结论必须包含 nextExperiments[]：每项含 entryRef、objective、track、
                         可选 techniqueId/candidateInputs/pathRunRefs；禁止只综述 AUTH_GAP。
-                        结论还必须包含 findingBindings[]（供 REPORT_GENERATION 写入 Markdown「漏洞相关」）：
+                        结论还必须包含 findingBindings[]（供 REPORT_GENERATION 写入 Markdown「关键发现」）：
                         对每个 finding/hypothesis（含 STATIC_INFERRED）给出
                         findingId|hypothesisId、title、severity、status、
                         api:{method,route,entryRef}、poc:{kind,steps[],provenance}；
                         poc.kind 取 STATIC_HINT|AUTH_POC|EXPERIMENT_HINT|RUNTIME_OBSERVED；
                         STATIC_INFERRED 可给静态/鉴权 PoC 或实验提示，必须诚实标注 provenance；
-                        材料缺失时写「暂无 PoC」，禁止编造 VERIFIED 利用或从 FORCED-only 宣称已确认。
+                        材料缺失时写「本轮未形成可复现 PoC」，禁止编造 VERIFIED 利用或从 FORCED-only 宣称已确认。
                         工具白名单含 sandbox_probe：仅可对明确 coverage gap 调用；必填 track、objective，
                         gaps 非空时必填 coverageGapRef；expectedSignal/stopCondition 仅为标签；
                         优先消费 TRACE_PLAN_VS_ACTUAL：对 missingEffects 入口优先 sandbox_probe。
@@ -103,9 +107,11 @@ public final class AiRolePrompts {
                         对 TRACE_PLAN_VS_ACTUAL 的 missingEffects 优先 sandbox_probe 补齐观测。
                         FORCED_REACHABILITY 且 HTTP 2xx + ENTRY_HIT 是有运行时路径材料（须引用
                         INSTRUMENTATION_REACHABILITY / 测试工具绕行），禁止写「无运行时确认」或「无一动态证据」；
-                        仍禁止写成匿名可利用、已确认利用或 VERIFIED；FORCED 单独不得升 DYNAMIC_CONFIRMED。
+                        仍禁止把「仅 FORCED/仅 2xx/仅入口」写成匿名可利用或 VERIFIED；FORCED 单独不得升 DYNAMIC_CONFIRMED（ADR-0004）。
+                        当服务端已对危险 sink 效果（H3 SQL / H4 EFFECT_TRIGGERED）给出 DYNAMIC_CONFIRMED 时，
+                        必须引用该状态与 requiredPrivilege/authContext（未认证/cookie/低权/管理员等），不得降级为「仅达达性」。
                         禁止用 UNAUTH/COVERAGE 的 302 否定已存在的 FORCED 2xx（不得写「Shiro 全局无绕过」）。
-                        DYNAMIC_CONFIRMED 仅服务端 SQL 门禁可写。列出前置条件、证据、反证/缺口、影响和下一步验证。
+                        DYNAMIC_CONFIRMED 仅服务端门禁可写。列出前置条件、证据、反证/缺口、影响和下一步验证。
                         结论必须包含 nextExperiments[]（可被 sandbox_probe 消费的入口×轨步骤）；组合链仅在共享
                         资源/身份/文件 PathRun 证据上候选；禁止 AUTH_GAP 综述替代下一步实验。
                         结论 JSON 必须含 rootCause：{attackPath:[{layer,label,evidenceRefs[]}],rootCauseStatement,
@@ -153,8 +159,11 @@ public final class AiRolePrompts {
             case PATH_EXPLORATION -> """
                     Consume PRE_ANALYSIS, AUTH_ANALYSIS, DYNAMIC_VERIFICATION, PathRun (HTTP/Agent/SQL),
                     PathTrace (facts_search kind=PATH_TRACE), CONTRAST_LEDGER / STATIC_CONTRAST, and
-                    COVERAGE_GAP_FACTS. Prefer PathTrace lastBusinessHop, parameterFlow, effectRefs, and exitReason
-                    when proposing nextExperiments (World Pack refine, parameter expand, posture replay). Emit a
+                    COVERAGE_GAP_FACTS. Prefer PathTrace lastBusinessHop, parameterFlow, effectRefs
+                    (EFFECT:FILE_WRITE|FILE_READ|FILE_DELETE|SSRF|EXPRESSION|… plus sink symbol; legacy EFFECT:FILE
+                    still means write), and EFFECT event attributes targetClass/targetMethod when binding effects
+                    back to static sinks/findings. Use exitReason when proposing nextExperiments (World Pack refine,
+                    parameter expand, posture replay). Emit a
                     nextExperiment per gap when possible. Deepen taint structure with code_query kind=TAINT_GRAPH.
                     Model multiple distinct paths with track/posture, actual requests, responses, data/state
                     transitions, triggers, evidence, counterevidence, confidence, and stop conditions. Prefer
@@ -166,12 +175,12 @@ public final class AiRolePrompts {
                     or VERIFIED (ADR-0004). Never turn an unexecuted candidate into fact.
                     Emit nextExperiments[] with entryRef, objective, track, optional
                     techniqueId/candidateInputs/pathRunRefs — steps must be sandbox_probe-consumable, not AUTH_GAP
-                    essays. Also emit findingBindings[] for REPORT_GENERATION Markdown "Vulnerabilities" section:
+                    essays. Also emit findingBindings[] for REPORT_GENERATION Markdown "Key Findings" section:
                     for each finding/hypothesis (including STATIC_INFERRED) provide
                     findingId|hypothesisId, title, severity, status, api:{method,route,entryRef},
                     poc:{kind,steps[],provenance}; poc.kind is STATIC_HINT|AUTH_POC|EXPERIMENT_HINT|RUNTIME_OBSERVED;
                     STATIC_INFERRED may use static/auth PoC or experiment hints with honest provenance;
-                    write "No PoC yet" when absent — never invent VERIFIED exploits or elevate from FORCED-only.
+                    write "No reproducible PoC in this round" when absent — never invent VERIFIED exploits or elevate from FORCED-only.
                     Allowlist includes sandbox_probe: probe only an explicit coverage gap; required track,
                     objective, and coverageGapRef when gaps exist; expectedSignal/stopCondition are labels only;
                     prefer TRACE_PLAN_VS_ACTUAL missingEffects entries for sandbox_probe priority;
@@ -201,9 +210,11 @@ public final class AiRolePrompts {
                     STATIC_ONLY contrast rows must not be elevated to bypassed/confirmed.
                     FORCED_REACHABILITY with HTTP 2xx + ENTRY_HIT is runtime path material — cite
                     INSTRUMENTATION_REACHABILITY / test-tool bypass; never write "no runtime confirmation" or
-                    "zero dynamic evidence"; still never claim anonymous exploitability, confirmed exploit, or
-                    VERIFIED; FORCED alone must not become DYNAMIC_CONFIRMED.
-                    DYNAMIC_CONFIRMED is server-gated for SQL only. Emit nextExperiments[] consumable by sandbox_probe;
+                    "zero dynamic evidence"; still never claim FORCED-only / 2xx-only / entry-only as anonymous
+                    exploitability or VERIFIED; FORCED alone must not become DYNAMIC_CONFIRMED (ADR-0004).
+                    When the server already set DYNAMIC_CONFIRMED for a dangerous sink effect (H3 SQL / H4
+                    EFFECT_TRIGGERED), cite that status and requiredPrivilege/authContext; do not demote to
+                    reachability-only. DYNAMIC_CONFIRMED is server-gated only. Emit nextExperiments[] consumable by sandbox_probe;
                     combination chains only when PathRuns share identity/resource/file evidence — not AUTH_GAP essays.
                     Conclusion JSON must include rootCause shaped like ROOT_CAUSE_TEMPLATE, with attackPath steps
                     that each carry non-empty evidenceRefs; prefer CWE_MAPPING_HINTS for cweId.
@@ -213,8 +224,8 @@ public final class AiRolePrompts {
     }
 
     /**
-     * REPORT_GENERATION 角色合同：locale-pure Markdown 大纲 + 填空骨架。
-     * 服务端仍通过 {@link FindingBindings#enforceReportSection} 强制首章。
+     * REPORT_GENERATION 角色合同：locale-pure 可交付 Markdown 大纲 + 填空骨架。
+     * 服务端仍通过 {@link FindingBindings#enforceReportSection} 强制封面/摘要/关键发现/附录。
      */
     public static String reportRoleInstruction(AiOutputLanguage language) {
         if (language == AiOutputLanguage.ZH_CN) {
@@ -222,81 +233,108 @@ public final class AiRolePrompts {
                     先查询 SCAN、ENTRY、SINK、EVIDENCE、PathRun、PathTrace（facts_search kind=PATH_TRACE）、
                     STATIC_CONTRAST 与 DYNAMIC_EVIDENCE。优先消费 FINDING_BINDINGS_FACTS 与 PRIOR_ROLE_INFERENCE
                     中 PATH_EXPLORATION 的 findingBindings（接口+PoC+reportRole），不得由前端或本角色凭空编造接口/PoC。
-                    按入口引用 PathTrace evidence refs 说明最深路径、参数流、sink/effect、退出原因与
-                    World/Posture/强达限制，禁止只凭 HTTP 500 或模型文本下结论。
-                    漏洞信息只写在 Markdown「漏洞相关 / 风险点」内；证据/业务逻辑/路径叙事一律放在其后。
+                    输出必须是面向客户的可交付安全审计报告，不是内部控制面/调试清单。
+                    主文用人话写风险、影响面与复现；内部枚举、pathRunRefs、poc.kind、三轨术语放入附录。
                     不要单独展开「证据图」或「覆盖矩阵」专章。
 
                     【硬性规则】
-                    - locale-pure 简体中文：禁止英文专章标题（## Vulnerabilities / ## Risk Points / ## Executive Summary 等）。
-                    - 不得编造 VERIFIED；不得把 FORCED_REACHABILITY 写成 DYNAMIC_CONFIRMED / VERIFIED / 匿名可利用（ADR-0004）。
-                    - FORCED 2xx+ENTRY_HIT 是 INSTRUMENTATION_REACHABILITY 路径材料，不是已确认利用。
-                    - PoC/复现步骤只能来自 FINDING_BINDINGS_FACTS / findingBindings / 已投影 PathRun·PathTrace；无材料写「暂无 PoC」。
-                    - STATIC_ONLY 只能写「静态候选/未动态确认」；证据不足必须写明，不得编造 sink/链路。
-                    - 严格保留验证状态枚举原文：STATIC_INFERRED、DYNAMIC_SUSPECTED、DYNAMIC_CONFIRMED、VERIFIED、UNREACHED。
+                    - locale-pure 简体中文：禁止英文专章标题（## Key Findings / ## Vulnerabilities / ## Executive Summary 等）。
+                    - 禁止旧模板标题「## 漏洞相关」；主发现章使用「## 关键发现」。
+                    - 不得编造 VERIFIED；不得把「仅 FORCED_REACHABILITY / 仅 2xx / 仅入口」写成 DYNAMIC_CONFIRMED / 匿名可利用（ADR-0004）。
+                    - FORCED 2xx+ENTRY_HIT 无危险 sink 效果时是 INSTRUMENTATION_REACHABILITY 路径材料；有 H3/H4 确认时须写 DYNAMIC_CONFIRMED + 所需权限。
+                    - 复现步骤只能来自 FINDING_BINDINGS_FACTS / findingBindings / 已投影 PathRun·PathTrace；
+                      无材料写「本轮未形成可复现 PoC」+ 简短下一步，禁止在主文堆砌 UNAUTH/COVERAGE/FORCED 术语。
+                    - 入口未知时写「入口未绑定」，禁止主文写 UNKNOWN UNBOUND 原文堆砌。
+                    - 验证状态用人话（已动态确认 / 仅静态信号 / 待验证），并在括号保留枚举原文：
+                      STATIC_INFERRED、DYNAMIC_SUSPECTED、DYNAMIC_CONFIRMED、VERIFIED、UNREACHED。
                     - 不得把 DYNAMIC_CONFIRMED 宣传为生产实库已证实；MOCK / SCAN_AUTH_POSTURE 不得写成匿名利用。
-                    - 排序门禁：顶部「漏洞相关」只放高置信、有攻击配合链或可达 RCE/等价影响证据的项（reportRole=PRIMARY）。
-                    - 默认未授权/鉴权缺口、无后续配合链、且无可达 RCE 证据的入口必须放入文末「风险点」
-                      （reportRole=RISK_POINT），标注为风险点而非主漏洞，禁止夸大成已确认 RCE。
+                    - 排序门禁：「## 关键发现」只放高置信、有攻击配合链或可达 RCE/等价影响证据的项（reportRole=PRIMARY）。
+                    - 默认未授权/鉴权缺口、无后续配合链、且无可达 RCE 证据的入口放入「## 其他风险点」
+                      （reportRole=RISK_POINT），标注为风险提示而非主发现，禁止夸大成已确认 RCE。
 
                     【必填章节】（顺序固定）
-                    1. # 审计报告
-                    2. ## 漏洞相关 — 仅 PRIMARY；每条含标题、严重度/状态、接口 method+route/entryRef、描述、PoC/复现、provenance、pathRunRefs（若有）
-                    3. ## 风险点 — 仅 RISK_POINT（无材料可写「无」一行）；明确「风险点（非主漏洞）」
-                    4. ## 执行摘要与结论边界
-                    5. ## 入口—身份轨—PathRun 矩阵
-                    6. ## 静态·动态对照账本 — 须覆盖 CONTRAST_LEDGER 全部 STATIC_ONLY / 未匹配行摘要
-                    7. ## 未覆盖区域、限制与下一步验证
+                    1. # 安全审计报告
+                    2. ## 报告元信息 — 项目/扫描 ID（若可知）、范围摘要、总体结论（一句话风险等级）
+                    3. ## 执行摘要 — 按严重度计数；已动态确认 vs 仅静态信号；是否有可复现 PoC
+                    4. ## 关键发现 — 仅 PRIMARY；按「高危/中危/低危/信息」分组（勿扁平编号混排）；组内可按验证状态优先；
+                       每条含业务可读标题、风险等级、验证状态、简述、三层技术路径、复现步骤、证据摘要（次级）
+                    5. ## 其他风险点 — 仅 RISK_POINT（无材料可写「无」一行；同样按严重度分组）
+                    6. ## 利用链 — 仅当 findings/rootCause/AttackStep/已有链证据可推断时给出；
+                       标注「推断/候选」vs「已验证」；禁止编造；无材料写「本轮未识别可组合利用链」
+                    7. ## 附录：技术细节 — sink、entryId、provenance、poc.kind、pathRunRefs、内部状态
+                    8. ## 限制与下一步验证 — coverage gap / 身份不可用 / 预算耗尽与可引用 nextExperiments
 
-                    【选填章节】（有材料时按序插入；无材料可省略，禁止空话填充）
-                    - ## 按入口路径调试（三轨 outcome）
-                    - ## 攻击路径（Mermaid flowchart，至少 3 步）
-                    - ## 迭代对比（消费 LEDGER_DIFF_SUMMARY）
+                    【三层技术路径】（每条发现必填，用人话、简洁）
+                    - **入口**: METHOD route / 接口绑定；未知写「入口未绑定」，禁止 UNKNOWN UNBOUND 堆砌
+                    - **中途代码逻辑**: 入口到危险点之间的关键业务/代码逻辑（来自 path hop / rootCause.attackPath /
+                      描述）；无材料写「本轮证据不足以描述中间逻辑」
+                    - **底层触发位置**: 真正触发危险操作的 sink/底层调用（如 Class#method）
+
+                    【选填章节】（有材料时按序插入附录之后；无材料可省略，禁止空话填充）
                     - ## 修复建议（消费 FIX_SUGGESTION_CONTEXT / rootCause.fixSuggestion 与 CWE）
-                    - ## 多条推测链路
-                    - ## 组合漏洞可能性
-                    - ## 动态证据、业务路径叙事与姿态说明
+                    - ## 攻击路径（Mermaid flowchart，至少 3 步；单 finding 路径，不同于「利用链」组合）
+                    - ## 静态·动态对照账本摘要
 
                     【Markdown 骨架 — 按事实填空；占位符勿原样保留】
-                    # 审计报告
+                    # 安全审计报告
 
-                    ## 漏洞相关
+                    ## 报告元信息
+                    - **扫描 ID**: {scanId}
+                    - **范围摘要**: 共 {n} 条发现（关键发现 {p} / 其他风险点 {r}）
+                    - **总体结论**: {一句话风险等级，勿升 VERIFIED}
 
-                    ### 漏洞 1: {PRIMARY title}
-                    - **严重度/状态**: {severity} / {status}
-                    - **接口**: {METHOD} {route} (`{entryRef}`)
-                    - **描述**: {description from findingBindings}
-                    - **PoC / 复现**:
-                      1. {step from findingBindings.poc.steps OR 暂无 PoC}
-                    - **provenance**: {INSTRUMENTATION_REACHABILITY|STATIC_INFERRED|...} (kind={...})
-                    - pathRunRefs: `{pathRunId}`
+                    ## 执行摘要
+                    ### 发现数量（按严重度）
+                    - 高危（high）: {n}
+                    ### 验证与复现概况
+                    - **已动态确认/已验证**: {n}
+                    - **仅静态信号**: {n}
+                    - **具备可复现 PoC 材料**: {n}
 
-                    ## 风险点
+                    ## 关键发现
 
-                    > 默认未授权可达但无后续配合链、且无可达 RCE 证据的入口，仅作风险标注。
+                    ### 高危
+                    #### 1. {PRIMARY title}
+                    - **风险等级**: 高危（high）
+                    - **验证状态**: {人话}（{STATIC_INFERRED|...}）
+                    - **简述**: {2–4 句，先风险后技术点}
+                    - **技术路径**:
+                      - **入口**: {METHOD route 或 入口未绑定}
+                      - **中途代码逻辑**: {业务 hop / 本轮证据不足以描述中间逻辑}
+                      - **底层触发位置**: `{Class#method}`
+                    - **复现步骤**:
+                      1. {findingBindings.poc.steps 或 本轮未形成可复现 PoC}
+                    ##### 证据摘要
+                    - sink: `{sink}`
+                    - entryId: `{entryRef}`
+                    - provenance: `{...}`
 
-                    ### 风险点 1: {RISK_POINT title}
-                    - **标注**: 风险点（非主漏洞）
-                    - **严重度/状态**: {severity} / {status}
-                    - **接口**: {METHOD} {route} (`{entryRef}`)
-                    - **描述**: {description}
-                    - **PoC / 复现**:
-                      1. {暂无 PoC 或静态提示}
-                    - **provenance**: STATIC_INFERRED (kind=STATIC_HINT)
+                    ## 其他风险点
 
-                    ## 执行摘要与结论边界
-                    {最高验证状态、证据边界、FORCED/MOCK 限制一句话}
+                    > 默认未授权可达但无后续配合链、且无可达高影响证据的入口，仅作风险提示。
 
-                    ## 入口—身份轨—PathRun 矩阵
-                    | 入口 | UNAUTH | COVERAGE | FORCED | 说明 |
-                    | --- | --- | --- | --- | --- |
-                    | {entryRef} | {outcome} | {outcome} | {outcome} | {INSTRUMENTATION_REACHABILITY 等} |
+                    ### 中危
+                    #### 1. {RISK_POINT title}
+                    - **标注**: 风险提示（非主发现）
+                    - **风险等级**: 中危（medium）
+                    - **验证状态**: 仅静态信号（STATIC_INFERRED）
+                    - **简述**: {description}
+                    - **技术路径**:
+                      - **入口**: {METHOD route 或 入口未绑定}
+                      - **中途代码逻辑**: 本轮证据不足以描述中间逻辑
+                      - **底层触发位置**: `{sink}`
+                    - **复现步骤**:
+                      1. 本轮未形成可复现 PoC。
 
-                    ## 静态·动态对照账本
-                    - STATIC_ONLY: {entry/sink} — 静态候选/未动态确认
-                    - MATCHED/PARTIAL: {摘要 + evidence refs}
+                    ## 利用链
+                    1. 【推断/候选】{注册/鉴权绕过类} + {需认证危险 sink} = {影响面简述}
+                    （无材料时仅写：本轮未识别可组合利用链）
 
-                    ## 未覆盖区域、限制与下一步验证
+                    ## 附录：技术细节
+                    ### A.1 {title}
+                    - findingId / status / poc.kind / pathRunRefs / 原始 sink
+
+                    ## 限制与下一步验证
                     - {coverage gap / IDENTITY_UNAVAILABLE / 预算耗尽}
                     - 下一步: {可引用 nextExperiments，非空话}
                     """;
@@ -305,91 +343,122 @@ public final class AiRolePrompts {
                 Query SCAN, ENTRY, SINK, EVIDENCE, PathRun, PathTrace (facts_search kind=PATH_TRACE),
                 STATIC_CONTRAST, and DYNAMIC_EVIDENCE first. Prefer FINDING_BINDINGS_FACTS and
                 PATH_EXPLORATION findingBindings (API + PoC + reportRole) from PRIOR_ROLE_INFERENCE —
-                do not invent interface/PoC in this role. Per entry cite PathTrace evidence refs for
-                deepest path, parameterFlow, sink/effect, exitReason, and World/Posture/forced limits —
-                never explain findings from HTTP 500 or model text alone. Vulnerability info lives only
-                inside Markdown "## Vulnerabilities" / "## Risk Points"; narrative sections come after.
-                Do not add dedicated Evidence Graph or Coverage Matrix chapters.
+                do not invent interface/PoC in this role. Output a customer-deliverable security audit
+                report, not an internal control-plane / debug checklist. Put risk, impact surface, and
+                reproduction in the main body; keep enums, pathRunRefs, poc.kind, and tri-track jargon
+                in the appendix. Do not add dedicated Evidence Graph or Coverage Matrix chapters.
 
                 [Hard rules]
-                - locale-pure English: do not mix Chinese section headers (## 漏洞相关 / ## 风险点 / ## 执行摘要).
-                - Never invent VERIFIED; FORCED_REACHABILITY must not be written as DYNAMIC_CONFIRMED / VERIFIED /
-                  anonymous exploitability (ADR-0004).
-                - FORCED 2xx+ENTRY_HIT is INSTRUMENTATION_REACHABILITY path material, not confirmed exploit.
-                - PoC/reproduction steps only from FINDING_BINDINGS_FACTS / findingBindings / projected
-                  PathRun·PathTrace; write "No PoC yet" when absent.
-                - STATIC_ONLY may only be "static-candidate / not dynamically confirmed"; state insufficient
-                  evidence explicitly — never invent sinks or chains.
-                - Preserve verification status enums verbatim: STATIC_INFERRED, DYNAMIC_SUSPECTED,
-                  DYNAMIC_CONFIRMED, VERIFIED, UNREACHED.
+                - locale-pure English: do not mix Chinese section headers
+                  (## 关键发现 / ## 漏洞相关 / ## 执行摘要 / ## 其他风险点).
+                - Do not use legacy "## Vulnerabilities"; use "## Key Findings" for primary items.
+                - Never invent VERIFIED; FORCED-only / 2xx-only / entry-only must not be written as
+                  DYNAMIC_CONFIRMED / anonymous exploitability (ADR-0004).
+                - FORCED 2xx+ENTRY_HIT without dangerous sink effect is INSTRUMENTATION_REACHABILITY path material;
+                  with H3/H4 confirmation write DYNAMIC_CONFIRMED + required privilege.
+                - Reproduction steps only from FINDING_BINDINGS_FACTS / findingBindings / projected
+                  PathRun·PathTrace; write "No reproducible PoC in this round" plus a short next step when
+                  absent — do not dump UNAUTH/COVERAGE/FORCED jargon into the main body.
+                - When entry is unknown write "entrypoint unbound"; do not dump UNKNOWN UNBOUND in the main body.
+                - Use human-readable verification status (dynamically confirmed / static signal only / pending)
+                  and keep enums in parentheses: STATIC_INFERRED, DYNAMIC_SUSPECTED, DYNAMIC_CONFIRMED,
+                  VERIFIED, UNREACHED.
                 - Do not market DYNAMIC_CONFIRMED as production-database proof; MOCK / SCAN_AUTH_POSTURE
                   must not be written as anonymous exploit.
-                - Ordering gate: top "## Vulnerabilities" holds only high-confidence items with attack
+                - Ordering gate: "## Key Findings" holds only high-confidence items with attack
                   cooperation chains or reachable RCE/equivalent impact evidence (reportRole=PRIMARY).
                 - Default unauthenticated / auth-gap endpoints without follow-on cooperation and without
-                  reachable RCE evidence MUST go in trailing "## Risk Points" (reportRole=RISK_POINT);
-                  label as risk only — do not oversell as confirmed RCE.
+                  reachable RCE evidence MUST go in "## Additional Risk Notes" (reportRole=RISK_POINT);
+                  label as risk notes only — do not oversell as confirmed RCE.
 
                 [Required sections] (fixed order)
-                1. # Audit Report
-                2. ## Vulnerabilities — PRIMARY only; each item: title, severity/status,
-                   API method+route/entryRef, description, PoC/reproduction, provenance, pathRunRefs (if any)
-                3. ## Risk Points — RISK_POINT only (one-line "none" when empty); label "risk point (not primary)"
-                4. ## Executive Summary and Evidence Boundary
-                5. ## Entrypoint-Track-PathRun Matrix
-                6. ## Static-Dynamic Contrast Ledger — cover every STATIC_ONLY / unmatched CONTRAST_LEDGER row
-                7. ## Gaps, Limitations, and Next Validation Steps
+                1. # Security Audit Report
+                2. ## Report Metadata — project/scan ID when known, scope summary, one-line overall risk
+                3. ## Executive Summary — counts by severity; confirmed vs static-only; reproducible PoC presence
+                4. ## Key Findings — PRIMARY only; group by High / Medium / Low / Informational (no flat mixed list);
+                   within a group prefer verification status; each item: business title, risk level,
+                   verification status, summary, three-layer technical path, reproduction, evidence digest
+                5. ## Additional Risk Notes — RISK_POINT only (one-line "none" when empty; also severity-grouped)
+                6. ## Exploit Chains — only when findings/rootCause/AttackStep/existing chain evidence support it;
+                   label inferred/candidate vs verified; never invent; otherwise write
+                   "No combinable exploit chain identified this round"
+                7. ## Appendix: Technical Details — sink, entryId, provenance, poc.kind, pathRunRefs, raw status
+                8. ## Limitations and Next Validation Steps — coverage gaps / identity unavailable / budget + nextExperiments
 
-                [Optional sections] (insert in order when materials exist; omit rather than pad)
-                - ## per-entry Path Debug (tri-track outcomes)
-                - ## Attack Path (Mermaid flowchart, >=3 steps)
-                - ## Iteration Summary (consume LEDGER_DIFF_SUMMARY)
+                [Three-layer technical path] (required per finding; human-readable, concise)
+                - **Entry**: METHOD route / API binding; write "entrypoint unbound" when unknown —
+                  do not dump UNKNOWN UNBOUND
+                - **Intermediate logic**: key business/code logic between entry and dangerous sink
+                  (from path hops / rootCause.attackPath / description); write
+                  "Insufficient evidence this round to describe intermediate logic" when absent
+                - **Trigger location**: real sink / low-level call site (e.g. Class#method)
+
+                [Optional sections] (insert after appendix when materials exist; omit rather than pad)
                 - ## Remediation / Fix Suggestions (FIX_SUGGESTION_CONTEXT / rootCause.fixSuggestion + CWE)
-                - ## Multiple Hypothesized Paths
-                - ## Combined Vulnerability Possibilities
-                - ## Dynamic Evidence, Business-Path Narrative, and Posture Notes
+                - ## Attack Path (Mermaid flowchart, >=3 steps; single-finding path, distinct from Exploit Chains)
+                - ## Static-Dynamic Contrast Ledger Summary
 
                 [Markdown skeleton — fill from facts; do not leave placeholders]
-                # Audit Report
+                # Security Audit Report
 
-                ## Vulnerabilities
+                ## Report Metadata
+                - **Scan ID**: {scanId}
+                - **Scope summary**: {n} findings (key findings {p} / additional risk notes {r})
+                - **Overall conclusion**: {one-line risk rating; never elevate to VERIFIED}
 
-                ### Finding 1: {PRIMARY title}
-                - **Severity/Status**: {severity} / {status}
-                - **API**: {METHOD} {route} (`{entryRef}`)
-                - **Description**: {description from findingBindings}
-                - **PoC / Reproduction**:
-                  1. {step from findingBindings.poc.steps OR No PoC yet}
-                - **provenance**: {INSTRUMENTATION_REACHABILITY|STATIC_INFERRED|...} (kind={...})
-                - pathRunRefs: `{pathRunId}`
+                ## Executive Summary
+                ### Finding counts by severity
+                - high: {n}
+                ### Verification and reproduction overview
+                - **Dynamically confirmed / verified**: {n}
+                - **Static signal only**: {n}
+                - **With reproducible PoC material**: {n}
 
-                ## Risk Points
+                ## Key Findings
+
+                ### High
+                #### 1. {PRIMARY title}
+                - **Risk level**: high
+                - **Verification status**: {human label} ({STATIC_INFERRED|...})
+                - **Summary**: {2–4 sentences, risk first}
+                - **Technical path**:
+                  - **Entry**: {METHOD route or entrypoint unbound}
+                  - **Intermediate logic**: {business hops OR insufficient-evidence phrase}
+                  - **Trigger location**: `{Class#method}`
+                - **Reproduction steps**:
+                  1. {findingBindings.poc.steps OR No reproducible PoC in this round}
+                ##### Evidence digest
+                - sink: `{sink}`
+                - entryId: `{entryRef}`
+                - provenance: `{...}`
+
+                ## Additional Risk Notes
 
                 > Default unauthenticated endpoints without follow-on cooperation and without reachable
-                > RCE evidence are risk annotations only.
+                > high-impact evidence are risk notes only.
 
-                ### Risk Point 1: {RISK_POINT title}
-                - **Label**: risk point (not primary)
-                - **Severity/Status**: {severity} / {status}
-                - **API**: {METHOD} {route} (`{entryRef}`)
-                - **Description**: {description}
-                - **PoC / Reproduction**:
-                  1. {No PoC yet or static hint}
-                - **provenance**: STATIC_INFERRED (kind=STATIC_HINT)
+                ### Medium
+                #### 1. {RISK_POINT title}
+                - **Label**: risk note (not a primary finding)
+                - **Risk level**: medium
+                - **Verification status**: Static signal only (STATIC_INFERRED)
+                - **Summary**: {description}
+                - **Technical path**:
+                  - **Entry**: {METHOD route or entrypoint unbound}
+                  - **Intermediate logic**: Insufficient evidence this round to describe intermediate logic
+                  - **Trigger location**: `{sink}`
+                - **Reproduction steps**:
+                  1. No reproducible PoC in this round.
 
-                ## Executive Summary and Evidence Boundary
-                {highest status, evidence boundary, FORCED/MOCK limits in one short paragraph}
+                ## Exploit Chains
+                1. [inferred/candidate] {register/auth-gap} + {authenticated dangerous sink} = {impact hint}
+                (when no materials: only write "No combinable exploit chain identified this round")
 
-                ## Entrypoint-Track-PathRun Matrix
-                | Entry | UNAUTH | COVERAGE | FORCED | Notes |
-                | --- | --- | --- | --- | --- |
-                | {entryRef} | {outcome} | {outcome} | {outcome} | {INSTRUMENTATION_REACHABILITY etc.} |
+                ## Appendix: Technical Details
+                ### A.1 {title}
+                - findingId / status / poc.kind / pathRunRefs / raw sink
 
-                ## Static-Dynamic Contrast Ledger
-                - STATIC_ONLY: {entry/sink} — static-candidate / not dynamically confirmed
-                - MATCHED/PARTIAL: {summary + evidence refs}
-
-                ## Gaps, Limitations, and Next Validation Steps
+                ## Limitations and Next Validation Steps
                 - {coverage gap / IDENTITY_UNAVAILABLE / budget exhausted}
                 - Next: {cite nextExperiments; no filler}
                 """;

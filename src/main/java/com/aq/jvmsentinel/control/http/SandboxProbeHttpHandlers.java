@@ -19,6 +19,7 @@ import com.aq.jvmsentinel.model.ExperimentPlan;
 import com.aq.jvmsentinel.model.RunProfile;
 import com.aq.jvmsentinel.worker.ExternalArtifactTaskExecutor;
 import com.aq.jvmsentinel.worker.ResourceBudget;
+import com.aq.jvmsentinel.worker.docker.SandboxLaunchCommandBuilder;
 import com.aq.jvmsentinel.worker.TaskLifecycle;
 import com.aq.jvmsentinel.worker.TaskScope;
 import com.aq.jvmsentinel.worker.TaskSnapshot;
@@ -461,10 +462,8 @@ private final PathFindingsHttpHandlers pathFindings;
                 Math.max(baseWall, baseWall + probeWaves * 2L + slowWaves * 4L + 90L));
         long memoryBytes = size >= 80L * 1024 * 1024
                 ? 3L * 1024 * 1024 * 1024 : ControlPlaneHttpLimits.DEFAULT_MEMORY_BYTES;
-        // 为 agent 事件及每个 probe 一条 APPLICATION_REPORTED HTTP 行保留空间。
-        long traceBytes = Math.min(16L * 1024 * 1024,
-                Math.max(size >= 20L * 1024 * 1024 ? 4L * 1024 * 1024 : 512L * 1024,
-                        512L * 1024 + probes * 2_048L));
+        // 按探针事件下限抬升轨迹字节（与 agent maxEvents 抬升对齐），钳在 MAX_TRACE_BYTES。
+        long traceBytes = SandboxLaunchCommandBuilder.resolveTraceBytesBudget(probes, size);
         return new ResourceBudget(wallSeconds, wallSeconds * 1_000L, memoryBytes,
                 64L * 1024 * 1024, traceBytes);
     }

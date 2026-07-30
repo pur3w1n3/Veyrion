@@ -79,7 +79,7 @@ public final class ExternalArtifactTaskExecutor {
                                         String workerId) {
         this(control, sandbox, catalog, runtimePolicy,
                 new AgentJsonlTraceConverter(Clock.systemUTC(), ExternalArtifactPaths.MAX_TRACE_BYTES,
-                        64 * 1024, 100_000, WorkerContracts.MAX_TRACE_PAYLOAD_BYTES),
+                        64 * 1024, 500_000, WorkerContracts.MAX_TRACE_PAYLOAD_BYTES),
                 workerId);
     }
 
@@ -711,9 +711,12 @@ public final class ExternalArtifactTaskExecutor {
             this.code = ExternalArtifactIds.requireId(code, "code");
         }
 
-        /** 供 worker 子包 helper 构造 fail-closed 执行异常。 */
+        /** 供 worker 子包 helper 构造 fail-closed 执行异常；已是本类型时不再二次套娃。 */
         public static ExternalArtifactExecutionException of(String code, String message, Throwable cause) {
-            return ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.of(code, message, cause);
+            if (cause instanceof ExternalArtifactExecutionException existing) {
+                return existing;
+            }
+            return new ExternalArtifactExecutionException(code, message, cause);
         }
 
         public String code() {

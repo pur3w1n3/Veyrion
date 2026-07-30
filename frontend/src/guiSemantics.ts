@@ -66,8 +66,8 @@ export const RESULTS_VIEW_META: Record<ResultsViewId, { zh: string; en: string; 
   report: {
     zh: '最终报告',
     en: 'Final report',
-    blurbZh: 'REPORT_GENERATION 最终报告正文（非发现 HTML / 非仪表盘 JSON）',
-    blurbEn: 'REPORT_GENERATION markdown body (not findings HTML / not dashboard JSON)'
+    blurbZh: 'REPORT_GENERATION 可交付审计报告正文（封面/摘要/按严重度分组的关键发现/利用链/附录；非发现 HTML / 非仪表盘 JSON）',
+    blurbEn: 'REPORT_GENERATION deliverable audit report (cover/summary/severity-grouped key findings/exploit chains/appendix; not findings HTML / not dashboard JSON)'
   },
   findings: {
     zh: '发现',

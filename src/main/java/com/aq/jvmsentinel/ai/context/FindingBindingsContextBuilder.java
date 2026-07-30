@@ -44,17 +44,16 @@ public final class FindingBindingsContextBuilder {
                 && job.role() != AgentRole.VULNERABILITY_TRIAGE) {
             return "";
         }
-        List<FindingBindings.Binding> bindings;
-        if (job.role() == AgentRole.REPORT_GENERATION) {
-            bindings = loadPathFindingBindings(job, language);
-            if (bindings.isEmpty()) {
-                bindings = assembleFindingBindings(job, language);
+        // REPORT 也走 assemble：消费最新 PathRun/H4 enricher，避免 PATH 结论里的 STATIC 快照。
+        FindingBindings.AssembleResult assembled = assembleFindingBindingsDetailed(job, language);
+        if (assembled.bindings().isEmpty() && job.role() == AgentRole.REPORT_GENERATION) {
+            List<FindingBindings.Binding> fromPath = loadPathFindingBindings(job, language);
+            if (!fromPath.isEmpty()) {
+                return FindingBindings.formatFactsBlock(fromPath, fromPath.size(), language);
             }
-        } else {
-            bindings = assembleFindingBindings(job, language);
         }
-        if (bindings.isEmpty()) return "";
-        return FindingBindings.formatFactsBlock(bindings, language);
+        if (assembled.bindings().isEmpty()) return "";
+        return FindingBindings.formatFactsBlock(assembled, language);
     }
 
     public List<FindingBindings.Binding> loadPathFindingBindings(
@@ -81,20 +80,27 @@ public final class FindingBindingsContextBuilder {
 
     public List<FindingBindings.Binding> assembleFindingBindings(
             SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
-        if (job == null || job.scanId() == null) return List.of();
+        return assembleFindingBindingsDetailed(job, language).bindings();
+    }
+
+    public FindingBindings.AssembleResult assembleFindingBindingsDetailed(
+            SQLiteControlPlanePersistence.AiJobData job, AiOutputLanguage language) {
+        if (job == null || job.scanId() == null) {
+            return new FindingBindings.AssembleResult(List.of(), 0);
+        }
         try {
             ControlPlaneStore.ScanRecord scan = store.requireScan(job.scanId());
             List<ApiDtos.PathRunDto> runs = pathRuns.loadPathRuns(job);
             Map<String, com.aq.jvmsentinel.domain.pathdebug.PathTrace> traces =
                     contrast.loadPathTracesByPathRunId(job);
-            return FindingBindings.assemble(
+            return FindingBindings.assembleDetailed(
                     scan.dto().findings(),
                     scan.dto().entries(),
                     runs,
                     traces,
                     language);
         } catch (RuntimeException ignored) {
-            return List.of();
+            return new FindingBindings.AssembleResult(List.of(), 0);
         }
     }
 }

@@ -24,7 +24,81 @@ public final class LoopbackHttpProbeAcceptanceTest {
         slowRetryPrioritizesUnauthAndCaps();
         dualPhaseRecoversSlowAuthChallenge();
         authAndBladeChannelsAreIndependent();
+        multipartUploadProbeShape();
+        formAndXmlProbeShape();
+        fileReadDownloadProbeShape();
         System.out.println("LoopbackHttpProbeAcceptanceTest: PASS");
+    }
+
+    private static void multipartUploadProbeShape() {
+        check(LoopbackHttpProbe.looksMultipartUpload("/common/fileUpload", "file=synthetic&type=synthetic"),
+                "fileUpload route must be treated as multipart");
+        check(LoopbackHttpProbe.looksMultipartUpload("/api/v1/items", "file=synthetic"),
+                "file= query param triggers multipart");
+        check(!LoopbackHttpProbe.looksMultipartUpload("/common/test-connection",
+                        "jdbcUrl=jdbc:mysql://127.0.0.1:3306/veyrion"),
+                "JDBC test-connection must stay JSON");
+        byte[] body = LoopbackHttpProbe.buildMultipartBody("file=synthetic&type=synthetic");
+        String text = new String(body, StandardCharsets.US_ASCII);
+        check(text.contains("name=\"file\"")
+                        && text.contains("filename=\"../veyrion-upload.bin\""),
+                "multipart file part must carry traversal filename: " + text);
+        check(text.contains("name=\"type\"") && text.contains("synthetic"),
+                "multipart body carries non-file query fields");
+        byte[] named = LoopbackHttpProbe.buildMultipartBody(
+                "file=synthetic&filename=../custom-upload.bin");
+        String namedText = new String(named, StandardCharsets.US_ASCII);
+        check(namedText.contains("filename=\"../custom-upload.bin\""),
+                "explicit filename query overrides multipart filename");
+        String headers = LoopbackHttpProbe.buildRequestHeaders(
+                "POST", "/common/fileUpload", body.length, "", "", "corr-1",
+                "ADMIN", "plan:posture:entry-ann-88:forced_reachability", "",
+                "multipart/form-data; boundary=----veyrion-upload-boundary");
+        check(headers.contains("Content-Type: multipart/form-data; boundary="),
+                "upload probe headers must not force application/json");
+        check(!headers.contains("Content-Type: application/json"),
+                "multipart probe must not also claim JSON content type");
+    }
+
+    private static void fileReadDownloadProbeShape() {
+        check(LoopbackHttpProbe.looksFileReadDownload("/common/download", "path=../a.txt"),
+                "download route is file-read");
+        check(LoopbackHttpProbe.looksFileReadDownload("/api/file/get", ""),
+                "getFile-like route is file-read");
+        check(LoopbackHttpProbe.looksFileReadDownload("/api/v1/items", "filepath=../x"),
+                "filepath= query triggers file-read");
+        check(!LoopbackHttpProbe.looksMultipartUpload("/common/download", "path=../a.txt"),
+                "download must not be stolen by multipart");
+        check(!LoopbackHttpProbe.looksFileReadDownload("/common/fileUpload", "file=synthetic"),
+                "upload route is not file-read");
+        String q = LoopbackHttpProbe.ensureTraversalReadQuery("", true);
+        check(q.contains("path=") && q.contains(".."),
+                "empty read query gets traversal path sample: " + q);
+    }
+
+    private static void formAndXmlProbeShape() {
+        check(LoopbackHttpProbe.looksFormUrlEncoded("/user/login", "username=veyrion&password=veyrion"),
+                "login route must use form-urlencoded");
+        check(LoopbackHttpProbe.looksFormUrlEncoded("/account/save", "username=a&token=b"),
+                "save + credential-like params → form");
+        check(!LoopbackHttpProbe.looksFormUrlEncoded("/common/test-connection",
+                        "jdbcUrl=jdbc:mysql://127.0.0.1:3306/veyrion&username=veyrion"),
+                "JDBC test-connection must not switch to form");
+        check(!LoopbackHttpProbe.looksFormUrlEncoded("/api/v1/items", "name=synthetic"),
+                "JSON API routes stay JSON");
+        byte[] form = LoopbackHttpProbe.buildFormUrlEncodedBody("username=veyrion&password=veyrion");
+        check("username=veyrion&password=veyrion".equals(new String(form, StandardCharsets.US_ASCII)),
+                "form body mirrors query pairs");
+        check(LoopbackHttpProbe.looksXmlBody("/demo/xml/parse", "xml=synthetic"),
+                "xml route must use application/xml");
+        check(LoopbackHttpProbe.looksXmlBody("/soap/endpoint", ""),
+                "soap route triggers XML body");
+        check(!LoopbackHttpProbe.looksXmlBody("/api/v1/items", "name=synthetic"),
+                "ordinary API must not force XML");
+        String xml = new String(LoopbackHttpProbe.buildSyntheticXmlBody("xml=marker1"),
+                StandardCharsets.US_ASCII);
+        check(xml.contains("<?xml") && xml.contains("marker1"),
+                "synthetic XML body carries marker: " + xml);
     }
 
     private static void siblingPortFileIsValidated() throws Exception {

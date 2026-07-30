@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.worker;
 
+import com.aq.jvmsentinel.analysis.experiment.EffectRouteBinder;
 import com.aq.jvmsentinel.analysis.experiment.PathTraceProjectionBridge;
 import com.aq.jvmsentinel.analysis.experiment.PostureExperimentCompiler;
 import com.aq.jvmsentinel.control.ApiDtos;
@@ -34,10 +35,10 @@ public final class TraceProjectionService {
     private static final int MAX_CHUNKS = 10_000;
     /**
      * 须与 {@link AgentJsonlTraceConverter} / agent {@code maxEvents}
-     *（最高 100_000）对齐。coverage 下真实 Spring Boot JAR 远多于 1 万行；
+     *（最高 500_000）对齐。coverage 下真实 Spring Boot JAR 远多于 1 万行；
      * 低于摄入上限投影会 fail-closed 为 PROJECTION_FAILED。
      */
-    private static final int MAX_EVENTS = 100_000;
+    private static final int MAX_EVENTS = 500_000;
     private static final int MAX_LINE_BYTES = 64 * 1024;
 
     private final InMemoryTraceStore traces;
@@ -135,12 +136,18 @@ public final class TraceProjectionService {
         List<ApiDtos.PathRunDto> pathRuns = new ArrayList<>();
         List<PathTrace> pathTraces = new ArrayList<>();
         Set<String> springBoundRouteKeys = new HashSet<>();
+        Map<String, Set<String>> corrToRoutes = EffectRouteBinder.newCorrRouteIndex();
+        List<AgentJsonlTraceConverter.AgentEvent> allEffectEvents = new ArrayList<>();
         String scopeDigest = WorkerContracts.sha256((snapshot.scope().projectId() + "\n"
                 + snapshot.scope().artifactDigest() + "\n" + snapshot.scope().scanId() + "\n"
                 + snapshot.scope().taskId()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
         int httpAttempt = 0;
         for (EventWithDigest item : events) {
             AgentJsonlTraceConverter.AgentEvent event = item.event();
+            EffectRouteBinder.rememberRoute(corrToRoutes, event);
+            if (EffectRouteBinder.isEffectLike(event)) {
+                allEffectEvents.add(event);
+            }
             if (isPathTraceWindowEvent(event) && !isProbeHttpEvent(event)) {
                 pendingWindowEvents.add(new PendingWindowEvent(event, correlationId(event.detail())));
             }
@@ -236,13 +243,28 @@ public final class TraceProjectionService {
                 ApiDtos.PathRunDto pathRun = pathRunFromHttp(
                         snapshot, event, evidenceId, httpAttempt++, List.copyOf(windowSql),
                         springBoundRouteKeys);
-                pathRuns.add(pathRun);
                 PostureExperimentCompiler.CompiledPostureExperiment posturePlan =
                         posturePlans.apply(pathRun.experimentPlanId());
                 List<AgentJsonlTraceConverter.AgentEvent> windowEvents =
-                        drainWindowEvents(pendingWindowEvents, httpCorr);
+                        new ArrayList<>(drainWindowEvents(pendingWindowEvents, httpCorr));
+                // 关联丢失时：同 route / 同 correlation 的孤儿 EFFECT 仍挂到本 PathRun（H4）。
+                if (windowEvents.stream().noneMatch(EffectRouteBinder::isEffectLike)) {
+                    windowEvents.addAll(EffectRouteBinder.effectsForRoute(
+                            corrToRoutes, allEffectEvents, route));
+                }
+                if (windowEvents.stream().noneMatch(EffectRouteBinder::isEffectLike)
+                        && !httpCorr.isBlank()) {
+                    windowEvents.addAll(EffectRouteBinder.effectsForCorrelation(
+                            allEffectEvents, httpCorr));
+                }
+                PathTrace pathTrace = PathTraceProjectionBridge.projectFromPathRun(
+                        pathRun, posturePlan, windowEvents);
+                PathRun gated = DynamicConfirmedGate.applyEffect(
+                        toPathRunModel(pathRun), pathTrace, "");
+                ApiDtos.PathRunDto confirmed = toPathRunDto(gated);
+                pathRuns.add(confirmed);
                 pathTraces.add(PathTraceProjectionBridge.projectFromPathRun(
-                        pathRun, posturePlan, windowEvents));
+                        confirmed, posturePlan, windowEvents));
             }
             if ("BRANCH_COVERAGE".equals(event.eventType()) && !pathRuns.isEmpty()) {
                 ApiDtos.PathRunDto last = pathRuns.remove(pathRuns.size() - 1);
@@ -608,6 +630,34 @@ public final class TraceProjectionService {
                 gated.parameterBound(), sqlDtos, gated.stopReason(), gated.verificationStatus(),
                 gated.evidenceRefs(), gated.identityProvenance(), gated.identityPrecondition(),
                 gated.branchHitMap());
+    }
+
+    public static PathRun toPathRunModel(ApiDtos.PathRunDto dto) {
+        Objects.requireNonNull(dto, "dto");
+        IdentityTrack track;
+        try {
+            track = IdentityTrack.valueOf(dto.track() == null ? "UNAUTH" : dto.track());
+        } catch (IllegalArgumentException ignored) {
+            track = IdentityTrack.UNAUTH;
+        }
+        PathOutcomeClass outcome;
+        try {
+            outcome = PathOutcomeClass.valueOf(
+                    dto.outcomeClass() == null ? "UNKNOWN" : dto.outcomeClass());
+        } catch (IllegalArgumentException ignored) {
+            outcome = PathOutcomeClass.UNKNOWN;
+        }
+        List<SqlEvent> sql = dto.sqlEvents() == null ? List.of() : dto.sqlEvents().stream()
+                .filter(Objects::nonNull)
+                .map(s -> new SqlEvent(s.sqlText(), s.parameterSummary(), s.readWrite(),
+                        s.parameterized(), s.maliciousFragmentPresent(), s.captureMode()))
+                .toList();
+        return new PathRun(
+                dto.pathRunId(), dto.scanId(), dto.entrypointRef(), track, dto.attemptId(),
+                dto.experimentPlanId(), dto.method(), dto.contentType(), dto.requestSummary(),
+                outcome, dto.httpStatus(), dto.entryHit(), dto.parameterBound(), sql,
+                dto.stopReason(), dto.verificationStatus(), dto.evidenceRefs(),
+                dto.identityProvenance(), dto.identityPrecondition(), dto.branchHitMap());
     }
 
     /**

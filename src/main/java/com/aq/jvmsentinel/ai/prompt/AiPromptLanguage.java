@@ -25,10 +25,11 @@ public final class AiPromptLanguage {
     public static String languageInstruction(AiOutputLanguage language) {
         return language == AiOutputLanguage.ZH_CN
                 ? "所有面向分析师的内容必须使用简体中文（locale-pure）；章节标题、说明、PoC 步骤不得夹杂英文 Markdown 标题"
-                + "（禁止 ## Vulnerabilities / ## Summary / ## Findings 等英文专章）。"
+                + "（禁止 ## Key Findings / ## Vulnerabilities / ## Executive Summary / ## Findings 等英文专章）。"
                 + "类名、方法、路由、证据 ID、状态枚举与 JSON 字段名保持原文。\n"
                 : "Write all analyst-facing content in English only (locale-pure); section titles, narration, and PoC "
-                + "steps must not mix Chinese Markdown headers (forbidden: ## 漏洞相关 / ## 执行摘要 / ## 修复建议). "
+                + "steps must not mix Chinese Markdown headers "
+                + "(forbidden: ## 关键发现 / ## 漏洞相关 / ## 执行摘要 / ## 修复建议). "
                 + "Preserve class names, methods, routes, evidence IDs, status enums, and JSON field names verbatim.\n";
     }
 

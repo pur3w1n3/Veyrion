@@ -9,6 +9,7 @@ import com.aq.jvmsentinel.model.SqlEvent;
 import com.aq.jvmsentinel.worker.AgentJsonlTraceConverter;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -139,14 +140,7 @@ public final class PathTraceProjectionBridge {
                     List.of()));
         }
         if ("EFFECT_TRIGGERED".equals(pathDebugKind)) {
-            String effectKind = detail.getOrDefault("effectKind", event.eventType());
-            return List.of(new PathTraceProjector.EventSummary(
-                    TraceEventKind.EFFECT_TRIGGERED,
-                    effectKind + " at " + symbol,
-                    symbol,
-                    "EFFECT:" + effectKind,
-                    false,
-                    List.of("EFFECT:" + effectKind)));
+            return List.of(effectSummary(event, detail, symbol));
         }
         if ("DEPENDENCY_FAILURE".equals(pathDebugKind)) {
             String failureClass = detail.getOrDefault("failureClass", "DEPENDENCY_UNAVAILABLE");
@@ -219,16 +213,8 @@ public final class PathTraceProjectionBridge {
                     detail.getOrDefault("failureClass", "DEPENDENCY_UNAVAILABLE"),
                     false,
                     List.of()));
-            case "PROCESS", "FILE", "HTTP_CLIENT", "JNDI" -> {
-                String effect = detail.getOrDefault("effectKind", event.eventType());
-                yield List.of(new PathTraceProjector.EventSummary(
-                        TraceEventKind.EFFECT_TRIGGERED,
-                        effect + " at " + symbol,
-                        symbol,
-                        "EFFECT:" + effect,
-                        false,
-                        List.of("EFFECT:" + effect)));
-            }
+            case "PROCESS", "FILE", "HTTP_CLIENT", "JNDI" -> List.of(
+                    effectSummary(event, detail, symbol));
             case "CLASS_LOAD", "INSTRUMENTATION_CAPABILITY", "INSTRUMENTATION_ERROR" -> List.of(
                     new PathTraceProjector.EventSummary(
                             TraceEventKind.METHOD_HOP,
@@ -239,6 +225,62 @@ public final class PathTraceProjectionBridge {
                             List.of()));
             default -> List.of();
         };
+    }
+
+    /**
+     * EFFECT 投影：优先保留 JDK/框架 sink（targetClass#targetMethod）供
+     * effectRefs / AI PATH_TRACE 反推静态 sink；caller 进 attributes.callerRef。
+     */
+    private static PathTraceProjector.EventSummary effectSummary(
+            AgentJsonlTraceConverter.AgentEvent event,
+            Map<String, String> detail,
+            String callerSymbol) {
+        String effectKind = detail.getOrDefault("effectKind",
+                event.eventType() == null ? "UNKNOWN" : event.eventType());
+        String targetClass = detail.getOrDefault("targetClass", "").trim();
+        String targetMethod = detail.getOrDefault("targetMethod", "").trim();
+        String sinkSymbol;
+        if (!targetClass.isBlank()) {
+            sinkSymbol = targetMethod.isBlank() ? targetClass : targetClass + "#" + targetMethod;
+        } else {
+            sinkSymbol = callerSymbol == null ? "" : callerSymbol;
+        }
+        String summaryText = effectKind + " at " + sinkSymbol;
+        if (!sinkSymbol.isBlank() && callerSymbol != null && !callerSymbol.isBlank()
+                && !sinkSymbol.equals(callerSymbol)) {
+            summaryText = summaryText + " via " + callerSymbol;
+        }
+        Map<String, Object> attrs = new LinkedHashMap<>();
+        attrs.put("effectKind", effectKind);
+        if (!targetClass.isBlank()) {
+            attrs.put("targetClass", targetClass);
+        }
+        if (!targetMethod.isBlank()) {
+            attrs.put("targetMethod", targetMethod);
+        }
+        String effectOp = detail.getOrDefault("effectOp", "").trim();
+        if (!effectOp.isBlank()) {
+            attrs.put("effectOp", effectOp);
+        }
+        String pathOrUrl = detail.getOrDefault("pathOrUrl", "").trim();
+        if (!pathOrUrl.isBlank()) {
+            attrs.put("pathOrUrl", pathOrUrl);
+        }
+        if (callerSymbol != null && !callerSymbol.isBlank()) {
+            attrs.put("callerRef", callerSymbol);
+        }
+        String secondary = detail.getOrDefault("secondaryEffectKinds", "").trim();
+        if (!secondary.isBlank()) {
+            attrs.put("secondaryEffectKinds", secondary);
+        }
+        return new PathTraceProjector.EventSummary(
+                TraceEventKind.EFFECT_TRIGGERED,
+                summaryText,
+                sinkSymbol,
+                "EFFECT:" + effectKind,
+                false,
+                List.of("EFFECT:" + effectKind),
+                attrs);
     }
 
     private static String correlationFromRun(ApiDtos.PathRunDto run) {

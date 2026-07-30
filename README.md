@@ -25,7 +25,7 @@ Veyrion 是面向**已明确授权**的闭源 JVM 制品的本地路径调试型
 - **`VERIFIED` 门禁当前关闭**（fail-closed）。没有 gVisor/Kata 逃逸套件和可重放强化隔离证据，不得宣称生产可用或恶意制品隔离已验证。
 - **`TRUSTED_DOCKER`** 是普通 runc + `--network none` 的受信本地调试后端，只面向用户信任、由后端管理并重新校验摘要的内部 JAR；**不是** gVisor/Kata。
 - 沙箱不可用时动态能力保持 `DYNAMIC_DISABLED` / disabled，**绝不回退到宿主机 Java 执行制品**。
-- `FORCED_REACHABILITY` 仅在沙箱内对已识别 auth/role/permission/license/feature guard 短接，必须标 `INSTRUMENTATION_REACHABILITY`，**不能单独升** `DYNAMIC_CONFIRMED` / `VERIFIED`。
+- `FORCED_REACHABILITY` 仅在沙箱内对已识别 auth/role/permission/license/feature guard 短接，必须标 `INSTRUMENTATION_REACHABILITY`；**仅强达/2xx/入口不能确认**；危险 sink 效果闭环可升 `DYNAMIC_CONFIRMED` 并标注 `requiredPrivilege`（`VERIFIED` 仍关）。
 - AI、前端、MOCK/规则生成不能补写 `FACT` 或单独提升验证状态。
 - 不保证“发现所有非常规漏洞”；系统用 coverage gap、停止原因和 provenance 保持诚实。
 
@@ -42,7 +42,7 @@ Veyrion 是面向**已明确授权**的闭源 JVM 制品的本地路径调试型
 |----------|------|
 | `STATIC_INFERRED` | 静态事实或分析表明可能可达 |
 | `DYNAMIC_SUSPECTED` | 受控运行到达关键点，但闭环不足 |
-| `DYNAMIC_CONFIRMED` | 满足服务端 H3 动态门禁；不等于生产实库证实 |
+| `DYNAMIC_CONFIRMED` | 满足服务端 H3 SQL / H4 sink-effect 门禁，并投影所需权限；不等于生产实库证实 |
 | `VERIFIED` | 强化隔离 + 可重放证据；**当前关闭** |
 | `UNREACHED` | 身份、预算、启动、超时或依赖限制导致未覆盖 |
 
@@ -161,7 +161,7 @@ Artifact Universe
 |---------|------|
 | `UNAUTH` | 未授权轨：标出鉴权墙 |
 | `COVERAGE_POSTURE` | 特权/业务覆盖轨：有界业务路径探索（失败前路径仍记录） |
-| `FORCED_REACHABILITY` | Docker-only：短接已识别 guard；标 `INSTRUMENTATION_REACHABILITY`，不单独升 `VERIFIED` |
+| `FORCED_REACHABILITY` | Docker-only：短接已识别 guard；标 `INSTRUMENTATION_REACHABILITY`；无 sink 效果不确认，有 H4 效果可确认+权限 |
 | `BYPASS` | 有证据后的绕过组合（不得把 Bypass Zoo 当主召回） |
 
 目标不是保证所有接口完整 2xx，而是即使因数据库、License、文件或依赖失败，也保留失败前真实业务路径、参数流、sink/effect 和退出原因。

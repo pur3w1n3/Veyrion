@@ -13,13 +13,51 @@ import java.util.List;
  * 断网 Docker 沙箱内启动应用 JAR 的固定 shell 命令构建。
  */
 public final class SandboxLaunchCommandBuilder {
+    /**
+     * 与 agent {@code AgentConfig} 的 maxEvents 上限同步（当前 500_000）。
+     * 下发值超出该区间时 premain 会直接失败，应用 HTTP 永不就绪（exit 70）。
+     */
+    public static final long AGENT_MAX_EVENTS = 500_000L;
+    /** 与 agent {@code AgentConfig} 的 maxEvents 下限同步。 */
+    public static final long AGENT_MIN_EVENTS = 1L;
+    /** 按探针数抬升轨迹事件预算的下限系数（XSS hop 过滤后约 96 字节/事件）。 */
+    public static final long EVENTS_PER_PROBE = 2_500L;
+    /** 事件体积粗估；与 {@link #resolveAgentMaxEvents} / {@link #resolveTraceBytesBudget} 共用。 */
+    public static final long BYTES_PER_EVENT_ESTIMATE = 96L;
+
     private SandboxLaunchCommandBuilder() { }
+
+    /**
+     * 计算下发给 javaagent 的 maxEvents：按探针抬升，但必须钳在 agent 合法区间内。
+     */
+    public static long resolveAgentMaxEvents(int probeCount, long maxBytes) {
+        int probes = Math.max(1, probeCount);
+        long fromBytes = Math.max(AGENT_MIN_EVENTS, maxBytes / BYTES_PER_EVENT_ESTIMATE);
+        long raised = Math.max(probes * EVENTS_PER_PROBE, Math.min(AGENT_MAX_EVENTS, fromBytes));
+        return Math.max(AGENT_MIN_EVENTS, Math.min(AGENT_MAX_EVENTS, raised));
+    }
+
+    /**
+     * 动态任务轨迹字节预算：按探针事件下限抬升，钳在 {@link ExternalArtifactPaths#MAX_TRACE_BYTES}。
+     * 避免「maxEvents 抬到 50 万但 maxTraceBytes 仍卡 16MiB」导致字节侧先饿死。
+     */
+    public static long resolveTraceBytesBudget(int probeCount, long artifactSizeBytes) {
+        int probes = Math.max(1, Math.min(ExternalArtifactPaths.MAX_PROBE_PLAN_ENTRIES, probeCount));
+        long sizeFloor = artifactSizeBytes >= 20L * 1024 * 1024 ? 4L * 1024 * 1024 : 512L * 1024;
+        long probeFloor = 512L * 1024
+                + probes * ExternalArtifactPaths.PROBE_TRACE_BYTES_PER_ENTRY;
+        long eventsFloor = probes * EVENTS_PER_PROBE * BYTES_PER_EVENT_ESTIMATE;
+        return Math.min(ExternalArtifactPaths.MAX_TRACE_BYTES,
+                Math.max(sizeFloor, Math.max(probeFloor, eventsFloor)));
+    }
 
     public static String fixedCommand(ResourceBudget budget,
                                       ExternalArtifactTaskExecutor.ArtifactRegistration registration) {
-        long maxBytes = AgentTraceReader.agentTraceBudget(budget, registration.probePlan().size());
-        // ~128 字节/事件（XSS hop 过滤后）；为 FORCED PathTrace 留余量。
-        long maxEvents = Math.max(1, Math.min(100_000, maxBytes / 128));
+        int probeCount = Math.max(1, registration.probePlan().size());
+        long maxBytes = AgentTraceReader.agentTraceBudget(budget, probeCount);
+        // ~96 字节/事件（XSS hop 过滤后）；按探针数抬高下限，降低后半程探针被洪泛饿死概率。
+        // 抬升后仍钳制到 agent 合法区间，避免 maxEvents 越界导致 premain 崩掉。
+        long maxEvents = resolveAgentMaxEvents(probeCount, maxBytes);
         long runSeconds = Math.max(1, budget.maxWallClockSeconds() - 15);
         String worldPackMode = registration.worldPackDependencyMode();
         boolean mockDependencies = !"OBSERVE_FAIL".equalsIgnoreCase(worldPackMode);
