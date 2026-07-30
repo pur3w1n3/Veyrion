@@ -2,7 +2,7 @@
 
 本模块是 **Sensor Agent**：在授权 Docker 沙箱（`TRUSTED_DOCKER`）内对 Spring Boot 可执行 JAR 做字节码观测与有界 FORCED 短接，写出 `agent-events.jsonl`。它**不是**沙箱边界、安全策略引擎、控制面或漏洞判定器。
 
-产品级审计流水线见 [AUDIT_FLOW.md](../docs/AUDIT_FLOW.md)；Agent 只覆盖其中「Docker Sandbox + Framework Boundary + Sensor」切片。架构红线见 [ADR-0004](../docs/adr/0004-sandbox-posture-vs-agent-bypass.md)。
+产品级审计流水线模型见 [AUDIT_FLOW.md](../docs/AUDIT_FLOW.md)（产品模型文档，**不以代码对齐改写**）。Agent 只覆盖其中「Docker Sandbox + Framework Boundary + Sensor」切片。当前代码执行与模型的差距见 [AUDIT_FLOW_CODE_GAP.md](AUDIT_FLOW_CODE_GAP.md)。架构红线见 [ADR-0004](../docs/adr/0004-sandbox-posture-vs-agent-bypass.md)。
 
 ---
 
@@ -19,6 +19,7 @@
 9. [构建、测试与镜像重建](#9-构建测试与镜像重建)
 10. [ADR-0004 红线](#10-adr-0004-红线)
 11. [关键类目录图](#11-关键类目录图)
+12. [与 AUDIT_FLOW 模型差距](#12-与-audit_flow-模型差距)
 
 ---
 
@@ -230,7 +231,7 @@ ControlPlane startAudit / enqueueDynamic
 
 - **无宿主回退**：沙箱不可用 → `DYNAMIC_DISABLED` / 静态结果；不得在宿主机加载被测 JAR。
 - **`TRUSTED_DOCKER`**：受信本地 JAR 调试（Docker Desktop runc + network none），**不是**恶意制品强化隔离；`VerifiedStatusGate` 对 TRUSTED_DOCKER 永不升 `VERIFIED`。
-- Agent 切片在 AUDIT_FLOW 中对应确定性阶段 **`DYNAMIC_OBSERVATION`**（非 AI 角色），位于首次 `AUTH_ANALYSIS` 与 `AUTH_BYPASS_CONFIRM` 之间。
+- Agent 切片在**代码阶段机**中对应确定性阶段 **`DYNAMIC_OBSERVATION`**（非 AI），位于首次 `AUTH_ANALYSIS` 与 `AUTH_BYPASS_CONFIRM` 之间。产品模型 [AUDIT_FLOW.md](../docs/AUDIT_FLOW.md) 将该段叙述为「Docker Sandbox + Sensor」与 AUTH 续跑之间的动态观察；命名与回环差异见 [AUDIT_FLOW_CODE_GAP.md](AUDIT_FLOW_CODE_GAP.md)。
 
 ---
 
@@ -320,3 +321,13 @@ agent/
 - `worker.InstrumentationClassPrefix` — `classPrefix`
 - `analysis.experiment.GuardSurfaceCatalog` — `forcedGuardTypeNames`
 - `control.service.ProbePlanService` — 探针 × posture 计划
+
+---
+
+## 12. 与 AUDIT_FLOW 模型差距
+
+[AUDIT_FLOW.md](../docs/AUDIT_FLOW.md) 是产品模型文档，保持独立，**不**随代码「对齐」改写。
+
+完整对照（阶段名、mermaid IR2 重算、PATH/TRIAGE 回 OBS、FORCED/Agent 切片、六 AI 角色）见专用差距文档：
+
+→ **[AUDIT_FLOW_CODE_GAP.md](AUDIT_FLOW_CODE_GAP.md)**
