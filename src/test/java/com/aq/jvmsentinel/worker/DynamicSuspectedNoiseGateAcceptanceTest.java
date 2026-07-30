@@ -126,6 +126,15 @@ public final class DynamicSuspectedNoiseGateAcceptanceTest {
                         == SandboxStartupDiagnostics.FailureClass.PROBE_EVENT_COVERAGE_INCOMPLETE
                         && "PROBE_EVENT_COVERAGE_INCOMPLETE".equals(coverage.code()),
                 "probe coverage incomplete must not fall through to UNKNOWN_STARTUP_FAILURE");
+        SandboxStartupDiagnostics.Diagnosis truncated =
+                SandboxStartupDiagnostics.classify(-1,
+                        "PROBE_EVENT_EVIDENCE_TRUNCATED loopback HTTP probe evidence does not cover "
+                                + "the submitted plan (expected=177, observed=148, loopbackProbeEvents=209, "
+                                + "httpEvents=209, truncatedTail=true, missing=29: GET /blade-flow/x track=UNAUTH)");
+        check(truncated.failureClass()
+                        == SandboxStartupDiagnostics.FailureClass.PROBE_EVENT_EVIDENCE_TRUNCATED
+                        && "PROBE_EVENT_EVIDENCE_TRUNCATED".equals(truncated.code()),
+                "truncatedTail coverage gap classifies as PROBE_EVENT_EVIDENCE_TRUNCATED");
         SandboxStartupDiagnostics.Diagnosis emptyProbes =
                 SandboxStartupDiagnostics.classify(-1,
                         "EMPTY_PROBE_EVENTS loopback HTTP probe evidence does not cover the submitted plan "

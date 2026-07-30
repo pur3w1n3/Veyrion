@@ -23,6 +23,8 @@ import type {
   UpdateScanRequest,
   ProviderDto,
   SaveProviderRequest,
+  DetectProviderProtocolRequest,
+  ProtocolDetectResultDto,
   ProviderModelInventoryDto,
   RoleAssignmentDto,
   AiRole,
@@ -70,7 +72,7 @@ import {
 } from './scans'
 import { parseProject } from './projects'
 import { parseArtifact } from './artifacts'
-import { parseProvider, parseProviderModelInventory, parseRoleAssignment } from './providers'
+import { parseProvider, parseProviderModelInventory, parseProtocolDetectResult, parseRoleAssignment } from './providers'
 import { parseAiJob, parseAuditRun, parseAiJobEvents } from './ai'
 
 const jsonHeaders = (token?: string): HeadersInit => {
@@ -555,6 +557,16 @@ export class HttpSentinelApi implements SentinelApi {
     await this.request(`providers/${encodeURIComponent(asText(providerId, 'providerId'))}`, {
       method: 'DELETE', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey())
     }, 'delete provider')
+  }
+
+  async detectProviderProtocol(request: DetectProviderProtocolRequest): Promise<ProtocolDetectResultDto> {
+    const response = await this.request('providers/detect-protocol', {
+      method: 'POST',
+      credentials: 'include',
+      headers: mutationHeaders(this.token, generatedIdempotencyKey()),
+      body: JSON.stringify(request)
+    }, 'detect provider protocol')
+    return parseProtocolDetectResult(response)
   }
 
   async refreshProviderModels(providerId: string): Promise<ProviderModelInventoryDto> {

@@ -38,11 +38,12 @@ const SEVERITY_RANK: Record<Finding['severity'], number> = {
   info: 4
 }
 
+/** 数值越小越靠前：动态确认优先，避免「静态优先」把 CONFIRMED 埋到列表底部。 */
 const STATUS_RANK: Record<Finding['status'], number> = {
-  STATIC_INFERRED: 0,
-  DYNAMIC_CONFIRMED: 1,
+  DYNAMIC_CONFIRMED: 0,
+  VERIFIED: 1,
   DYNAMIC_SUSPECTED: 2,
-  VERIFIED: 3,
+  STATIC_INFERRED: 3,
   UNREACHED: 9
 }
 

@@ -68,6 +68,7 @@ public interface ControlPlaneRouteActions {
     void createProvider(HttpExchange exchange) throws IOException;
     void updateProvider(HttpExchange exchange, String providerId) throws IOException;
     void deleteProvider(HttpExchange exchange, String providerId) throws IOException;
+    void detectProviderProtocol(HttpExchange exchange) throws IOException;
     void refreshProviderModels(HttpExchange exchange, String providerId) throws IOException;
     void listRoleAssignments(HttpExchange exchange, String projectId) throws IOException;
     void sendRoleAssignment(HttpExchange exchange, String projectId, AgentRole role) throws IOException;

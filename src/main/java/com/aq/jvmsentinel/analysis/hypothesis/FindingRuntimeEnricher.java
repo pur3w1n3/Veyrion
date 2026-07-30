@@ -5,6 +5,7 @@ import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
 import com.aq.jvmsentinel.domain.pathdebug.RuntimePosture;
 import com.aq.jvmsentinel.domain.pathdebug.RuntimePostureKind;
+import com.aq.jvmsentinel.domain.pathdebug.TraceEventKind;
 import com.aq.jvmsentinel.model.PathRun;
 import com.aq.jvmsentinel.model.VerificationStatus;
 import com.aq.jvmsentinel.worker.DynamicConfirmedGate;
@@ -116,7 +117,8 @@ public final class FindingRuntimeEnricher {
                 }
                 continue;
             }
-            if (!Boolean.TRUE.equals(run.entryHit())) continue;
+            // 与 H4 一致：PathRun.entryHit 在 5xx/超时常为 null，但 PathTrace 可有 ENTRY_HIT。
+            if (!entryReached(run, trace)) continue;
             RuntimePostureKind kind = postureKindOf(run, trace);
             if (kind == RuntimePostureKind.FORCED_REACHABILITY) {
                 anyForcedEntryHit = true;
@@ -237,6 +239,19 @@ public final class FindingRuntimeEnricher {
             wire.put("authContext", enrichment.requiredPrivilegeLabel());
         }
         return wire;
+    }
+
+    /**
+     * 入口是否到达：显式 {@code entryHit=true}，或 {@code entryHit} 未知但 PathTrace
+     * 含 {@code ENTRY_HIT}（5xx / DEPENDENCY_MOCK_GAP 常见）。{@code entryHit=false} 仍拒绝。
+     */
+    public static boolean entryReached(ApiDtos.PathRunDto run, PathTrace trace) {
+        if (run == null) return false;
+        if (Boolean.FALSE.equals(run.entryHit())) return false;
+        if (Boolean.TRUE.equals(run.entryHit())) return true;
+        if (trace == null || trace.events() == null) return false;
+        return trace.events().stream()
+                .anyMatch(e -> e != null && e.kind() == TraceEventKind.ENTRY_HIT);
     }
 
     public static boolean matchesFindingEntry(

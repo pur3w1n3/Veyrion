@@ -68,7 +68,7 @@ public final class SandboxLaunchMaxEventsAcceptanceTest {
         check(trace512 == ExternalArtifactPaths.MAX_TRACE_BYTES,
                 "full probe plan must clamp trace bytes to MAX_TRACE_BYTES; got " + trace512);
         long traceSmall = SandboxLaunchCommandBuilder.resolveTraceBytesBudget(1, 1_000);
-        check(traceSmall >= 512L * 1024, "tiny artifact still keeps 512KiB floor; got " + traceSmall);
+        check(traceSmall >= 1024L * 1024, "tiny artifact keeps 1MiB probe evidence floor; got " + traceSmall);
 
         check(ExternalArtifactPaths.TMPFS_TRACE_HEADROOM_BYTES == 32L * 1024 * 1024,
                 "tmpfs headroom must stay 32MiB");

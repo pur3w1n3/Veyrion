@@ -202,6 +202,12 @@ public final class RouteTable {
             if ("GET".equals(method)) { actions.listProviders(exchange); return; }
             if ("POST".equals(method)) { actions.createProvider(exchange); return; }
         }
+        if (path.size() == 2 && "providers".equals(path.get(0))
+                && "detect-protocol".equals(path.get(1)) && "POST".equals(method)) {
+            actions.requirePermission(exchange, Permission.MANAGE_PROVIDERS);
+            actions.detectProviderProtocol(exchange);
+            return;
+        }
         if (path.size() == 2 && "providers".equals(path.get(0))) {
             actions.requirePermission(exchange, Permission.MANAGE_PROVIDERS);
             if ("PATCH".equals(method)) { actions.updateProvider(exchange, path.get(1)); return; }

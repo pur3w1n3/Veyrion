@@ -96,10 +96,18 @@ public final class AiJobOrchestrator implements AutoCloseable {
     private static final int PATH_TRIAGE_MAX_TOOL_CALLS = 8;
     private static final int PATH_TRIAGE_MAX_PROBES = 4;
     private static final int FINALIZE_AFTER_TOOL_CALLS = 12;
+    /** final-only 后模型仍返回 tool_calls 时，额外允许的有界 re-ask 轮数。 */
+    private static final int TOOL_PHASE_CLOSED_REASK_MAX = 1;
     private static final int MAX_OUTPUT_TOKENS = 2_048;
-    /** Provider 硬上限 2 分钟；大工具上下文下的完整审计报告需要上限内完成。 */
-    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(120);
+    /**
+     * 单次 Provider HTTP 超时。PATH/TRIAGE 多轮工具后上下文更大，120s 易在慢提供商上误报
+     * TRANSPORT_FAILED；上限见 {@link ProviderChatTransport.Limits}（5 分钟）。
+     */
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(180);
     private static final Duration JOB_TIMEOUT = Duration.ofSeconds(600);
+    /** 可恢复传输/限流错误的额外重试次数（总尝试 = 1 + N）。 */
+    private static final int PROVIDER_TRANSIENT_RETRIES = 2;
+    private static final Duration PROVIDER_RETRY_BACKOFF = Duration.ofMillis(250);
     @FunctionalInterface
     public interface TerminalListener {
         void onTerminal(SQLiteControlPlanePersistence.AiJobData job);
@@ -353,12 +361,14 @@ public final class AiJobOrchestrator implements AutoCloseable {
         int pathTriageProbeAttempts = 0;
         int codeQuerySuccessCount = 0;
         boolean finalOnly = false;
+        int toolPhaseClosedReasks = 0;
+        int roundLimit = maxRounds;
         boolean authPocRepairAsked = false;
         boolean authCodeQueryRepairAsked = false;
         boolean authDiversityRepairAsked = false;
         boolean dynamicProbeRepairAsked = false;
         int dynamicAutoProbeCount = 0;
-        for (; rounds < maxRounds; rounds++) {
+        for (; rounds < roundLimit; rounds++) {
             if (state.cancelled || context.isCancelled() || Thread.currentThread().isInterrupted()) {
                 persistCancelled(initial.aiJobId(), actorId, started);
                 return;
@@ -379,10 +389,8 @@ public final class AiJobOrchestrator implements AutoCloseable {
                             "outputLanguage", outputLanguage.name(),
                             "toolDefinitionCount", definitions.size())),
                     null, null, null, null, null, null);
-            ProviderChatTransport.Response response = transport.send(provider, credential, request,
-                    new ProviderChatTransport.Limits(REQUEST_TIMEOUT,
-                            ProviderChatContracts.MAX_REQUEST_BYTES,
-                            ProviderChatContracts.MAX_RESPONSE_BYTES));
+            ProviderChatTransport.Response response = sendProviderWithRetry(
+                    initial, provider, credential, request, state, context);
             requestId = response.requestId() == null ? requestId : response.requestId();
             Map<String, Object> providerResult = new LinkedHashMap<>();
             providerResult.put("httpStatus", response.statusCode());
@@ -419,8 +427,46 @@ public final class AiJobOrchestrator implements AutoCloseable {
             }
             if (parsed.stopReason() == ProviderChatContracts.StopReason.TOOL_USE) {
                 if (finalOnly) {
+                    // 关闭工具阶段后模型仍返回 tool_calls：拒绝执行，有界 re-ask 纯文本，不把 job 打成难懂失败。
+                    List<ToolResult> denied = new ArrayList<>();
+                    for (var call : parsed.executableCalls()) {
+                        ToolResult result = new ToolResult(CanonicalToolContracts.SCHEMA_VERSION,
+                                call.callId(), call.toolName(), ToolStatus.DENIED, List.of(),
+                                "TOOL_PHASE_CLOSED", false);
+                        denied.add(result);
+                        Map<String, Object> summary = new LinkedHashMap<>();
+                        summary.put("tool", call.toolName());
+                        summary.put("status", result.status().name());
+                        summary.put("errorCode", "TOOL_PHASE_CLOSED");
+                        toolSummary.add(summary);
+                        appendEvent(initial, "TOOL_CALL", "RUNNING", null, null,
+                                safeToolName(call.toolName()),
+                                argumentSummary(call.toolName(), call.arguments()),
+                                result.status().name(), null, null);
+                    }
+                    turns.add(parsed.assistant());
+                    turns.add(protocol == ProviderProtocol.OPENAI_CHAT
+                            ? openAi.toolResults(parsed.assistant(), denied)
+                            : anthropic.toolResults(parsed.assistant(), denied));
+                    if (toolPhaseClosedReasks < TOOL_PHASE_CLOSED_REASK_MAX) {
+                        toolPhaseClosedReasks++;
+                        // 末轮触发时给一轮 grace，避免立即 ROUND_BUDGET_EXHAUSTED。
+                        if (rounds + 1 >= roundLimit) {
+                            roundLimit = rounds + 2;
+                        }
+                        turns.add(new ProviderChatContracts.UserTurn(
+                                AiPromptLanguage.toolPhaseClosedReask(outputLanguage)));
+                        appendEvent(initial, "TOOL_PHASE_CLOSED_REASK", "RUNNING", null, null,
+                                null, null, null,
+                                "TOOL_PHASE_CLOSED deniedCalls=" + denied.size()
+                                        + " reask=" + toolPhaseClosedReasks
+                                        + "/" + TOOL_PHASE_CLOSED_REASK_MAX,
+                                null);
+                        continue;
+                    }
                     throw new JobFailure("TOOL_CALL_AFTER_BUDGET",
-                            "provider returned tool calls after the server closed the tool phase");
+                            "provider kept requesting tools after the server closed the tool phase"
+                                    + " (re-ask exhausted)");
                 }
                 List<ToolResult> results = new ArrayList<>();
                 for (var call : parsed.executableCalls()) {
@@ -677,15 +723,67 @@ public final class AiJobOrchestrator implements AutoCloseable {
         if ("CANCELLED".equals(current.status()) || "COMPLETED".equals(current.status())) return;
         appendEvent(current, "FAILURE", "FAILED", null, null, null,
                 null, null, null, AiPromptSanitizer.sanitizeDiagnostic(diagnostic));
+        // transition 必须执行：事件写入失败不得把 job 留在 RUNNING。
         transition(current, "FAILED", safeReason(reason), current.providerRequestId(),
                 elapsed(started), current.rounds(), current.toolSummaryJson(), null,
                 actorId, "ai-job.fail");
+    }
+
+    private ProviderChatTransport.Response sendProviderWithRetry(
+            SQLiteControlPlanePersistence.AiJobData job, ProviderDefinition provider,
+            byte[] credential, ObjectNode request, Running state, ToolExecutionContext context) {
+        ProviderChatTransport.Limits limits = new ProviderChatTransport.Limits(REQUEST_TIMEOUT,
+                ProviderChatContracts.MAX_REQUEST_BYTES,
+                ProviderChatContracts.MAX_RESPONSE_BYTES);
+        ProviderChatTransport.TransportException last = null;
+        for (int attempt = 1; attempt <= PROVIDER_TRANSIENT_RETRIES + 1; attempt++) {
+            if (state.cancelled || context.isCancelled() || Thread.currentThread().isInterrupted()) {
+                throw new ProviderChatTransport.TransportException("REQUEST_CANCELLED");
+            }
+            try {
+                return transport.send(provider, credential, request, limits);
+            } catch (ProviderChatTransport.TransportException failure) {
+                last = failure;
+                if (attempt > PROVIDER_TRANSIENT_RETRIES || !isRetryableProviderFailure(failure.code())) {
+                    throw failure;
+                }
+                appendEvent(job, "PROVIDER_RETRY", "RUNNING", null, null, null, null, null, null,
+                        AiPromptSanitizer.sanitizeDiagnostic(
+                                failure.code() + " attempt=" + attempt
+                                        + "/" + (PROVIDER_TRANSIENT_RETRIES + 1)
+                                        + (failure.diagnostic() == null
+                                        ? "" : " " + failure.diagnostic())));
+                try {
+                    Thread.sleep(PROVIDER_RETRY_BACKOFF.toMillis() * attempt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new ProviderChatTransport.TransportException("REQUEST_CANCELLED");
+                }
+            }
+        }
+        throw last != null ? last : new ProviderChatTransport.TransportException("TRANSPORT_FAILED");
+    }
+
+    private static boolean isRetryableProviderFailure(String code) {
+        if (code == null) return false;
+        return "TRANSPORT_FAILED".equals(code)
+                || "REQUEST_TIMEOUT".equals(code)
+                || "RESPONSE_TIMEOUT".equals(code)
+                || "HTTP_408".equals(code)
+                || "HTTP_429".equals(code)
+                || "HTTP_502".equals(code)
+                || "HTTP_503".equals(code)
+                || "HTTP_504".equals(code);
     }
 
     private static String genericDiagnostic(Throwable failure) {
         String message = failure.getMessage();
         String value = failure.getClass().getSimpleName()
                 + (message == null || message.isBlank() ? "" : ": " + message);
+        Throwable cause = failure.getCause();
+        if (cause != null && cause.getMessage() != null && !cause.getMessage().isBlank()) {
+            value = value + " (" + cause.getClass().getSimpleName() + ": " + cause.getMessage() + ")";
+        }
         return AiPromptSanitizer.sanitizeDiagnostic(value);
     }
 
@@ -855,11 +953,15 @@ public final class AiJobOrchestrator implements AutoCloseable {
                              String toolCallName, String toolArgumentsSummary,
                              String toolResultStatus, String modelInferenceSummary,
                              String failureDiagnostic) {
-        store.appendAiJobEvent(new SQLiteControlPlanePersistence.AiJobEventData(
-                job.aiJobId(), 0, job.workspaceId(), job.projectId(), stage, status,
-                providerRequestSummary, providerResultSummary, toolCallName,
-                toolArgumentsSummary, toolResultStatus, modelInferenceSummary,
-                failureDiagnostic, clock.instant().toString()));
+        try {
+            store.appendAiJobEvent(new SQLiteControlPlanePersistence.AiJobEventData(
+                    job.aiJobId(), 0, job.workspaceId(), job.projectId(), stage, status,
+                    providerRequestSummary, providerResultSummary, toolCallName,
+                    toolArgumentsSummary, toolResultStatus, modelInferenceSummary,
+                    failureDiagnostic, clock.instant().toString()));
+        } catch (RuntimeException persistenceFailure) {
+            // 事件遥测不得把可完成的 AI job 打成 AI_JOB_FAILED（含 SQLITE_BUSY / 事件上限）。
+        }
     }
 
     private static String safeReason(String reason) {

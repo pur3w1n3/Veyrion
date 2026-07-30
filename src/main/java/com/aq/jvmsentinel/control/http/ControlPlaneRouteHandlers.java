@@ -52,6 +52,7 @@ public final class ControlPlaneRouteHandlers implements ControlPlaneRouteActions
     @Override public void createProvider(HttpExchange e) throws IOException { operators.createProvider(e); }
     @Override public void updateProvider(HttpExchange e, String id) throws IOException { operators.updateProvider(e, id); }
     @Override public void deleteProvider(HttpExchange e, String id) throws IOException { operators.deleteProvider(e, id); }
+    @Override public void detectProviderProtocol(HttpExchange e) throws IOException { operators.detectProviderProtocol(e); }
     @Override public void refreshProviderModels(HttpExchange e, String id) throws IOException { operators.refreshProviderModels(e, id); }
     @Override public void listRoleAssignments(HttpExchange e, String id) throws IOException { aiJobs.listRoleAssignments(e, id); }
     @Override public void sendRoleAssignment(HttpExchange e, String p, AgentRole r) throws IOException { aiJobs.sendRoleAssignment(e, p, r); }

@@ -38,8 +38,8 @@ public final class ExternalArtifactPaths {
     public static final long MAX_ARTIFACT_BYTES = 2L * 1024 * 1024 * 1024;
     /**
      * 轨迹 tmpfs 相对 {@link #MAX_TRACE_BYTES}/{@code maxTraceBytes} 的固定余量。
-     * 覆盖同挂载上的 application.log、progress、probe-plan（≤3MiB）、WaitHttpReady
-     * stderr 与并发刷盘；避免轨迹写满后再写日志即 ENOSPC。取 32MiB（非百分比）：
+     * 覆盖同挂载上的 application.log、progress、probe-plan（≤3MiB）、http-context-path、
+     * WaitHttpReady stderr 与并发刷盘；避免轨迹写满后再写日志即 ENOSPC。取 32MiB（非百分比）：
      * 小预算时也有绝对地板，大探针满额时余量仍可预期。
      */
     public static final long TMPFS_TRACE_HEADROOM_BYTES = 32L * 1024 * 1024;

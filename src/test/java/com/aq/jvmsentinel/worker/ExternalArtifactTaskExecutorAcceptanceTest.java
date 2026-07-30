@@ -263,10 +263,27 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                         && !classified.contains("[UNKNOWN_STARTUP_FAILURE]"),
                 "coverage failure must not classify as UNKNOWN_STARTUP_FAILURE");
 
-        // 截断尾行：已有完整事件时不因半行 JSON 整文件判死
+        // 截断尾行但覆盖已完整：不因半行 JSON 整文件判死
         String truncated = formEvent + "{\"schemaVersion\":1,\"eventType\":\"HTTP\",\"class\":";
         ExternalArtifactTaskExecutor.requireHttpProbeEvidence(
                 formPlan, truncated.getBytes(StandardCharsets.UTF_8));
+
+        // 截断尾行且覆盖不全：标 TRUNCATED（可重试），不得假报 COVERAGE_INCOMPLETE
+        var truncatedIncomplete = expect(
+                ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.class,
+                () -> ExternalArtifactTaskExecutor.requireHttpProbeEvidence(
+                        multiTrack, truncated.getBytes(StandardCharsets.UTF_8)),
+                "truncated incomplete coverage is evidence truncation");
+        check("PROBE_EVENT_EVIDENCE_TRUNCATED".equals(truncatedIncomplete.code())
+                        && truncatedIncomplete.getMessage().contains("truncatedTail=true")
+                        && truncatedIncomplete.getMessage().contains("track=ADMIN"),
+                "truncated tail with missing plan items is PROBE_EVENT_EVIDENCE_TRUNCATED");
+        String truncatedClassified = com.aq.jvmsentinel.worker.docker.ExternalArtifactDiagnostics
+                .failureDiagnostic(truncatedIncomplete);
+        check(truncatedClassified.contains("[PROBE_EVENT_EVIDENCE_TRUNCATED]")
+                        && !truncatedClassified.contains("[PROBE_EVENT_COVERAGE_INCOMPLETE]")
+                        && !truncatedClassified.contains("[UNKNOWN_STARTUP_FAILURE]"),
+                "truncated evidence must classify as PROBE_EVENT_EVIDENCE_TRUNCATED");
 
         // 仅截断半行、无任何事件 → MALFORMED
         var malformed = expect(ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.class,
@@ -873,8 +890,11 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         void assertRetainedProbeReused() {
             check(commands.stream().anyMatch(command ->
                             command.startsWith("rm -f " + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)
+                                    && command.contains(": > " + ExternalArtifactTaskExecutor.TRACE_FILE)
+                                    && command.contains(": > " + ExternalArtifactTaskExecutor.TRACE_DIRECTORY
+                                    + "/application.log")
                                     && command.contains("复用已启动应用，准备本轮探针")),
-                    "retained probe prepares trace files in existing sandbox");
+                    "retained probe reclaims tmpfs and prepares probe files");
             check(commands.stream().anyMatch(command ->
                             command.contains("com.aq.jvmsentinel.agent.LoopbackHttpProbe --batch "
                                     + ExternalArtifactTaskExecutor.TRACE_DIRECTORY

@@ -36,6 +36,13 @@ public final class FindingBindingsAcceptanceTest {
         languageInstructionLocalePure();
         effectConfirmedBindingSurfacesDynamicConfirmed();
         incidentalDeserialDoesNotConfirmUnrelatedFinding();
+        maxBindingsPrefersForcedMaterialsOverStaticAuthGap();
+        orphanSpelEffectBecomesConfirmedBinding();
+        nullEntryHitForcedFillsMidLogicFromHops();
+        orphanSpelNotBlockedByAuthGapOnSameEntry();
+        orphanCapLeavesRoomForHighImpactFindings();
+        executiveSummarySeparatesForcedFromPureStatic();
+        rememberMeDeserialOrphansCollapse();
         System.out.println("FindingBindingsAcceptanceTest: PASS ("
                 + Math.max(ASSERTIONS.get(), AcceptanceAssertions.get()) + " assertions)");
     }
@@ -379,9 +386,255 @@ public final class FindingBindingsAcceptanceTest {
         List<FindingBindings.Binding> bindings = FindingBindings.assemble(
                 List.of(authGap), List.of(entry), List.of(run),
                 Map.of("pr-deserial-noise", trace), AiOutputLanguage.ZH_CN);
-        check(bindings.size() == 1, "auth-gap binding assembled");
-        check(ApiDtos.STATIC_INFERRED.equals(bindings.get(0).status()),
+        FindingBindings.Binding authBinding = bindings.stream()
+                .filter(b -> "finding-auth".equals(b.findingId())).findFirst().orElse(null);
+        check(authBinding != null, "auth-gap binding assembled");
+        check(ApiDtos.STATIC_INFERRED.equals(authBinding.status()),
                 "incidental Shiro DESERIAL PathRun CONFIRMED must not elevate AUTH_GAP finding");
+        check(bindings.stream().anyMatch(b ->
+                        "DESERIALIZATION".equals(b.securityProperty())
+                                && ApiDtos.DYNAMIC_CONFIRMED.equals(b.status())),
+                "Shiro DESERIAL must surface as orphan/channel binding, not be swallowed by AUTH_GAP");
+    }
+
+    private static void maxBindingsPrefersForcedMaterialsOverStaticAuthGap() {
+        java.util.ArrayList<ApiDtos.FindingDto> findings = new java.util.ArrayList<>();
+        java.util.ArrayList<ApiDtos.EntryDto> entries = new java.util.ArrayList<>();
+        java.util.ArrayList<ApiDtos.PathRunDto> runs = new java.util.ArrayList<>();
+        java.util.HashMap<String, PathTrace> traces = new java.util.HashMap<>();
+        for (int i = 1; i <= FindingBindings.MAX_BINDINGS + 3; i++) {
+            String entryId = "entry-gap-" + i;
+            String route = "/gap/" + i;
+            entries.add(entry(entryId, "GET", route));
+            findings.add(findingWithSeverity(
+                    "finding-gap-" + i, "静态推断的鉴权缺口信号", entryId,
+                    route, "AUTH_GAP", "low"));
+        }
+        entries.add(entry("entry-forced", "GET", "/blade-desk/dashboard/activities"));
+        findings.add(findingWithSeverity(
+                "finding-forced-auth", "静态推断的鉴权缺口信号", "entry-forced",
+                "/blade-desk/dashboard/activities", "AUTH_GAP", "low"));
+        ApiDtos.PathRunDto forced = pathRun(
+                "pr-forced-dash", "entry:GET:/blade-desk/dashboard/activities",
+                200, true, "plan:posture:entry-forced:forced_reachability");
+        runs.add(forced);
+        traces.put("pr-forced-dash", forcedTraceWithHops(
+                "pr-forced-dash", "entry:GET:/blade-desk/dashboard/activities"));
+        List<FindingBindings.Binding> bindings = FindingBindings.assemble(
+                findings, entries, runs, traces, AiOutputLanguage.ZH_CN);
+        java.util.Set<String> ids = bindings.stream()
+                .map(FindingBindings.Binding::findingId)
+                .collect(java.util.stream.Collectors.toSet());
+        check(ids.contains("finding-forced-auth"),
+                "MAX_BINDINGS must keep AUTH_GAP that has FORCED PathRun materials");
+        FindingBindings.Binding forcedBinding = bindings.stream()
+                .filter(b -> "finding-forced-auth".equals(b.findingId())).findFirst().orElseThrow();
+        check(forcedBinding.pathRunRefs().contains("pr-forced-dash"),
+                "forced AUTH_GAP keeps pathRunRefs after truncate");
+        check(forcedBinding.title().contains("强达") || forcedBinding.poc().steps().stream()
+                        .anyMatch(s -> s.contains("授权沙箱") || s.contains("HTTP")),
+                "forced materials surface in title or PoC");
+    }
+
+    private static void orphanSpelEffectBecomesConfirmedBinding() {
+        ApiDtos.EntryDto entry = entry("entry-sms", "POST", "/blade-resource/sms/enable");
+        ApiDtos.PathRunDto run = new ApiDtos.PathRunDto(
+                ApiDtos.SCHEMA_VERSION, "pr-spel", "scan-a",
+                "entry:POST:/blade-resource/sms/enable", "UNAUTH", "attempt-1",
+                "plan:posture:entry-sms:forced_reachability", "POST", "application/json",
+                "POST /blade-resource/sms/enable track=UNAUTH", "AUTH_CHALLENGE",
+                401, true, null, List.of(), "AUTH_CHALLENGE",
+                ApiDtos.DYNAMIC_CONFIRMED, List.of("ev-spel"), "MOCK", "");
+        PathTrace trace = effectTrace(
+                "pr-spel", "entry:POST:/blade-resource/sms/enable",
+                "EFFECT:EXPRESSION",
+                "org.springframework.expression.spel.standard.SpelExpression#getValue");
+        java.util.ArrayList<ApiDtos.FindingDto> noise = new java.util.ArrayList<>();
+        java.util.ArrayList<ApiDtos.EntryDto> entries = new java.util.ArrayList<>();
+        entries.add(entry);
+        for (int i = 1; i <= FindingBindings.MAX_BINDINGS; i++) {
+            String entryId = "entry-noise-" + i;
+            entries.add(entry(entryId, "GET", "/noise/" + i));
+            noise.add(findingWithSeverity(
+                    "finding-noise-" + i, "静态推断的鉴权缺口信号", entryId,
+                    "/noise/" + i, "AUTH_GAP", "low"));
+        }
+        List<FindingBindings.Binding> bindings = FindingBindings.assemble(
+                noise, entries, List.of(run),
+                Map.of("pr-spel", trace), AiOutputLanguage.ZH_CN);
+        check(bindings.stream().anyMatch(b ->
+                        ApiDtos.DYNAMIC_CONFIRMED.equals(b.status())
+                                && "EXPRESSION".equals(b.securityProperty())),
+                "orphan EXPRESSION must win a MAX_BINDINGS slot over static AUTH_GAP noise");
+        FindingBindings.Binding orphan = bindings.stream()
+                .filter(b -> "EXPRESSION".equals(b.securityProperty())).findFirst().orElseThrow();
+        check(orphan.title().contains("SpEL") || orphan.title().contains("表达式"),
+                "orphan title names SpEL/表达式");
+        check(orphan.pathRunRefs().contains("pr-spel"), "orphan keeps pathRunRefs");
+        String md = FindingBindings.renderMarkdownSection(bindings, AiOutputLanguage.ZH_CN);
+        check(md.contains("已动态确认") || md.contains("DYNAMIC_CONFIRMED"),
+                "report surfaces orphan SpEL as confirmed, not all-static");
+    }
+
+    private static void orphanSpelNotBlockedByAuthGapOnSameEntry() {
+        ApiDtos.EntryDto entry = entry("entry-sms", "POST", "/blade-resource/sms/enable");
+        ApiDtos.FindingDto authGap = findingWithProperty(
+                "finding-auth-sms", "静态推断的鉴权缺口信号",
+                "entry-sms", "/blade-resource/sms/enable", "AUTH_GAP");
+        ApiDtos.PathRunDto run = new ApiDtos.PathRunDto(
+                ApiDtos.SCHEMA_VERSION, "pr-spel-auth", "scan-a",
+                "entry:POST:/blade-resource/sms/enable", "UNAUTH", "attempt-1",
+                "plan:posture:entry-sms:forced_reachability", "POST", "application/json",
+                "POST /blade-resource/sms/enable track=UNAUTH", "AUTH_CHALLENGE",
+                401, true, null, List.of(), "AUTH_CHALLENGE",
+                ApiDtos.DYNAMIC_CONFIRMED, List.of("ev-spel-auth"), "MOCK", "");
+        PathTrace trace = effectTrace(
+                "pr-spel-auth", "entry:POST:/blade-resource/sms/enable",
+                "EFFECT:EXPRESSION",
+                "org.springframework.expression.spel.standard.SpelExpression#getValue");
+        List<FindingBindings.Binding> bindings = FindingBindings.assemble(
+                List.of(authGap), List.of(entry), List.of(run),
+                Map.of("pr-spel-auth", trace), AiOutputLanguage.ZH_CN);
+        check(bindings.stream().anyMatch(b ->
+                        ApiDtos.DYNAMIC_CONFIRMED.equals(b.status())
+                                && "EXPRESSION".equals(b.securityProperty())),
+                "AUTH_GAP on same entry must not swallow orphan EXPRESSION effect");
+        check(bindings.stream().anyMatch(b -> "finding-auth-sms".equals(b.findingId())),
+                "AUTH_GAP finding remains alongside orphan SpEL");
+    }
+
+    private static void orphanCapLeavesRoomForHighImpactFindings() {
+        java.util.ArrayList<ApiDtos.FindingDto> findings = new java.util.ArrayList<>();
+        java.util.ArrayList<ApiDtos.EntryDto> entries = new java.util.ArrayList<>();
+        java.util.ArrayList<ApiDtos.PathRunDto> runs = new java.util.ArrayList<>();
+        java.util.LinkedHashMap<String, PathTrace> traces = new java.util.LinkedHashMap<>();
+        for (int i = 1; i <= 40; i++) {
+            String entryId = "entry-spel-" + i;
+            String route = "/blade-resource/sms/orphan/" + i;
+            entries.add(entry(entryId, "POST", route));
+            String pr = "pr-orphan-" + i;
+            runs.add(new ApiDtos.PathRunDto(
+                    ApiDtos.SCHEMA_VERSION, pr, "scan-a",
+                    "entry:POST:" + route, "UNAUTH", "attempt-1",
+                    "plan:posture:" + entryId + ":forced_reachability", "POST", "application/json",
+                    "POST " + route, "AUTH_CHALLENGE",
+                    401, true, null, List.of(), "AUTH_CHALLENGE",
+                    ApiDtos.DYNAMIC_CONFIRMED, List.of("ev-" + pr), "MOCK", ""));
+            traces.put(pr, effectTrace(pr, "entry:POST:" + route, "EFFECT:EXPRESSION",
+                    "org.springframework.expression.spel.standard.SpelExpression#getValue"));
+        }
+        entries.add(entry("entry-jwt", "GET", "/blade-auth/oauth/token"));
+        findings.add(findingWithSeverity(
+                "finding-jwt-keep", "静态推断的硬编码/默认 JWT 签名密钥信号",
+                "entry-jwt", "/blade-auth/oauth/token", "HARDCODED_JWT_SIGN_KEY", "high"));
+        List<FindingBindings.Binding> bindings = FindingBindings.assemble(
+                findings, entries, runs, traces, AiOutputLanguage.ZH_CN);
+        long orphanConfirmed = bindings.stream()
+                .filter(b -> "EXPRESSION".equals(b.securityProperty())
+                        && ApiDtos.DYNAMIC_CONFIRMED.equals(b.status()))
+                .count();
+        check(orphanConfirmed <= FindingBindings.MAX_ORPHAN_BINDINGS,
+                "orphan EXPRESSION bindings must respect MAX_ORPHAN_BINDINGS");
+        check(bindings.stream().anyMatch(b -> "finding-jwt-keep".equals(b.findingId())),
+                "JWT high-impact finding must survive orphan flood");
+    }
+
+    private static void executiveSummarySeparatesForcedFromPureStatic() {
+        ApiDtos.EntryDto forcedEntry = entry("entry-forced", "GET", "/blade-desk/notice/list");
+        ApiDtos.EntryDto staticEntry = entry("entry-static", "GET", "/blade-desk/notice/detail");
+        ApiDtos.FindingDto forcedFinding = findingWithProperty(
+                "finding-forced", "静态推断的鉴权缺口信号",
+                "entry-forced", "/blade-desk/notice/list", "AUTH_GAP");
+        ApiDtos.FindingDto staticFinding = findingWithProperty(
+                "finding-static", "静态推断的鉴权缺口信号",
+                "entry-static", "/blade-desk/notice/detail", "AUTH_GAP");
+        ApiDtos.PathRunDto forced = pathRun(
+                "pr-forced-exec", "entry:GET:/blade-desk/notice/list", 200, true,
+                "plan:posture:entry-forced:forced_reachability");
+        PathTrace trace = forcedTraceWithHops(
+                "pr-forced-exec", "entry:GET:/blade-desk/notice/list");
+        List<FindingBindings.Binding> bindings = FindingBindings.assemble(
+                List.of(forcedFinding, staticFinding),
+                List.of(forcedEntry, staticEntry),
+                List.of(forced),
+                Map.of("pr-forced-exec", trace),
+                AiOutputLanguage.ZH_CN);
+        String md = FindingBindings.renderMarkdownSection(bindings, AiOutputLanguage.ZH_CN);
+        check(md.contains("含运行时路径材料"),
+                "executive summary must count forced materials separately from pure static");
+        check(md.contains("仅静态信号"), "executive summary retains pure-static bucket");
+        check(md.contains("强达") || md.contains("路径观测"),
+                "overall conclusion must not claim pure-static when forced materials exist");
+    }
+
+    private static void rememberMeDeserialOrphansCollapse() {
+        java.util.ArrayList<ApiDtos.PathRunDto> runs = new java.util.ArrayList<>();
+        java.util.LinkedHashMap<String, PathTrace> traces = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < 8; i++) {
+            String route = "/sys/menu/item-" + i;
+            String pr = "pr-rm-" + i;
+            runs.add(new ApiDtos.PathRunDto(
+                    ApiDtos.SCHEMA_VERSION, pr, "scan-a",
+                    "entry:GET:" + route, "UNAUTH", "attempt-1",
+                    "plan:posture:forced_reachability", "GET", "application/json",
+                    "GET " + route + " cookie=rememberMe=xxx", "AUTH_CHALLENGE",
+                    302, true, null, List.of(), "AUTH_CHALLENGE",
+                    ApiDtos.DYNAMIC_CONFIRMED, List.of("ev-" + pr), "MOCK", ""));
+            traces.put(pr, effectTrace(pr, "entry:GET:" + route, "EFFECT:DESERIALIZATION",
+                    "org.apache.shiro.mgt.AbstractRememberMeManager#getRememberedSerializedIdentity"));
+        }
+        List<FindingBindings.Binding> bindings = FindingBindings.assemble(
+                List.of(), List.of(), runs, traces, AiOutputLanguage.ZH_CN);
+        long deserial = bindings.stream()
+                .filter(b -> "DESERIALIZATION".equals(b.securityProperty()))
+                .count();
+        check(deserial == 1, "RememberMe DESERIAL orphans must collapse to one binding");
+        check(bindings.get(0).title().contains("RememberMe") || bindings.get(0).title().contains("反序列化"),
+                "collapsed orphan titles RememberMe/反序列化 channel");
+    }
+
+    private static void nullEntryHitForcedFillsMidLogicFromHops() {
+        ApiDtos.EntryDto entry = entry("entry-ann-8", "POST", "/blade-flow/model/deploy");
+        ApiDtos.FindingDto finding = findingWithProperty(
+                "finding-bpmn", "静态推断的BPMN/流程部署信号",
+                "entry-ann-8", "/blade-flow/model/deploy", "BPMN_DEPLOY");
+        ApiDtos.PathRunDto run = new ApiDtos.PathRunDto(
+                ApiDtos.SCHEMA_VERSION, "pr-bpmn", "scan-a",
+                "entry:POST:/blade-flow/model/deploy", "ADMIN", "attempt-1",
+                "plan:posture:entry-ann-8:forced_reachability", "POST", "application/json",
+                "POST /blade-flow/model/deploy", "DEPENDENCY_MOCK_GAP",
+                500, null, null, List.of(), "DEPENDENCY_MOCK_GAP",
+                ApiDtos.UNREACHED, List.of("ev-bpmn"), "MOCK", "");
+        List<TraceEvent> events = List.of(
+                new TraceEvent(1, TraceEventKind.ENTRY_HIT, "entry",
+                        "entry:POST:/blade-flow/model/deploy", "", false, Map.of(), ""),
+                new TraceEvent(2, TraceEventKind.METHOD_HOP, "hop",
+                        "org.springblade.flow.engine.service.impl.FlowEngineServiceImpl#deployModel",
+                        "", false, Map.of(), ""),
+                new TraceEvent(3, TraceEventKind.METHOD_HOP, "hop",
+                        "org.flowable.engine.RepositoryService#createDeployment",
+                        "", false, Map.of(), ""));
+        PathTrace trace = new PathTrace(
+                PathTrace.SCHEMA_VERSION, "pathtrace:pr-bpmn", "pr-bpmn",
+                "probe-1", "plan:posture:entry-ann-8:forced_reachability", "traceplan-1",
+                "entry:POST:/blade-flow/model/deploy", "ADMIN",
+                RuntimePosture.forced(List.of("GUARD:AUTH:TokenInterceptor")),
+                "world-1", "corr-1", 1, events, List.of(),
+                TraceExitReason.DEPENDENCY_UNAVAILABLE,
+                "org.flowable.engine.RepositoryService#createDeployment",
+                List.of(), false);
+        List<FindingBindings.Binding> bindings = FindingBindings.assemble(
+                List.of(finding), List.of(entry), List.of(run),
+                Map.of("pr-bpmn", trace), AiOutputLanguage.ZH_CN);
+        check(bindings.size() == 1, "bpmn binding assembled");
+        FindingBindings.Binding binding = bindings.get(0);
+        check(binding.pathRunRefs().contains("pr-bpmn"), "bpmn 500 attaches pathRun via Trace ENTRY_HIT");
+        check(!FindingBindings.NO_MID_LOGIC_ZH.equals(binding.midLogic()),
+                "midLogic must not stay empty when METHOD_HOP exists");
+        check(binding.midLogic().contains("FlowEngineServiceImpl")
+                        || binding.midLogic().contains("RepositoryService")
+                        || binding.midLogic().contains("deployModel"),
+                "midLogic includes business hop subjects");
     }
 
     private static PathTrace effectTrace(

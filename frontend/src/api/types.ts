@@ -711,6 +711,30 @@ export type SaveProviderRequest = {
   enabled?: boolean
 }
 
+export type DetectProviderProtocolRequest = {
+  baseUrl: string
+  apiKey?: string
+  providerId?: string
+}
+
+export type ProtocolDetectCandidateDto = {
+  kind: ProviderKind
+  viable: boolean
+  reasonCode: string
+  detail: string
+  httpStatus?: number
+}
+
+export type ProtocolDetectResultDto = {
+  schemaVersion: number
+  baseUrl: string
+  status: 'UNIQUE' | 'MULTIPLE' | 'NONE'
+  recommendedKind?: ProviderKind
+  hint?: string
+  probedAt: string
+  candidates: ProtocolDetectCandidateDto[]
+}
+
 export type ProviderInventoryModelDto = {
   schemaVersion: number
   modelId: string
@@ -978,6 +1002,7 @@ export interface SentinelApi {
   createProvider(request: SaveProviderRequest): Promise<ProviderDto>
   updateProvider(providerId: string, request: Partial<SaveProviderRequest>): Promise<ProviderDto>
   deleteProvider(providerId: string): Promise<void>
+  detectProviderProtocol(request: DetectProviderProtocolRequest): Promise<ProtocolDetectResultDto>
   refreshProviderModels(providerId: string): Promise<ProviderModelInventoryDto>
   listRoleAssignments(projectId: string): Promise<RoleAssignmentDto[]>
   saveRoleAssignment(projectId: string, role: AiRole, request: SaveRoleAssignmentRequest): Promise<RoleAssignmentDto>

@@ -29,6 +29,9 @@ public final class ProbeEvidenceValidator {
      * <p>覆盖按 wire identity（method/route/requestTarget/track）比对；expected 的
      * requestTarget 使用与 LoopbackHttpProbe 相同的 body/query 规则，避免 form/multipart
      * 假阴性。{@code expected.size()==observed.size()} 仍可能因集合成员不同而失败。</p>
+     *
+     * <p>末行 JSON 截断（{@code truncatedTail}）且覆盖不全时抛
+     * {@code PROBE_EVENT_EVIDENCE_TRUNCATED}，不得标成真实 {@code PROBE_EVENT_COVERAGE_INCOMPLETE}。</p>
      */
     public static void requireHttpProbeEvidence(ExternalArtifactTaskExecutor.ArtifactRegistration registration,
                                          byte[] mergedJsonl) {
@@ -91,7 +94,15 @@ public final class ProbeEvidenceValidator {
         if (observed.containsAll(expected)) return;
         Set<String> missing = new LinkedHashSet<>(expected);
         missing.removeAll(observed);
-        String code = loopbackProbeEvents == 0 ? "EMPTY_PROBE_EVENTS" : "PROBE_EVENT_COVERAGE_INCOMPLETE";
+        // 尾部半行截断时，缺项可能是假阴性（证据预算/tmpfs 写断），不得标成真实未覆盖。
+        String code;
+        if (loopbackProbeEvents == 0) {
+            code = "EMPTY_PROBE_EVENTS";
+        } else if (skippedTruncatedTail) {
+            code = "PROBE_EVENT_EVIDENCE_TRUNCATED";
+        } else {
+            code = "PROBE_EVENT_COVERAGE_INCOMPLETE";
+        }
         throw ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.of(code,
                 "loopback HTTP probe evidence does not cover the submitted plan (expected="
                         + expected.size() + ", observed=" + observed.size()

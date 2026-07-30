@@ -61,12 +61,28 @@ public final class WaitHttpReady {
             return;
         }
         for (int port : ordered) {
-            int status = probe(port);
+            int status = probe(port, "/");
             if (status >= 0) {
+                String contextPath = HttpContextPathDetector.detectFromApplicationLog(traceDir);
+                if (contextPath.isEmpty()) {
+                    contextPath = HttpContextPathDetector.normalize(
+                            System.getProperty("veyrion.loopbackProbe.contextPath", ""));
+                }
+                HttpContextPathDetector.writeContextPathFile(traceDir, contextPath);
+                int contextStatus = status;
+                if (!contextPath.isEmpty()) {
+                    int prefixed = probe(port, contextPath);
+                    if (prefixed >= 0) {
+                        contextStatus = prefixed;
+                    }
+                }
                 write(traceDir, "http-port.txt", Integer.toString(port));
                 write(traceDir, "listen-ports.txt", listen);
                 write(traceDir, "progress.txt",
                         "进程 LISTEN 端口 " + port + " 判定为 HTTP（GET / → " + status
+                                + (contextPath.isEmpty()
+                                ? ""
+                                : "；context-path " + contextPath + " → " + contextStatus)
                                 + "；全部 LISTEN: " + listen + "）");
                 System.out.println(port);
                 return;
@@ -89,13 +105,15 @@ public final class WaitHttpReady {
         return head.startsWith("HTTP/1.") || head.startsWith("HTTP/2");
     }
 
-    private static int probe(int port) {
+    private static int probe(int port, String path) {
+        String target = path == null || path.isBlank() ? "/" : path;
+        if (!target.startsWith("/")) target = "/" + target;
         try (Socket socket = new Socket()) {
             InetAddress loopback = InetAddress.getByAddress(new byte[]{127, 0, 0, 1});
             socket.connect(new InetSocketAddress(loopback, port), 1_500);
             socket.setSoTimeout(1_500);
             OutputStream output = socket.getOutputStream();
-            byte[] request = ("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            byte[] request = ("GET " + target + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
                     .getBytes(StandardCharsets.US_ASCII);
             output.write(request);
             output.flush();

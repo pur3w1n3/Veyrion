@@ -2,11 +2,11 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateA
 import { api, type AiJobDto, type DynamicTaskDto, type ScanDto } from '../api'
 import { errorMessage } from '../components/Common'
 
-const TERMINAL_SCAN = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const TERMINAL_JOB = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'BLOCKED'])
 const ACTIVE_JOB = new Set(['QUEUED', 'RUNNING'])
-const ACTIVE_TASK = new Set(['QUEUED', 'RUNNING', 'LEASED'])
-const POLL_MS = 1500
+const ACTIVE_TASK = new Set(['QUEUED', 'RUNNING', 'LEASED', 'PAUSED'])
+const POLL_MS = 2500
+const POLL_HIDDEN_MS = 10000
 
 const pickLatestTask = (tasks: DynamicTaskDto[]): DynamicTaskDto | undefined =>
   [...tasks].sort((left, right) => {
@@ -14,7 +14,14 @@ const pickLatestTask = (tasks: DynamicTaskDto[]): DynamicTaskDto | undefined =>
     return byTime !== 0 ? byTime : left.taskId.localeCompare(right.taskId)
   }).at(-1)
 
-const shouldKeepLive = (
+/**
+ * 是否继续 live 拉取。
+ *
+ * 重要：制品静态扫描结束后 scan.status 即为 COMPLETED，但 AI/动态流水线仍可能
+ * 长时间运行。因此不能用 scan.status 终态单独停轮询，必须以 pipeline 投影与
+ * job/task 活跃态为准。
+ */
+export const shouldKeepAuditLive = (
   scan: ScanDto | undefined,
   jobs: AiJobDto[],
   task: DynamicTaskDto | undefined,
@@ -23,29 +30,42 @@ const shouldKeepLive = (
   if (task && ACTIVE_TASK.has(task.status)) return true
   const scanJobs = jobs.filter((job) => job.scanId === scanId)
   if (scanJobs.some((job) => ACTIVE_JOB.has(job.status))) return true
-  // 操作员暂停保留游标；继续轮询以保持 resume/status 新鲜。
-  if (scan?.pipelineStatus === 'PAUSED' || scan?.pipelineStatus === 'RUNNING' || scan?.pipelineArmed) {
+
+  const pipelineStatus = scan?.pipelineStatus
+  if (scan?.pipelineArmed || pipelineStatus === 'RUNNING' || pipelineStatus === 'PAUSED') {
     return true
   }
-  if (scan && TERMINAL_SCAN.has(scan.status)) return false
-  // 动态观测失败/取消且无后续 AI job：停止轮询。
-  if (task && (task.status === 'FAILED' || task.status === 'CANCELLED')) return false
-  // 跨 stage 间隙持续刷新（上一 stage 完成、下一 job 尚未
-  // 创建）。终态失败/阻塞表示流水线无法推进时停止 —
-  // 否则 UI 需切换标签页才能恢复。
-  if (scanJobs.length === 0) return scan == null || !TERMINAL_SCAN.has(scan.status)
-  const allTerminal = scanJobs.every((job) => TERMINAL_JOB.has(job.status))
-  if (!allTerminal) return true
-  if (scanJobs.some((job) => job.status === 'FAILED' || job.status === 'BLOCKED' || job.status === 'CANCELLED')) {
+  if (pipelineStatus === 'COMPLETE' || pipelineStatus === 'STOPPED') {
     return false
   }
-  return scan == null || !TERMINAL_SCAN.has(scan.status)
+  if (scanJobs.some((job) => job.role === 'REPORT_GENERATION' && job.status === 'COMPLETED')) {
+    return false
+  }
+
+  // 跨 stage 间隙：上一 job/task 已终态、下一资源尚未创建；pipeline 可能短暂 IDLE/缺省。
+  if (scanJobs.length === 0) {
+    return pipelineStatus === 'IDLE'
+  }
+  if (scanJobs.some((job) => !TERMINAL_JOB.has(job.status))) return true
+
+  const hasHardStop = scanJobs.some((job) =>
+    job.status === 'FAILED' || job.status === 'BLOCKED' || job.status === 'CANCELLED')
+  if (hasHardStop) {
+    // 硬失败且流水线未声明仍在推进时停止；IDLE 保留短暂对账窗口。
+    return pipelineStatus === 'IDLE'
+  }
+  if (task && (task.status === 'FAILED' || task.status === 'CANCELLED')) {
+    return pipelineStatus === 'IDLE'
+  }
+
+  // 全部成功终态：在 pipeline 明确 NONE 前继续拉（覆盖 stage 间隙与投影滞后）。
+  return pipelineStatus !== 'NONE'
 }
 
 /**
  * 审计执行 / 过程视图的 live 同步。
- * 优先 Control Plane SSE 触发 GET 刷新；scan 或任意 job/task 非终态时
- * 回退到有界轮询。
+ * 优先 Control Plane SSE 触发 GET 刷新；有界轮询覆盖 SSE 早关
+ * （静态 ScanCompleted / 动态 TaskStopped 会结束事件流）与跨 stage 间隙。
  */
 export function useAuditLiveRefresh({
   projectId,
@@ -95,6 +115,8 @@ export function useAuditLiveRefresh({
     if (!scanId || scanId === 'unscanned') {
       setDynamicTask(undefined)
       taskRef.current = undefined
+      setScan(undefined)
+      scanRef.current = undefined
       return
     }
 
@@ -130,58 +152,79 @@ export function useAuditLiveRefresh({
 
     let closed = false
     let pollTimer: number | undefined
-    let sseAlive = false
+    let inFlight = false
 
     const reportError = (cause: unknown) => {
       if (!closed) onErrorRef.current?.(errorMessage(cause))
     }
 
-    const schedulePoll = () => {
+    const pollDelayMs = () =>
+      (typeof document !== 'undefined' && document.visibilityState === 'hidden')
+        ? POLL_HIDDEN_MS
+        : POLL_MS
+
+    const schedulePoll = (delayMs = pollDelayMs()) => {
       if (closed || pollTimer !== undefined) return
       pollTimer = window.setTimeout(() => {
         pollTimer = undefined
         void runPoll()
-      }, POLL_MS)
+      }, delayMs)
     }
+
+    const stillLive = () =>
+      shouldKeepAuditLive(scanRef.current, jobsRef.current, taskRef.current, scanId)
 
     const runPoll = async () => {
       if (closed) return
+      if (inFlight) {
+        schedulePoll()
+        return
+      }
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        if (stillLive()) schedulePoll(POLL_HIDDEN_MS)
+        return
+      }
+      inFlight = true
       try {
         await refreshNow()
       } catch (cause) {
         reportError(cause)
+      } finally {
+        inFlight = false
       }
       if (closed) return
-      if (shouldKeepLive(scanRef.current, jobsRef.current, taskRef.current, scanId)) {
-        schedulePoll()
-      }
+      if (stillLive()) schedulePoll()
     }
 
-    // SSE 仅提示；onReconcile 已 GET scan。refreshNow 重载 jobs/tasks。
+    const onVisibility = () => {
+      if (closed || document.visibilityState === 'hidden') return
+      // 回到前台：若仍应 live 且无定时器，立刻补一次。
+      if (pollTimer === undefined && stillLive()) schedulePoll(0)
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+
+    // SSE 仅提示；静态 ScanCompleted / 动态 TaskStopped 后流会结束，不能作为唯一通道。
     const unsubscribe = api.subscribe(scanId, () => undefined, {
       onReconcile: (next) => {
         if (closed) return
-        sseAlive = true
         setScan(next)
         scanRef.current = next
         void refreshNow().catch(reportError).then(() => {
-          if (!closed && shouldKeepLive(scanRef.current, jobsRef.current, taskRef.current, scanId)) {
-            schedulePoll()
-          }
+          if (!closed && stillLive()) schedulePoll()
         })
       },
       onError: () => {
-        // EventSource 自行重试；SSE 不稳定时确保轮询覆盖间隙。
-        if (!closed && !sseAlive) schedulePoll()
+        // EventSource 重试间隙由轮询兜底（含 SSE 因终态事件关闭之后）。
+        if (!closed && stillLive()) schedulePoll()
       }
     })
 
-    // 始终启动有界轮询；SSE 可用时加速更新。
     schedulePoll()
 
     return () => {
       closed = true
       if (pollTimer !== undefined) window.clearTimeout(pollTimer)
+      document.removeEventListener('visibilitychange', onVisibility)
       unsubscribe()
     }
   }, [projectId, scanId, refreshNow])

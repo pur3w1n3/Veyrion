@@ -40,4 +40,14 @@ public final class AiPromptLanguage {
                 : "The server tool phase is closed. Use only the evidence already returned and provide the final "
                 + "English Markdown inference now. Do not request, assume, or describe more tool calls.";
     }
+
+    /** final-only 轮模型仍返回 tool_calls 后的有界 re-ask；不得重新开放工具。 */
+    public static String toolPhaseClosedReask(AiOutputLanguage language) {
+        return language == AiOutputLanguage.ZH_CN
+                ? "上轮工具请求已被服务端拒绝（工具阶段已关闭，工具调用不会执行）。"
+                + "请勿再发起任何工具调用；仅基于已返回证据直接输出最终中文 Markdown 推断。"
+                : "Your previous tool request was rejected by the server (tool phase closed; tools will not run). "
+                + "Do not request any more tools. Provide the final English Markdown inference from evidence "
+                + "already returned.";
+    }
 }

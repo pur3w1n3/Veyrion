@@ -1,4 +1,11 @@
-import type { ProviderDto, ProviderKind, ProviderModelInventoryDto, RoleAssignmentDto, AiRole } from './types'
+import type {
+  ProviderDto,
+  ProviderKind,
+  ProviderModelInventoryDto,
+  ProtocolDetectResultDto,
+  RoleAssignmentDto,
+  AiRole,
+} from './types'
 import {
   asText,
   optionalText,
@@ -61,6 +68,48 @@ export const parseProviderModelInventory = (value: unknown): ProviderModelInvent
         providerModelName: asText(item.providerModelName, 'providerInventory.model.providerModelName'),
         contextWindowTokens: 0,
         enabled: false
+      }
+    })
+  }
+}
+
+export const parseProtocolDetectResult = (value: unknown): ProtocolDetectResultDto => {
+  if (!isRecord(value)) throw new Error('invalid provider protocol detect response')
+  const status = asText(value.status, 'protocolDetect.status')
+  if (status !== 'UNIQUE' && status !== 'MULTIPLE' && status !== 'NONE') {
+    throw new Error('invalid protocolDetect.status')
+  }
+  if (!Array.isArray(value.candidates)) throw new Error('invalid protocolDetect.candidates')
+  const kinds = ['OPENAI_CHAT', 'ANTHROPIC_MESSAGES', 'OPENAI_COMPATIBLE', 'AZURE_OPENAI', 'LOCAL']
+  const recommendedRaw = value.recommendedKind === undefined || value.recommendedKind === null
+    ? undefined
+    : asText(value.recommendedKind, 'protocolDetect.recommendedKind')
+  if (recommendedRaw !== undefined && !kinds.includes(recommendedRaw)) {
+    throw new Error('invalid protocolDetect.recommendedKind')
+  }
+  return {
+    schemaVersion: schemaVersion(value.schemaVersion, 'protocolDetect.schemaVersion'),
+    baseUrl: asText(value.baseUrl, 'protocolDetect.baseUrl'),
+    status,
+    recommendedKind: recommendedRaw as ProviderKind | undefined,
+    hint: optionalText(value.hint),
+    probedAt: asText(value.probedAt, 'protocolDetect.probedAt'),
+    candidates: value.candidates.map((item, index) => {
+      if (!isRecord(item)) throw new Error(`invalid protocolDetect.candidates[${index}]`)
+      const kind = asText(item.kind, `protocolDetect.candidates[${index}].kind`)
+      if (!kinds.includes(kind)) throw new Error(`invalid protocolDetect.candidates[${index}].kind`)
+      const httpStatus = item.httpStatus === undefined || item.httpStatus === null
+        ? undefined
+        : Number(item.httpStatus)
+      if (httpStatus !== undefined && (!Number.isSafeInteger(httpStatus) || httpStatus < 0)) {
+        throw new Error(`invalid protocolDetect.candidates[${index}].httpStatus`)
+      }
+      return {
+        kind: kind as ProviderKind,
+        viable: asBoolean(item.viable, `protocolDetect.candidates[${index}].viable`),
+        reasonCode: asText(item.reasonCode, `protocolDetect.candidates[${index}].reasonCode`),
+        detail: asText(item.detail, `protocolDetect.candidates[${index}].detail`),
+        httpStatus
       }
     })
   }

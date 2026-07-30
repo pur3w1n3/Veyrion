@@ -16,6 +16,8 @@ import type {
   FindingReplayDto,
   FocusEntryProbeDto,
   ProviderDto,
+  DetectProviderProtocolRequest,
+  ProtocolDetectResultDto,
   ProviderModelInventoryDto,
   RoleAssignmentDto,
   AiJobDto,
@@ -195,6 +197,9 @@ export class MockSentinelApi implements SentinelApi {
   async createProvider(): Promise<ProviderDto> { return this.unavailable('create provider') }
   async updateProvider(): Promise<ProviderDto> { return this.unavailable('update provider') }
   async deleteProvider(): Promise<void> { return this.unavailable('delete provider') }
+  async detectProviderProtocol(_request: DetectProviderProtocolRequest): Promise<ProtocolDetectResultDto> {
+    return this.unavailable('detect provider protocol')
+  }
   async refreshProviderModels(): Promise<ProviderModelInventoryDto> { return this.unavailable('refresh provider models') }
   async listRoleAssignments(): Promise<RoleAssignmentDto[]> { return [] }
   async saveRoleAssignment(): Promise<RoleAssignmentDto> { return this.unavailable('save role assignment') }

@@ -44,8 +44,9 @@ public final class SandboxLaunchCommandBuilder {
     public static long resolveTraceBytesBudget(int probeCount, long artifactSizeBytes) {
         int probes = Math.max(1, Math.min(ExternalArtifactPaths.MAX_PROBE_PLAN_ENTRIES, probeCount));
         long sizeFloor = artifactSizeBytes >= 20L * 1024 * 1024 ? 4L * 1024 * 1024 : 512L * 1024;
-        long probeFloor = 512L * 1024
-                + probes * ExternalArtifactPaths.PROBE_TRACE_BYTES_PER_ENTRY;
+        // 复用沙箱 PATH 探针需在 agent 轨迹旁再写完整 probe-events；按条目保留余量。
+        long probeFloor = 1024L * 1024
+                + probes * ExternalArtifactPaths.PROBE_TRACE_BYTES_PER_ENTRY * 2L;
         long eventsFloor = probes * EVENTS_PER_PROBE * BYTES_PER_EVENT_ESTIMATE;
         return Math.min(ExternalArtifactPaths.MAX_TRACE_BYTES,
                 Math.max(sizeFloor, Math.max(probeFloor, eventsFloor)));
@@ -180,6 +181,7 @@ public final class SandboxLaunchCommandBuilder {
                 + " > " + ExternalArtifactPaths.TRACE_DIRECTORY + "/application.log 2>&1"
                 + " & APP_PID=$!; elapsed=0; probe_status=1; probe_jvm_status=not-run; PROBE_JVM_OK=0; HTTP_PORT="
                 + "; rm -f " + ExternalArtifactPaths.TRACE_DIRECTORY + "/http-port.txt "
+                + ExternalArtifactPaths.TRACE_DIRECTORY + "/http-context-path.txt "
                 + ExternalArtifactPaths.TRACE_DIRECTORY + "/listen-ports.txt "
                 + ExternalArtifactPaths.TRACE_DIRECTORY + "/http-port.stdout "
                 + ExternalArtifactPaths.TRACE_DIRECTORY + "/wait-http-ready.err "

@@ -794,6 +794,9 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
     @Override public void deleteProvider(HttpExchange exchange, String providerId) throws IOException {
         routeHandlers.deleteProvider(exchange, providerId);
     }
+    @Override public void detectProviderProtocol(HttpExchange exchange) throws IOException {
+        routeHandlers.detectProviderProtocol(exchange);
+    }
     @Override public void refreshProviderModels(HttpExchange exchange, String providerId) throws IOException {
         routeHandlers.refreshProviderModels(exchange, providerId);
     }

@@ -109,6 +109,15 @@
                         </configuration>
                     </execution>
                     <execution>
+                        <id>http-context-path-detector-acceptance</id>
+                        <phase>test</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <classpathScope>test</classpathScope>
+                            <mainClass>com.aq.jvmsentinel.agent.HttpContextPathDetectorAcceptanceTest</mainClass>
+                        </configuration>
+                    </execution>
+                    <execution>
                         <id>path-debug-sensor-acceptance</id>
                         <phase>test</phase>
                         <goals><goal>java</goal></goals>

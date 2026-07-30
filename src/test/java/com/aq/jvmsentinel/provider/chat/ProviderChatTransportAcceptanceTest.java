@@ -55,6 +55,44 @@ public final class ProviderChatTransportAcceptanceTest {
                     "diagnostic is useful, redacted, and strictly bounded");
             check(("Bearer " + credential).equals(authorization.get()),
                     "credential is sent only in the protocol header");
+
+            // 请求超时必须是 REQUEST_TIMEOUT，不能吞成 TRANSPORT_FAILED。
+            HttpServer slow = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            slow.createContext("/v1/chat/completions", exchange -> {
+                exchange.getRequestBody().readAllBytes();
+                try {
+                    Thread.sleep(3_000);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                byte[] ok = "{\"id\":\"x\",\"choices\":[]}".getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, ok.length);
+                exchange.getResponseBody().write(ok);
+                exchange.close();
+            });
+            slow.start();
+            try {
+                ProviderDefinition slowProvider = new ProviderDefinition(
+                        ProviderContracts.SCHEMA_VERSION, "local", "provider-timeout", "Provider timeout",
+                        ProviderKind.OPENAI_CHAT,
+                        URI.create("http://127.0.0.1:" + slow.getAddress().getPort()),
+                        true, true, Instant.now(), Instant.now());
+                ProviderChatTransport.TransportException timeout = expect(
+                        ProviderChatTransport.TransportException.class,
+                        () -> new ProviderChatTransport().send(slowProvider,
+                                credential.getBytes(StandardCharsets.UTF_8), request,
+                                new ProviderChatTransport.Limits(Duration.ofMillis(400),
+                                        ProviderChatContracts.MAX_REQUEST_BYTES,
+                                        ProviderChatContracts.MAX_RESPONSE_BYTES)));
+                check("REQUEST_TIMEOUT".equals(timeout.code()),
+                        "HttpTimeoutException maps to REQUEST_TIMEOUT, not TRANSPORT_FAILED: "
+                                + timeout.code());
+                check(timeout.diagnostic() != null && timeout.diagnostic().contains("exceeded"),
+                        "REQUEST_TIMEOUT carries a bounded diagnostic");
+            } finally {
+                slow.stop(0);
+            }
         } finally {
             server.stop(0);
         }

@@ -72,8 +72,8 @@ export const RESULTS_VIEW_META: Record<ResultsViewId, { zh: string; en: string; 
   findings: {
     zh: '发现',
     en: 'Findings',
-    blurbZh: '静态优先排序；PathRun 失败不进入发现列表',
-    blurbEn: 'Static-first sort; PathRun failures are not findings'
+    blurbZh: '验证态优先排序（确认在前）；PathRun 失败不进入发现列表',
+    blurbEn: 'Verification-status-first sort (confirmed first); PathRun failures are not findings'
   },
   entryExploration: {
     zh: '入口参数探索',

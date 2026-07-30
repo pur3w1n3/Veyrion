@@ -80,18 +80,26 @@ public final class ExternalArtifactTaskExecutor {
         this(control, sandbox, catalog, runtimePolicy,
                 new AgentJsonlTraceConverter(Clock.systemUTC(), ExternalArtifactPaths.MAX_TRACE_BYTES,
                         64 * 1024, 500_000, WorkerContracts.MAX_TRACE_PAYLOAD_BYTES),
-                workerId);
+                workerId, LocalWorkerQuota.defaults());
     }
 
     public ExternalArtifactTaskExecutor(WorkerControlPlaneClient control, SandboxRuntimeClient sandbox,
                                         ArtifactCatalog catalog, RuntimePolicy runtimePolicy,
                                         AgentJsonlTraceConverter converter, String workerId) {
+        this(control, sandbox, catalog, runtimePolicy, converter, workerId, LocalWorkerQuota.defaults());
+    }
+
+    public ExternalArtifactTaskExecutor(WorkerControlPlaneClient control, SandboxRuntimeClient sandbox,
+                                        ArtifactCatalog catalog, RuntimePolicy runtimePolicy,
+                                        AgentJsonlTraceConverter converter, String workerId,
+                                        LocalWorkerQuota quota) {
         this.control = Objects.requireNonNull(control, "control");
         this.sandbox = Objects.requireNonNull(sandbox, "sandbox");
         this.catalog = Objects.requireNonNull(catalog, "catalog");
         this.runtimePolicy = Objects.requireNonNull(runtimePolicy, "runtimePolicy");
         this.converter = Objects.requireNonNull(converter, "converter");
-        this.retainedSessions = new RetainedSandboxSessions(Duration.ofMinutes(20));
+        this.retainedSessions = new RetainedSandboxSessions(Duration.ofMinutes(20),
+                Objects.requireNonNull(quota, "quota"));
         this.workerId = ExternalArtifactIds.requireId(workerId, "workerId");
     }
 
@@ -201,12 +209,13 @@ public final class ExternalArtifactTaskExecutor {
             byte[] probeBytes = AgentTraceReader.readTraceFile(
                     sandbox, sandboxId, PROBE_TRACE_FILE,
                     budget.maxTraceBytes() - agentBytes.length, false);
+            // 覆盖校验只看 probe-events：避免与 agent HTTP 合并后淹没 truncatedTail 信号。
+            requireHttpProbeEvidence(registration, probeBytes);
             byte[] jsonl = AgentTraceMerger.mergeProbeEvents(agentBytes, probeBytes);
             if (jsonl.length > budget.maxTraceBytes()) {
                 throw ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.of(
                         "TRACE_TOO_LARGE", "Agent trace exceeds the task budget", null);
             }
-            requireHttpProbeEvidence(registration, jsonl);
             List<TraceChunk> chunks = converter.convert(jsonl, request.scope(), budget);
             pulse(request.scope(), lease, heartbeatExtension,
                     "提交轨迹（" + chunks.size() + " 段）");
@@ -216,10 +225,15 @@ public final class ExternalArtifactTaskExecutor {
             int httpPort = readSandboxHttpPort(sandboxId);
             pulse(request.scope(), lease, heartbeatExtension,
                     "保留断网沙箱会话供 PATH/TRIAGE 复用");
-            retainedSessions.retain(request.scope(), registration.sha256(), sandboxId, httpPort, sandbox);
-            sandboxId = null;
-            pulse(request.scope(), lease, heartbeatExtension,
-                    "任务完成；断网沙箱保留至 TRIAGE 动态校验结束");
+            if (retainedSessions.retain(request.scope(), registration.sha256(),
+                    sandboxId, httpPort, sandbox)) {
+                sandboxId = null;
+                pulse(request.scope(), lease, heartbeatExtension,
+                        "任务完成；断网沙箱保留至 TRIAGE 动态校验结束");
+            } else {
+                pulse(request.scope(), lease, heartbeatExtension,
+                        "任务完成；全局保留沙箱硬顶已满且无法同工作区腾挪，容器将释放");
+            }
             WorkerControlPlaneClient.TaskDescriptor completed =
                     control.complete(request.scope(), lease.leaseId(), workerId);
             ExternalArtifactTaskValidator.requireCompletedDescriptor(completed, request.scope(), descriptor);
@@ -264,8 +278,13 @@ public final class ExternalArtifactTaskExecutor {
         ResourceBudget budget = descriptor.resourceBudget();
         pulse(request.scope(), lease, heartbeatExtension,
                 "清理上次探针输出并上传本轮计划（复用沙箱）");
+        // 回收 trace tmpfs：首轮 agent-events / application.log 常占满 maxTrace+headroom，
+        // 复用探针再写 probe-events 会中途 ENOSPC → truncatedTail 假 COVERAGE_INCOMPLETE。
+        // agent 轨迹块已在首轮 commit，磁盘副本可截断。
         CommandResult prepareProbe = sandbox.command(session.sandboxId(), new CommandRequest(
                 "rm -f " + PROBE_TRACE_FILE + " " + PROBE_STATUS_FILE
+                        + "; : > " + TRACE_FILE
+                        + "; : > " + TRACE_DIRECTORY + "/application.log"
                         + "; printf '%s\\n' '复用已启动应用，准备本轮探针' > "
                         + TRACE_DIRECTORY + "/progress.txt",
                 WORKING_DIRECTORY, Duration.ofSeconds(10), SANDBOX_UID, SANDBOX_GID));

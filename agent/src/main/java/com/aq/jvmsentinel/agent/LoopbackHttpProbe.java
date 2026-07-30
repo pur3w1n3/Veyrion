@@ -95,6 +95,7 @@ public final class LoopbackHttpProbe {
         int port = args.length >= 3 ? Integer.parseInt(args[2]) : 8080;
         String query = args.length >= 4 ? args[3] : "";
         lastBatchPort = port;
+        lastBatchContextPath = resolveContextPath(null);
         ProbeAttempt attempt = probeOne(method, route, port, query, "UNAUTH", "", "", "", "",
                 FAST_CONNECT_TIMEOUT_MS, FAST_READ_TIMEOUT_MS, 1);
         writeAttemptEvent(attempt);
@@ -174,8 +175,13 @@ public final class LoopbackHttpProbe {
         writtenEvents = 0;
         writeFailures = 0;
         lastBatchPort = port;
+        lastBatchContextPath = resolveContextPath(planFile);
+        if (!lastBatchContextPath.isEmpty()) {
+            HttpContextPathDetector.writeContextPathFile(traceDirFor(planFile), lastBatchContextPath);
+        }
         int concurrency = Math.min(targets.size(), batchConcurrency());
         writeProgress("批量探测启动：" + targets.size() + " 个目标，并发 " + concurrency
+                + (lastBatchContextPath.isEmpty() ? "" : "，context-path " + lastBatchContextPath)
                 + "（快波 " + FAST_READ_TIMEOUT_MS + "ms，慢重试上限 " + MAX_SLOW_RETRIES + "）");
 
         List<ProbeAttempt> wave1 = runWave(targets, port, concurrency,
@@ -228,6 +234,13 @@ public final class LoopbackHttpProbe {
         if (writtenEvents == 0) {
             System.err.println("LoopbackHttpProbe wrote zero HTTP events");
             return 3;
+        }
+        // 证据写失败（常见于 trace tmpfs ENOSPC）不得伪装成功；否则 worker 会把缺尾部
+        // 误判为 PROBE_EVENT_COVERAGE_INCOMPLETE。
+        if (writeFailures > 0) {
+            System.err.println("LoopbackHttpProbe event write failures=" + writeFailures
+                    + " written=" + writtenEvents);
+            return 4;
         }
         if (failures == targets.size()) return 2;
         return 0;
@@ -326,8 +339,9 @@ public final class LoopbackHttpProbe {
                 || (authHeader != null && authHeader.length() > 2048)
                 || (bladeAuthHeader != null && bladeAuthHeader.length() > 2048)
                 || (cookieHeader != null && cookieHeader.length() > 2048)) {
+            String invalidTarget = route == null ? "" : route;
             return new ProbeAttempt(target, -1, "InvalidTarget",
-                    route == null ? "" : route, connectTimeoutMs, readTimeoutMs, "");
+                    invalidTarget, invalidTarget, connectTimeoutMs, readTimeoutMs, "");
         }
         boolean fileRead = looksFileReadDownload(target.route, target.query);
         boolean multipart = !fileRead && Set.of("POST", "PUT", "PATCH").contains(method)
@@ -338,9 +352,12 @@ public final class LoopbackHttpProbe {
                 && looksXmlBody(target.route, target.query);
         // multipart/form：参数进 body；query 留空，避免绑定形态错位。
         // 读/下载：GET 保留 query；POST 走 form body 携带 path/file。
+        // requestTarget 保持逻辑 MVC 路由（覆盖校验 / entry 对齐）；wire 另加 context-path。
         String requestTarget = multipart || form || target.query.isEmpty()
                 ? target.route
                 : target.route + "?" + ensureTraversalReadQuery(target.query, fileRead);
+        String wireRequestTarget = HttpContextPathDetector.joinRequestTarget(
+                lastBatchContextPath, requestTarget);
         byte[] body;
         String contentType;
         if (!Set.of("POST", "PUT", "PATCH").contains(method)) {
@@ -369,7 +386,7 @@ public final class LoopbackHttpProbe {
             socket.connect(new InetSocketAddress(loopback, port), connectTimeoutMs);
             socket.setSoTimeout(readTimeoutMs);
             OutputStream output = socket.getOutputStream();
-            String headerBlock = buildRequestHeaders(method, requestTarget, body.length,
+            String headerBlock = buildRequestHeaders(method, wireRequestTarget, body.length,
                     target.authHeader, target.bladeAuthHeader, correlationId,
                     target.track, target.experimentPlanId, target.cookieHeader, contentType);
             output.write(headerBlock.getBytes(StandardCharsets.US_ASCII));
@@ -396,8 +413,8 @@ public final class LoopbackHttpProbe {
             error = failure.getClass().getSimpleName();
             status = -1;
         }
-        return new ProbeAttempt(target, status, error, requestTarget, connectTimeoutMs, readTimeoutMs,
-                correlationId);
+        return new ProbeAttempt(target, status, error, requestTarget, wireRequestTarget,
+                connectTimeoutMs, readTimeoutMs, correlationId);
     }
 
     /**
@@ -709,15 +726,17 @@ public final class LoopbackHttpProbe {
     private static void writeAttemptEvent(ProbeAttempt attempt) {
         String outcome = classifyOutcome(attempt.status, attempt.error);
         String method = attempt.target.method.toUpperCase(Locale.ROOT);
-        System.out.println(method + " " + attempt.requestTarget
+        String shownTarget = attempt.wireRequestTarget == null || attempt.wireRequestTarget.isBlank()
+                ? attempt.requestTarget : attempt.wireRequestTarget;
+        System.out.println(method + " " + shownTarget
                 + " -> HTTP "
                 + (attempt.status < 0 ? "UNKNOWN" : Integer.toString(attempt.status))
                 + " (" + outcome + ", track=" + attempt.target.track
                 + ", port " + lastBatchPort + ")"
                 + (attempt.error.isEmpty() ? "" : "; " + attempt.error));
         writeProbeEvent(method, attempt.target.route, lastBatchPort, attempt.status,
-                attempt.requestTarget, attempt.error, outcome, attempt.target.track,
-                attempt.correlationId, attempt.target.experimentPlanId);
+                attempt.requestTarget, attempt.wireRequestTarget, attempt.error, outcome,
+                attempt.target.track, attempt.correlationId, attempt.target.experimentPlanId);
     }
 
     /**
@@ -759,7 +778,8 @@ public final class LoopbackHttpProbe {
     }
 
     private static synchronized void writeProbeEvent(String method, String route, int port, int status,
-                                                     String requestTarget, String error, String outcomeClass,
+                                                     String requestTarget, String wireRequestTarget,
+                                                     String error, String outcomeClass,
                                                      String track, String correlationId,
                                                      String experimentPlanId) {
         try {
@@ -784,6 +804,15 @@ public final class LoopbackHttpProbe {
                     .append("\"error\":\"").append(json(truncate(error == null ? "" : error, 64))).append("\",")
                     .append("\"outcomeClass\":\"").append(json(truncate(outcomeClass, 32))).append("\",")
                     .append("\"track\":\"").append(json(truncate(track == null ? "UNAUTH" : track, 32))).append("\"");
+            if (wireRequestTarget != null && !wireRequestTarget.isBlank()
+                    && !wireRequestTarget.equals(requestTarget)) {
+                detail.append(",\"wireRequestTarget\":\"")
+                        .append(json(truncate(wireRequestTarget, 512))).append("\"");
+            }
+            if (lastBatchContextPath != null && !lastBatchContextPath.isBlank()) {
+                detail.append(",\"contextPath\":\"")
+                        .append(json(truncate(lastBatchContextPath, 128))).append("\"");
+            }
             if (correlationId != null && !correlationId.isBlank()) {
                 detail.append(",\"correlationId\":\"").append(json(truncate(correlationId, 64))).append("\"");
             }
@@ -819,6 +848,25 @@ public final class LoopbackHttpProbe {
 
     /** Port for single-shot main / console lines; batch sets this before waves. */
     private static volatile int lastBatchPort = 0;
+    /** Servlet context path prefix for wire URIs; empty when root. */
+    private static volatile String lastBatchContextPath = "";
+
+    static String resolveContextPath(Path planFile) {
+        Path traceDir = traceDirFor(planFile);
+        return HttpContextPathDetector.resolve(traceDir);
+    }
+
+    static Path traceDirFor(Path planFile) {
+        String configured = System.getProperty("veyrion.sandbox.traceDir");
+        if (configured != null && !configured.isBlank()) {
+            return Path.of(configured);
+        }
+        if (planFile != null) {
+            Path parent = planFile.toAbsolutePath().normalize().getParent();
+            if (parent != null) return parent;
+        }
+        return Path.of(".");
+    }
 
     private static void writeProgress(String message) {
         try {
@@ -927,22 +975,34 @@ public final class LoopbackHttpProbe {
         final ProbeTarget target;
         final int status;
         final String error;
+        /** 逻辑 MVC requestTarget（无 servlet context），供覆盖校验。 */
         final String requestTarget;
+        /** 实际 HTTP 请求行 path（含 context-path）。 */
+        final String wireRequestTarget;
         final int connectTimeoutMs;
         final int readTimeoutMs;
         final String correlationId;
 
         ProbeAttempt(ProbeTarget target, int status, String error, String requestTarget,
                      int connectTimeoutMs, int readTimeoutMs) {
-            this(target, status, error, requestTarget, connectTimeoutMs, readTimeoutMs, "");
+            this(target, status, error, requestTarget, requestTarget, connectTimeoutMs, readTimeoutMs, "");
         }
 
         ProbeAttempt(ProbeTarget target, int status, String error, String requestTarget,
                      int connectTimeoutMs, int readTimeoutMs, String correlationId) {
+            this(target, status, error, requestTarget, requestTarget,
+                    connectTimeoutMs, readTimeoutMs, correlationId);
+        }
+
+        ProbeAttempt(ProbeTarget target, int status, String error, String requestTarget,
+                     String wireRequestTarget, int connectTimeoutMs, int readTimeoutMs,
+                     String correlationId) {
             this.target = target;
             this.status = status;
             this.error = error == null ? "" : error;
             this.requestTarget = requestTarget == null ? "" : requestTarget;
+            this.wireRequestTarget = wireRequestTarget == null || wireRequestTarget.isBlank()
+                    ? this.requestTarget : wireRequestTarget;
             this.connectTimeoutMs = connectTimeoutMs;
             this.readTimeoutMs = readTimeoutMs;
             this.correlationId = correlationId == null ? "" : correlationId;

@@ -9,10 +9,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
@@ -86,8 +88,18 @@ public final class ProviderChatTransport implements ChatTransport {
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 throw failure("REQUEST_CANCELLED");
-            } catch (IOException | RuntimeException transportFailure) {
-                throw failure("TRANSPORT_FAILED");
+            } catch (HttpTimeoutException timeout) {
+                // HttpClient request timeout（非 body 读超时）——勿并入 TRANSPORT_FAILED。
+                throw failure("REQUEST_TIMEOUT",
+                        "http request exceeded " + limits.requestTimeout().toSeconds() + "s");
+            } catch (IOException | UncheckedIOException transportFailure) {
+                Throwable root = transportFailure instanceof UncheckedIOException unchecked
+                        && unchecked.getCause() != null ? unchecked.getCause() : transportFailure;
+                if (root instanceof HttpTimeoutException) {
+                    throw failure("REQUEST_TIMEOUT",
+                            "http request exceeded " + limits.requestTimeout().toSeconds() + "s");
+                }
+                throw failure("TRANSPORT_FAILED", transportDiagnostic(root));
             }
             if (!target.equals(response.uri())) {
                 close(response.body());
@@ -312,6 +324,16 @@ public final class ProviderChatTransport implements ChatTransport {
         }
     }
 
+    private static String transportDiagnostic(Throwable failure) {
+        if (failure == null) return "IOException";
+        String type = failure.getClass().getSimpleName();
+        String message = failure.getMessage();
+        if (message == null || message.isBlank()) return type;
+        String combined = type + ": " + message.replaceAll("\\s+", " ").trim();
+        return combined.length() <= MAX_DIAGNOSTIC_CHARS
+                ? combined : combined.substring(0, MAX_DIAGNOSTIC_CHARS);
+    }
+
     private static TransportException failure(String code) {
         return new TransportException(code);
     }
@@ -324,7 +346,7 @@ public final class ProviderChatTransport implements ChatTransport {
         public Limits {
             Objects.requireNonNull(requestTimeout, "requestTimeout");
             if (requestTimeout.isZero() || requestTimeout.isNegative()
-                    || requestTimeout.compareTo(Duration.ofMinutes(2)) > 0) {
+                    || requestTimeout.compareTo(Duration.ofMinutes(5)) > 0) {
                 throw new IllegalArgumentException("requestTimeout is invalid");
             }
             if (maxRequestBytes < 1 || maxRequestBytes > ProviderChatContracts.MAX_REQUEST_BYTES

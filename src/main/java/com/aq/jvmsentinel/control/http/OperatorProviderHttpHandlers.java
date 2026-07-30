@@ -9,9 +9,11 @@ import com.aq.jvmsentinel.control.JsonCodec;
 import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
 import com.aq.jvmsentinel.model.ArtifactType;
 import com.aq.jvmsentinel.provider.AgentRole;
+import com.aq.jvmsentinel.provider.ProviderContracts;
 import com.aq.jvmsentinel.provider.ProviderContracts.ModelInventory;
 import com.aq.jvmsentinel.provider.ProviderContracts.ProviderDefinition;
 import com.aq.jvmsentinel.provider.ProviderContracts.ProviderKind;
+import com.aq.jvmsentinel.provider.ProviderProtocolDetector;
 import com.aq.jvmsentinel.security.ProviderSecretCipher;
 import com.aq.jvmsentinel.verification.VerifiedStatusGate;
 import com.aq.jvmsentinel.control.WorkerControlPlaneApi;
@@ -25,19 +27,28 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
 /** 从 ControlPlaneRouteHandlers 拆出的 HTTP 处理器：OperatorProvider 域。 */
 final class OperatorProviderHttpHandlers extends ControlPlaneHandlerSupport {
+    private final ProviderProtocolDetector protocolDetector;
 
     OperatorProviderHttpHandlers(ControlPlaneHandlerHost host) {
+        this(host, new ProviderProtocolDetector());
+    }
+
+    OperatorProviderHttpHandlers(ControlPlaneHandlerHost host, ProviderProtocolDetector protocolDetector) {
         super(host);
+        this.protocolDetector = Objects.requireNonNull(protocolDetector, "protocolDetector");
     }
 
     public synchronized void createProject(HttpExchange exchange) throws IOException {
@@ -145,6 +156,52 @@ final class OperatorProviderHttpHandlers extends ControlPlaneHandlerSupport {
         host.store.deleteProvider(providerId, actor(exchange).operatorId(), Instant.now(host.clock).toString());
         ControlPlaneHttpSupport.sendEmpty(exchange, 204);
     }
+    public void detectProviderProtocol(HttpExchange exchange) throws IOException {
+        Map<String, Object> body = ControlPlaneHttpSupport.readObject(exchange);
+        String baseUrl = ControlPlaneHttpSupport.optionalText(body, "baseUrl", null);
+        if (baseUrl == null) {
+            throw new ControlPlaneHttpSupport.ApiException(400, "INVALID_PROVIDER",
+                    "baseUrl is required for protocol detection");
+        }
+        String apiKey = body.containsKey("apiKey")
+                ? ControlPlaneHttpSupport.optionalText(body, "apiKey", null) : null;
+        String providerId = ControlPlaneHttpSupport.optionalText(body, "providerId", null);
+        URI endpoint;
+        try {
+            endpoint = URI.create(baseUrl);
+            ProviderContracts.validatedEndpoint(endpoint, ProviderKind.OPENAI_CHAT);
+        } catch (RuntimeException invalid) {
+            throw new ControlPlaneHttpSupport.ApiException(400, "INVALID_PROVIDER_ENDPOINT",
+                    "provider endpoint is invalid");
+        }
+        ProviderProtocolDetector.DetectionResult detection;
+        if (apiKey != null && !apiKey.isBlank()) {
+            byte[] credential = apiKey.getBytes(StandardCharsets.UTF_8);
+            try {
+                detection = protocolDetector.detect(endpoint, credential);
+            } finally {
+                Arrays.fill(credential, (byte) 0);
+            }
+        } else if (providerId != null) {
+            var provider = host.store.requireProvider(providerId);
+            if (!provider.hasCredential()) {
+                throw new ControlPlaneHttpSupport.ApiException(409, "PROVIDER_CREDENTIAL_REQUIRED",
+                        "provider credential is required for protocol detection");
+            }
+            try {
+                detection = host.store.withProviderCredential(providerId,
+                        credential -> protocolDetector.detect(endpoint, credential));
+            } catch (ProviderSecretCipher.SecretCipherException invalidCredential) {
+                throw new ControlPlaneHttpSupport.ApiException(409, "PROVIDER_CREDENTIAL_INVALID",
+                        "provider credential could not be used");
+            }
+        } else {
+            throw new ControlPlaneHttpSupport.ApiException(400, "PROVIDER_CREDENTIAL_REQUIRED",
+                    "apiKey or providerId with stored credential is required");
+        }
+        ControlPlaneHttpSupport.sendJson(exchange, 200, detectionMap(detection, baseUrl));
+    }
+
     public void refreshProviderModels(HttpExchange exchange, String providerId) throws IOException {
         var provider = host.store.requireProvider(providerId);
         if (!provider.enabled()) {
@@ -499,6 +556,35 @@ final class OperatorProviderHttpHandlers extends ControlPlaneHandlerSupport {
         result.put("updatedAt", provider.updatedAt());
         return result;
     }
+    static Map<String, Object> detectionMap(ProviderProtocolDetector.DetectionResult detection,
+                                            String baseUrl) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", detection.schemaVersion());
+        result.put("baseUrl", baseUrl);
+        result.put("status", detection.status());
+        if (detection.recommendedKind() != null) {
+            result.put("recommendedKind", detection.recommendedKind().name());
+        }
+        if (detection.hint() != null) {
+            result.put("hint", detection.hint());
+        }
+        result.put("probedAt", detection.probedAt().toString());
+        List<Object> candidates = new ArrayList<>();
+        for (ProviderProtocolDetector.KindCandidate candidate : detection.candidates()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("kind", candidate.kind().name());
+            item.put("viable", candidate.viable());
+            item.put("reasonCode", candidate.reasonCode());
+            item.put("detail", candidate.detail());
+            if (candidate.httpStatus() != null) {
+                item.put("httpStatus", candidate.httpStatus());
+            }
+            candidates.add(item);
+        }
+        result.put("candidates", candidates);
+        return result;
+    }
+
     static Map<String, Object> inventoryMap(ModelInventory inventory) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("schemaVersion", inventory.schemaVersion());

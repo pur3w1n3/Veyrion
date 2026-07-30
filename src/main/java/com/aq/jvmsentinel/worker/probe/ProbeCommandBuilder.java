@@ -30,6 +30,7 @@ public final class ProbeCommandBuilder {
                 + "; probe_jvm_status=$? ;; esac"
                 + "; printf 'probe_jvm_status=%s\\n' \"$probe_jvm_status\" > "
                 + ExternalArtifactPaths.PROBE_STATUS_FILE
+                // 0=成功；2=全部 HTTP 失败但仍有证据。4=证据写失败（tmpfs/IO）不可当成功。
                 + "; if [ \"$probe_jvm_status\" -eq 0 ] || [ \"$probe_jvm_status\" -eq 2 ]"
                 + "; then PROBE_JVM_OK=1; fi";
     }

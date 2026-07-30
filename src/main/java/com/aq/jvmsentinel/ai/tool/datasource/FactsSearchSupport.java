@@ -2,6 +2,7 @@ package com.aq.jvmsentinel.ai.tool.datasource;
 
 import com.aq.jvmsentinel.analysis.contrast.ContrastLedger;
 import com.aq.jvmsentinel.analysis.experiment.RuntimePostureOrchestrator;
+import com.aq.jvmsentinel.analysis.hypothesis.FindingRuntimeEnricher;
 import com.aq.jvmsentinel.ai.tool.EntryRefResolver;
 import com.aq.jvmsentinel.ai.tool.ToolDataSource.FactRecord;
 import com.aq.jvmsentinel.ai.tool.ToolDataSource.FactSearchPage;
@@ -12,6 +13,7 @@ import com.aq.jvmsentinel.control.StaticFactSnapshot;
 import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
 import com.aq.jvmsentinel.model.StaticContrastRow;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.ArrayList;
@@ -144,9 +146,11 @@ public final class FactsSearchSupport {
             }
         }
         if ("FINDING".equals(requested) || "FINDINGS".equals(requested)) {
+            List<ApiDtos.PathRunDto> runs = datasourceScope.pathRuns(scan);
+            Map<String, PathTrace> traces = tracesByPathRunId(scan);
             for (ApiDtos.FindingDto value : scan.dto().findings()) {
                 addIfMatching(result, scope, "finding:" + value.findingId(),
-                        findingFact(value), needle, limit);
+                        findingFact(value, scan.dto().entries(), runs, traces), needle, limit);
             }
         }
         if ("PATH_RUN".equals(requested) || "PATHRUN".equals(requested)) {
@@ -223,12 +227,24 @@ public final class FactsSearchSupport {
         }
         if (evidenceRef != null && evidenceRef.startsWith("finding:")) {
             String id = evidenceRef.substring("finding:".length());
+            List<ApiDtos.PathRunDto> runs = datasourceScope.pathRuns(scan);
+            Map<String, PathTrace> traces = tracesByPathRunId(scan);
             return scan.dto().findings().stream()
                     .filter(finding -> finding.findingId().equals(id))
                     .findFirst()
-                    .map(finding -> new FactRecord(scope, evidenceRef, findingFact(finding)));
+                    .map(finding -> new FactRecord(scope, evidenceRef,
+                            findingFact(finding, scan.dto().entries(), runs, traces)));
         }
         return Optional.empty();
+    }
+
+    private Map<String, PathTrace> tracesByPathRunId(ControlPlaneStore.ScanRecord scan) {
+        LinkedHashMap<String, PathTrace> out = new LinkedHashMap<>();
+        for (PathTrace trace : datasourceScope.pathTraces(scan)) {
+            if (trace == null || trace.pathRunId() == null || trace.pathRunId().isBlank()) continue;
+            out.putIfAbsent(trace.pathRunId(), trace);
+        }
+        return out;
     }
 
     /** 拒绝客户端通过 query 参数覆盖 path trace / 沙箱策略。 */
@@ -258,13 +274,23 @@ public final class FactsSearchSupport {
         }
     }
 
-    private static JsonNode findingFact(ApiDtos.FindingDto value) {
+    /**
+     * FINDING 事实附带 enricher 投影（pathRunRefs / 验证态），避免 AI 只见 DB 静态快照
+     * 而与 PATH_RUN CONFIRMED 材料脱节。
+     */
+    static JsonNode findingFact(
+            ApiDtos.FindingDto value,
+            List<ApiDtos.EntryDto> entries,
+            List<ApiDtos.PathRunDto> pathRuns,
+            Map<String, PathTrace> tracesByPathRunId) {
         ObjectNode node = DatasourceJson.JSON.createObjectNode();
         node.put("kind", "FINDING");
         node.put("findingId", value.findingId());
         node.put("title", value.title() == null ? "" : value.title());
         node.put("severity", value.severity() == null ? "" : value.severity());
-        node.put("verificationStatus", value.verificationStatus() == null ? "" : value.verificationStatus());
+        String dbStatus = value.verificationStatus() == null ? "" : value.verificationStatus();
+        node.put("verificationStatus", dbStatus);
+        node.put("dbVerificationStatus", dbStatus);
         node.put("entrypointId", value.entrypointId() == null ? "" : value.entrypointId());
         node.put("entry", value.entry() == null ? "" : value.entry());
         node.put("sinkId", value.sinkId() == null ? "" : value.sinkId());
@@ -273,6 +299,35 @@ public final class FactsSearchSupport {
         node.put("securityProperty", value.securityProperty() == null ? "" : value.securityProperty());
         node.put("confidence", value.confidence());
         node.put("dependencyMode", value.dependencyMode() == null ? "" : value.dependencyMode());
+        try {
+            FindingRuntimeEnricher.Enrichment enrichment = FindingRuntimeEnricher.enrich(
+                    value,
+                    entries == null ? List.of() : entries,
+                    pathRuns == null ? List.of() : pathRuns,
+                    tracesByPathRunId == null ? Map.of() : tracesByPathRunId,
+                    property -> property);
+            if (enrichment != null) {
+                if (!enrichment.title().isBlank()) {
+                    node.put("title", enrichment.title());
+                }
+                if (!enrichment.verificationStatus().isBlank()) {
+                    node.put("verificationStatus", enrichment.verificationStatus());
+                    node.put("enrichedVerificationStatus", enrichment.verificationStatus());
+                }
+                if (!enrichment.pathRunRefs().isEmpty()) {
+                    ArrayNode refs = node.putArray("pathRunRefs");
+                    enrichment.pathRunRefs().forEach(refs::add);
+                }
+                if (!enrichment.postureKind().isBlank()) {
+                    node.put("postureKind", enrichment.postureKind());
+                }
+                if (!enrichment.requiredPrivilege().isBlank()) {
+                    node.put("requiredPrivilege", enrichment.requiredPrivilege());
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // 投影失败时仍返回 DB 字段，不阻断 facts_search。
+        }
         return node;
     }
 

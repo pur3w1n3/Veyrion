@@ -8,7 +8,11 @@ import com.aq.jvmsentinel.domain.pathdebug.RuntimePosture;
 import com.aq.jvmsentinel.domain.pathdebug.RuntimePostureKind;
 import com.aq.jvmsentinel.domain.pathdebug.TraceEvent;
 import com.aq.jvmsentinel.domain.pathdebug.TraceEventKind;
+import com.aq.jvmsentinel.model.PathRun;
+import com.aq.jvmsentinel.model.VerificationStatus;
 import com.aq.jvmsentinel.provider.AiOutputLanguage;
+import com.aq.jvmsentinel.worker.DynamicConfirmedGate;
+import com.aq.jvmsentinel.worker.TraceProjectionService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -37,6 +41,8 @@ import java.util.Set;
  */
 public final class FindingBindings {
     public static final int MAX_BINDINGS = 48;
+    /** 孤儿 EFFECT 占位上限，避免全站 SpEL/RememberMe 噪声挤掉 BPMN/JWT/强达 finding。 */
+    public static final int MAX_ORPHAN_BINDINGS = 12;
     public static final int MAX_POC_STEPS = 8;
     public static final int MAX_HOPS_IN_POC = 6;
     /** 交付主章：关键发现（原「漏洞相关」调试列表已废弃）。 */
@@ -220,13 +226,29 @@ public final class FindingBindings {
             ranked.add(new EnrichedFinding(finding, enrichment));
         }
         ranked.sort(enrichedSelectionOrder());
+        // 孤儿强危险 EFFECT（无静态 finding）优先占位，但有上限，避免挤掉高价值 finding。
+        List<Binding> orphans = orphanEffectBindings(source, catalog, runs, traces, zh);
         List<Binding> out = new ArrayList<>();
+        LinkedHashSet<String> orphanKeys = new LinkedHashSet<>();
+        int orphanSlots = Math.min(MAX_ORPHAN_BINDINGS, MAX_BINDINGS);
+        for (Binding orphan : orphans) {
+            if (out.size() >= orphanSlots) break;
+            out.add(orphan);
+            if (orphan.api() != null) {
+                orphanKeys.add(orphan.securityProperty() + "|" + orphan.api().method()
+                        + "|" + orphan.api().route());
+            }
+        }
         for (EnrichedFinding item : ranked) {
             if (out.size() >= MAX_BINDINGS) break;
-            out.add(bindOne(item.finding(), item.enrichment(), catalog, runs, traces, zh));
+            Binding binding = bindOne(item.finding(), item.enrichment(), catalog, runs, traces, zh);
+            String key = binding.securityProperty() + "|" + binding.api().method()
+                    + "|" + binding.api().route();
+            if (orphanKeys.contains(key)) continue;
+            out.add(binding);
         }
         out.sort(bindingDeliverableOrder());
-        return new AssembleResult(out, ranked.size());
+        return new AssembleResult(out, ranked.size() + orphans.size());
     }
 
     private record EnrichedFinding(
@@ -236,6 +258,8 @@ public final class FindingBindings {
     private static Comparator<EnrichedFinding> enrichedSelectionOrder() {
         return Comparator
                 .comparingInt((EnrichedFinding e) -> statusRank(e.enrichment().verificationStatus()))
+                // 有 PathRun/强达材料的 finding 优先于纯静态高影响噪声，避免 MAX_BINDINGS 截掉强达。
+                .thenComparingInt(e -> e.enrichment().pathRunRefs().isEmpty() ? 1 : 0)
                 .thenComparingInt(e -> selectionImpactRank(e.finding()))
                 .thenComparingInt(e -> severityRank(e.finding().severity()))
                 .thenComparing(e -> e.finding().findingId(), Comparator.nullsLast(String::compareTo));
@@ -262,7 +286,7 @@ public final class FindingBindings {
                     && !matchesEntry(finding, entry, catalog, run)) {
                 continue;
             }
-            if (!Boolean.TRUE.equals(run.entryHit())) continue;
+            if (!FindingRuntimeEnricher.entryReached(run, trace)) continue;
             RuntimePostureKind kind = postureKind(run, trace);
             PathRunPick pick = new PathRunPick(run, trace, kind);
             if (enrichment.pathRunRefs().contains(run.pathRunId())
@@ -313,6 +337,7 @@ public final class FindingBindings {
         String sink = finding.sink() == null ? "" : finding.sink().trim();
         String securityProperty = finding.securityProperty() == null
                 ? "" : finding.securityProperty().trim();
+        PathTrace midTrace = bestEffect == null ? null : bestEffect.trace();
         return new Binding(
                 finding.findingId(),
                 finding.hypothesisId() == null ? "" : finding.hypothesisId(),
@@ -325,7 +350,7 @@ public final class FindingBindings {
                 pathRunRefs,
                 reportRole,
                 sink,
-                midLogicOf(finding, poc, zh),
+                midLogicOf(finding, poc, midTrace, zh),
                 securityProperty);
     }
 
@@ -334,9 +359,20 @@ public final class FindingBindings {
      * 无材料时返回诚实空态文案（不编造）。
      */
     static String midLogicOf(ApiDtos.FindingDto finding, PocBinding poc, boolean zh) {
+        return midLogicOf(finding, poc, null, zh);
+    }
+
+    static String midLogicOf(ApiDtos.FindingDto finding, PocBinding poc, PathTrace trace, boolean zh) {
         List<String> hopChain = extractHopChainFromPoc(poc, zh);
         if (!hopChain.isEmpty()) {
             return String.join(" → ", hopChain);
+        }
+        List<String> fromTrace = businessHops(trace);
+        if (!fromTrace.isEmpty()) {
+            return String.join(" → ", fromTrace.stream().map(FindingBindings::shortenTypeRef).toList());
+        }
+        if (trace != null && trace.lastBusinessHop() != null && !trace.lastBusinessHop().isBlank()) {
+            return shortenTypeRef(trace.lastBusinessHop());
         }
         List<String> rootMid = extractMidFromRootCause(finding == null ? null : finding.rootCause());
         if (!rootMid.isEmpty()) {
@@ -510,6 +546,12 @@ public final class FindingBindings {
                 + run.httpStatus() + "，入口命中=" + run.entryHit() + "。"
                 : "Replay request to \"" + impact + "\" in the authorized sandbox; observed HTTP "
                 + run.httpStatus() + ", entryHit=" + run.entryHit() + ".");
+        List<String> hops = businessHops(pick.trace());
+        if (!hops.isEmpty()) {
+            steps.add(zh
+                    ? "观测到的业务调用链：" + String.join(" → ", hops)
+                    : "Observed business call chain: " + String.join(" → ", hops));
+        }
         if (pick.trace() != null && pick.trace().effectRefs() != null
                 && !pick.trace().effectRefs().isEmpty()) {
             steps.add(zh
@@ -629,25 +671,222 @@ public final class FindingBindings {
     }
 
     private static List<String> businessHops(PathTrace trace) {
-        if (trace == null || trace.events() == null) return List.of();
+        if (trace == null) return List.of();
         List<String> hops = new ArrayList<>();
         LinkedHashSet<String> seen = new LinkedHashSet<>();
-        for (TraceEvent event : trace.events()) {
-            if (event == null || event.kind() != TraceEventKind.METHOD_HOP) continue;
-            String subject = event.subjectRef() == null ? "" : event.subjectRef().trim();
-            if (subject.isBlank()) continue;
-            String lower = subject.toLowerCase(Locale.ROOT);
-            if (lower.contains("javax.servlet") || lower.contains("jakarta.servlet")
-                    || lower.contains("springframework.web.servlet.frameworkservlet")
-                    || lower.contains("springframework.web.servlet.dispatcherservlet")) {
-                continue;
+        if (trace.events() != null) {
+            for (TraceEvent event : trace.events()) {
+                if (event == null || event.kind() != TraceEventKind.METHOD_HOP) continue;
+                String subject = event.subjectRef() == null ? "" : event.subjectRef().trim();
+                if (subject.isBlank()) continue;
+                String lower = subject.toLowerCase(Locale.ROOT);
+                if (lower.contains("javax.servlet") || lower.contains("jakarta.servlet")
+                        || lower.contains("springframework.web.servlet.frameworkservlet")
+                        || lower.contains("springframework.web.servlet.dispatcherservlet")
+                        || lower.contains("faststringwriter")
+                        || lower.contains("org.springblade.core.tool.api.r#")) {
+                    continue;
+                }
+                if (seen.add(subject)) {
+                    hops.add(subject);
+                }
+                if (hops.size() >= MAX_HOPS_IN_POC) break;
             }
-            if (seen.add(subject)) {
-                hops.add(subject);
+        }
+        if (hops.isEmpty() && trace.lastBusinessHop() != null && !trace.lastBusinessHop().isBlank()) {
+            String last = trace.lastBusinessHop().trim();
+            String lower = last.toLowerCase(Locale.ROOT);
+            if (!(lower.contains("faststringwriter")
+                    || lower.contains("javax.servlet")
+                    || lower.contains("jakarta.servlet"))) {
+                hops.add(last);
             }
-            if (hops.size() >= MAX_HOPS_IN_POC) break;
         }
         return hops;
+    }
+
+    /**
+     * 运行时观测到强危险 EFFECT，但静态阶段未生成<strong>可吸收该效果</strong>的 finding 时，
+     * 合成 REPORT 绑定，避免 SpEL/命令等效果只出现在 AI 散文里、findingBindings 全静态。
+     *
+     * <p>「覆盖」必须以 H4 property 匹配为准：同入口的 AUTH_GAP 不得吞掉 EXPRESSION/DESERIAL 孤儿。
+     * RememberMe 全站 DESERIAL 噪声折叠为单键，避免占满 {@link #MAX_ORPHAN_BINDINGS}。
+     */
+    static List<Binding> orphanEffectBindings(
+            List<ApiDtos.FindingDto> findings,
+            List<ApiDtos.EntryDto> entries,
+            List<ApiDtos.PathRunDto> pathRuns,
+            Map<String, PathTrace> tracesByPathRunId,
+            boolean zh) {
+        List<ApiDtos.FindingDto> source = findings == null ? List.of() : findings;
+        List<ApiDtos.EntryDto> catalog = entries == null ? List.of() : entries;
+        List<ApiDtos.PathRunDto> runs = pathRuns == null ? List.of() : pathRuns;
+        Map<String, PathTrace> traces = tracesByPathRunId == null ? Map.of() : tracesByPathRunId;
+        LinkedHashMap<String, Binding> byKey = new LinkedHashMap<>();
+        for (ApiDtos.PathRunDto run : runs) {
+            if (run == null) continue;
+            PathTrace trace = traces.get(run.pathRunId());
+            if (trace == null || trace.effectRefs() == null || trace.effectRefs().isEmpty()) continue;
+            PathRun model = TraceProjectionService.toPathRunModel(run);
+            if (DynamicConfirmedGate.evaluateEffect(model, trace, "")
+                    != VerificationStatus.DYNAMIC_CONFIRMED) {
+                continue;
+            }
+            Set<String> kinds = DynamicConfirmedGate.effectKindsOf(trace);
+            String property = primaryOrphanProperty(kinds);
+            if (property.isBlank()) continue;
+            // 仅当同入口 finding 的 securityProperty 能经 H4 吸收该 EFFECT 时才算已覆盖。
+            if (effectAbsorbedByFinding(source, catalog, run, trace, model)) {
+                continue;
+            }
+            String route = routeOf(run);
+            boolean rememberMeChannel = looksLikeRememberMeChannel(run, trace);
+            String key = rememberMeChannel && "DESERIALIZATION".equals(property)
+                    ? "DESERIALIZATION|*|REMEMBER_ME_CHANNEL"
+                    : property + "|" + run.method() + "|" + route;
+            PathRunPick pick = new PathRunPick(run, trace, postureKind(run, trace));
+            ApiBinding api = new ApiBinding(
+                    run.method(),
+                    rememberMeChannel && "DESERIALIZATION".equals(property)
+                            ? "/* (RememberMe/cookie channel)"
+                            : (route.isBlank() ? "/" : route),
+                    run.entrypointRef() == null ? "" : run.entrypointRef());
+            PocBinding poc = confirmedPoc(pick, api, null, zh);
+            String sink = firstEffectSink(trace);
+            String title = zh
+                    ? "已动态确认的" + orphanPropertyLabel(property, true)
+                    : "Dynamically confirmed " + orphanPropertyLabel(property, false);
+            if (rememberMeChannel && "DESERIALIZATION".equals(property)) {
+                title = zh
+                        ? "已动态确认的 RememberMe/反序列化信道信号"
+                        : "Dynamically confirmed RememberMe/deserialization channel signal";
+            }
+            String findingId = "runtime-effect-" + run.pathRunId();
+            Binding binding = new Binding(
+                    findingId,
+                    "",
+                    title,
+                    "high",
+                    ApiDtos.DYNAMIC_CONFIRMED,
+                    api,
+                    poc,
+                    descriptionOf(title, ApiDtos.DYNAMIC_CONFIRMED, api, poc, zh),
+                    List.of(run.pathRunId()),
+                    REPORT_ROLE_PRIMARY,
+                    sink,
+                    midLogicOf(null, poc, trace, zh),
+                    property);
+            Binding prior = byKey.get(key);
+            if (prior == null || preferOrphan(binding, prior)) {
+                byKey.put(key, binding);
+            }
+        }
+        List<Binding> orphans = new ArrayList<>(byKey.values());
+        orphans.sort(Comparator
+                .comparingInt((Binding b) -> statusRank(b.status()))
+                .thenComparing(Binding::findingId));
+        return orphans;
+    }
+
+    /** 同入口 finding 的 property 经 H4 可确认该 EFFECT → 由 enricher 负责，不算孤儿。 */
+    private static boolean effectAbsorbedByFinding(
+            List<ApiDtos.FindingDto> findings,
+            List<ApiDtos.EntryDto> catalog,
+            ApiDtos.PathRunDto run,
+            PathTrace trace,
+            PathRun model) {
+        for (ApiDtos.FindingDto finding : findings) {
+            if (finding == null) continue;
+            if (!FindingRuntimeEnricher.matchesFindingEntry(finding, catalog, run, trace)) {
+                continue;
+            }
+            String property = finding.securityProperty() == null ? "" : finding.securityProperty();
+            if (DynamicConfirmedGate.evaluateEffect(model, trace, property)
+                    == VerificationStatus.DYNAMIC_CONFIRMED) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean looksLikeRememberMeChannel(ApiDtos.PathRunDto run, PathTrace trace) {
+        String summary = run == null || run.requestSummary() == null
+                ? "" : run.requestSummary().toLowerCase(Locale.ROOT);
+        if (summary.contains("rememberme") || summary.contains("remember-me")
+                || summary.contains("cookie")) {
+            return true;
+        }
+        if (trace == null || trace.effectRefs() == null) return false;
+        for (String ref : trace.effectRefs()) {
+            if (ref == null) continue;
+            String lower = ref.toLowerCase(Locale.ROOT);
+            if (lower.contains("rememberme") || lower.contains("remember-me")
+                    || lower.contains("shiro")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean preferOrphan(Binding candidate, Binding incumbent) {
+        if (candidate.pathRunRefs().size() != incumbent.pathRunRefs().size()) {
+            return candidate.pathRunRefs().size() > incumbent.pathRunRefs().size();
+        }
+        return candidate.findingId().compareTo(incumbent.findingId()) < 0;
+    }
+
+    private static String primaryOrphanProperty(Set<String> kinds) {
+        if (kinds == null || kinds.isEmpty()) return "";
+        for (String preferred : List.of(
+                "EXPRESSION", "COMMAND", "DESERIALIZATION", "JNDI", "SQL", "JDBC",
+                "SSRF", "FILE_WRITE", "FILE", "PROCESS")) {
+            if (kinds.contains(preferred)) return preferred;
+        }
+        return "";
+    }
+
+    private static String orphanPropertyLabel(String property, boolean zh) {
+        String p = property == null ? "" : property.trim().toUpperCase(Locale.ROOT);
+        if (zh) {
+            return switch (p) {
+                case "EXPRESSION" -> "表达式/SpEL 注入信号";
+                case "COMMAND" -> "命令执行信号";
+                case "DESERIALIZATION" -> "反序列化信号";
+                case "JNDI" -> "JNDI 注入信号";
+                case "SQL", "JDBC" -> "SQL 注入信号";
+                case "SSRF" -> "SSRF 信号";
+                case "FILE_WRITE", "FILE" -> "文件写入信号";
+                case "PROCESS" -> "进程执行信号";
+                default -> "危险 sink 效果信号";
+            };
+        }
+        return p.isBlank() ? "dangerous sink effect" : p.toLowerCase(Locale.ROOT) + " signal";
+    }
+
+    private static String routeOf(ApiDtos.PathRunDto run) {
+        if (run == null) return "";
+        String ref = run.entrypointRef() == null ? "" : run.entrypointRef().trim();
+        if (ref.startsWith("entry:") && ref.chars().filter(ch -> ch == ':').count() >= 2) {
+            int second = ref.indexOf(':', "entry:".length());
+            if (second > 0 && second + 1 < ref.length()) {
+                return ref.substring(second + 1);
+            }
+        }
+        String summary = run.requestSummary() == null ? "" : run.requestSummary();
+        for (String part : summary.split("\\s+")) {
+            if (part.startsWith("/")) return part;
+        }
+        return ref;
+    }
+
+    private static String firstEffectSink(PathTrace trace) {
+        if (trace == null || trace.effectRefs() == null) return "";
+        for (String ref : trace.effectRefs()) {
+            if (ref == null || ref.isBlank()) continue;
+            if (ref.toUpperCase(Locale.ROOT).startsWith("EFFECT:")) continue;
+            if (ref.contains("#") || ref.contains(".")) return ref.trim();
+        }
+        return trace.effectRefs().isEmpty() ? "" : trace.effectRefs().get(0);
     }
 
     private static String descriptionOf(
@@ -1168,14 +1407,19 @@ public final class FindingBindings {
         md.append('\n');
         int verifiedLike = 0;
         int staticOnly = 0;
+        int staticWithRuntime = 0;
         int pending = 0;
         int withPoc = 0;
         for (Binding binding : all) {
             String status = binding.status();
+            boolean runtimeMaterial = hasRuntimePathMaterial(binding);
             if (ApiDtos.DYNAMIC_CONFIRMED.equals(status) || "VERIFIED".equals(status)) {
                 verifiedLike++;
             } else if (ApiDtos.DYNAMIC_SUSPECTED.equals(status)) {
                 pending++;
+            } else if (runtimeMaterial) {
+                // FORCED/COVERAGE 材料按 ADR-0004 保持 STATIC_INFERRED，但不得计入「纯静态」。
+                staticWithRuntime++;
             } else {
                 staticOnly++;
             }
@@ -1185,16 +1429,27 @@ public final class FindingBindings {
         md.append(zh
                 ? "- **已动态确认/已验证**: " + verifiedLike + "\n"
                 + "- **动态疑似（待进一步验证）**: " + pending + "\n"
+                + "- **含运行时路径材料（强达/覆盖，未确认）**: " + staticWithRuntime + "\n"
                 + "- **仅静态信号**: " + staticOnly + "\n"
                 + "- **具备可复现 PoC 材料**: " + withPoc + "\n\n"
                 : "- **Dynamically confirmed / verified**: " + verifiedLike + "\n"
                 + "- **Dynamically suspected (needs further validation)**: " + pending + "\n"
+                + "- **With runtime path material (forced/coverage, unconfirmed)**: "
+                + staticWithRuntime + "\n"
                 + "- **Static signal only**: " + staticOnly + "\n"
                 + "- **With reproducible PoC material**: " + withPoc + "\n\n");
         md.append(zh
-                ? "> 说明：验证状态由服务端证据门禁决定；静态信号与受控实验材料不得宣传为生产环境已证实利用。\n\n"
-                : "> Note: verification status is server-gated by evidence; static signals and controlled "
-                + "experiment material must not be marketed as production-confirmed exploits.\n\n");
+                ? "> 说明：验证状态由服务端证据门禁决定；强达/覆盖材料≠已确认利用；"
+                + "静态信号与受控实验材料不得宣传为生产环境已证实利用。\n\n"
+                : "> Note: verification status is server-gated by evidence; forced/coverage material "
+                + "is not confirmed exploitability; static signals and controlled experiment material "
+                + "must not be marketed as production-confirmed exploits.\n\n");
+    }
+
+    static boolean hasRuntimePathMaterial(Binding binding) {
+        if (binding == null) return false;
+        if (binding.pathRunRefs() != null && !binding.pathRunRefs().isEmpty()) return true;
+        return hasReproduciblePoc(binding);
     }
 
     private static void appendFindingCard(
@@ -1545,6 +1800,7 @@ public final class FindingBindings {
         int bestRank = Integer.MAX_VALUE;
         boolean anyConfirmed = false;
         boolean anySuspected = false;
+        boolean anyRuntimeMaterial = false;
         for (Binding binding : all) {
             int rank = severityRank(binding.severity());
             if (rank < bestRank) {
@@ -1557,6 +1813,9 @@ public final class FindingBindings {
             } else if (ApiDtos.DYNAMIC_SUSPECTED.equals(binding.status())) {
                 anySuspected = true;
             }
+            if (hasRuntimePathMaterial(binding)) {
+                anyRuntimeMaterial = true;
+            }
         }
         String sev = severityDisplay(topSeverity, zh);
         if (zh) {
@@ -1566,6 +1825,10 @@ public final class FindingBindings {
             if (anySuspected) {
                 return "最高风险等级为" + sev + "，存在动态疑似信号，需继续验证后定级。";
             }
+            if (anyRuntimeMaterial) {
+                return "最高风险等级为" + sev + "，已有受控强达/路径观测材料，"
+                        + "但尚无危险 sink 效果闭环确认，不得宣传为已确认可利用。";
+            }
             return "最高风险等级为" + sev + "，当前以静态推断为主，尚无已确认可利用证明。";
         }
         if (anyConfirmed) {
@@ -1574,6 +1837,11 @@ public final class FindingBindings {
         if (anySuspected) {
             return "Highest severity is " + sev
                     + "; dynamic suspicion exists and needs further validation before final rating.";
+        }
+        if (anyRuntimeMaterial) {
+            return "Highest severity is " + sev
+                    + "; controlled forced/path observations exist, but no dangerous sink-effect "
+                    + "confirmation yet — not confirmed exploitability.";
         }
         return "Highest severity is " + sev
                 + "; currently static-inferred with no confirmed exploitability proof.";

@@ -47,12 +47,15 @@ public final class ProviderModelInventoryClient {
     static final int MAX_MODELS = 1_000;
     static final int MAX_PAGES = 20;
     static final int PAGE_SIZE = 100;
+    /** 协议探测仅拉一页、limit=1 的最小清单请求。 */
+    static final int PROBE_PAGE_SIZE = 1;
     static final int MAX_PAGE_BYTES = 1_048_576;
     static final int MAX_TOTAL_BYTES = 4 * MAX_PAGE_BYTES;
     private static final int MAX_MODEL_NAME = 512;
     private static final int MAX_CURSOR = 512;
     private static final int MAX_API_KEY_BYTES = 4_096;
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
+    private static final Duration PROBE_TIMEOUT = Duration.ofSeconds(6);
 
     private final HttpClient client;
     private final ObjectMapper mapper;
@@ -88,6 +91,73 @@ public final class ProviderModelInventoryClient {
                 provider.endpoint(), apiKey);
     }
 
+    /**
+     * 对候选协议发最小 inventory 探测（单页 limit=1）。
+     * 失败不抛出协议异常，而返回结构化 outcome；异常消息不得含密钥或响应体原文。
+     */
+    public ProtocolProbeOutcome probe(URI endpoint, ProviderKind kind, byte[] apiKey) {
+        Objects.requireNonNull(endpoint, "endpoint");
+        Objects.requireNonNull(kind, "kind");
+        if (kind == ProviderKind.AZURE_OPENAI) {
+            return ProtocolProbeOutcome.unsupported();
+        }
+        ProviderProtocol protocol;
+        try {
+            protocol = kind.protocol();
+        } catch (RuntimeException unsupported) {
+            return ProtocolProbeOutcome.unsupported();
+        }
+        byte[] secret = Objects.requireNonNull(apiKey, "apiKey").clone();
+        String headerSecret = null;
+        try {
+            URI base = validateTransportEndpoint(endpoint, kind);
+            headerSecret = decodeSecret(secret);
+            URI requestUri = modelsUri(base, protocol, null, PROBE_PAGE_SIZE);
+            HttpRequest request = request(requestUri, protocol, headerSecret, PROBE_TIMEOUT);
+            HttpResponse<InputStream> response = send(request);
+            int status = response.statusCode();
+            if (!requestUri.equals(response.uri())) {
+                closeQuietly(response.body());
+                return ProtocolProbeOutcome.rejected(status, "REDIRECT_REJECTED");
+            }
+            if (status < 200 || status >= 300) {
+                closeQuietly(response.body());
+                return ProtocolProbeOutcome.rejected(status, "HTTP_REJECTED");
+            }
+            String contentType = response.headers().firstValue("Content-Type").orElse("");
+            if (!contentType.toLowerCase(java.util.Locale.ROOT).startsWith("application/json")) {
+                closeQuietly(response.body());
+                return ProtocolProbeOutcome.rejected(status, "INVALID_CONTENT_TYPE");
+            }
+            if (response.headers().firstValueAsLong("Content-Length").orElse(0) > MAX_PAGE_BYTES) {
+                closeQuietly(response.body());
+                return ProtocolProbeOutcome.rejected(status, "RESPONSE_TOO_LARGE");
+            }
+            byte[] body = readBounded(response.body(), MAX_PAGE_BYTES);
+            Page parsed = parsePage(body);
+            return ProtocolProbeOutcome.accepted(status, parsed.modelNames().size());
+        } catch (ProviderAccessException expected) {
+            String message = expected.getMessage() == null ? "" : expected.getMessage();
+            String code = "INVALID_RESPONSE";
+            if (message.contains("interrupted")) code = "TRANSPORT_INTERRUPTED";
+            else if (message.contains("request failed")) code = "TRANSPORT_FAILED";
+            else if (message.contains("credential")) code = "CREDENTIAL_INVALID";
+            return ProtocolProbeOutcome.failed(code);
+        } catch (IllegalArgumentException invalidEndpoint) {
+            return ProtocolProbeOutcome.failed("ENDPOINT_INVALID");
+        } finally {
+            Arrays.fill(secret, (byte) 0);
+            headerSecret = null;
+        }
+    }
+
+    ProtocolProbeOutcome probeForLoopbackTest(URI endpoint, ProviderKind kind, byte[] apiKey) {
+        if (!loopbackHttpForTests) {
+            throw new IllegalStateException("loopback HTTP test transport is disabled");
+        }
+        return probe(endpoint, kind, apiKey);
+    }
+
     ModelInventory fetchForLoopbackTest(String workspaceId, String providerId, ProviderKind kind,
                                         URI endpoint, byte[] apiKey) {
         if (!loopbackHttpForTests) {
@@ -110,8 +180,8 @@ public final class ProviderModelInventoryClient {
             String cursor = null;
             int totalBytes = 0;
             for (int page = 0; page < MAX_PAGES; page++) {
-                URI requestUri = modelsUri(base, protocol, cursor);
-                HttpRequest request = request(requestUri, protocol, headerSecret);
+                URI requestUri = modelsUri(base, protocol, cursor, PAGE_SIZE);
+                HttpRequest request = request(requestUri, protocol, headerSecret, REQUEST_TIMEOUT);
                 HttpResponse<InputStream> response = send(request);
                 if (!requestUri.equals(response.uri())) {
                     closeQuietly(response.body());
@@ -176,9 +246,10 @@ public final class ProviderModelInventoryClient {
         return ProviderContracts.validatedEndpoint(endpoint, kind);
     }
 
-    private static HttpRequest request(URI uri, ProviderProtocol protocol, String apiKey) {
+    private static HttpRequest request(URI uri, ProviderProtocol protocol, String apiKey,
+                                       Duration timeout) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
-                .timeout(REQUEST_TIMEOUT)
+                .timeout(timeout)
                 .header("Accept", "application/json")
                 .GET();
         if (protocol == ProviderProtocol.OPENAI_CHAT) {
@@ -286,13 +357,13 @@ public final class ProviderModelInventoryClient {
         }
     }
 
-    private static URI modelsUri(URI base, ProviderProtocol protocol, String cursor) {
+    private static URI modelsUri(URI base, ProviderProtocol protocol, String cursor, int pageSize) {
         String basePath = base.getRawPath();
         if (basePath == null || basePath.equals("/")) basePath = "";
         while (basePath.endsWith("/")) basePath = basePath.substring(0, basePath.length() - 1);
         String suffix = protocol.modelsPath();
         String path = basePath.endsWith("/v1") ? basePath + "/models" : basePath + suffix;
-        String query = "limit=" + PAGE_SIZE;
+        String query = "limit=" + pageSize;
         if (cursor != null) {
             query += "&" + protocol.cursorParameter() + "="
                     + URLEncoder.encode(cursor, StandardCharsets.UTF_8);
@@ -372,6 +443,37 @@ public final class ProviderModelInventoryClient {
     }
 
     private record Page(List<String> modelNames, boolean hasMore, String nextCursor) { }
+
+    /** 最小协议探测结果；不得携带密钥或响应体原文。 */
+    public record ProtocolProbeOutcome(boolean viable, int httpStatus, String reasonCode,
+                                       int modelSampleCount) {
+        public ProtocolProbeOutcome {
+            Objects.requireNonNull(reasonCode, "reasonCode");
+            if (reasonCode.isBlank() || reasonCode.length() > 64
+                    || reasonCode.chars().anyMatch(Character::isISOControl)) {
+                throw new IllegalArgumentException("reasonCode is invalid");
+            }
+            if (modelSampleCount < 0) {
+                throw new IllegalArgumentException("modelSampleCount is invalid");
+            }
+        }
+
+        static ProtocolProbeOutcome accepted(int httpStatus, int modelSampleCount) {
+            return new ProtocolProbeOutcome(true, httpStatus, "ACCEPTED", modelSampleCount);
+        }
+
+        static ProtocolProbeOutcome rejected(int httpStatus, String reasonCode) {
+            return new ProtocolProbeOutcome(false, httpStatus, reasonCode, 0);
+        }
+
+        static ProtocolProbeOutcome failed(String reasonCode) {
+            return new ProtocolProbeOutcome(false, 0, reasonCode, 0);
+        }
+
+        static ProtocolProbeOutcome unsupported() {
+            return new ProtocolProbeOutcome(false, 0, "UNSUPPORTED_KIND", 0);
+        }
+    }
 
     public static final class ProviderAccessException extends RuntimeException {
         private ProviderAccessException(String message) {

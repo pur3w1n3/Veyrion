@@ -3,6 +3,8 @@ package com.aq.jvmsentinel.analysis.hypothesis;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
 import com.aq.jvmsentinel.domain.pathdebug.RuntimePosture;
+import com.aq.jvmsentinel.domain.pathdebug.TraceEvent;
+import com.aq.jvmsentinel.domain.pathdebug.TraceEventKind;
 import com.aq.jvmsentinel.domain.pathdebug.TraceExitReason;
 
 import java.util.List;
@@ -16,6 +18,7 @@ public final class FindingRuntimeEnricherAcceptanceTest {
         forcedEntryHitEnrichesWithoutVerified();
         coverageTitleWithoutForced();
         noMatchKeepsStaticTitle();
+        nullEntryHitWithTraceEntryStillAttachesForced();
         System.out.println("FindingRuntimeEnricherAcceptanceTest: PASS");
     }
 
@@ -77,6 +80,44 @@ public final class FindingRuntimeEnricherAcceptanceTest {
                 finding, List.of(), List.of(), Map.of(), category -> "SQL 注入");
         check("静态推断的 SQL 注入信号".equals(enrichment.title()), "unchanged without PathRuns");
         check(enrichment.pathRunRefs().isEmpty(), "no pathRunRefs");
+    }
+
+    private static void nullEntryHitWithTraceEntryStillAttachesForced() {
+        List<ApiDtos.EntryDto> entries = List.of(entry("entry-ann-8", "POST", "/blade-flow/model/deploy"));
+        ApiDtos.FindingDto finding = finding(
+                "finding-bpmn", "静态推断的BPMN/流程部署信号", "entry-ann-8",
+                "/blade-flow/model/deploy", "BPMN_DEPLOY");
+        // 5xx DEPENDENCY_MOCK_GAP：PathRun.entryHit 常为 null，但 Trace 含 ENTRY_HIT。
+        ApiDtos.PathRunDto run = new ApiDtos.PathRunDto(
+                ApiDtos.SCHEMA_VERSION, "pr-bpmn-500", "scan-a",
+                "entry:POST:/blade-flow/model/deploy", "ADMIN", "attempt-1",
+                "plan:posture:entry-ann-8:forced_reachability", "POST", "application/json",
+                "POST /blade-flow/model/deploy track=ADMIN", "DEPENDENCY_MOCK_GAP",
+                500, null, null, List.of(), "DEPENDENCY_MOCK_GAP",
+                ApiDtos.UNREACHED, List.of("ev-bpmn"), "MOCK", "");
+        PathTrace trace = new PathTrace(
+                PathTrace.SCHEMA_VERSION, "pathtrace:pr-bpmn-500", "pr-bpmn-500",
+                "probe-1", "plan:posture:entry-ann-8:forced_reachability", "traceplan-1",
+                "entry:POST:/blade-flow/model/deploy", "ADMIN",
+                RuntimePosture.forced(List.of("GUARD:AUTH:TokenInterceptor")),
+                "world-1", "corr-1", 1,
+                List.of(
+                        new TraceEvent(1, TraceEventKind.ENTRY_HIT, "entry",
+                                "entry:POST:/blade-flow/model/deploy", "", false, Map.of(), ""),
+                        new TraceEvent(2, TraceEventKind.METHOD_HOP, "hop",
+                                "org.springblade.flow.engine.service.impl.FlowEngineServiceImpl#deployModel",
+                                "", false, Map.of(), "")),
+                List.of(), TraceExitReason.DEPENDENCY_UNAVAILABLE,
+                "org.springblade.flow.engine.service.impl.FlowEngineServiceImpl#deployModel",
+                List.of(), false);
+        FindingRuntimeEnricher.Enrichment enrichment = FindingRuntimeEnricher.enrich(
+                finding, entries, List.of(run), Map.of("pr-bpmn-500", trace),
+                category -> "BPMN");
+        check(FindingRuntimeEnricher.entryReached(run, trace), "entryReached via Trace ENTRY_HIT");
+        check(enrichment.pathRunRefs().contains("pr-bpmn-500"),
+                "null entryHit + Trace ENTRY_HIT must still attach FORCED pathRun");
+        check(enrichment.title().contains(FindingRuntimeEnricher.TITLE_FORCED),
+                "BPMN 500 with ENTRY_HIT surfaces 强达 title");
     }
 
     private static ApiDtos.EntryDto entry(String id, String method, String route) {

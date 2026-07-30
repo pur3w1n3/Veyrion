@@ -93,6 +93,7 @@ React GUI + Java Control Plane + SQLite 服务当前 JVM 切片。多语言 = �
 - **2026-07-30**：用户推翻「FORCED ≠ 可利用证明」对外读法——改为「无危险 sink 效果不得确认；有效果可 DYNAMIC_CONFIRMED + requiredPrivilege」；修订 ADR-0004 / FindingRuntimeEnricher / DynamicConfirmedGate H4。
 - **2026-07-30**：AI 数据面契约——内联可有界，但不得静默当全集；截断须 `truncated`/省略标记，并用 `facts_search`（page meta + offset / FINDING / PATH_TRACE eventsOffset）或 `evidence_get` 按 id 续取；agent 预算耗尽须显式 `TRACE_BUDGET_EXHAUSTED`（见 OPEN_GAPS P1-G）。
 - **2026-07-30**：沙箱轨迹 tmpfs = `maxTraceBytes + 32MiB`（上限 96MiB，disk 跟随抬升）；`/tmp` ≥128MiB 且不低于轨迹侧——避免轨迹写满后日志/并发刷盘 ENOSPC。
+- **2026-07-30**：本地 Docker worker / 保留沙箱按 UI 工作区（`projectId`）配额——默认全局并发 3、每 project 并发 1；保留会话全局 8、每 project 2。驱逐只在同 project 内 LRU；全局硬顶无法腾挪则拒绝新保留（不跨 project 踢会话）。配置：`VEYRION_WORKER_GLOBAL_CONCURRENCY` / `VEYRION_WORKER_PER_PROJECT_CONCURRENCY` / `VEYRION_RETAINED_SANDBOX_GLOBAL_MAX` / `VEYRION_RETAINED_SANDBOX_PER_PROJECT_MAX`（或对应 `veyrion.worker.*` / `veyrion.sandbox.*` 系统属性）。
 
 ## 6. 文档职责
 

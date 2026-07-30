@@ -3,6 +3,7 @@ package com.aq.jvmsentinel.dev;
 import com.aq.jvmsentinel.control.ControlPlaneServer;
 import com.aq.jvmsentinel.sandbox.LocalDockerTrustedSandboxClient;
 import com.aq.jvmsentinel.worker.LocalArtifactWorkerLoop;
+import com.aq.jvmsentinel.worker.LocalWorkerQuota;
 
 import java.io.IOException;
 import java.net.URI;
@@ -38,11 +39,12 @@ public final class DevLauncherMain {
         try (ControlPlaneServer server = new ControlPlaneServer(
                 "127.0.0.1", config.backendPort(), config.artifactRoot(), token,
                 database).start()) {
+            LocalWorkerQuota workerQuota = LocalWorkerQuota.fromEnvironment();
             LocalArtifactWorkerLoop worker = config.dockerArtifactWorker()
                     ? new LocalArtifactWorkerLoop(
                             server.baseUri().resolve("/internal/worker/v1/"),
                             server.workerToken(), new LocalDockerTrustedSandboxClient(),
-                            server::requireLocalArtifact, requiredRuntimeImage()).start()
+                            server::requireLocalArtifact, requiredRuntimeImage(), workerQuota).start()
                     : null;
             if (worker != null) {
                 server.setRetainedSandboxRelease(worker::releaseRetainedForScan);
@@ -63,6 +65,12 @@ public final class DevLauncherMain {
             System.out.println("No default workspace is created; open 工作区 to choose or create one.");
             System.out.println("Trusted internal JAR Docker worker: "
                     + (worker == null ? "disabled" : "enabled (TRUSTED_DOCKER, network none, network/DNS observation)"));
+            if (worker != null) {
+                System.out.println("Worker quotas: globalConcurrency=" + workerQuota.maxGlobalConcurrency()
+                        + " perProjectConcurrency=" + workerQuota.maxPerProjectConcurrency()
+                        + " retainedGlobal=" + workerQuota.maxGlobalRetainedSessions()
+                        + " retainedPerProject=" + workerQuota.maxPerProjectRetainedSessions());
+            }
             System.out.println("Press Ctrl+C to stop both processes.");
 
             try {

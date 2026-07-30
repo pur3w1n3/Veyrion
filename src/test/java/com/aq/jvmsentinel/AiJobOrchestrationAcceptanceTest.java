@@ -114,10 +114,10 @@ public final class AiJobOrchestrationAcceptanceTest {
                 "openai", "gpt-test", "local-admin", Instant.now().toString());
         java.util.concurrent.atomic.AtomicBoolean englishPrompt = new java.util.concurrent.atomic.AtomicBoolean();
         ChatTransport englishTransport = (provider, credential, request, limits) -> {
-            englishPrompt.set(request.toString().contains("Write all analyst-facing content in English")
-                    && (request.toString().contains("Entrypoint-Track-PathRun Matrix")
-                    || request.toString().contains("Entrypoint-to-Trigger Matrix"))
-                    && request.toString().contains("Combined Vulnerability Possibilities"));
+            String wire = request.toString();
+            englishPrompt.set(wire.contains("Write all analyst-facing content in English")
+                    && wire.contains("Security Audit Report")
+                    && wire.contains("Key Findings"));
             return new ProviderChatTransport.Response(200,
                     "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
                             .concat("\"content\":\"# English report\"}}]}")
@@ -152,9 +152,59 @@ public final class AiJobOrchestrationAcceptanceTest {
         check(events.stream().filter(event -> "TOOL_CALL".equals(event.stage())).count() == 2,
                 "ignored no-parallel hint is handled as two sequential audited tool decisions");
 
+        AtomicInteger closedPhaseCalls = new AtomicInteger();
+        AtomicInteger closedPhaseLeaks = new AtomicInteger();
+        ChatTransport toolPhaseClosedLeak = (provider, credential, request, limits) -> {
+            closedPhaseCalls.incrementAndGet();
+            boolean toolsOpen = request.has("tools") && request.get("tools").isArray()
+                    && !request.get("tools").isEmpty();
+            String body;
+            if (toolsOpen) {
+                body = "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{"
+                        + "\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"tool-close-"
+                        + closedPhaseCalls.get() + "\",\"type\":\"function\",\"function\":{"
+                        + "\"name\":\"facts_search\","
+                        + "\"arguments\":\"{\\\"kind\\\":\\\"EVIDENCE\\\",\\\"limit\\\":1}\"}}]}}]}";
+            } else if (closedPhaseLeaks.getAndIncrement() == 0) {
+                // final-only 轮仍返回 tool_calls——服务端应拒绝并 re-ask，而不是直接 FAILED。
+                body = "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{"
+                        + "\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"tool-leak-1\","
+                        + "\"type\":\"function\",\"function\":{\"name\":\"facts_search\","
+                        + "\"arguments\":\"{\\\"kind\\\":\\\"EVIDENCE\\\",\\\"limit\\\":1}\"}}]}}]}";
+            } else {
+                check(request.toString().contains("工具阶段已关闭")
+                                || request.toString().contains("tool phase closed"),
+                        "closed-phase re-ask must remind the model tools will not run");
+                body = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
+                        + "\"content\":\"# 关闭工具阶段后的有界推断\"}}]}";
+            }
+            return new ProviderChatTransport.Response(200,
+                    body.getBytes(StandardCharsets.UTF_8), "closed-phase-" + closedPhaseCalls.get(), 1);
+        };
+        try (AiJobOrchestrator orchestrator = new AiJobOrchestrator(
+                store, toolPhaseClosedLeak, Clock.systemUTC())) {
+            var job = store.createAiJob("project-ai", AgentRole.PRE_ANALYSIS,
+                    true, "local-admin", Instant.now().toString());
+            orchestrator.submit(job, "local-admin");
+            var done = awaitTerminal(store, job.aiJobId(), 15_000L);
+            check("COMPLETED".equals(done.status()),
+                    "tool calls after closed tool phase recover via re-ask; status="
+                            + done.status() + " reason=" + done.stopReason());
+            String closedPhaseEvents = store.aiJobEvents(job.aiJobId()).toString();
+            check(closedPhaseEvents.contains("TOOL_PHASE_CLOSED_REASK")
+                            && closedPhaseEvents.contains("TOOL_PHASE_CLOSED")
+                            && !closedPhaseEvents.contains(
+                                    "provider returned tool calls after the server closed"),
+                    "closed tool-phase leak is denied and re-asked without hard-failing the job");
+            check(closedPhaseLeaks.get() >= 1 && closedPhaseCalls.get() >= 5,
+                    "closed-phase path exercised tool rounds, one leak, and a final text round");
+        }
+
         store.saveRoleBinding("project-ai", AgentRole.VULNERABILITY_TRIAGE,
                 "openai", "gpt-test", "local-admin", Instant.now().toString());
+        AtomicInteger rateLimitHits = new AtomicInteger();
         ChatTransport rateLimited = (provider, credential, request, limits) -> {
+            rateLimitHits.incrementAndGet();
             throw new ProviderChatTransport.TransportException(
                     "HTTP_429", "type=rate_limit; message=retry later");
         };
@@ -162,13 +212,46 @@ public final class AiJobOrchestrationAcceptanceTest {
             var job = store.createAiJob("project-ai", AgentRole.VULNERABILITY_TRIAGE,
                     true, "local-admin", Instant.now().toString());
             orchestrator.submit(job, "local-admin");
-            var failed = awaitTerminal(store, job.aiJobId());
+            var failed = awaitTerminal(store, job.aiJobId(), 15_000L);
             check("FAILED".equals(failed.status()) && "HTTP_429".equals(failed.stopReason()),
                     "provider status failures are bounded and persisted without response bodies");
+            check(rateLimitHits.get() == 3,
+                    "HTTP_429 is retried a bounded number of times before failing: hits="
+                            + rateLimitHits.get());
             var failureEvents = store.aiJobEvents(job.aiJobId());
+            check(failureEvents.stream().anyMatch(event -> "PROVIDER_RETRY".equals(event.stage())),
+                    "transient provider failures emit PROVIDER_RETRY events");
             check(failureEvents.get(failureEvents.size() - 1).failureDiagnostic()
                             .contains("rate_limit"),
                     "sanitized provider diagnostic is persisted separately from stopReason");
+        }
+        AtomicInteger transportHits = new AtomicInteger();
+        ChatTransport recovers = (provider, credential, request, limits) -> {
+            int hit = transportHits.incrementAndGet();
+            if (hit <= 2) {
+                throw new ProviderChatTransport.TransportException(
+                        "TRANSPORT_FAILED", "ConnectException: connection reset");
+            }
+            // hit 3 = first successful provider round (tools); hit 4+ = final text.
+            boolean toolRound = hit == 3;
+            String body = toolRound
+                    ? "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{"
+                    + "\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"tool-r1\","
+                    + "\"type\":\"function\",\"function\":{\"name\":\"facts_search\","
+                    + "\"arguments\":\"{\\\"kind\\\":\\\"EVIDENCE\\\",\\\"limit\\\":1}\"}}]}}]}"
+                    : "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
+                    + "\"content\":\"recovered after transport blip\"}}]}";
+            return new ProviderChatTransport.Response(200,
+                    body.getBytes(StandardCharsets.UTF_8), "retry-" + hit, 1);
+        };
+        try (AiJobOrchestrator orchestrator = new AiJobOrchestrator(store, recovers, Clock.systemUTC())) {
+            var job = store.createAiJob("project-ai", AgentRole.VULNERABILITY_TRIAGE,
+                    true, "local-admin", Instant.now().toString());
+            orchestrator.submit(job, "local-admin");
+            var recovered = awaitTerminal(store, job.aiJobId(), 15_000L);
+            check("COMPLETED".equals(recovered.status()),
+                    "TRANSPORT_FAILED recovers after bounded retries: " + recovered.stopReason());
+            check(transportHits.get() >= 4, "recovery path consumed transient failures then completed");
         }
         assertTransportFailure(store, "HTTP_500");
         assertTransportFailure(store, "RESPONSE_TIMEOUT");
@@ -259,7 +342,7 @@ public final class AiJobOrchestrationAcceptanceTest {
             var job = store.createAiJob("project-ai", AgentRole.VULNERABILITY_TRIAGE,
                     true, "local-admin", Instant.now().toString());
             orchestrator.submit(job, "local-admin");
-            var failed = awaitTerminal(store, job.aiJobId());
+            var failed = awaitTerminal(store, job.aiJobId(), 15_000L);
             check("FAILED".equals(failed.status()) && code.equals(failed.stopReason()),
                     code + " is persisted as bounded failure metadata");
         }
@@ -302,7 +385,12 @@ public final class AiJobOrchestrationAcceptanceTest {
 
     private static SQLiteControlPlanePersistence.AiJobData awaitTerminal(
             ControlPlaneStore store, String jobId) throws Exception {
-        long deadline = System.nanoTime() + 5_000_000_000L;
+        return awaitTerminal(store, jobId, 5_000L);
+    }
+
+    private static SQLiteControlPlanePersistence.AiJobData awaitTerminal(
+            ControlPlaneStore store, String jobId, long timeoutMillis) throws Exception {
+        long deadline = System.nanoTime() + timeoutMillis * 1_000_000L;
         while (System.nanoTime() < deadline) {
             var job = store.requireAiJob(jobId);
             if (List.of("COMPLETED", "FAILED", "CANCELLED", "BLOCKED").contains(job.status())) return job;

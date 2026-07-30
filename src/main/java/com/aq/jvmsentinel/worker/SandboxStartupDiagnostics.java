@@ -28,6 +28,8 @@ public final class SandboxStartupDiagnostics {
         /** 探针计划证据缺失或未覆盖 — 不是沙箱启动失败。 */
         EMPTY_PROBE_EVENTS,
         PROBE_EVENT_COVERAGE_INCOMPLETE,
+        /** JSONL 尾部截断导致覆盖不可判定 — 可重试，非真实 plan 缺口。 */
+        PROBE_EVENT_EVIDENCE_TRUNCATED,
         MALFORMED_PROBE_EVENTS,
         UNKNOWN_STARTUP_FAILURE
     }
@@ -76,6 +78,14 @@ public final class SandboxStartupDiagnostics {
                 && lower.contains("loopbackprobeevents=0"))) {
             return new Diagnosis(FailureClass.EMPTY_PROBE_EVENTS, "EMPTY_PROBE_EVENTS",
                     "Non-empty probe plan produced zero LoopbackHttpProbe events", details);
+        }
+        if (lower.contains("probe_event_evidence_truncated")
+                || (lower.contains("does not cover the submitted plan")
+                && lower.contains("truncatedtail=true"))) {
+            return new Diagnosis(FailureClass.PROBE_EVENT_EVIDENCE_TRUNCATED,
+                    "PROBE_EVENT_EVIDENCE_TRUNCATED",
+                    "Loopback HTTP probe evidence JSONL was truncated before full plan coverage",
+                    details);
         }
         if (lower.contains("probe_event_coverage_incomplete")
                 || lower.contains("does not cover the submitted plan")) {

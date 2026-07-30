@@ -130,8 +130,8 @@ export function FindingsView({
 
       <p className="form-help">
         {english
-          ? 'Static-first sort. PathRun failures and diagnostics never appear here.'
-          : '静态优先排序。PathRun 失败与诊断项不会出现在此列表。'}
+          ? 'Sorted by verification status (confirmed first), then severity. PathRun failures and diagnostics never appear here.'
+          : '按验证态排序（动态确认优先），再按严重度。PathRun 失败与诊断项不会出现在此列表。'}
       </p>
 
       <div className="finding-toolbar">
