@@ -15,8 +15,8 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Maps application query ports to legacy {@code /api/v1} JSON maps (P1-08).
- * Transport (HttpExchange) stays in ControlPlaneServer; this class only projects.
+ * 将 application 查询 port 映射为 legacy {@code /api/v1} JSON map（P1-08）。
+ * 传输层（HttpExchange）留在 ControlPlaneServer；本类仅做投影。
  */
 public final class ScanQueryHttpSupport {
     private final EvidenceGraphQueryPort evidenceGraphs;
@@ -44,7 +44,7 @@ public final class ScanQueryHttpSupport {
             return Optional.empty();
         }
         List<SecurityHypothesis> items = hypotheses.hypotheses(scanId);
-        // Empty list is a valid response when the scan exists; caller checks existence.
+        // scan 存在时空列表也是合法响应；调用方自行检查存在性。
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("schemaVersion", SecurityHypothesis.SCHEMA_VERSION);
         body.put("scanId", scanId);

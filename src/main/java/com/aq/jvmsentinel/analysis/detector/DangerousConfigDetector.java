@@ -13,8 +13,8 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * JWT / crypto / dangerous configuration heuristics (P1-05).
- * Reuses AUTH_GAP/JWT sink signals and redacted configuration lines; never invents sink-none.
+ * 说明：JWT/crypto/dangerous configuration 启发式（P1-05）。
+ * 复用 AUTH_GAP/JWT sink signal 与 redacted configuration 行；永不发明 sink-none。
  */
 public final class DangerousConfigDetector implements Detector {
     public static final String VERSION = "0.1.0";
@@ -82,7 +82,7 @@ public final class DangerousConfigDetector implements Detector {
             }
         }
 
-        // Reuse JWT sink presence as CONFIG family signal (not DATAFLOW / not sink-none).
+        // 复用 JWT sink presence 为 CONFIG family signal（非 DATAFLOW / 非 sink-none）。
         for (ApiDtos.SinkDto sink : context.sinks()) {
             if (sink == null || sink.category() == null) continue;
             if (!"JWT".equalsIgnoreCase(sink.category())) continue;

@@ -9,7 +9,7 @@ const zhLabels: Record<VerificationStatus, string> = {
   UNREACHED: '未覆盖'
 }
 
-/** EN keeps verification status codes as professional terms. */
+/** EN locale 将 verification status code 保留为专业术语。 */
 export function StatusPill({ status, english = false }: { status: VerificationStatus; english?: boolean }) {
   return (
     <span className={`status status-${status.toLowerCase()}`}>

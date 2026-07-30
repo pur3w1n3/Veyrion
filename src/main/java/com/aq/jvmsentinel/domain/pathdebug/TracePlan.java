@@ -7,7 +7,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Static bridge from Entry/Guard/Effect facts to dynamic observation targets (P0-21).
+ * 说明：Entry/Guard/Effect fact 到 dynamic observation target 静态桥（P0-21）。
  */
 public record TracePlan(
         int schemaVersion,

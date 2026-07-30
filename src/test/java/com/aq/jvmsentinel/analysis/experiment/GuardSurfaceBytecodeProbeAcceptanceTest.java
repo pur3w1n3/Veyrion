@@ -16,7 +16,7 @@ import java.util.jar.JarOutputStream;
 import java.util.stream.Collectors;
 
 /**
- * Bounded bytecode heuristic: Filter calling StpUtil becomes GuardSurface candidate.
+ * 有界 bytecode 启发式：调用 StpUtil 的 Filter 成为 GuardSurface 候选。
  */
 public final class GuardSurfaceBytecodeProbeAcceptanceTest {
     public static void main(String[] args) throws Exception {

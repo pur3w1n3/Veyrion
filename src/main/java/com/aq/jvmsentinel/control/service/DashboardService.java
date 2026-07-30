@@ -12,7 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Aggregates dashboard contrast / ranking / ledger-diff views (Step 4). */
+/** 聚合 dashboard contrast / ranking / ledger-diff 视图（Step 4）。 */
 public final class DashboardService {
     private DashboardService() {
     }

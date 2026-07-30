@@ -8,7 +8,7 @@ import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P2 scaffolding: production session/CSRF/SSO/tenancy/retention remain DISABLED.
+ * 说明：P2 scaffolding：production session/CSRF/SSO/tenancy/retention 保持 DISABLED。
  */
 public final class ProductionFeaturesAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

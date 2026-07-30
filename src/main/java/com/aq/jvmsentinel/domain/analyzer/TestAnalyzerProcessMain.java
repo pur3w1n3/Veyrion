@@ -14,11 +14,11 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Independent-process Test Analyzer entrypoint (P1-07).
+ * 独立进程 Test Analyzer 入口（P1-07）。
  *
  * <p>Started via {@link ProcessBuilder}; writes a minimal staged-IR envelope to the path in
  * {@code args[0]}. Has no Control Plane store, AI tools, or Worker privileges — only emits
- * versioned IR chunks for the parent to feed through {@link AnalyzerIngress}.
+ * 版本化 IR chunk，供父进程经 {@link AnalyzerIngress} 摄入。
  *
  * <p>Args: {@code <outPath> <projectId> <artifactDigest> <scanId> <analysisId> <policyDigest>
  * <submissionId>}

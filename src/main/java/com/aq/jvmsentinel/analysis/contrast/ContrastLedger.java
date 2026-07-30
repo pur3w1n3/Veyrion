@@ -16,8 +16,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Bounded CONTRAST_LEDGER for REPORT / PATH / TRIAGE prompts and server-side
- * incomplete-ledger enforcement.
+ * 有界 CONTRAST_LEDGER：REPORT/PATH/TRIAGE prompt 与服务端
+ * incomplete-ledger 强制。
  */
 public final class ContrastLedger {
     public static final String EVENT_INCOMPLETE = "REPORT_LEDGER_INCOMPLETE";
@@ -56,8 +56,8 @@ public final class ContrastLedger {
     }
 
     /**
-     * LEGACY convenience: builds ledger via {@link #taintPathsFromSinks}.
-     * Production PATH/contrast paths with a static-facts row must pass
+     * LEGACY 便利：经 {@link #taintPathsFromSinks} 构建 ledger。
+     * 带 static-facts 行的 production PATH/contrast 路径必须通过
      * {@link com.aq.jvmsentinel.control.StaticFactSnapshot#resolveContrastTaintPaths}
      * (or {@code resolveTaintPaths}) into the 5-arg overload instead.
      */
@@ -94,10 +94,10 @@ public final class ContrastLedger {
     }
 
     /**
-     * LEGACY-only empty-step stubs from sink symbols ({@code tp-sink-*} when no taint-path token).
-     * Authoritative PATH/contrast must use persisted IR via
+     * 仅 LEGACY 空 step stub，来自 sink symbol（无 taint-path token 时 {@code tp-sink-*}）。
+     * 权威 PATH/contrast 须经 persisted IR 使用
      * {@link com.aq.jvmsentinel.control.StaticFactSnapshot#resolveContrastTaintPaths};
-     * this method is only the no-facts-row fallback (coverage={@code LEGACY_INCOMPLETE}).
+     * 本方法仅为无 facts-row fallback（coverage={@code LEGACY_INCOMPLETE}）。
      */
     public static List<BytecodeFactIndex.TaintPath> taintPathsFromSinks(List<ApiDtos.SinkDto> sinks) {
         if (sinks == null || sinks.isEmpty()) return List.of();
@@ -135,7 +135,7 @@ public final class ContrastLedger {
                 covered++;
             }
         }
-        // First dynamic coverage observation opens round 1; more covered runs bump the round.
+        // 首次 dynamic coverage observation 开启 round 1；更多 covered run 提升 round。
         if (covered == 0) return 0;
         return Math.min(covered, 32);
     }
@@ -256,8 +256,8 @@ public final class ContrastLedger {
     }
 
     /**
-     * Ensures every STATIC_ONLY (and unmatched) summary appears in the report text.
-     * If the model omitted them, append a server section and mark incomplete.
+     * 确保每个 STATIC_ONLY（及 unmatched）summary 出现在 report 文本。
+     * 若模型遗漏，append 服务端 section 并标记 incomplete。
      */
     public static EnforceResult enforceReport(String summaryMarkdown, Ledger ledger, boolean english) {
         if (ledger == null) {

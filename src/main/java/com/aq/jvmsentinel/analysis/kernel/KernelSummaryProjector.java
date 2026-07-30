@@ -11,8 +11,8 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Projects IR / sink / guard heuristics into MethodSummary and sanitizer seeds.
- * Provenance is inference only; never FACT or verification elevation.
+ * 将 IR / sink / guard 启发式投影为 MethodSummary 与 sanitizer seed。
+ * Provenance 仅 inference；永非 FACT 或 verification 提升。
  */
 public final class KernelSummaryProjector {
     public static final int MAX_SANITIZER_SEEDS = 256;

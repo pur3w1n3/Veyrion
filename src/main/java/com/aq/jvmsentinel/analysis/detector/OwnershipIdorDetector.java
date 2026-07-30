@@ -12,8 +12,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Heuristic IDOR/BOLA ownership gap: object-id PathVariable/RequestParam on an HTTP
- * entry without ownership / tenant / principal-binding preconditions.
+ * 启发式 IDOR/BOLA ownership gap：HTTP entry 上 object-id PathVariable/RequestParam
+ * 无 ownership / tenant / principal-binding 前置条件。
  */
 public final class OwnershipIdorDetector implements Detector {
     public static final String VERSION = "0.1.0";

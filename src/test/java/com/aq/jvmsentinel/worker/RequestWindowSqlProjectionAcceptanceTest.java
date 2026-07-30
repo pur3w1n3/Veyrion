@@ -13,7 +13,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-06: PathRun consumes only request-window SQL; SQL is not copied across HTTP probes.
+ * P0-06：PathRun 仅消费 request-window SQL；SQL 不在 HTTP 探针间复制。
  */
 public final class RequestWindowSqlProjectionAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

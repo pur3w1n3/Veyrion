@@ -1,7 +1,7 @@
 /**
- * Persistence adapter boundary (P1-08 skeleton).
+ * Persistence 适配器边界（P1-08 骨架）。
  *
- * <p>Existing SQLite implementation remains under {@code control.persistence}; new repository
- * ports migrate here incrementally. Must not depend on HTTP or GUI.
+ * <p>现有 SQLite 实现仍位于 {@code control.persistence}；新 repository
+ * port 逐步迁移至此。不得依赖 HTTP 或 GUI。
  */
 package com.aq.jvmsentinel.adapter.persistence;

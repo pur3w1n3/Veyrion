@@ -2,7 +2,7 @@ package com.aq.jvmsentinel.decompile;
 
 import java.util.Objects;
 
-/** Operator-provisioned, digest-pinned tool artifact; this does not bundle or load the tool. */
+/** 运维预置、digest 固定的 tool artifact；不打包也不加载 tool。 */
 public record DecompilerToolArtifact(int schemaVersion, DecompilerTool tool, String version,
                                      String sha256, String sandboxJarPath) {
     public static final int SCHEMA_VERSION = 1;

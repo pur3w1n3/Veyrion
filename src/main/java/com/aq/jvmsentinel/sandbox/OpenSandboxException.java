@@ -1,6 +1,6 @@
 package com.aq.jvmsentinel.sandbox;
 
-/** Sanitized adapter failure. Remote response bodies and credentials are never included in messages. */
+/** sanitized adapter 失败。remote response body 与 credential 永不包含在 message 中。 */
 public final class OpenSandboxException extends RuntimeException {
     private final String code;
     private final int httpStatus;

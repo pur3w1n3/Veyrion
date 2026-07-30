@@ -6,13 +6,13 @@ import com.aq.jvmsentinel.worker.WorkerCapability;
 import java.util.List;
 import java.util.Objects;
 
-/** Safe creation request: the public shape intentionally has no host mounts, environment, or credentials. */
+/** 安全创建 request：public shape 刻意无 host mount、environment 或 credential。 */
 public record SandboxRequest(String image, List<String> entrypoint, int timeoutSeconds,
                              ResourceBudget resourceBudget, WorkerCapability requiredCapability,
                              List<ReadOnlyArtifactMount> readOnlyArtifacts,
                              long tmpfsBytes) {
     /**
-     * v1 source compatibility. The removed fixture discriminator may only be false.
+     * v1 source 兼容。已移除的 fixture discriminator 仅能为 false。
      */
     public SandboxRequest(String image, List<String> entrypoint, int timeoutSeconds,
                           ResourceBudget resourceBudget, boolean fixtureOnly,
@@ -52,7 +52,7 @@ public record SandboxRequest(String image, List<String> entrypoint, int timeoutS
         }
     }
 
-    /** v1 wire/source compatibility; fixture execution has been removed. */
+    /** v1 wire/source 兼容；fixture execution 已移除。 */
     public boolean fixtureOnly() {
         return false;
     }

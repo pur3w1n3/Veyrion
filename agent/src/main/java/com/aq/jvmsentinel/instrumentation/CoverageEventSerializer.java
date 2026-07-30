@@ -6,7 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Encodes branch hits without exceeding EventWriter's 256-character detail value limit. */
+/** 编码分支 hit，不超过 EventWriter 256 字符 detail 值上限。 */
 final class CoverageEventSerializer {
     private static final int MAX_DETAIL_VALUE_LENGTH = 256;
 

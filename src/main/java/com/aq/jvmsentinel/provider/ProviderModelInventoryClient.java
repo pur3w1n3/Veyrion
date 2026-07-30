@@ -40,8 +40,8 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Bounded, inventory-only client for OpenAI Chat Completions and Anthropic Messages providers.
- * This class deliberately has no method that executes a model request.
+ * 有界、仅 inventory 的 client，面向 OpenAI Chat Completions 与 Anthropic Messages provider。
+ * 本类刻意没有任何执行 model request 的方法。
  */
 public final class ProviderModelInventoryClient {
     static final int MAX_MODELS = 1_000;
@@ -159,8 +159,8 @@ public final class ProviderModelInventoryClient {
             throw failure("provider pagination exceeds limit");
         } finally {
             Arrays.fill(secret, (byte) 0);
-            // HttpRequest requires an immutable String header value. It is never retained by a DTO,
-            // exception, audit record, or result, and the caller-owned byte array remains caller-owned.
+            // HttpRequest 需要 immutable String header value。永不保留于 DTO、
+            // exception、audit record 或 result；caller-owned byte array 仍归 caller。
             headerSecret = null;
         }
     }
@@ -363,7 +363,7 @@ public final class ProviderModelInventoryClient {
         try {
             body.close();
         } catch (IOException ignored) {
-            // The response is already being rejected.
+            // response 已在拒绝流程中。
         }
     }
 

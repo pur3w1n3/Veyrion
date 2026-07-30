@@ -7,8 +7,8 @@ import java.nio.file.Path;
 import java.util.stream.Collectors;
 
 /**
- * Optional real-artifact smoke: set VEYRION_BALDEX_JAR to a SpringBlade/baldex executable JAR.
- * Skips cleanly when unset so default CI does not require the sample.
+ * 可选真实 artifact smoke：设 VEYRION_BALDEX_JAR 为 SpringBlade/baldex 可执行 JAR。
+ * 未设时干净 SKIP，默认 CI 不要求 sample。
  */
 public final class AuthJwtStaticBaldexSmoke {
     private AuthJwtStaticBaldexSmoke() {

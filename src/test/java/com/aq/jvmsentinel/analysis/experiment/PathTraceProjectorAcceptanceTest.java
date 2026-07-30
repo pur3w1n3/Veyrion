@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-21: PathTraceProjector acceptance.
+ * 说明：P0-21：PathTraceProjector 验收。
  */
 public final class PathTraceProjectorAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

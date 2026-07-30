@@ -5,12 +5,12 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Read-only PathRun query (P1-08). Merges persisted and projected runs for a scan.
- * MOCK provenance stays visible; callers must not upgrade verification status.
+ * 只读 PathRun 查询（P1-08）。合并 scan 的持久化与投影 run。
+ * MOCK provenance 保持可见；调用方不得升级 verification status。
  */
 public interface PathRunQueryPort {
     boolean scanExists(String scanId);
 
-    /** Neutral PathRun view maps; empty when the scan is missing. */
+    /** 中性 PathRun 视图 map；scan 缺失时为空。 */
     Optional<List<Map<String, Object>>> pathRunsForScan(String scanId);
 }

@@ -3,8 +3,8 @@ package com.aq.jvmsentinel.model;
 import java.util.Objects;
 
 /**
- * Declares how an artifact may be executed dynamically. Without a complete
- * profile, WAR / non-Boot / CLASS stay static-only — never host-executed.
+ * 声明 artifact 如何动态执行。无完整 profile 时，
+ * WAR / non-Boot / CLASS 保持 static-only — 永不 host 执行。
  */
 public record RunProfile(
         ArtifactType artifactType,
@@ -43,7 +43,7 @@ public record RunProfile(
                             MODE_NON_BOOT_JAR);
                 }
                 if (!profileProvided) {
-                    // Boot JAR uses the default TRUSTED_DOCKER java -jar profile.
+                    // Boot JAR 使用默认 TRUSTED_DOCKER java -jar profile。
                     yield new RunProfile(type, true, true, "java -jar TRUSTED_DOCKER", MODE_OK);
                 }
                 yield new RunProfile(type, true, true, "java -jar TRUSTED_DOCKER", MODE_OK);

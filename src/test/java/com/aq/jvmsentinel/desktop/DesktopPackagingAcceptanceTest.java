@@ -14,7 +14,7 @@ import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
- * P2 SCAFFOLDING: desktop-jlink.ps1 -DryRun success path with a fake JDK that provides jlink.
+ * 说明：P2 SCAFFOLDING：desktop-jlink.ps1 -DryRun 成功路径，fake JDK 提供 jlink。
  */
 public final class DesktopPackagingAcceptanceTest {
     public static void main(String[] args) throws Exception {

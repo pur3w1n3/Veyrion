@@ -4,9 +4,9 @@ import java.time.Duration;
 import java.util.Objects;
 
 /**
- * Execd command request. Trusted Docker runs as the container's default user (typically root)
- * so imported JARs can bind their configured ports (including privileged ones like 80).
- * Caller-supplied environment remains forbidden.
+ * 说明：Execd command request；Trusted Docker 以 container 默认 user（通常 root）运行，
+ * 以便导入 JAR 绑定配置端口（含 privileged 如 80）。
+ * 调用方提供的 environment 仍禁止。
  */
 public record CommandRequest(String command, String workingDirectory, Duration timeout, int uid, int gid) {
     public CommandRequest {

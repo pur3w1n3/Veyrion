@@ -4,7 +4,7 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Explicit analysis / artifact coverage gap. Gaps are never counted as covered.
+ * 显式 analysis / artifact coverage gap。Gap 永不算 covered。
  */
 public record CoverageGap(
         String id,

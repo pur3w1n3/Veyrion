@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Acceptance: FORCED ENTRY_HIT enriches finding wire titles/pathRunRefs without elevating VERIFIED.
+ * 验收：FORCED ENTRY_HIT enrich finding wire title/pathRunRef，不提升 VERIFIED。
  */
 public final class FindingRuntimeEnricherAcceptanceTest {
     public static void main(String[] args) {

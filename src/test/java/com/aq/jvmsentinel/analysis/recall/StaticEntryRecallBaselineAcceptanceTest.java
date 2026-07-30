@@ -5,7 +5,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * P1-04: synthetic static entry recall baseline — scores are development-only, not production recall.
+ * P1-04：合成 static entry recall baseline — 分数仅 development，非 production recall。
  */
 public final class StaticEntryRecallBaselineAcceptanceTest {
     public static void main(String[] args) {

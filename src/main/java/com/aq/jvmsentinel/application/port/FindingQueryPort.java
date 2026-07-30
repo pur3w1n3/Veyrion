@@ -5,13 +5,13 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Read-only finding query (P1-08). HTTP adapters project to legacy {@code /api/v1} maps.
- * Does not elevate verification status.
+ * 只读 finding 查询（P1-08）。HTTP adapter 投影为 legacy {@code /api/v1} map。
+ * 不提升 verification status。
  */
 public interface FindingQueryPort {
     boolean scanExists(String scanId);
 
-    /** Neutral finding view maps for a scan; empty when the scan is missing. */
+    /** scan 的中性 finding 视图 map；scan 缺失时为空。 */
     Optional<List<Map<String, Object>>> findingsForScan(String scanId);
 
     Optional<Map<String, Object>> findingView(String findingId);

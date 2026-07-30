@@ -17,8 +17,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * P0-14: public schema registry fixtures + TS/Java consumer field drift check.
- * Uses a lightweight hand validator (no new JSON Schema dependency).
+ * 说明：P0-14：public schema registry fixture + TS/Java consumer field drift 检查。
+ * 使用轻量 hand validator（无新 JSON Schema 依赖）。
  */
 public final class SchemaContractAcceptanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -216,8 +216,8 @@ public final class SchemaContractAcceptanceTest {
     }
 
     /**
-     * Minimal object validator: required, closed enums, additionalProperties with
-     * extensions / x-veyrion-* exceptions, open kind/family strings.
+     * 最小 object validator：required、closed enum、additionalProperties 与
+     * 说明：extension/x-veyrion-* exception 与 open kind/family 字符串。
      */
     static List<String> validateAgainstSchema(JsonNode schema, JsonNode instance) {
         List<String> errors = new ArrayList<>();
@@ -312,7 +312,7 @@ public final class SchemaContractAcceptanceTest {
         }
         check(fields.contains("hypothesisId"), "TS Finding includes hypothesisId");
         check(fields.contains("securityProperty"), "TS Finding includes securityProperty");
-        // Shared wire names that must not drift from schema optional/required sets.
+        // 共享 wire 名不得与 schema optional/required 集 drift。
         for (String shared : List.of("findingId", "entrypointId", "sinkId", "verificationStatus",
                 "evidenceCount", "confidence", "schemaVersion", "projectId", "artifactDigest",
                 "scanId", "entry", "sink", "dependency", "dependencyMode", "rootCause",

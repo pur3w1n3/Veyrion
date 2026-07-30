@@ -12,8 +12,8 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * PathRun SQL must carry statement-level D1 fields and must not promote Redis/MySQL
- * handshake/listen meta ({@code port=6379}, {@code sqlClass=…,bytes=N}) as SQL evidence.
+ * PathRun SQL 须携带语句级 D1 字段，且不得将 Redis/MySQL
+ * handshake/listen 元数据（{@code port=6379}、{@code sqlClass=…,bytes=N}）提升为 SQL 证据。
  */
 public final class SqlPathRunProjectionAcceptanceTest {
     private static final String DIGEST = "b".repeat(64);
@@ -54,7 +54,7 @@ public final class SqlPathRunProjectionAcceptanceTest {
                     + "\"detail\":{\"httpMethod\":\"GET\",\"route\":\"/api/users\",\"requestTarget\":\"/api/users\","
                     + "\"status\":\"200\",\"port\":\"8080\",\"error\":\"\",\"track\":\"UNAUTH\"}}\n";
 
-    /** Benign + META_MARKER statement pair for D2 structure influence (protocol meta still excluded). */
+    /** 良性 + META_MARKER 语句对，用于 D2 结构影响（仍排除协议 meta）。 */
     private static final String D2_JSONL =
             "{\"schemaVersion\":1,\"sequence\":0,\"eventType\":\"AGENT_STARTED\","
                     + "\"provenanceKind\":\"RUNTIME_OBSERVED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
@@ -156,7 +156,7 @@ public final class SqlPathRunProjectionAcceptanceTest {
         check("DYNAMIC_SUSPECTED".equals(run.verificationStatus())
                         || "DYNAMIC_CONFIRMED".equals(run.verificationStatus()),
                 "D2 capped at DYNAMIC_SUSPECTED; only H3 may DYNAMIC_CONFIRMED");
-        // Parameterized meta keeps H3 from confirming in this fixture.
+        // 参数化 meta 使 H3 在此 fixture 中无法确认。
         check("DYNAMIC_SUSPECTED".equals(run.verificationStatus()),
                 "parameterized meta probe remains DYNAMIC_SUSPECTED under D2");
     }

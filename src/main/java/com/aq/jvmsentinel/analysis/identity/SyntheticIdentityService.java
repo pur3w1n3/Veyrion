@@ -17,18 +17,18 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Platform-owned synthetic identity materials harvested from the authorized artifact.
- * Provenance is MOCK / RULE_GENERATED / FACT (config in JAR); never claimed as operator credentials.
+ * 从 authorized artifact harvest 的平台 owned synthetic identity 材料。
+ * Provenance 为 MOCK / RULE_GENERATED / FACT（JAR 内 config）；永非 operator credential。
  *
  * <p>Channel selection is material-driven: JWT signing keys mint Bearer tokens; Cookie-channel
- * cipher / session materials produce Cookie headers. There is no silent fallback to commercial
- * framework defaults for arbitrary JARs, and rememberMe cipher keys are never used as JWT secrets.
+ * cipher / session 材料产生 Cookie header。无 silent fallback 到 commercial
+ * framework default（任意 JAR），rememberMe cipher key 永不用作 JWT secret。
  */
 public final class SyntheticIdentityService {
 
     /**
-     * Marker Cookie value when a rememberMe cipher key was harvested but encrypted
-     * rememberMe payload minting is out of scope this round.
+     * 仅 harvest rememberMe cipher key（encrypted payload 不在 scope）；
+     * 本轮 out of scope：rememberMe payload mint。
      */
     public static final String COOKIE_MATERIAL_MARKER = "veyrion-cipher-key-harvested";
 
@@ -201,8 +201,8 @@ public final class SyntheticIdentityService {
     }
 
     /**
-     * Fallback materialization for known technique labels when the AI PoC did not
-     * supply authorizationHeader. Prefer AI-authored PoC material when present.
+     * AI PoC 未
+     * 提供 authorizationHeader 时，已知 technique label 的 fallback materialization。存在时优先 AI 撰写 PoC 材料。
      */
     public SyntheticIdentity synthesizeTechnique(AuthBypassTechnique technique, MaterialBundle materials) {
         Objects.requireNonNull(technique, "technique");
@@ -210,7 +210,7 @@ public final class SyntheticIdentityService {
         return switch (technique) {
             case MISSING_AUTH -> new SyntheticIdentity(track, "", "MOCK",
                     "MISSING_AUTH: no Authorization header", true, "");
-            // Probe layer prefixes "Authorization: bearer "; a single space yields an empty-ish token.
+            // Probe 层前缀 "Authorization: bearer "；单空格产生近乎空 token。
             case EMPTY_BEARER -> new SyntheticIdentity(track, " ", "RULE_GENERATED",
                     "EMPTY_BEARER: blank bearer token", true, "");
             case DEFAULT_SECRET_HS256, LOGOUT_TOKEN -> {
@@ -259,9 +259,9 @@ public final class SyntheticIdentityService {
     }
 
     /**
-     * Minimal HS256 JWT with generic enterprise-ish claims (sub/role/exp).
-     * Framework-specific claim shapes belong in AI-authored PoCs or adapter hints —
-     * not hardcoded as the platform mint narrative.
+     * 带 generic enterprise-ish claim（sub/role/exp）的最小 HS256 JWT。
+     * Framework 特定 claim shape 属于 AI 撰写 PoC 或 adapter hint —
+     * 非 hardcode 为 platform mint 叙事。
      */
     static String mintHs256Token(String secret, String role, IdentityTrack track) {
         String header = b64Url("{\"alg\":\"HS256\",\"typ\":\"JWT\"}");
@@ -302,8 +302,8 @@ public final class SyntheticIdentityService {
     }
 
     /**
-     * Secondary auth-channel value: scheme + token (probe layer does not auto-prefix
-     * the secondary header name). Wire/API still may call this via {@link #bladeAuthHeaderValue}.
+     * 次要 auth-channel 值：scheme + token（probe 层不 auto-prefix
+     * 次要 header 名）。Wire/API 仍可通过 {@link #bladeAuthHeaderValue} 调用。
      */
     public static String secondaryAuthHeaderValue(String rawToken) {
         if (rawToken == null || rawToken.isBlank()) return "";

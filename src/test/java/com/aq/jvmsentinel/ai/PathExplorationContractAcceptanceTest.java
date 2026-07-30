@@ -1,6 +1,8 @@
 package com.aq.jvmsentinel.ai;
 
 import com.aq.jvmsentinel.AcceptanceAssertions;
+import com.aq.jvmsentinel.ai.prompt.AiRolePrompts;
+import com.aq.jvmsentinel.ai.prompt.AiSystemPrompt;
 import com.aq.jvmsentinel.ai.tool.AiToolRegistry;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolCall;
 import com.aq.jvmsentinel.ai.tool.CanonicalToolContracts.ToolResult;
@@ -21,7 +23,7 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-11: PATH_EXPLORATION sandbox_probe allowlist / prompt / schema contract unity.
+ * P0-11：PATH_EXPLORATION sandbox_probe allowlist / prompt / schema 合同一致性。
  */
 public final class PathExplorationContractAcceptanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -101,11 +103,8 @@ public final class PathExplorationContractAcceptanceTest {
     }
 
     private static void pathRoleAndSystemPromptsUnified() throws Exception {
-        Method roleInstruction = AiJobOrchestrator.class.getDeclaredMethod(
-                "roleInstruction", AgentRole.class, AiOutputLanguage.class);
-        roleInstruction.setAccessible(true);
-        String zh = (String) roleInstruction.invoke(null, AgentRole.PATH_EXPLORATION, AiOutputLanguage.ZH_CN);
-        String en = (String) roleInstruction.invoke(null, AgentRole.PATH_EXPLORATION, AiOutputLanguage.EN);
+        String zh = AiRolePrompts.roleInstruction(AgentRole.PATH_EXPLORATION, AiOutputLanguage.ZH_CN);
+        String en = AiRolePrompts.roleInstruction(AgentRole.PATH_EXPLORATION, AiOutputLanguage.EN);
         check(zh.contains("sandbox_probe"), "ZH PATH roleInstruction mentions sandbox_probe");
         check(zh.contains("track") && zh.contains("objective") && zh.contains("coverageGapRef"),
                 "ZH PATH roleInstruction requires track/objective/coverageGapRef");
@@ -141,10 +140,10 @@ public final class PathExplorationContractAcceptanceTest {
                         && en.contains("DYNAMIC_CONFIRMED") && en.contains("VERIFIED"),
                 "EN PATH forbids FORCED-only DYNAMIC_CONFIRMED/VERIFIED (ADR-0004)");
 
-        String reportZh = (String) roleInstruction.invoke(
-                null, AgentRole.REPORT_GENERATION, AiOutputLanguage.ZH_CN);
-        String reportEn = (String) roleInstruction.invoke(
-                null, AgentRole.REPORT_GENERATION, AiOutputLanguage.EN);
+        String reportZh = AiRolePrompts.roleInstruction(
+                AgentRole.REPORT_GENERATION, AiOutputLanguage.ZH_CN);
+        String reportEn = AiRolePrompts.roleInstruction(
+                AgentRole.REPORT_GENERATION, AiOutputLanguage.EN);
         check(reportZh.contains("## 漏洞相关") && reportZh.contains("findingBindings"),
                 "ZH REPORT Markdown leads with ## 漏洞相关 from PATH findingBindings");
         check(reportZh.contains("FINDING_BINDINGS_FACTS") || reportZh.contains("findingBindings"),
@@ -168,9 +167,7 @@ public final class PathExplorationContractAcceptanceTest {
                         && reportEn.contains("[Markdown skeleton"),
                 "EN REPORT has required/optional outline + Markdown skeleton");
 
-        Field systemPrompt = AiJobOrchestrator.class.getDeclaredField("SYSTEM_PROMPT");
-        systemPrompt.setAccessible(true);
-        String system = (String) systemPrompt.get(null);
+        String system = AiSystemPrompt.SYSTEM_PROMPT;
         check(system.contains("PATH_EXPLORATION"), "SYSTEM_PROMPT mentions PATH_EXPLORATION");
         check(system.contains("sandbox_probe"), "SYSTEM_PROMPT mentions sandbox_probe");
         check(system.contains("coverageGapRef"), "SYSTEM_PROMPT mentions coverageGapRef");

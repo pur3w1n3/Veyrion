@@ -8,7 +8,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-21: path-debug domain contract round-trip and legacy compatibility.
+ * 说明：P0-21：path-debug domain contract 往返与 legacy 兼容。
  */
 public final class PathDebugContractAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

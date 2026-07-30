@@ -11,7 +11,7 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 
 /**
- * Synthetic identity harvest/mint rules: no silent commercial Blade key fallback
+ * 说明：Synthetic identity harvest/mint 规则：无 silent commercial Blade key fallback
  * (acceptance only; not VERIFIED).
  */
 public final class SyntheticIdentityAcceptanceTest {

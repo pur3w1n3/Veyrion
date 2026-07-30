@@ -19,8 +19,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Builds a same-scan shared memory snapshot for AI roles and the GUI debug view.
- * Server-authored only; model cannot write FACT layers.
+ * 构建同 scan 共享 memory 快照，供 AI 角色与 GUI 调试视图。
+ * 仅服务端编写；模型不能写入 FACT 层。
  */
 public final class ScanMemoryBuilder {
     public static final int SCHEMA_VERSION = 1;
@@ -220,7 +220,7 @@ public final class ScanMemoryBuilder {
         return root;
     }
 
-    /** Compact INDEX section for prompt injection. */
+    /** 供 prompt 注入的紧凑 INDEX 分区。 */
     public static Map<String, Object> indexOnly(Map<String, Object> full) {
         Map<String, Object> index = new LinkedHashMap<>();
         index.put("schemaVersion", full.get("schemaVersion"));
@@ -279,12 +279,13 @@ public final class ScanMemoryBuilder {
         List<Map<String, Object>> tools = new ArrayList<>();
         tools.add(tool("scan_memory_get",
                 "读取本扫描共享记忆切片",
-                "section=INDEX|FACTS|WORK|INFERENCE|TOOLS_CATALOG|ROLE_SLICE|FULL；可选 role=",
+                "section=INDEX|FACTS|WORK|INFERENCE|TOOLS_CATALOG|ROLE_SLICE|FULL；INDEX 已在提示词则跳过；"
+                        + "ROLE_SLICE 时可选 role=（默认当前任务角色，不能改权限）",
                 "索引、事实层、工作层、推断层、工具说明、角色切片",
                 "全部六个角色"));
         tools.add(tool("facts_search",
                 "在已索引事实中搜索",
-                "kind=SCAN|ENTRY|DEPENDENCY|SINK|EVIDENCE|DYNAMIC_EVIDENCE|PATH_RUN|PATH_TRACE|STATIC_CONTRAST|ANY；query；limit",
+                "kind=SCAN|ENTRY|DEPENDENCY|SINK|…；query 用 entryId/route/class（勿用 * 或单空格；空 query=列表）；limit",
                 "入口/依赖/sink/证据/PathRun 摘要/PathTrace 参数流与 effect/对照行",
                 "全部角色（按白名单）"));
         tools.add(tool("evidence_get",

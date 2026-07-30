@@ -12,11 +12,11 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * WAR-oriented FrameworkAdapter skeleton (P2 SCAFFOLDING).
+ * WAR 向 FrameworkAdapter 骨架（P2 SCAFFOLDING）。
  *
  * <p>Matches {@code .war} / {@code WEB-INF} surfaces and exposes neutral HINT notes.
- * Dynamic execution remains {@link RunProfile#MODE_WAR_DYNAMIC_DISABLED} until a future
- * audited embedded-container profile lands — this adapter never grants host execution.
+ * Dynamic execution 保持 {@link RunProfile#MODE_WAR_DYNAMIC_DISABLED} 直至未来
+ * 审计过的 embedded-container profile 落地 — 本 adapter 永不授予 host execution。
  */
 public final class WarFrameworkAdapter implements FrameworkAdapter {
     private static final Set<String> ROUTE_SIGNALS = Set.of(
@@ -52,7 +52,7 @@ public final class WarFrameworkAdapter implements FrameworkAdapter {
     }
 
     /**
-     * Neutral dynamic-policy fact for WAR: profile presence does not enable host execution.
+     * WAR 的中性 dynamic-policy fact：profile 存在不启用 host execution。
      */
     public static String dynamicPolicyFact(boolean profileProvided) {
         RunProfile profile = RunProfile.forArtifact(ArtifactType.WAR, false, profileProvided);

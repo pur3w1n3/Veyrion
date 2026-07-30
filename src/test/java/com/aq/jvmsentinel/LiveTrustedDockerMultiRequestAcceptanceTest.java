@@ -43,9 +43,9 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Live TRUSTED_DOCKER multi-request evidence: ≥2 HTTP probes, PathRun correlation isolation.
- * Docker unavailable / runtime image missing → explicit SKIP (gate still PASS via fixture asserts).
- * When Docker + digest-pinned runtime image are present, the live path must succeed.
+ * Live TRUSTED_DOCKER 多 request evidence：≥2 HTTP probe、PathRun correlation 隔离。
+ * Docker 不可用 / runtime image 缺失 → 显式 SKIP（gate 经 fixture assert 仍 PASS）。
+ * 说明：digest-pinned runtime image 存在时 live path 须成功（Docker）。
  */
 public final class LiveTrustedDockerMultiRequestAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -77,9 +77,9 @@ public final class LiveTrustedDockerMultiRequestAcceptanceTest {
     /** Always-on projection contract: two correlations keep SQL/HTTP isolated. */
     private static void fixtureCorrelationIsolationAlways() throws Exception {
         String marker = SqlDiffProbe.META_MARKER;
-        // Interleave JDBC→HTTP per correlation. Batching all JDBC before any HTTP drains
-        // the pending window on the first HTTP and orphans later correlations (current
-        // TraceProjectionService request-window semantics).
+        // 每 correlation 交错 JDBC→HTTP。全部 JDBC 批在任何 HTTP 前
+        // 在首 HTTP 耗尽 pending window 并 orphan 后续 correlation（当前
+        // 说明：TraceProjectionService request-window 语义）。
         String jsonl = ""
                 + event(0, "AGENT_STARTED", "main", Map.of("mode", "fixture"))
                 + event(1, "JDBC", "q1", Map.of(
@@ -122,8 +122,8 @@ public final class LiveTrustedDockerMultiRequestAcceptanceTest {
         ApiDtos.PathRunDto second = projection.pathRuns().stream()
                 .filter(run -> run.requestSummary().contains("correlationId=req-2-bbbb"))
                 .findFirst().orElseThrow();
-        // Request-window semantics: pending JDBC is drained at each HTTP. Interleaved
-        // JDBC→HTTP per correlation keeps isolation under the current projector.
+        // Request-window 语义：每次 HTTP 耗尽 pending JDBC。交错
+        // 每 correlation JDBC→HTTP 在当前 projector 下保持隔离。
         check(first.sqlEvents().size() == 1 && first.sqlEvents().get(0).sqlText().contains("FROM a"),
                 "corr-1 owns SQL-a only");
         check(second.sqlEvents().size() == 1 && second.sqlEvents().get(0).sqlText().contains("FROM b"),
@@ -212,8 +212,8 @@ public final class LiveTrustedDockerMultiRequestAcceptanceTest {
                 }
                 if (route.contains("/api/a") || summary.contains("/api/a")) {
                     sawA = true;
-                    // Strict SQL ownership only when this PathRun carries correlationId.
-                    // Fixture path covers isolation; live Agent may omit corr today.
+                    // 仅本 PathRun 带 correlationId 时严格 SQL ownership。
+                    // Fixture path 覆盖隔离；live Agent 今日可能 omit corr。
                     if (hasCorr) {
                         check(!sqlText.contains("marker_b") && !sqlText.contains("FROM t_b"),
                                 "live /api/a PathRun must not own SQL-b: " + sqlText);

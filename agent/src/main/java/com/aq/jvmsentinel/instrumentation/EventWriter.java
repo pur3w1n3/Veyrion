@@ -94,7 +94,7 @@ final class EventWriter implements AutoCloseable {
         }
     }
 
-    /** One visible gap event so control-plane / AI do not invent "no instrumentation". */
+    /** 一条可见 gap 事件，以免 control-plane / AI 捏造「无插桩」。 */
     private void writeBudgetExhaustedOnce() {
         if (stopped.get()) {
             return;
@@ -126,7 +126,7 @@ final class EventWriter implements AutoCloseable {
             bytesWritten += encoded.length;
             sequence++;
         } catch (IOException ignored) {
-            // Fail-closed; caller still stops the writer.
+            // Fail-closed；调用方仍停止 writer。
         }
     }
 
@@ -144,7 +144,7 @@ final class EventWriter implements AutoCloseable {
         try {
             channel.close();
         } catch (IOException ignored) {
-            // The writer is already fail-closed.
+            // Writer 已处于 fail-closed。
         }
     }
 

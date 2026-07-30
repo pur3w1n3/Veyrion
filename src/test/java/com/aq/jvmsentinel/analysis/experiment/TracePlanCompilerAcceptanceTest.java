@@ -10,7 +10,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-21: TracePlanCompiler acceptance.
+ * 说明：P0-21：TracePlanCompiler 验收。
  */
 public final class TracePlanCompilerAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

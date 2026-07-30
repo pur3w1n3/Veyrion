@@ -7,8 +7,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Ordered dynamic path for one PathRun attempt (P0-21).
- * Preserves pre-failure hops/effects even when the request exits on dependency failure.
+ * 单次 PathRun attempt 的有序 dynamic path（P0-21）。
+ * 即使 request 因 dependency failure 退出，仍保留 failure 前 hop/effect。
  */
 public record PathTrace(
         int schemaVersion,

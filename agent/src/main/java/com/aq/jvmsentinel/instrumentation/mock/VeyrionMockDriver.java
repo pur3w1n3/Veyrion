@@ -9,7 +9,7 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.util.Properties;
 import java.util.logging.Logger;
 
-/** In-sandbox JDBC driver for deny-all Docker runs. Never opens a real network socket. */
+/** deny-all Docker 运行用的沙箱内 JDBC driver。永不打开真实 network socket。 */
 public final class VeyrionMockDriver implements Driver {
     public static final String URL_PREFIX = "jdbc:veyrion-mock:";
 
@@ -17,7 +17,7 @@ public final class VeyrionMockDriver implements Driver {
         try {
             DriverManager.registerDriver(new VeyrionMockDriver());
         } catch (SQLException ignored) {
-            // registration is best-effort at class init; agent premain also registers
+            // class init 时尽力注册；agent premain 也会注册
         }
     }
 

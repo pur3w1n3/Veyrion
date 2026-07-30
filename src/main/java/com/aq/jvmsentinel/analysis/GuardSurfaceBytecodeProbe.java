@@ -7,10 +7,10 @@ import com.aq.jvmsentinel.model.BytecodeFactIndex;
 import java.util.Locale;
 
 /**
- * Bounded bytecode heuristic for FORCED GuardSurface candidates.
- * Types implementing Filter / HandlerInterceptor (or Sa-Token equivalents) that call
- * Subject / SecurityContext / StpUtil / getToken become catalog candidates — still gated
- * by the server allowlist at runtime. Never elevates VERIFIED.
+ * FORCED GuardSurface 候选的有界 bytecode 启发式。
+ * 实现 Filter / HandlerInterceptor（或 Sa-Token 等价物）且调用
+ * 类型 Subject/SecurityContext/StpUtil/getToken 成为 catalog 候选 — runtime 仍由服务端 allowlist gate。
+ * 永不提升 VERIFIED。
  */
 public final class GuardSurfaceBytecodeProbe {
     private static final int MAX_CALL_EDGES_SCAN = 64;

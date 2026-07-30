@@ -19,10 +19,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * Control-plane Analyzer ingress: bounded staging → full validation → atomic evidence publish.
+ * 控制面 Analyzer ingress：有界 staging → 完整校验 → 原子 evidence 发布。
  *
  * <p>Designed for out-of-process Analyzers; same-process Test Analyzer proves the contract.
- * Partial / rejected submissions never enter the authoritative evidence store.
+ * 部分/被拒绝的 submission 永不进入权威 evidence store。
  */
 public final class AnalyzerIngress {
     private final AnalyzerEvidenceStore store;
@@ -92,8 +92,8 @@ public final class AnalyzerIngress {
         Session session = requireSession(sessionId);
         Objects.requireNonNull(submission, "submission");
 
-        // Scope/deadline authorization must precede idempotency replay. A submission id
-        // is globally indexed, so a valid session from another scan must not receive it.
+        // scope/deadline 授权必须先于 idempotency replay。submission id
+        // 全局索引，故另一 scan 的有效 session 不得接收它。
         ensureOpen(session);
         if (!session.spec.scope().equals(submission.scope())) {
             throw new AnalyzerRejectException(AnalyzerRejectReason.SCOPE_MISMATCH,
@@ -210,8 +210,8 @@ public final class AnalyzerIngress {
                         "manifest entry mismatch at sequence " + i);
             }
         }
-        // Explicit missing-chunk probe: gaps in staged sequences already prevented at stage time;
-        // commit with fewer manifest entries than required contiguous 0..n-1 is MISSING_CHUNK.
+        // 显式 missing-chunk probe：staged sequence 的 gap 已在 stage 时阻止；
+        // manifest entry 少于所需连续 0..n-1 的 commit 为 MISSING_CHUNK。
         for (int expected = 0; expected < ordered.size(); expected++) {
             final long seq = expected;
             boolean present = ordered.stream().anyMatch(chunk -> chunk.sequence() == seq);
@@ -246,10 +246,10 @@ public final class AnalyzerIngress {
                 case IrChunk.KIND_PROGRAM_NODE -> nodes.add(toProgramNode(chunk.payload()));
                 case IrChunk.KIND_ENTRY -> nodes.add(toEntryNode(chunk.payload()));
                 case IrChunk.KIND_COVERAGE_GAP -> {
-                    // Gaps are published from submission.coverageGaps, not as IR nodes.
+                    // Gap 从 submission.coverageGaps 发布，而非 IR node。
                 }
                 default -> {
-                    // Unknown kinds are retained only as diagnostics via payload; never elevate status.
+                    // 未知 kind 仅经 payload 保留为 diagnostic；永不提升 status。
                 }
             }
         }

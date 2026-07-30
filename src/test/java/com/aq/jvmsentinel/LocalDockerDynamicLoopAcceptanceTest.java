@@ -132,7 +132,7 @@ public final class LocalDockerDynamicLoopAcceptanceTest {
                         role + " exposes provider, tool, and inference events: " + events);
             }
         } finally {
-            // Docker bind mounts can briefly keep the managed JAR locked on Windows.
+            // Docker bind mount 在 Windows 上可能短暂锁定 managed JAR。
             deleteTreeBestEffort(root);
         }
         System.out.println("LocalDockerDynamicLoopAcceptanceTest: PASS");

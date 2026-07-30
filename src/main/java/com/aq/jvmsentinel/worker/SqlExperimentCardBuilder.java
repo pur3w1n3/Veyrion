@@ -16,8 +16,7 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Builds D3 replayable SQL experiment cards from PathRun pairs that show
- * benign vs metachar statement-level SQL (D2). Never emits VERIFIED.
+ * 从展示良性 vs 元字符语句级 SQL（D2）的 PathRun 对构建 D3 可重放 SQL 实验卡片。永不输出 VERIFIED。
  */
 public final class SqlExperimentCardBuilder {
     private SqlExperimentCardBuilder() { }

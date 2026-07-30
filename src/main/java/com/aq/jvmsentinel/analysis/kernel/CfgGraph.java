@@ -8,8 +8,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Serializable method CFG projection built from persisted IR sites.
- * Not a full SSA form; branch/exception edges may be incomplete.
+ * 从 persisted IR site 构建的可序列化 method CFG 投影。
+ * 非完整 SSA；branch/exception edge 可能不完整。
  */
 public record CfgGraph(
         String schemaVersion,

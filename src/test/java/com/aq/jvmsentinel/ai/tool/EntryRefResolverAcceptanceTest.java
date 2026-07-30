@@ -4,7 +4,7 @@ import com.aq.jvmsentinel.control.ApiDtos;
 
 import java.util.List;
 
-/** Focused acceptance checks for entry ref aliasing used by plan_propose / sandbox_probe. */
+/** plan_propose / sandbox_probe 所用 entry ref 别名的聚焦验收检查。 */
 public final class EntryRefResolverAcceptanceTest {
     public static void main(String[] args) {
         List<ApiDtos.EntryDto> entries = List.of(

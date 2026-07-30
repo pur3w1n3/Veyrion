@@ -6,8 +6,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Provider-neutral tool protocol. Authorization is deliberately absent: calls
- * contain only model output, while authorization lives in server-side context.
+ * Provider 中立工具协议。故意不含授权：call
+ * 仅含模型输出，授权位于服务端 context。
  */
 public final class CanonicalToolContracts {
     public static final int SCHEMA_VERSION = 1;

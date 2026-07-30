@@ -43,8 +43,8 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Thin default JVM providers wrapping existing PreAnalysis / sink / AuthCoverage /
- * AnalysisPack logic. No big-bang rewrite of discovery.
+ * 包装现有 PreAnalysis / sink / AuthCoverage / 的薄 default JVM provider
+ * AnalysisPack 逻辑。discovery 无 big-bang 重写。
  */
 public final class DefaultJvmProviders {
     public static final String ARTIFACT_ID = "default-jvm-artifact";

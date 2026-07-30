@@ -12,8 +12,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Bounded field / return taint enhancement hooks over existing {@link BytecodeFactIndex.TaintPath}s.
- * Does not replace {@code InterproceduralTaintAnalyzer}; it annotates paths with FIELD/RETURN/SANITIZER steps.
+ * 现有 {@link BytecodeFactIndex.TaintPath} 上的有界 field / return taint 增强 hook。
+ * 不替换 {@code InterproceduralTaintAnalyzer}；以 FIELD/RETURN/SANITIZER step 标注 path。
  */
 public final class FieldReturnTaintEnhancer {
     public static final int PATH_BUDGET = 2_048;
@@ -107,7 +107,7 @@ public final class FieldReturnTaintEnhancer {
                     }
                 }
             }
-            // Field-read bridge: if a later CALL step's method reads a field written by source method.
+            // Field-read bridge：若后续 CALL step 的 method 读 source method 写的 field。
             Set<String> written = new HashSet<>(fieldWritesByMethod.getOrDefault(sourceMethod, List.of()));
             for (BytecodeFactIndex.TaintStep step : path.steps()) {
                 if (!"CALL".equals(step.kind())) continue;

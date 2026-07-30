@@ -3,7 +3,7 @@ package com.aq.jvmsentinel.model;
 import java.util.Locale;
 import java.util.Set;
 
-/** Maps HTTP/transport probe signals to the minimum PathOutcomeClass taxonomy. */
+/** 将 HTTP/transport probe 信号映射到最小 PathOutcomeClass 分类。 */
 public final class PathOutcomeClassifier {
     private static final Set<String> TRANSPORT = Set.of(
             "ConnectException", "SocketException", "SocketTimeoutException",

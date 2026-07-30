@@ -130,8 +130,8 @@ public final class ArtifactUploadAcceptanceTest {
                 check(put(client, base, projectId, tooLargeId, 0, tooLarge, tooLargeDigest,
                         server.mutationToken()).statusCode() == 413, "Chunk hard limit must be enforced");
             } catch (java.io.IOException transportRejected) {
-                // The bounded HTTP body reader may close the connection before
-                // a response when a client exceeds the request hard limit.
+                // 有界 HTTP body reader 可能在
+                // client 超过 request hard limit 时关闭连接而无 response。
             }
             delete(client, base, projectId, tooLargeId, server.mutationToken());
 

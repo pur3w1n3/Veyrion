@@ -3,8 +3,8 @@ package com.aq.jvmsentinel.domain.hypothesis;
 import java.util.Locale;
 
 /**
- * Hypothesis lifecycle for the P0-12 vertical slice.
- * Static sink / AUTH_GAP projections start as {@link #CANDIDATE}.
+ * P0-12 垂直切片的 hypothesis lifecycle。
+ * 静态 sink / AUTH_GAP 投影起始于 {@link #CANDIDATE}。
  */
 public enum HypothesisLifecycle {
     CANDIDATE,

@@ -20,8 +20,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * Stage retry for DYNAMIC_OBSERVATION: terminal FAILED allows retry; leftover QUEUED is
- * superseded; focus-probe stays fail-closed busy while a live task exists.
+ * 说明：DYNAMIC_OBSERVATION stage retry：terminal FAILED 允许 retry；leftover QUEUED
+ * 被 supersede；live task 存在时 focus-probe 保持 fail-closed busy。
  */
 public final class DynamicStageRetryAcceptanceTest {
     public static void main(String[] args) throws Exception {

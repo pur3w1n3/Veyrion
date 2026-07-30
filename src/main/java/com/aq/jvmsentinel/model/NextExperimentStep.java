@@ -4,8 +4,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Evidence-constrained next validation step produced by PATH / TRIAGE.
- * Consumable by {@code sandbox_probe}; never upgrades verification alone.
+ * PATH / TRIAGE 产生的 evidence 约束下一步验证。
+ * 可由 {@code sandbox_probe} 消费；单独永不升级 verification。
  */
 public record NextExperimentStep(
         String entryRef,

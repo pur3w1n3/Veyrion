@@ -3,7 +3,7 @@ package com.aq.jvmsentinel.worker;
 import java.time.Instant;
 import java.util.Objects;
 
-/** A resumable position that may reference only an already committed trace head. */
+/** 可恢复位置，仅可引用已提交的轨迹头。 */
 public record TaskCheckpoint(int schemaVersion, TaskScope scope, String checkpointId,
                              long traceSequence, String traceHeadDigest, Instant createdAt) {
     public TaskCheckpoint {

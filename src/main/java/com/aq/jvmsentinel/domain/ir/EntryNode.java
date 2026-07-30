@@ -6,8 +6,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Entry surface (HTTP, RPC, message, task, …). AUTH-only filter rows are not EntryNodes;
- * they project as {@link GuardNode} and are recorded as a compatibility gap.
+ * Entry 面（HTTP、RPC、message、task、…）。仅 AUTH 的 filter 行不是 EntryNode；
+ * 它们投影为 {@link GuardNode} 并记为 compatibility gap。
  *
  * <p>Stable id: {@code entry:{entryDtoId}} — equals legacy EntryDto.id after the prefix.
  */

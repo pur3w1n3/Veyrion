@@ -22,8 +22,8 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-07: VULNERABILITY_TRIAGE conclusionJson retains structured rootCause and non-empty
- * evidenceRefs; AUTH PoC serialization must not empty those fields.
+ * P0-07：VULNERABILITY_TRIAGE conclusionJson 保留结构化 rootCause 与非空
+ * evidenceRefs；AUTH PoC 序列化不得清空这些字段。
  */
 public final class TriageConclusionFidelityAcceptanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();

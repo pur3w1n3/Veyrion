@@ -15,20 +15,20 @@ import java.util.concurrent.Executors;
 import java.util.function.Predicate;
 
 /**
- * Server-owned audit stage machine. Model output cannot arm, skip, or expand stages.
- * Advancement requires an armed pipeline from an authorized audit-run and a CAS match on
- * {@code pipelineRunId}, {@code stageAttemptId}, and the expected job/task identity.
+ * 服务端拥有的审计阶段状态机。模型输出不能 arm、跳过或扩展阶段。
+ * 推进需来自已授权 audit-run 的 armed pipeline，且对
+ * {@code pipelineRunId}、{@code stageAttemptId} 与预期 job/task 身份 CAS 匹配。
  *
- * <p>Path-debug order: PRE → AUTH → DYNAMIC_OBSERVATION → AUTH bypass confirm (evidence only) →
- * DYNAMIC_VERIFICATION → PATH ↔ OBS loops → TRIAGE ↔ OBS loops → REPORT.
- * OBS feedback loops are capped ({@code VEYRION_AUDIT_OBS_LOOP_MAX} / {@code veyrion.audit.obsLoopMax},
- * default 3).</p>
+ * <p>Path-debug 顺序：PRE → AUTH → DYNAMIC_OBSERVATION → AUTH bypass 确认（仅证据）→
+ * DYNAMIC_VERIFICATION → PATH ↔ OBS 循环 → TRIAGE ↔ OBS 循环 → REPORT。
+ * OBS 反馈循环有上限（{@code VEYRION_AUDIT_OBS_LOOP_MAX} / {@code veyrion.audit.obsLoopMax}，
+ * 默认 3）。</p>
  */
 public final class AuditPipelineCoordinator {
     private static final Set<String> BUSY = Set.of("QUEUED", "RUNNING", "COMPLETED");
     private static final Set<String> JOB_SUCCESS = Set.of("COMPLETED");
     private static final Set<String> JOB_FAILURE = Set.of("FAILED", "CANCELLED", "BLOCKED");
-    /** Env / system property for PATH/TRIAGE → OBS feedback loop cap (AUDIT_FLOW mermaid). */
+    /** PATH/TRIAGE → OBS 反馈循环上限的 env / system property（AUDIT_FLOW mermaid）。 */
     public static final String OBS_LOOP_MAX_ENV = "VEYRION_AUDIT_OBS_LOOP_MAX";
     public static final String OBS_LOOP_MAX_PROP = "veyrion.audit.obsLoopMax";
     private static final int OBS_LOOP_MAX_DEFAULT = 3;
@@ -80,74 +80,73 @@ public final class AuditPipelineCoordinator {
     }
 
     public interface Actions {
-        /** Create a QUEUED AI job; caller binds identity before submit. */
+        /** 创建 QUEUED AI job；调用方在 submit 前绑定身份。 */
         String createRoleJob(String projectId, String scanId, AgentRole role,
                              AiOutputLanguage language, String actorId);
 
         void submitRoleJob(String jobId, String actorId);
 
-        /** Enqueue the pipeline dynamic observation task and return its taskId. */
+        /** 入队 pipeline dynamic observation task 并返回 taskId。 */
         String enqueueDynamic(String scanId, String actorId);
 
         boolean hasRunningDynamicTask(String scanId);
 
         /**
-         * Replace the scan cursor with a new armed run/attempt. Always succeeds for a
-         * well-formed write; used on arm and retry.
-         */
+ * 用新 armed run/attempt 替换 scan cursor。格式良好的写入总是成功；用于 arm 与重试。
+ */
         void replaceCursor(Cursor cursor, boolean armed, String stopReason);
 
         /**
-         * CAS: advance only when scan/run/attempt and expected resource still match.
-         * Returns false when foreign, stale, duplicate, or late.
-         */
+ * CAS：仅当 scan/run/attempt 与预期资源仍匹配时推进。
+ * 外来、过期、重复或迟到时返回 false。
+ */
         boolean compareAndAdvance(Cursor expected, Cursor next, boolean armed, String stopReason);
 
-        /** Observe current job status for restart reconciliation. */
+        /** 观察当前 job 状态以供重启协调。 */
         default String jobStatus(String jobId) { return null; }
 
-        /** Observe job stopReason (e.g. PROCESS_RESTARTED) for precise disarm labels. */
+        /** 观察 job stopReason（如 PROCESS_RESTARTED）以精确 disarm 标签。 */
         default String jobStopReason(String jobId) { return null; }
 
-        /** Observe current task lifecycle name for restart reconciliation. */
+        /** 观察当前 task lifecycle 名称以供重启协调。 */
         default String taskLifecycle(String projectId, String scanId, String taskId) { return null; }
 
         /**
-         * Best-effort release of a scan-scoped retained deny-all sandbox after PATH/TRIAGE
-         * dynamic validation completes or the pipeline abandons a stage that may have held one.
-         */
+ * PATH/TRIAGE 动态验证完成或 pipeline 放弃可能持有 sandbox 的阶段后，
+ * best-effort 释放 scan 作用域内保留的 deny-all sandbox。
+ */
         default void releaseRetainedSandbox(Arm arm) { }
 
         /**
-         * AUTH_BYPASS_CONFIRM only when PathRuns show AUTH_CHALLENGE or pass-gate (AUDIT_FLOW §4).
-         * Default true preserves unit-test fixtures that do not wire PathRuns.
-         */
+ * 仅当 PathRun 显示 AUTH_CHALLENGE 或过闸时才 AUTH_BYPASS_CONFIRM（AUDIT_FLOW §4）。
+ * 默认 true 以保留未接入 PathRun 的单元测试 fixture。
+ */
         default boolean hasDynamicAuthEvidence(String scanId) {
             return true;
         }
 
-        /** IR2: full detector recompute after PathTrace/PathRun observation (AUDIT_FLOW mermaid). */
+        /** IR2：PathTrace/PathRun 观测后全量 detector 重算（AUDIT_FLOW mermaid）。 */
         default void recomputeDetectorsAfterObservation(String scanId) { }
 
         /**
-         * Whether PATH/TRIAGE should re-enter DYNAMIC_OBSERVATION (coverage gap / STATIC_ONLY /
-         * unverified hypothesis work remaining).
-         */
+ * PATH/TRIAGE 是否应重新进入 DYNAMIC_OBSERVATION（coverage gap / STATIC_ONLY /
+ * 未验证 hypothesis 工作仍剩）。
+ */
         default boolean hasPendingObservationLoopWork(String scanId) {
             return false;
         }
 
-        /** Max PATH/TRIAGE ↔ OBS feedback loops; default from env/prop or 3. */
+        /** PATH/TRIAGE ↔ OBS 反馈循环上限；默认来自 env/prop 或 3。 */
         default int observationLoopMax() {
             return resolveObservationLoopMax();
         }
     }
 
-    /** Visible for tests: parse loop cap from env then system property. */
+    /** 测试可见：先从 env 再从 system property 解析循环上限。 */
     public static int resolveObservationLoopMax() {
         String raw = System.getenv(OBS_LOOP_MAX_ENV);
         if (raw == null || raw.isBlank()) {
-            raw = System.getenv("VEYRIION_AUDIT_OBS_LOOP_MAX"); // common typo alias
+            raw = System.getenv("VEYRIION_AUDIT_OBS_LOOP_MAX"); // 常见拼写别名
         }
         if (raw == null || raw.isBlank()) {
             raw = System.getProperty(OBS_LOOP_MAX_PROP, String.valueOf(OBS_LOOP_MAX_DEFAULT));
@@ -176,9 +175,9 @@ public final class AuditPipelineCoordinator {
     }
 
     private final ConcurrentHashMap<String, Cursor> cursors = new ConcurrentHashMap<>();
-    /** After a PATH/TRIAGE-driven OBS loop, resume this AI stage (not AUTH_BYPASS_CONFIRM). */
+    /** PATH/TRIAGE 驱动的 OBS 循环后，恢复此 AI 阶段（非 AUTH_BYPASS_CONFIRM）。 */
     private final ConcurrentHashMap<String, PipelineStage> afterDynamicResume = new ConcurrentHashMap<>();
-    /** Per-scan count of PATH/TRIAGE → OBS feedback loops consumed. */
+    /** 每 scan 已消耗的 PATH/TRIAGE → OBS 反馈循环次数。 */
     private final ConcurrentHashMap<String, Integer> observationLoopCounts = new ConcurrentHashMap<>();
     private final Actions actions;
     private final Executor async = Executors.newSingleThreadExecutor(runnable -> {
@@ -200,9 +199,9 @@ public final class AuditPipelineCoordinator {
     }
 
     /**
-     * Arms a new pipeline run that is already waiting on a caller-created AI job.
-     * Invalidates any prior run for the scan.
-     */
+ * Arm 新 pipeline run，已等待调用方创建的 AI job。
+ * 使该 scan 上任何先前 run 失效。
+ */
     public synchronized Arm armForJob(String scanId, String projectId, String actorId,
                          AiOutputLanguage language, PipelineStage stage, String jobId) {
         Objects.requireNonNull(stage, "stage");
@@ -222,9 +221,9 @@ public final class AuditPipelineCoordinator {
     }
 
     /**
-     * Arms a new pipeline run that is already waiting on a caller-created dynamic task.
-     * Invalidates any prior run for the scan.
-     */
+ * Arm 新 pipeline run，已等待调用方创建的 dynamic task。
+ * 使该 scan 上任何先前 run 失效。
+ */
     public synchronized Arm armForTask(String scanId, String projectId, String actorId,
                           AiOutputLanguage language, PipelineStage stage, String taskId) {
         Objects.requireNonNull(stage, "stage");
@@ -249,9 +248,9 @@ public final class AuditPipelineCoordinator {
     }
 
     /**
-     * Restores a persisted cursor exactly. Does not infer stage from scan-wide jobs/tasks.
-     * Reconciles already-terminal expected resources; otherwise waits without re-enqueue.
-     */
+ * 精确恢复已持久化 cursor。不从 scan 级 job/task 推断阶段。
+ * 协调已终态的预期资源；否则等待且不重新入队。
+ */
     public synchronized void resume(Cursor cursor) {
         Objects.requireNonNull(cursor, "cursor");
         if (cursor.stage() == PipelineStage.COMPLETE) {
@@ -269,6 +268,58 @@ public final class AuditPipelineCoordinator {
 
     public Cursor cursor(String scanId) {
         return scanId == null ? null : cursors.get(scanId);
+    }
+
+    /** 操作员暂停 armed pipeline 时的持久化 stopReason。 */
+    public static final String STOP_OPERATOR_PAUSED = "OPERATOR_PAUSED";
+    /** 操作员取消/停止 armed pipeline 时的持久化 stopReason。 */
+    public static final String STOP_OPERATOR_CANCELLED = "OPERATOR_CANCELLED";
+
+    /**
+ * 操作员暂停：丢弃 live cursor 使阶段完成无法推进，并持久化
+ * {@link #STOP_OPERATOR_PAUSED} 与当前阶段身份（清空预期 job/task）。
+ * 调用方须在返回后取消在途预期资源。
+ *
+ * @return 暂停快照；scan 未 armed 时为 null
+ */
+    public synchronized Cursor operatorPause(String scanId) {
+        if (scanId == null || scanId.isBlank()) {
+            return null;
+        }
+        Cursor live = cursors.get(scanId);
+        if (live == null) {
+            return null;
+        }
+        if (!cursors.remove(scanId, live)) {
+            return null;
+        }
+        Cursor paused = new Cursor(live.arm(), live.stage(), live.stageAttemptId(), null, null);
+        actions.releaseRetainedSandbox(live.arm());
+        actions.replaceCursor(paused, false, STOP_OPERATOR_PAUSED);
+        return paused;
+    }
+
+    /**
+ * 操作员取消/停止：丢弃 live cursor 并持久化 {@link #STOP_OPERATOR_CANCELLED}。
+ *
+ * @return armed cursor 被取消时为 true
+ */
+    public synchronized boolean operatorCancel(String scanId) {
+        if (scanId == null || scanId.isBlank()) {
+            return false;
+        }
+        Cursor live = cursors.get(scanId);
+        if (live == null) {
+            return false;
+        }
+        if (!cursors.remove(scanId, live)) {
+            return false;
+        }
+        actions.releaseRetainedSandbox(live.arm());
+        Cursor terminal = new Cursor(live.arm(), live.stage(), live.stageAttemptId(), null, null);
+        actions.replaceCursor(terminal, false, STOP_OPERATOR_CANCELLED);
+        resetLoopState(scanId);
+        return true;
     }
 
     public void onAiJobFinished(AiJobData job) {
@@ -321,7 +372,7 @@ public final class AuditPipelineCoordinator {
         }
         if (snapshot.lifecycle() != TaskLifecycle.COMPLETED) {
             if (isStaticContinueDynamicTerminal(snapshot)) {
-                // AUDIT_FLOW: DYNAMIC_DISABLED keeps static narrative — do not abort the pipeline.
+                // AUDIT_FLOW：DYNAMIC_DISABLED 保留静态叙事——勿中止 pipeline。
                 async.execute(() -> advanceStaticOnlyAfterDynamic(cursor));
                 return;
             }
@@ -332,7 +383,7 @@ public final class AuditPipelineCoordinator {
         async.execute(() -> advanceAfterDynamic(cursor));
     }
 
-    /** Worker missing / dynamic disabled: continue AI stages on static facts only. */
+    /** Worker 缺失 / dynamic 禁用：仅基于静态 fact 继续 AI 阶段。 */
     static boolean isStaticContinueDynamicTerminal(TaskSnapshot snapshot) {
         if (snapshot == null) {
             return false;
@@ -371,7 +422,7 @@ public final class AuditPipelineCoordinator {
                         + (stop == null || stop.isBlank() ? status : stop));
                 return;
             }
-            // Still QUEUED/RUNNING — wait; do not re-enqueue.
+            // 仍 QUEUED/RUNNING——等待；勿重新入队。
             return;
         }
         if (cursor.expectedTaskId() != null) {
@@ -395,7 +446,7 @@ public final class AuditPipelineCoordinator {
             }
             return;
         }
-        // Armed stage without expected resource: recover by enqueueing once for this attempt.
+        // armed 阶段无预期资源：本 attempt 入队一次以恢复。
         enqueueForStage(cursor);
     }
 
@@ -421,15 +472,15 @@ public final class AuditPipelineCoordinator {
     }
 
     /**
-     * AUDIT_FLOW mermaid: PATH/TRIAGE may return to OBS (sandbox_probe / new PathRun) up to
-     * {@link Actions#observationLoopMax()} times, then IR2 recompute, then next stage.
-     */
+ * AUDIT_FLOW mermaid：PATH/TRIAGE 最多可回到 OBS（sandbox_probe / 新 PathRun）
+ * {@link Actions#observationLoopMax()} 次，然后 IR2 重算，再进入下一阶段。
+ */
     private void afterPathOrTriageMaybeLoop(Cursor live, PipelineStage completedStage) {
         String scanId = live.arm().scanId();
         try {
             actions.recomputeDetectorsAfterObservation(scanId);
         } catch (RuntimeException ignored) {
-            // IR2 is best-effort; stage advancement must not stall.
+            // IR2 为 best-effort；阶段推进不得卡住。
         }
         int max = Math.max(0, actions.observationLoopMax());
         int used = observationLoopCounts.getOrDefault(scanId, 0);
@@ -459,7 +510,7 @@ public final class AuditPipelineCoordinator {
         try {
             actions.recomputeDetectorsAfterObservation(scanId);
         } catch (RuntimeException ignored) {
-            // IR2 best-effort.
+            // IR2 best-effort。
         }
         PipelineStage resume = afterDynamicResume.remove(scanId);
         if (resume == PipelineStage.PATH_EXPLORATION) {
@@ -470,7 +521,7 @@ public final class AuditPipelineCoordinator {
             beginRoleStage(live, PipelineStage.VULNERABILITY_TRIAGE, AgentRole.VULNERABILITY_TRIAGE);
             return;
         }
-        // First observation after AUTH: confirm only when dynamic auth evidence exists.
+        // AUTH 后首次观测：仅当存在动态 auth 证据时才确认。
         if (actions.hasDynamicAuthEvidence(scanId)) {
             beginRoleStage(live, PipelineStage.AUTH_BYPASS_CONFIRM, AgentRole.AUTH_ANALYSIS);
             return;
@@ -478,7 +529,7 @@ public final class AuditPipelineCoordinator {
         beginRoleStage(live, PipelineStage.DYNAMIC_VERIFICATION, AgentRole.DYNAMIC_VERIFICATION);
     }
 
-    /** Dynamic unavailable: skip AUTH confirm (no evidence) and continue static-capable AI stages. */
+    /** dynamic 不可用：跳过 AUTH 确认（无证据）并继续可静态 AI 阶段。 */
     private void advanceStaticOnlyAfterDynamic(Cursor cursor) {
         Cursor live = cursors.get(cursor.arm().scanId());
         if (live == null || !sameAttempt(live, cursor)) {
@@ -545,8 +596,8 @@ public final class AuditPipelineCoordinator {
         }
         try {
             if (actions.hasRunningDynamicTask(arm.scanId())) {
-                // A non-pipeline dynamic task is still running; keep the stage attempt and wait
-                // until the pipeline-owned enqueue can proceed. Do not bind foreign task ids.
+                // 非 pipeline dynamic task 仍在运行；保持阶段 attempt 并等待
+                // 直至 pipeline 拥有的入队可继续。勿绑定外来 task id。
                 async.execute(() -> waitToEnqueueDynamic(binding));
                 return;
             }
@@ -558,21 +609,21 @@ public final class AuditPipelineCoordinator {
             if (!cursors.replace(arm.scanId(), binding, waiting)) {
                 return;
             }
-            // A terminal callback can arrive before expectedTaskId is bound.
-            // Reconcile the exact task after binding so it cannot be lost.
+            // 终态回调可能在 expectedTaskId 绑定前到达。
+            // 绑定后协调精确 task，避免丢失。
             String lifecycle = actions.taskLifecycle(arm.projectId(), arm.scanId(), taskId);
             if (lifecycle != null && isTerminalTaskLifecycle(lifecycle)) {
                 if (TaskLifecycle.COMPLETED.name().equals(lifecycle)) {
                     advanceAfterDynamic(waiting);
                 } else if ("FAILED".equals(lifecycle) || "CANCELLED".equals(lifecycle)) {
-                    // Enqueued task already terminal without COMPLETED — static continue when possible.
+                    // 已入队 task 已终态且非 COMPLETED——尽可能静态继续。
                     advanceStaticOnlyAfterDynamic(waiting);
                 } else {
                     disarm(waiting, PipelineStage.DYNAMIC_OBSERVATION.name() + "_" + lifecycle);
                 }
             }
         } catch (RuntimeException failure) {
-            // Sandbox/worker unavailable at enqueue: keep static AI narrative (AUDIT_FLOW).
+            // 入队时 sandbox/worker 不可用：保留静态 AI 叙事（AUDIT_FLOW）。
             advanceStaticOnlyAfterDynamic(binding);
         }
     }

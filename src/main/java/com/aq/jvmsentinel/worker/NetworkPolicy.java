@@ -6,7 +6,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.HashSet;
 
-/** Deny-by-default network contract. Allowlist entries are control-plane policy, not task payload data. */
+/** 默认拒绝的网络合同。白名单条目为控制面策略，非任务载荷数据。 */
 public record NetworkPolicy(NetworkMode mode, List<String> allowlist) {
     public NetworkPolicy {
         Objects.requireNonNull(mode, "mode");

@@ -22,8 +22,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 /**
- * Load-free harvest of auth/role/permission/license/feature guard type names from an artifact JAR.
- * Drives FORCED_REACHABILITY allowlists; never elevates VERIFIED and never targets sanitizers.
+ * 从 artifact JAR 无 load 采集 auth/role/permission/license/feature guard 类型名。
+ * 驱动 FORCED_REACHABILITY allowlist；永不提升 VERIFIED，永不 targeting sanitizer。
  */
 public final class GuardSurfaceCatalog {
     public static final int MAX_SURFACES = 64;
@@ -93,7 +93,7 @@ public final class GuardSurfaceCatalog {
                 if (!lower.endsWith(".class")) {
                     continue;
                 }
-                // Skip synthetic/anonymous inners; keep named nested types that look like filters.
+                // 跳过 synthetic/anonymous inner；保留像 filter 的命名 nested type。
                 int dollar = lower.lastIndexOf('$');
                 if (dollar >= 0) {
                     String after = lower.substring(dollar + 1);
@@ -111,7 +111,7 @@ public final class GuardSurfaceCatalog {
                     consider(typeName, nameMatch, byType);
                     continue;
                 }
-                // Bounded bytecode heuristic for Filter/Interceptor calling auth APIs.
+                // Filter/Interceptor 调用 auth API 的有界 bytecode 启发式。
                 if (bytecodeProbes >= MAX_BYTECODE_PROBES || !GuardSurfaceBytecodeProbe.looksProbeWorthy(typeName)) {
                     continue;
                 }
@@ -261,7 +261,7 @@ public final class GuardSurfaceCatalog {
                 }
             }
         } catch (IOException ignored) {
-            // Nested lib optional.
+            // Nested lib 可选。
         }
     }
 
@@ -376,7 +376,7 @@ public final class GuardSurfaceCatalog {
     }
 
     private static DecisionShape shapeFor(String simple, String lower) {
-        // Shiro AccessControl decision filters (isAccessAllowed) — not outer chain binders.
+        // 说明：Shiro AccessControl decision filter（isAccessAllowed）— 非外层 chain binder。
         if (simple.contains("accesscontrol")
                 || lower.contains("accesscontrolfilter")
                 || lower.startsWith("org.apache.shiro.web.filter.authc.")
@@ -413,7 +413,7 @@ public final class GuardSurfaceCatalog {
                 || simple.contains("httptrace") || simple.contains("websitemesh")) {
             return true;
         }
-        // Container / infra bases — never force the outer chain binder.
+        // 容器/infra base — 永不 force 外层 chain binder。
         if (simple.equals("abstractshirofilter")
                 || simple.equals("springshirofilter")
                 || simple.equals("pathmatchingfilter")

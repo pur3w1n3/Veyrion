@@ -21,8 +21,8 @@ import java.util.Set;
 import java.util.TreeMap;
 
 /**
- * Read-only projection of scan facts into {@link CoverageMatrix}.
- * unknown / unresolved / truncated / unreached are gaps and never counted as covered.
+ * scan fact 到 {@link CoverageMatrix} 的只读投影。
+ * gap 状态 unknown/unresolved/truncated/unreached 永不算 covered。
  */
 public final class CoverageMatrixProjector {
     /** Test/hook: suppress detector families so recall gate can fail deliberately. */
@@ -88,8 +88,8 @@ public final class CoverageMatrixProjector {
     }
 
     /**
-     * Recall gate: baseline expected covered detector families must appear with signals &gt; 0
-     * and countedAsCovered=true. Gaps never satisfy the gate.
+     * Recall gate：baseline 期望 covered detector family 须 signal &gt; 0 出现
+     * 且 countedAsCovered=true。Gap 永不满足 gate。
      */
     public static RecallGateResult evaluateRecallGate(
             CoverageMatrix matrix, Set<String> expectedCoveredFamilies) {
@@ -228,7 +228,7 @@ public final class CoverageMatrixProjector {
             signals.merge(family, 1, Integer::sum);
             versions.putIfAbsent(family, hypothesis.detectorVersion());
         }
-        // Sink categories fill families when hypotheses are empty/suppressed for inventory visibility.
+        // hypothesis 空/suppress 时 sink category 填充 family 以保 inventory 可见。
         for (ApiDtos.SinkDto sink : sinks) {
             if (sink == null || sink.category() == null) continue;
             String category = sink.category().trim().toUpperCase(Locale.ROOT);
@@ -241,7 +241,7 @@ public final class CoverageMatrixProjector {
                 versions.putIfAbsent(family, "static-sink-compat/0.1");
             }
         }
-        // Always expose expected baseline families so suppress mode yields zero-signal gaps.
+        // 始终暴露期望 baseline family，使 suppress mode 产生 zero-signal gap。
         ensureFamily(signals, versions, HypothesisFamily.DATAFLOW.name(), mode);
         ensureFamily(signals, versions, HypothesisFamily.GUARD_COVERAGE.name(), mode);
 
@@ -378,7 +378,7 @@ public final class CoverageMatrixProjector {
             }
         }
         if (universe.incomplete()) {
-            // Incomplete universe is an unknown/gap signal (not covered).
+            // Incomplete universe 为 unknown/gap signal（非 covered）。
             unknown = Math.max(unknown, 1);
         }
         if (snapshot != null && snapshot.effectiveArtifactUniverse() != null

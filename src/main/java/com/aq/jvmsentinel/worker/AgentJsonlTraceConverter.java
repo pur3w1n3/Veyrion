@@ -17,10 +17,9 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Converts the bounded {@code agent-jsonl-v1} stream into immutable Worker trace chunks.
+ * 将有界的 {@code agent-jsonl-v1} 流转换为不可变 Worker 轨迹块。
  *
- * <p>The converter validates but does not semantically rewrite events. Payloads retain the
- * complete input lines, normalizing only line endings to a single LF.</p>
+ * <p>转换器校验但不语义重写事件。载荷保留完整输入行，仅将行尾规范化为单个 LF。</p>
  */
 public final class AgentJsonlTraceConverter {
     private static final Set<String> FIELDS = Set.of(
@@ -166,8 +165,8 @@ public final class AgentJsonlTraceConverter {
     }
 
     /**
-     * Strictly parses one converter-accepted agent-jsonl-v1 line.
-     * The returned event contains immutable values and never retains the input buffer.
+     * 严格解析一条转换器接受的 agent-jsonl-v1 行。
+     * 返回的事件含不可变值，且不保留输入缓冲区。
      */
     public static AgentEvent parseAcceptedLine(byte[] rawLine, int length, long expectedSequence) {
         Objects.requireNonNull(rawLine, "rawLine");
@@ -254,7 +253,7 @@ public final class AgentJsonlTraceConverter {
         }
     }
 
-    /** Independent ingestion limits supplied by trusted Worker configuration. */
+    /** 由可信 Worker 配置提供的独立摄入上限。 */
     public record Limits(long maxTotalBytes, int maxLineBytes, int maxLines,
                          int maxChunkPayloadBytes) {
         public Limits {
@@ -268,7 +267,7 @@ public final class AgentJsonlTraceConverter {
         }
     }
 
-    /** Immutable semantic view of one accepted Agent event. */
+    /** 一条已接受 Agent 事件的不可变语义视图。 */
     public record AgentEvent(long sequence, String eventType, String provenanceKind,
                              String verificationStatus, String className, String method,
                              String timestamp, String thread, Map<String, String> detail) {

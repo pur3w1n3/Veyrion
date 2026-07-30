@@ -12,10 +12,10 @@ import net.bytebuddy.jar.asm.Opcodes;
 import net.bytebuddy.pool.TypePool;
 
 /**
- * Adds a compact hit probe immediately before every JVM conditional branch or switch instruction.
+ * 在每个 JVM 条件分支或 switch 指令前添加紧凑 hit probe。
  *
  * <p>The branch index is local to the original method and follows bytecode visitation order. The
- * probe records that the branch site was reached; it does not claim which outgoing edge was taken.</p>
+ * probe 记录分支点已到达；不声称走了哪条 outgoing edge。</p>
  */
 final class BranchCoverageInstrumentation extends AsmVisitorWrapper.AbstractBase {
     private final String className;

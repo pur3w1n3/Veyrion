@@ -30,8 +30,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Code-owned registry and fail-closed dispatcher. Provider adapters may expose
- * {@link #definitionsFor(AgentRole)}, but cannot register handlers or alter role grants.
+ * 代码拥有的 registry 与 fail-closed 分发器。Provider 适配器可暴露
+ * {@link #definitionsFor(AgentRole)}，但不能注册 handler 或改变 role 授权。
  */
 public final class AiToolRegistry {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -97,7 +97,9 @@ public final class AiToolRegistry {
         if (encoded.length > context.budget().maxArgumentBytes()) {
             return CanonicalToolContracts.error(call, ToolStatus.INVALID_ARGUMENTS, "ARGUMENT_BYTES_EXCEEDED");
         }
-        if (containsReservedName(call.arguments())) {
+        // 已声明 schema 字段（如 scan_memory_get.role 用于 ROLE_SLICE）允许；
+        // 未声明保留名仍表示模型控制的 scope/authority。
+        if (containsReservedName(call.arguments(), tool.schema().fields().keySet())) {
             return CanonicalToolContracts.error(call, ToolStatus.DENIED, "MODEL_CONTROLLED_SCOPE_OR_AUTHORITY");
         }
         String schemaError = tool.schema().validate(call.arguments());
@@ -168,10 +170,11 @@ public final class AiToolRegistry {
         ToolSchema schema = new ToolSchema(Map.copyOf(fields), Set.of());
         ToolDefinition definition = new ToolDefinition("scan_memory_get",
                 "Read the same-scan shared memory snapshot (server-authored). "
-                        + "section=INDEX (default compact counts+gaps+effects) | FACTS | WORK | INFERENCE | "
-                        + "TOOLS_CATALOG (tool purpose/args/returns) | ROLE_SLICE (pass role=PRE_ANALYSIS|…) | FULL. "
-                        + "Use this before flooding facts_search. FACTS/WORK are citable; INFERENCE must not upgrade "
-                        + "VERIFIED. Does not change sandbox policy.",
+                        + "section=INDEX|FACTS|WORK|INFERENCE|TOOLS_CATALOG|ROLE_SLICE|FULL (default INDEX). "
+                        + "If SCAN_MEMORY_INDEX is already in the prompt, skip INDEX and read FACTS/WORK/TOOLS_CATALOG. "
+                        + "Optional role= only for ROLE_SLICE (defaults to the current job role; do not use role to "
+                        + "change job authority). FACTS/WORK are citable; INFERENCE must not upgrade VERIFIED. "
+                        + "Does not change sandbox policy.",
                 schema.jsonSchema(), OverflowPolicy.TRUNCATE);
         return new RegisteredTool(definition, schema, (call, context) -> {
             String section = call.arguments().has("section")
@@ -191,9 +194,10 @@ public final class AiToolRegistry {
                 Set.of("kind"));
         ToolDefinition definition = new ToolDefinition("facts_search",
                 "Search already-indexed, read-only facts in the server-bound project. "
-                        + "Prefer scan_memory_get section=INDEX first for orientation. "
+                        + "Prefer scan_memory_get section=FACTS (or INDEX only if not already injected) before flooding. "
                         + "Kinds: SCAN, ENTRY, DEPENDENCY, SINK, EVIDENCE, DYNAMIC_EVIDENCE, PATH_RUN, PATH_TRACE, "
                         + "STATIC_CONTRAST, ANY. "
+                        + "Omit query or use \"\" to list up to limit; never use \"*\" or a lone space (substring miss → empty). "
                         + "For PRE_ANALYSIS, query ENTRY with entry ids, routes, controller/class names, HTTP methods, "
                         + "or English enum keywords; do not rely only on translated prose. "
                         + "PATH_RUN returns persisted HTTP status, outcomeClass, and SQL event detail. "
@@ -289,7 +293,7 @@ public final class AiToolRegistry {
         planFields.put("evidenceRefs", Field.stringArray(8, 256));
         planFields.put("authorizationHeader", Field.string(2048));
         planFields.put("secondaryAuthorizationHeader", Field.string(2048));
-        planFields.put("bladeAuthHeader", Field.string(2048)); // deprecated wire alias
+        planFields.put("bladeAuthHeader", Field.string(2048)); // deprecated wire 别名
         planFields.put("query", Field.string(256));
         planFields.put("bodyHint", Field.string(1024));
         ToolSchema schema = new ToolSchema(planFields, Set.of("entrypointRef", "objective"));
@@ -323,7 +327,7 @@ public final class AiToolRegistry {
             plan.put("objective", call.arguments().get("objective").asText());
             plan.put("sourceEvidenceRef", canonicalRef);
             plan.set("candidateInputs", candidates);
-            // Server-gate optional PathRun experiment fields only when entry:* is proposed.
+            // 仅当提出 entry:* 时对可选 PathRun experiment 字段做服务端闸门。
             if (call.arguments().has("track")
                     || call.arguments().has("method")
                     || call.arguments().has("contentType")
@@ -558,7 +562,7 @@ public final class AiToolRegistry {
             String authorizationHeader = call.arguments().has("authorizationHeader")
                     ? call.arguments().get("authorizationHeader").asText("") : "";
             if (!authorizationHeader.isEmpty()) {
-                // Validate bounds via candidate constructor without requiring a technique enum.
+                // 经 candidate 构造器校验边界，不要求 technique enum。
                 AuthBypassCandidate.validateAuthMaterialOnly(authorizationHeader);
             }
             String bladeAuthHeader = firstNonBlankArg(call.arguments(),
@@ -666,7 +670,7 @@ public final class AiToolRegistry {
         return "TOOL_EXECUTION_FAILED";
     }
 
-    /** Prefer first non-blank among named JSON args (generic name before deprecated alias). */
+    /** 命名 JSON 参数中取首个非 blank（通用名优先于 deprecated 别名）。 */
     private static String firstNonBlankArg(JsonNode arguments, String... names) {
         if (arguments == null || names == null) return "";
         for (String name : names) {
@@ -704,20 +708,34 @@ public final class AiToolRegistry {
 
     private record NodeDepth(JsonNode node, int depth) { }
 
-    private static boolean containsReservedName(JsonNode node) {
+    private static boolean containsReservedName(JsonNode node, Set<String> allowedTopLevelFields) {
+        return containsReservedName(node, allowedTopLevelFields, true);
+    }
+
+    private static boolean containsReservedName(
+            JsonNode node, Set<String> allowedTopLevelFields, boolean atTopLevel) {
         if (node == null) return false;
+        Set<String> allowed = allowedTopLevelFields == null ? Set.of() : allowedTopLevelFields;
         if (node.isObject()) {
             Iterator<Map.Entry<String, JsonNode>> fields = node.properties().iterator();
             while (fields.hasNext()) {
                 Map.Entry<String, JsonNode> field = fields.next();
-                String normalized = field.getKey().replace("_", "").replace("-", "")
-                        .toLowerCase(Locale.ROOT);
-                if (RESERVED_ARGUMENT_NAMES.contains(normalized) || containsReservedName(field.getValue())) {
+                String key = field.getKey() == null ? "" : field.getKey();
+                String normalized = key.replace("_", "").replace("-", "").toLowerCase(Locale.ROOT);
+                boolean schemaAllowed = atTopLevel && allowed.contains(key);
+                if (!schemaAllowed && RESERVED_ARGUMENT_NAMES.contains(normalized)) {
+                    return true;
+                }
+                if (containsReservedName(field.getValue(), allowed, false)) {
                     return true;
                 }
             }
         } else if (node.isArray()) {
-            for (JsonNode child : node) if (containsReservedName(child)) return true;
+            for (JsonNode child : node) {
+                if (containsReservedName(child, allowed, false)) {
+                    return true;
+                }
+            }
         }
         return false;
     }
@@ -726,7 +744,7 @@ public final class AiToolRegistry {
         String message = exception.getMessage();
         if (message == null || message.isBlank()) return "TOOL_ARGUMENT_REJECTED";
         String trimmed = message.trim();
-        // Stable uppercase codes thrown by control-plane / candidate gates.
+        // control-plane / candidate 闸门抛出的稳定大写 code。
         if (trimmed.matches("[A-Z][A-Z0-9_]{2,127}")) {
             return trimmed;
         }
@@ -781,7 +799,7 @@ public final class AiToolRegistry {
             }
             for (String name : required) {
                 if (!arguments.has(name)) return "MISSING_ARGUMENT";
-                // Required strings must be non-blank; optional strings may be "" (e.g. MISSING_AUTH).
+                // 必填字符串须非 blank；可选字符串可为 ""（如 MISSING_AUTH）。
                 Field field = fields.get(name);
                 if (field != null && field.kind() == Kind.STRING
                         && arguments.get(name).isTextual()
@@ -814,8 +832,8 @@ public final class AiToolRegistry {
 
         boolean valid(JsonNode node) {
             return switch (kind) {
-                // Optional strings may be blank (MISSING_AUTH authorizationHeader:"");
-                // required non-blank is enforced in ToolSchema.validate.
+                // 可选字符串可为 blank（MISSING_AUTH authorizationHeader:""）；
+                // 必填非 blank 在 ToolSchema.validate 中强制。
                 case STRING -> node.isTextual()
                         && node.asText().length() <= maximum && node.asText().indexOf('\0') < 0;
                 case INTEGER -> node.isIntegralNumber() && node.canConvertToInt()

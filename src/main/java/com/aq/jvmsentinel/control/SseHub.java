@@ -20,9 +20,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Bounded Server-Sent Events hub.  Events are retained per scan for a short
- * replay window; clients must reconcile state with the idempotent GET APIs
- * after a gap or a reconnect.
+ * 有界 Server-Sent Events 中心。事件按 scan 保留短 replay 窗口；
+ * 客户端在 gap 或重连后必须用幂等 GET API 对账状态。
  */
 public final class SseHub {
     private static final int HISTORY_LIMIT = 256;
@@ -57,9 +56,8 @@ public final class SseHub {
             while (channel.history.size() > HISTORY_LIMIT) channel.history.removeFirst();
             for (Client client : List.copyOf(channel.clients)) {
                 if (!client.offer(event)) {
-                    // A slow client receives the latest state eventually.  It
-                    // must use GET reconciliation; retaining an unbounded
-                    // queue would turn an SSE connection into a memory sink.
+                    // 慢客户端最终会收到最新状态；须用 GET 对账。
+                    // 无界队列会把 SSE 连接变成内存 sink。
                     client.offerGapMarker();
                 }
             }
@@ -73,8 +71,8 @@ public final class SseHub {
     }
 
     /**
-     * Handles one SSE request.  This method intentionally blocks until the
-     * browser closes the connection; the HTTP server must use a worker pool.
+     * 处理一次 SSE 请求。本方法有意阻塞直到 browser 关闭连接；
+     * HTTP server 须使用 worker pool。
      */
     public void open(HttpExchange exchange, String scanId, String lastEventId) throws IOException {
         Objects.requireNonNull(exchange, "exchange");
@@ -106,16 +104,13 @@ public final class SseHub {
                     terminal |= isTerminal(event);
                 }
                 if (!terminal && lastEventId != null && !lastEventId.isBlank()) {
-                    // If the caller acknowledged the terminal event exactly,
-                    // there is nothing left to stream.  Do not hold an idle
-                    // connection open forever.
+                    // 调用方已精确确认终态事件时，无需再 stream。
+                    // 勿永久保持空闲连接。
                     terminal = historyContainsTerminalAfter(channel, lastEventId);
                 }
                 output.flush();
-                // A completed scan has a finite event log.  Closing after the
-                // terminal event makes one-shot HTTP clients deterministic and
-                // prevents browsers from reconnecting forever to an already
-                // completed scan.  An in-flight scan remains a live stream.
+                // 已完成 scan 的事件日志有限。终态事件后关闭使一次性 HTTP client 行为确定，
+                // 并防止 browser 对已完成的 scan 无限重连。在途 scan 仍为 live stream。
                 while (!client.closed && !terminal) {
                     VersionedEvent event = client.queue.poll(HEARTBEAT_SECONDS, TimeUnit.SECONDS);
                     if (event == null) {
@@ -130,8 +125,7 @@ public final class SseHub {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         } catch (IOException ignored) {
-            // Browser disconnects are normal for SSE.  GET reconciliation is
-            // the source of truth if the stream ended during a write.
+            // browser 断开对 SSE 属正常。stream 在写入中结束时以 GET 对账为准。
         } finally {
             client.closed = true;
             synchronized (channel) { channel.clients.remove(client); }
@@ -159,8 +153,7 @@ public final class SseHub {
             }
             result.add(event);
         }
-        // If the requested ID has fallen out of the bounded history, replay
-        // what is available.  The client then performs a GET reconciliation.
+        // 请求的 ID 已超出有界 history 时，replay 可用部分；client 再执行 GET 对账。
         if (!found) result = new ArrayList<>(history);
         return List.copyOf(result);
     }
@@ -191,9 +184,8 @@ public final class SseHub {
         body.put("occurredAt", event.occurredAt().toString());
         body.put("payloadRef", "memory://events/" + event.eventId());
         if (event.context() != null) {
-            // Keep both the nested context and flat identifiers.  The nested
-            // form is the canonical contract; flat fields make lightweight
-            // EventSource consumers and log shippers backwards compatible.
+            // 同时保留嵌套 context 与扁平标识符。嵌套形式为规范 contract；
+            // 扁平字段便于轻量 EventSource 消费者与 log shipper 向后兼容。
             body.put("projectId", event.context().projectId());
             body.put("artifactDigest", event.context().artifactDigest());
             body.put("scanId", event.context().scanId());
@@ -258,9 +250,8 @@ public final class SseHub {
         }
 
         private void offerGapMarker() {
-            // A null marker cannot be stored in ArrayBlockingQueue.  Dropping
-            // the oldest event is sufficient: the next reconnect/GET fills
-            // any gap, and the queue remains bounded.
+            // null 标记无法存入 ArrayBlockingQueue。丢弃最旧事件即可：
+            // 下次重连/GET 会补齐 gap，队列保持有界。
             queue.poll();
         }
     }

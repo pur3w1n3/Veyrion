@@ -7,8 +7,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * Process-local Fake evidence store for Test Analyzer / contract proofs.
- * Not a Control Plane SQLite adapter — Analyzers must never receive DB handles.
+ * 进程内 Fake evidence store，用于 Test Analyzer / contract 证明。
+ * 非 Control Plane SQLite adapter — Analyzer 永不得接收 DB handle。
  */
 public final class InMemoryAnalyzerEvidenceStore implements AnalyzerEvidenceStore {
     private final ConcurrentMap<String, PublishedEvidence> bySubmission = new ConcurrentHashMap<>();

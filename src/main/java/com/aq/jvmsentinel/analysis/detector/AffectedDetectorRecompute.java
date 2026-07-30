@@ -15,9 +15,9 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * AUDIT_FLOW IR2: after PathTrace / PathRun observation, re-run the full detector suite
- * against current scan facts and merge hypotheses. Never elevates verification status;
- * preserves non-CANDIDATE lifecycles from prior observations.
+ * 说明：AUDIT_FLOW IR2：PathTrace/PathRun observation 后对当前 scan fact 重跑完整 detector suite
+ * 并合并 hypothesis。永不提升 verification status；
+ * 保留先前 observation 的非 CANDIDATE lifecycle。
  */
 public final class AffectedDetectorRecompute {
     private AffectedDetectorRecompute() {

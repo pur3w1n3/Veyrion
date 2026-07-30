@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Acceptance: REPORT CONTRAST_LEDGER forces all STATIC_ONLY summary rows (bounded).
+ * 验收：REPORT CONTRAST_LEDGER 强制所有 STATIC_ONLY summary 行（有界）。
  */
 public final class ContrastLedgerAcceptanceTest {
     public static void main(String[] args) {
@@ -60,7 +60,7 @@ public final class ContrastLedgerAcceptanceTest {
         check(prompt.contains("CONTRAST_LEDGER"), "prompt injects CONTRAST_LEDGER");
         check(prompt.contains("STATIC_ONLY"), "prompt lists STATIC_ONLY");
 
-        // Model omits STATIC_ONLY → server appends + REPORT_LEDGER_INCOMPLETE.
+        // 模型遗漏 STATIC_ONLY → 服务端 append + REPORT_LEDGER_INCOMPLETE。
         ContrastLedger.EnforceResult incomplete = ContrastLedger.enforceReport(
                 "# 审计报告\n\n只有摘要，没有对照表。\n", ledger, false);
         check(incomplete.incomplete(), "omission triggers incomplete");
@@ -73,7 +73,7 @@ public final class ContrastLedgerAcceptanceTest {
         check(!incomplete.summary().contains("已绕过"),
                 "server appendix never claims bypassed");
 
-        // Model already covered → no incomplete event.
+        // 模型已覆盖 → 无 incomplete event。
         ContrastLedger.EnforceResult complete = ContrastLedger.enforceReport(
                 "# 报告\n" + row.rowId() + " STATIC_ONLY 静态未动态确认\n", ledger, false);
         check(!complete.incomplete(), "covered ledger is complete");
@@ -106,7 +106,7 @@ public final class ContrastLedgerAcceptanceTest {
             check(role != null && !role.name().contains("STATIC_AUDIT"),
                     "no STATIC_AUDIT role");
         }
-        // Sink model still usable for projection without new AI stage.
+        // Sink model 无新 AI stage 仍可用于 projection。
         Sink sink = new Sink("s", "AUTH_GAP", "c#m", "gap", 0.5, List.of(),
                 VerificationStatus.STATIC_INFERRED);
         check("AUTH_GAP".equals(sink.category()), "AUTH_GAP remains secondary sink fact");

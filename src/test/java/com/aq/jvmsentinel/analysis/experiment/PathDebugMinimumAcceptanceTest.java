@@ -19,7 +19,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-21 minimum acceptance fixtures without live Docker.
+ * P0-21 最小 acceptance fixture，无 live Docker。
  */
 public final class PathDebugMinimumAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

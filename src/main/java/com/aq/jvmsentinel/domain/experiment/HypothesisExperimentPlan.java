@@ -8,8 +8,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Server-owned experiment plan bound to a SecurityHypothesis (P1-06).
- * AI may propose fields; only the server compiles and gates lifecycle transitions.
+ * 绑定 SecurityHypothesis 的服务端 owned experiment plan（P1-06）。
+ * AI 可提议 field；仅服务端编译并 gate lifecycle 转换。
  */
 public record HypothesisExperimentPlan(
         int schemaVersion,

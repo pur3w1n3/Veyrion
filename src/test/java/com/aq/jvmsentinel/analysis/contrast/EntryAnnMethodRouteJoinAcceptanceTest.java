@@ -8,7 +8,7 @@ import com.aq.jvmsentinel.model.StaticContrastRow;
 import java.util.List;
 
 /**
- * Acceptance: static {@code entry:entry-ann-*} rows join PathRuns keyed as
+ * 验收：static {@code entry:entry-ann-*} 行 join 键为
  * {@code entry:METHOD:/route} (scan-ee80407e1f95449d join gap).
  */
 public final class EntryAnnMethodRouteJoinAcceptanceTest {

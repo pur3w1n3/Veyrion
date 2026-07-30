@@ -22,13 +22,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Parses and validates AUTH/triage AI-authored bypass PoCs.
- * Accepts Authorization / secondaryAuthorizationHeader (wire: bladeAuthHeader) / JWT /
- * query / body hints under hard bounds;
- * rejects entry escape, oversize, control chars, and destructive unchecked payloads.
- * When a scan has an auth surface (JWT / AUTH_GAP / auth-annotated entries) but AUTH
- * emits no structured PoCs, the server requires a repair re-ask or seeds RULE_GENERATED
- * drafts so DYNAMIC still has candidates — never elevates verification from LLM alone.
+ * 解析并校验 AUTH/triage 模型产出的 bypass PoC。
+ * 接受 Authorization / secondaryAuthorizationHeader（wire: bladeAuthHeader）/ JWT /
+ * query / body 提示，受硬边界约束；
+ * 拒绝 entry 逃逸、超长、控制字符与未校验的破坏性 payload。
+ * 当 scan 存在鉴权面（JWT / AUTH_GAP / auth 标注 entry）但 AUTH 未产出结构化 PoC 时，
+ * 服务端要求 repair 补问或种子 RULE_GENERATED 草稿，使 DYNAMIC 仍有候选——
+ * 绝不仅凭 LLM 提升验证状态。
  */
 public final class AuthBypassFeasibility {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -38,16 +38,16 @@ public final class AuthBypassFeasibility {
     public static final String ENFORCEMENT_SEEDED = "AUTH_BYPASS_POC_SEEDED";
     public static final String ENFORCEMENT_SATISFIED = "AUTH_BYPASS_POC_SATISFIED";
     public static final String DRAFT_RULE_GENERATED = "RULE_GENERATED";
-    /** DYNAMIC must attempt sandbox_probe when AUTH handed non-empty PoCs. */
+    /** AUTH 移交非空 PoC 时 DYNAMIC 必须尝试 sandbox_probe。 */
     public static final String DYNAMIC_ATTEMPT_REQUIRED = "DYNAMIC_POC_ATTEMPT_REQUIRED";
     public static final String DYNAMIC_ATTEMPT_SEEDED = "DYNAMIC_POC_ATTEMPT_SEEDED";
     public static final String DYNAMIC_ATTEMPT_SATISFIED = "DYNAMIC_POC_ATTEMPT_SATISFIED";
-    /** Prompt target band: attempt this many distinct PoCs before narrative-only. */
+    /** Prompt 目标区间：叙事-only 前先尝试此数量的 distinct PoC。 */
     public static final int DYNAMIC_POC_PROBE_MIN = 3;
     public static final int DYNAMIC_POC_PROBE_MAX = 8;
-    /** Server auto-enqueue fallback cap (wall-clock / scan-busy aware). */
+    /** 服务端自动入队回退上限（感知 wall-clock / scan-busy）。 */
     public static final int DYNAMIC_POC_AUTO_PROBE_MAX = 3;
-    /** AUTH must diversify to at least this many mechanism/path keys when surface present. */
+    /** 鉴权面存在时 AUTH 须多样化至少此数量的 mechanism/path key。 */
     public static final int AUTH_POC_MECHANISM_MIN = 3;
     public static final String CODE_QUERY_REQUIRED = "AUTH_CODE_QUERY_REQUIRED";
     public static final String POC_DIVERSITY_REQUIRED = "AUTH_POC_DIVERSITY_REQUIRED";
@@ -72,8 +72,8 @@ public final class AuthBypassFeasibility {
     }
 
     /**
-     * Static auth surface signals that require structured bypass PoCs from AUTH.
-     */
+ * 需要 AUTH 产出结构化 bypass PoC 的静态鉴权面信号。
+ */
     public record AuthSurface(
             boolean present,
             int jwtSinkCount,
@@ -103,7 +103,7 @@ public final class AuthBypassFeasibility {
         }
     }
 
-    /** P3: AUTH confirm must distinguish static hypothesis from PathRun dynamic contrast. */
+    /** P3：AUTH 确认须区分静态 hypothesis 与 PathRun 动态对比。 */
     public enum BypassConfirmationStatus {
         HYPOTHESIS,
         DYNAMIC_CONTRAST,
@@ -265,10 +265,10 @@ public final class AuthBypassFeasibility {
     }
 
     /**
-     * Server evidence gate for AUTH bypass confirmation.
-     * Zero PathRun AUTH_CHALLENGE / pass-gate evidence → never DYNAMIC_CONTRAST;
-     * claiming confirmed without evidence → INSUFFICIENT_EVIDENCE.
-     */
+ * AUTH bypass 确认的服务端证据闸门。
+ * 零 PathRun AUTH_CHALLENGE / 过闸证据 → 不得 DYNAMIC_CONTRAST；
+ * 无证据却声称已确认 → INSUFFICIENT_EVIDENCE。
+ */
     public static BypassConfirmation evaluateBypassConfirmation(
             String summaryOrJson,
             List<ApiDtos.PathRunDto> pathRuns,
@@ -298,7 +298,7 @@ public final class AuthBypassFeasibility {
         block.put("status", confirmation.status().name());
         ArrayNode refs = block.putArray("pathRunRefs");
         confirmation.pathRunRefs().stream().limit(32).forEach(refs::add);
-        // Legacy flat field for dashboards that already read confirmationStatus.
+        // 供已读 confirmationStatus 的 dashboard 使用的 legacy 扁平字段。
         node.put("confirmationStatus", confirmation.status().name());
         if (confirmation.status() == BypassConfirmationStatus.INSUFFICIENT_EVIDENCE) {
             String summary = node.path("summary").asText("");
@@ -310,11 +310,11 @@ public final class AuthBypassFeasibility {
     }
 
     /**
-     * Whether AUTH_BYPASS_CONFIRM should be scheduled (AUDIT_FLOW: only after AUTH_CHALLENGE
-     * or pass-gate PathRun evidence). FORCED/COVERAGE 2xx with entryHit counts as 过闸 for
-     * <em>scheduling</em> only — confirmation status still uses {@link #isPassGate} (BYPASS/ADMIN)
-     * so FORCED alone cannot become DYNAMIC_CONTRAST bypass confirmation.
-     */
+ * 是否应调度 AUTH_BYPASS_CONFIRM（AUDIT_FLOW：仅在 AUTH_CHALLENGE
+ * 或过闸 PathRun 证据之后）。FORCED/COVERAGE 2xx 且 entryHit 仅计为<em>调度</em>过闸——
+ * 确认状态仍用 {@link #isPassGate}（BYPASS/ADMIN），
+ * 故单独 FORCED 不能成为 DYNAMIC_CONTRAST bypass 确认。
+ */
     public static boolean hasConfirmableDynamicAuthEvidence(List<ApiDtos.PathRunDto> pathRuns) {
         if (pathRuns == null || pathRuns.isEmpty()) {
             return false;
@@ -330,7 +330,7 @@ public final class AuthBypassFeasibility {
         return false;
     }
 
-    /** COVERAGE / FORCED HTTP 2xx–3xx with entry hit — gate-pass signal for confirm scheduling. */
+    /** COVERAGE / FORCED HTTP 2xx–3xx 且 entry hit——确认调度的过闸信号。 */
     static boolean isCoverageOrForcedPass(ApiDtos.PathRunDto run) {
         if (run == null || !Boolean.TRUE.equals(run.entryHit())) {
             return false;
@@ -344,9 +344,9 @@ public final class AuthBypassFeasibility {
     }
 
     /**
-     * PathRuns that can support dynamic contrast: AUTH_CHALLENGE, or 2xx/3xx on
-     * BYPASS_CANDIDATE / ADMIN tracks for claimed entries (when claims are present).
-     */
+ * 可支撑动态对比的 PathRun：AUTH_CHALLENGE，或对已声明 entry 在
+ * BYPASS_CANDIDATE / ADMIN track 上的 2xx/3xx（存在 claim 时）。
+ */
     public static List<String> collectDynamicAuthEvidenceRefs(
             List<ApiDtos.PathRunDto> pathRuns,
             List<AuthBypassCandidate> claimedCandidates) {
@@ -360,7 +360,7 @@ public final class AuthBypassFeasibility {
             }
         }
         List<String> refs = selectAuthEvidence(pathRuns, claimedEntries, true);
-        // EntryRef formats differ (entry:<id> vs entry:METHOD:/route); fall back to scan-wide signals.
+        // EntryRef 格式不同（entry:<id> vs entry:METHOD:/route）；回退到 scan 级信号。
         if (refs.isEmpty() && !claimedEntries.isEmpty()) {
             refs = selectAuthEvidence(pathRuns, Set.of(), false);
         }
@@ -408,7 +408,7 @@ public final class AuthBypassFeasibility {
             JsonNode block = root.get("bypassConfirmation");
             if (block != null && block.isObject()) return block;
         } catch (Exception ignored) {
-            // Fall through to embedded object scan.
+            // 继续扫描内嵌 object。
         }
         int idx = indexOfIgnoreCase(summaryOrJson, "\"bypassConfirmation\"");
         if (idx < 0) return null;
@@ -440,7 +440,7 @@ public final class AuthBypassFeasibility {
         if (claimedEntries == null || claimedEntries.isEmpty()) return true;
         String normalized = normalizeEntryRef(entrypointRef);
         if (claimedEntries.contains(normalized)) return true;
-        // PathRun entry refs are often entry:METHOD:/route while PoCs use entry:<id>.
+        // PathRun entry ref 常为 entry:METHOD:/route，PoC 用 entry:<id>。
         for (String claimed : claimedEntries) {
             if (normalized.contains(claimed) || claimed.contains(normalized)) return true;
             String bare = claimed.startsWith("entry:") ? claimed.substring("entry:".length()) : claimed;
@@ -515,7 +515,7 @@ public final class AuthBypassFeasibility {
                 authEntries.stream().limit(MAX_SEEDED_ENTRIES).toList());
     }
 
-    /** Empty PoCs are incomplete when the scan exposes an auth surface. */
+    /** scan 暴露鉴权面时空 PoC 视为不完整。 */
     public static boolean requiresStructuredBypassPoCs(AuthSurface surface) {
         return surface != null && surface.present();
     }
@@ -525,7 +525,7 @@ public final class AuthBypassFeasibility {
                 && (candidates == null || candidates.isEmpty());
     }
 
-    /** Distinct entry+technique(+payload) mechanisms; used for AUTH multi-PoC band. */
+    /** distinct entry+technique(+payload) 机制；用于 AUTH 多 PoC 区间。 */
     public static int distinctMechanismCount(List<AuthBypassCandidate> candidates) {
         if (candidates == null || candidates.isEmpty()) {
             return 0;
@@ -540,9 +540,9 @@ public final class AuthBypassFeasibility {
     }
 
     /**
-     * Surface present but fewer than {@link #AUTH_POC_MECHANISM_MIN} distinct mechanisms,
-     * and model did not supply enough infeasible evidence refs to explain the gap.
-     */
+ * 鉴权面存在但 distinct 机制数少于 {@link #AUTH_POC_MECHANISM_MIN}，
+ * 且模型未提供足够 infeasible 证据 ref 解释缺口。
+ */
     public static boolean isSparseMechanisms(
             List<AuthBypassCandidate> candidates, AuthSurface surface, int infeasibleEvidenceCount) {
         if (!requiresStructuredBypassPoCs(surface)) {
@@ -598,9 +598,9 @@ public final class AuthBypassFeasibility {
     }
 
     /**
-     * Prefer auth-material PoCs, then diversify by entryRef/technique for DYNAMIC
-     * sandbox_probe attempts (prompt band and server auto-enqueue fallback).
-     */
+ * 优先含 auth material 的 PoC，再按 entryRef/technique 多样化，
+ * 供 DYNAMIC sandbox_probe（prompt 区间与服务端自动入队回退）。
+ */
     public static List<AuthBypassCandidate> selectTopProbeTargets(
             List<AuthBypassCandidate> candidates, int limit) {
         if (candidates == null || candidates.isEmpty() || limit <= 0) {
@@ -620,7 +620,7 @@ public final class AuthBypassFeasibility {
         List<AuthBypassCandidate> selected = new ArrayList<>();
         Set<String> selectedKeys = new LinkedHashSet<>();
         Set<String> selectedEntries = new LinkedHashSet<>();
-        // Pass 1: one PoC per entryRef (auth-material first).
+        // Pass 1：每个 entryRef 一个 PoC（auth-material 优先）。
         for (AuthBypassCandidate candidate : ordered) {
             if (selected.size() >= capped) break;
             String key = candidate.entryRef() + "|" + candidate.techniqueId();
@@ -631,7 +631,7 @@ public final class AuthBypassFeasibility {
             selectedEntries.add(candidate.entryRef());
             selected.add(candidate);
         }
-        // Pass 2: fill remaining slots with unused technique/entry pairs.
+        // Pass 2：用未使用的 technique/entry 对填充剩余槽位。
         for (AuthBypassCandidate candidate : ordered) {
             if (selected.size() >= capped) break;
             String key = candidate.entryRef() + "|" + candidate.techniqueId();
@@ -642,20 +642,19 @@ public final class AuthBypassFeasibility {
     }
 
     /**
-     * Server draft candidates from static JWT/AUTH_GAP/auth-entry signals.
-     * Marked RULE_GENERATED; DYNAMIC may attempt them. Never upgrades verification alone.
-     */
+ * 由静态 JWT/AUTH_GAP/auth-entry 信号生成的服务端草稿候选。
+ * 标记 RULE_GENERATED；DYNAMIC 可尝试。绝不单独提升验证状态。
+ */
     public static List<AuthBypassCandidate> seedRuleGeneratedDrafts(ApiDtos.ScanDto scan) {
         return seedRuleGeneratedDrafts(scan, null);
     }
 
     /**
-     * Server draft candidates from static JWT/AUTH_GAP/auth-entry signals.
-     * DEFAULT_SECRET_HS256 is seeded only when harvest found mintable sign-key material
-     * in the artifact (low-confidence RULE_GENERATED). Multi-header auth surface alone never
-     * forges a commercial default JWT. Secret-less techniques (MISSING_AUTH / EMPTY_BEARER /
-     * ALG_NONE) remain available without harvested keys.
-     */
+ * 由静态 JWT/AUTH_GAP/auth-entry 信号生成的服务端草稿候选。
+ * 仅当 harvest 在制品中发现可 mint 的 sign-key material 时才种子 DEFAULT_SECRET_HS256
+ * （低置信 RULE_GENERATED）。多 header 鉴权面 alone 从不伪造商业默认 JWT。
+ * 无 secret 技术（MISSING_AUTH / EMPTY_BEARER / ALG_NONE）在无 harvest key 时仍可用。
+ */
     public static List<AuthBypassCandidate> seedRuleGeneratedDrafts(
             ApiDtos.ScanDto scan, java.nio.file.Path artifactPath) {
         if (scan == null) return List.of();
@@ -736,7 +735,7 @@ public final class AuthBypassFeasibility {
         return List.copyOf(drafts).stream().limit(AuthBypassCandidate.MAX_CANDIDATES).toList();
     }
 
-    /** True when scan entries suggest an adapter that prefers a secondary auth header. */
+    /** scan entry 表明适配器偏好 secondary auth header 时为 true。 */
     private static boolean looksMultiHeaderAuthScan(ApiDtos.ScanDto scan) {
         if (scan == null || scan.entries() == null) return false;
         List<String> routes = new ArrayList<>();
@@ -840,7 +839,7 @@ public final class AuthBypassFeasibility {
                 try {
                     result.add(fromNode(item, null));
                 } catch (IllegalArgumentException ignored) {
-                    // Drop corrupted persisted rows fail-closed.
+                    // 丢弃损坏的持久化行，fail-closed。
                 }
             }
             return List.copyOf(result);
@@ -919,14 +918,14 @@ public final class AuthBypassFeasibility {
             JsonNode direct = JSON.readTree(trimmed);
             if (direct.has("bypassPoCs") || direct.has("bypassCandidates")) return direct;
         } catch (Exception ignored) {
-            // Fall through.
+            // 继续向下。
         }
         Matcher fenced = FENCED_JSON.matcher(trimmed);
         if (fenced.find()) {
             try {
                 return JSON.readTree(fenced.group(1));
             } catch (Exception ignored) {
-                // continue
+                // 继续
             }
         }
         int idx = indexOfIgnoreCase(trimmed, "\"bypassPoCs\"");
@@ -939,7 +938,7 @@ public final class AuthBypassFeasibility {
                     try {
                         return JSON.readTree(slice);
                     } catch (Exception ignored) {
-                        // continue
+                        // 继续
                     }
                 }
             }

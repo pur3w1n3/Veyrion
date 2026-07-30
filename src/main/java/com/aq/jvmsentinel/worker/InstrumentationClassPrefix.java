@@ -10,12 +10,12 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Resolves Agent {@code classPrefix} so FORCED/COVERAGE PathTraces can record
- * Controller → Service → Util → Repository hops, not only the primary entry's leaf package.
+ * 解析 Agent {@code classPrefix}，使 FORCED/COVERAGE PathTrace 能记录
+ * Controller → Service → Util → Repository 跳转，而非仅主入口的叶包。
  *
- * <p>Previously Control Plane used {@code declaringClass}'s immediate package
- * (e.g. {@code com.app.common.controller}), which excluded sibling {@code .service}/
- * {@code .mapper} types and starved METHOD_HOP / EFFECT evidence under FORCED.</p>
+ * <p>此前 Control Plane 使用 {@code declaringClass} 的即时包
+ *（如 {@code com.app.common.controller}），排除了同级 {@code .service}/
+ * {@code .mapper} 类型，导致 FORCED 下 METHOD_HOP / EFFECT 证据不足。</p>
  */
 public final class InstrumentationClassPrefix {
     private static final Set<String> TERMINAL_LAYERS = Set.of(
@@ -88,7 +88,7 @@ public final class InstrumentationClassPrefix {
         String[] parts = prefix.split("\\.");
         if (parts.length < 2) return false;
         if (parts.length == 2 && TOO_BROAD.contains(parts[0].toLowerCase(Locale.ROOT))) {
-            // e.g. com.kalvin is OK (2 segments with vendor); com alone rejected above
+            // 例如 com.kalvin 可接受（2 段 vendor）；上文已拒绝单独的 com
             return !parts[1].isBlank();
         }
         return !TOO_BROAD.contains(prefix.toLowerCase(Locale.ROOT));
@@ -113,7 +113,7 @@ public final class InstrumentationClassPrefix {
         if (primaryPackage == null || primaryPackage.isBlank()) return "";
         String stripped = stripTerminalLayer(primaryPackage);
         String[] parts = stripped.split("\\.");
-        // Prefer app root: keep at least vendor.product (2) and at most 4 segments.
+        // 优先应用根：至少保留 vendor.product（2 段），最多 4 段。
         int keep = Math.min(Math.max(parts.length, 0), 4);
         if (parts.length >= 3) {
             keep = Math.min(3, parts.length); // com.kalvin.kvf

@@ -3,8 +3,8 @@ package com.aq.jvmsentinel.domain.hypothesis;
 import java.util.Locale;
 
 /**
- * SecurityHypothesis family taxonomy (ADR-0001 neutral contract).
- * Unknown wire values map to {@link #UNKNOWN} without elevating verification status.
+ * 说明：SecurityHypothesis family 分类（ADR-0001 中立 contract）。
+ * 未知 wire 值映射为 {@link #UNKNOWN}，不提升 verification status。
  */
 public enum HypothesisFamily {
     DATAFLOW,

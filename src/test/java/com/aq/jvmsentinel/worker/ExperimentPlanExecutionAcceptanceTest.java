@@ -37,7 +37,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * P1-03: experiment plans bind for execution; over-budget rejected as PROBE_BUDGET.
+ * P1-03：实验计划绑定执行；超预算以 PROBE_BUDGET 拒绝。
  */
 public final class ExperimentPlanExecutionAcceptanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();

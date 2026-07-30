@@ -2,7 +2,7 @@ package com.aq.jvmsentinel.model;
 
 import java.util.Objects;
 
-/** Bounded parameter constraint harvested from bytecode flow / annotations. */
+/** 从 bytecode flow / annotation 采集的有界 parameter constraint。 */
 public record ParameterConstraint(
         ConstraintType type,
         String literal,

@@ -8,9 +8,9 @@ import java.lang.instrument.Instrumentation;
 import java.util.Properties;
 
 /**
- * Under Docker {@code --network none}, Quartz {@code AUTO} instance-id generation often fails with
+ * 说明：Docker {@code --network none} 下 Quartz {@code AUTO} instance-id 生成常失败，
  * {@code Couldn't get host name} and surfaces as {@code Cannot run without an instance id}.
- * When dependency mocks are enabled, force a stable sandbox identity.
+ * 启用 dependency mock 时，强制稳定 sandbox identity。
  */
 public final class QuartzInstanceIdFailOpen {
     public static final String SANDBOX_INSTANCE_ID = "veyrion-sandbox";
@@ -52,8 +52,8 @@ public final class QuartzInstanceIdFailOpen {
     }
 
     /**
-     * If the application loads Quartz properties with {@code AUTO}/{@code SYS_PROP}/blank id,
-     * rewrite to a literal sandbox id before {@code StdSchedulerFactory} instantiates.
+     * 若应用以 {@code AUTO}/{@code SYS_PROP}/blank id 加载 Quartz properties，
+     * 在 {@code StdSchedulerFactory} 实例化前 rewrite 为 literal sandbox id。
      */
     public static final class StdSchedulerFactoryPropsAdvice {
         private StdSchedulerFactoryPropsAdvice() {

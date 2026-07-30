@@ -8,8 +8,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Ensures the product flood ceiling (512 probes) stays inside the documented trusted-sandbox
- * upload budget, and that oversize plans fail closed with a clear message before Docker upload.
+ * 确保产品洪泛上限（512 探针）落在 documented trusted-sandbox
+ * 上传预算内，超大计划在 Docker 上传前 fail-closed 并给出清晰消息。
  */
 public final class ProbePlanUploadBudgetAcceptanceTest {
     private ProbePlanUploadBudgetAcceptanceTest() { }
@@ -49,7 +49,7 @@ public final class ProbePlanUploadBudgetAcceptanceTest {
         expectMessage(IllegalArgumentException.class, "probe plan exceeds entry limit",
                 () -> ExternalArtifactTaskExecutor.encodeProbePlan(oversize));
 
-        // Typical dual-auth flood (≈800-byte headers) must remain well under budget.
+        // 典型双 auth 洪泛（≈800 字节 header）须远低于预算。
         List<ExternalArtifactTaskExecutor.ProbeTarget> typical = new ArrayList<>();
         String typicalAuth = "Bearer " + "t".repeat(800);
         String typicalBlade = "u".repeat(800);

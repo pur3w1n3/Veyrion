@@ -8,7 +8,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
-/** facts_search kind=PATH_TRACE rejects client policy override fields. */
+/** facts_search kind=PATH_TRACE 拒绝客户端 policy 覆盖字段。 */
 public final class PathTraceQueryDenialAcceptanceTest {
     public static void main(String[] args) {
         AcceptanceAssertions.reset();

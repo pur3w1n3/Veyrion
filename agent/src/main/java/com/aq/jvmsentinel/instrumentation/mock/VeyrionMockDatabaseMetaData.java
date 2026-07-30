@@ -6,7 +6,7 @@ import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
-/** Proxy-based DatabaseMetaData to avoid JDK surface mismatches across runtimes. */
+/** 基于代理的 DatabaseMetaData，避免跨 runtime 的 JDK 表面对不齐。 */
 final class VeyrionMockDatabaseMetaData {
     private VeyrionMockDatabaseMetaData() {
     }

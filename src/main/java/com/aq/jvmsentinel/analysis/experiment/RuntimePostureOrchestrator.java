@@ -12,7 +12,7 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * P0-21: server-owned runtime posture decisions. AI/frontend cannot supply forced reachability policy.
+ * P0-21：服务端 owned runtime posture 决策。AI/frontend 不能提供 forced reachability policy。
  */
 public final class RuntimePostureOrchestrator {
     private static final Set<String> FORBIDDEN_CLIENT_OVERRIDE_KEYS = Set.of(
@@ -50,7 +50,7 @@ public final class RuntimePostureOrchestrator {
     }
 
     /**
-     * BYPASS posture is generated only for AUTH PoC candidates or UNAUTH unexpected pass-through.
+     * BYPASS posture 仅对 AUTH PoC 候选或 UNAUTH unexpected pass-through 生成。
      */
     public static RuntimePosture bypassForCandidate(boolean authPocCandidate, boolean unauthUnexpectedPass) {
         if (!authPocCandidate && !unauthUnexpectedPass) {

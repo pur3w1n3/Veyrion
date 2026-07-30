@@ -4,8 +4,8 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Untrusted override attempt from model / frontend / Analyzer.
- * Any present field must cause fail-closed rejection.
+ * 来自 model / frontend / Analyzer 的不可信 override 尝试。
+ * 任何 present field 必须导致 fail-closed 拒绝。
  */
 public record RuntimeAdapterOverrideAttempt(
         Optional<String> commandOverride,

@@ -9,13 +9,13 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Default Spring MVC adapter — always matches as the JVM-generic baseline.
- * Does not prefer a secondary auth header; HS256 minting requires artifact harvest.
+ * 默认 Spring MVC adapter — 始终作为 JVM-generic baseline 匹配。
+ * 不 prefer 次要 auth header；HS256 mint 需 artifact harvest。
  */
 public final class SpringMvcAdapter implements FrameworkAdapter {
     private static final Set<String> ROUTE_SIGNALS = Set.of(
             "admin", "upload", "deploy", "token", "exec", "oauth", "sql", "jndi", "ssrf", "deserial");
-    // Do not include bare "controller" — nearly every Spring MVC class matches and starves probe budget.
+    // 勿包含裸 "controller" — 几乎每 Spring MVC class 都匹配并耗尽 probe budget。
     private static final Set<String> CLASS_SIGNALS = Set.of(
             "admin", "upload", "deploy", "oauth");
 

@@ -20,9 +20,9 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Live JDBC H3 evidence: handshake/meta must not reach DYNAMIC_CONFIRMED; marker statement can.
- * Embedded SQLite JDBC always runs. Postgres container path runs when Docker + image available;
- * otherwise SKIP with log (gate still PASS).
+ * 说明：Live JDBC H3 evidence：handshake/meta 不得达 DYNAMIC_CONFIRMED；marker statement 可以。
+ * Embedded SQLite JDBC 始终运行。Docker + image 可用时 Postgres container path 运行；
+ * 否则 SKIP 并 log（gate 仍 PASS）。
  */
 public final class LiveJdbcH3AcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -95,7 +95,7 @@ public final class LiveJdbcH3AcceptanceTest {
                 try {
                     statement.execute(injected);
                 } catch (Exception ignored) {
-                    // SQLite may reject unterminated quote; statement text still observed.
+                    // SQLite 可能拒绝 unterminated quote；statement 文本仍被观测。
                 }
             }
             PathRun positive = pathRun("pr-sqlite-pos", "corr-sqlite-pos", List.of(
@@ -141,7 +141,7 @@ public final class LiveJdbcH3AcceptanceTest {
             awaitPostgresReady(name);
             String benign = "SELECT 1 AS id WHERE 'alice' = 'alice'";
             String injected = "SELECT 1 AS id WHERE 'x' = '" + MARKER;
-            // Handshake/meta analogue: server readiness noise must not confirm.
+            // Handshake/meta 类比：server readiness 噪声不得 confirm。
             PathRun handshake = pathRun("pr-pg-meta", "corr-pg-meta", List.of(
                     new SqlEvent("accepted-without-credential-capture", "", "UNKNOWN",
                             false, true, "DEPENDENCY_PROTOCOL_MOCK"),
@@ -159,7 +159,7 @@ public final class LiveJdbcH3AcceptanceTest {
                             == VerificationStatus.DYNAMIC_SUSPECTED,
                     "live Postgres benign statement stays DYNAMIC_SUSPECTED");
 
-            // Marker SQL may fail at the engine; H3 cares about observed statement text.
+            // Marker SQL 可能在 engine 失败；H3 关心观测 statement 文本。
             psql(name, injected);
             PathRun positive = pathRun("pr-pg-pos", "corr-pg-pos", List.of(
                     new SqlEvent(injected, "", "READ", false, true, "RUNTIME_OBSERVED")));

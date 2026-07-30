@@ -1,6 +1,6 @@
 import type { AiRole, DependencyMode, HypothesisFamily } from './api'
 
-/** Locale-aware hypothesis family labels (ZH primary in Chinese UI; EN code as secondary term). */
+/** 按 locale 的 hypothesis family 标签（中文 UI 以 ZH 为主；EN code 为次要术语）。 */
 export const HYPOTHESIS_FAMILY_META: Record<HypothesisFamily, {
   zh: string
   en: string
@@ -75,7 +75,7 @@ export const hypothesisFamilyBlurb = (family: string | undefined, english = fals
   return english ? meta.blurbEn : meta.blurbZh
 }
 
-/** Human-readable labels for fixed model roles. Technical codes stay for API only. */
+/** 固定模型角色的人类可读标签。技术 code 仅用于 API。 */
 export const AI_ROLE_META: Record<AiRole, {
   name: string
   nameEn: string
@@ -241,7 +241,7 @@ export const jobStatusLabel = (status: string | undefined, english = false) => {
   }
 }
 
-/** Prefer errorCode-aware labels for BLOCKED / no-Worker / projection failures (P1-23). */
+/** BLOCKED / 无 Worker / projection 失败优先使用 errorCode 感知标签（P1-23）。 */
 export const pipelineStatusLabel = (status: string | undefined, errorCode?: string | undefined, english = false) => {
   const code = (errorCode ?? '').toUpperCase()
   if (code === 'WORKER_UNAVAILABLE' || code === 'NO_WORKER') {
@@ -266,6 +266,10 @@ export const stopReasonLabel = (reason: string | undefined, english = false) => 
       return english ? 'Evidence projection failed' : '证据投影失败'
     case 'USER_CANCELLED':
       return english ? 'Cancelled' : '已取消'
+    case 'OPERATOR_PAUSED':
+      return english ? 'Paused by operator' : '操作员已暂停'
+    case 'OPERATOR_CANCELLED':
+      return english ? 'Stopped by operator' : '操作员已停止'
     case 'COMPLETED':
       return english ? 'Completed' : '已完成'
     default:
@@ -283,6 +287,8 @@ export const timelineStateLabel = (state: string, english = false) => {
       return english ? 'Waiting' : '等待中'
     case 'unavailable':
       return english ? 'Unavailable' : '不可用'
+    case 'skipped':
+      return english ? 'Skipped' : '已跳过'
     default:
       return state
   }

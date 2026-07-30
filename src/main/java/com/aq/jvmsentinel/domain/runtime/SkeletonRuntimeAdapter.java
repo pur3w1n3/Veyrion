@@ -4,8 +4,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Minimal RuntimeAdapter skeleton: binds only server-fixed profiles and rejects overrides.
- * Does not launch containers or grant Analyzer dynamic execution rights.
+ * 最小 RuntimeAdapter 骨架：仅绑定服务端固定 profile 并拒绝 override。
+ * 不 launch container 也不授予 Analyzer dynamic execution 权限。
  */
 public final class SkeletonRuntimeAdapter implements RuntimeAdapter {
     private final String runtimeKind;

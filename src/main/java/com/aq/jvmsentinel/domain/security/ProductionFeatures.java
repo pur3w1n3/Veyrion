@@ -1,13 +1,13 @@
 package com.aq.jvmsentinel.domain.security;
 
 /**
- * Fail-closed production session / tenancy feature flags (P2 scaffolding).
+ * fail-closed 的 production session / tenancy feature flag（P2 scaffolding）。
  *
- * <p>All flags remain {@link #DISABLED}. Enabling any requires an ACCEPTED ADR and audited
- * implementation — see {@code docs/adr/0003-production-session-deferred.md}.
+ * <p>所有 flag 保持 {@link #DISABLED}。启用任一需 ACCEPTED ADR 与审计过的
+ * 实现 — 见 {@code docs/adr/0003-production-session-deferred.md}。
  */
 public final class ProductionFeatures {
-    /** Sentinel constant: production session stack is not enabled. */
+    /** 哨兵常量：production session 栈未启用。 */
     public static final boolean DISABLED = true;
 
     public static final boolean SESSION_AUTH = false;

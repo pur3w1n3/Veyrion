@@ -28,8 +28,8 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 
 /**
- * AUTH code_query harvest + DEFAULT_SECRET_HS256 seed only when key found in artifact
- * (acceptance only; not VERIFIED / production).
+ * AUTH code_query harvest + 仅当制品中发现 key 才种子 DEFAULT_SECRET_HS256
+ * （仅验收；非 VERIFIED / 生产）。
  */
 public final class AuthCodeQueryAcceptanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();

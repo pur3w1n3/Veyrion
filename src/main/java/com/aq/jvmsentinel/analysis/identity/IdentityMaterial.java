@@ -5,8 +5,8 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Channel-agnostic identity material harvested from an authorized artifact.
- * Never elevates verification status; value bytes stay internal to mint/apply paths.
+ * 从 authorized artifact harvest 的 channel-agnostic identity 材料。
+ * 不提升 verification status；value 字节留在 mint/apply path 内部。
  */
 public record IdentityMaterial(
         IdentityMaterialKind kind,

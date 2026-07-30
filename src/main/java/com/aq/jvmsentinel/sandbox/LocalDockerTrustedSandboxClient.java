@@ -30,25 +30,24 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Local Docker backend for explicitly trusted, catalog-owned internal JARs.
+ * 显式 trusted、catalog-owned 内部 JAR 的 Local Docker backend。
  *
- * <p>This capability is separate from both fixture runc and release-gated hardened runtimes.
- * It never falls back to a host process. Docker's effective network, mount, identity, tmpfs and
- * resource policy is inspected before a handle is returned. The trusted development mode keeps
- * the container rootfs writable and runs as root for compatibility with application startup;
- * the artifact mount itself remains read-only and all external egress remains denied.</p>
+ * <p>本能力与 fixture runc 及 release-gated hardened runtime 均分离。
+ * 永不 fallback 到 host process。返回 handle 前检查 Docker 有效 network、mount、identity、tmpfs
+ * 与 resource policy。trusted 开发模式保持 container rootfs 可写并以 root 运行以兼容应用启动；
+ * artifact mount 本身只读，所有外部 egress 仍 deny。</p>
  */
 public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClient {
-    /** Container-default identity (root for the trusted runtime image). Privileged listen ports like 80 must work. */
+    /** Container 默认 identity（trusted runtime image 为 root）。privileged listen port（如 80）必须可用。 */
     private static final int SANDBOX_UID = 0;
     private static final int SANDBOX_GID = 0;
     private static final String TRACE_TMP = "/tmp/veyrion-trace";
     private static final int MAX_PROCESS_OUTPUT = 4 * 1024 * 1024;
     private static final int MAX_PIDS = 1_024;
     /**
-     * Host→trace-tmpfs upload ceiling via {@code docker exec} stdin.
-     * Aligned with {@link ExternalArtifactTaskExecutor#MAX_PROBE_PLAN_UPLOAD_BYTES}
-     * (512 flood entries × worst-case TSV line = 3 MiB). Not a general artifact upload path.
+     * 经 {@code docker exec} stdin 的 Host→trace-tmpfs upload 上限。
+     * 与 {@link ExternalArtifactTaskExecutor#MAX_PROBE_PLAN_UPLOAD_BYTES} 对齐
+     *（512 flood entry × 最坏 TSV 行 = 3 MiB）。非通用 artifact upload path。
      */
     public static final int MAX_UPLOAD_HOST_FILE_BYTES =
             ExternalArtifactTaskExecutor.MAX_PROBE_PLAN_UPLOAD_BYTES;
@@ -76,13 +75,13 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
             throw new IllegalArgumentException("dockerExecutable is invalid");
         }
         this.dockerExecutable = dockerExecutable;
-        // TRUSTED_DOCKER tasks retain sandboxes for PATH/TRIAGE reuse; short-lived test JVMs
-        // otherwise leave veyrion-trusted-* containers running (entrypoint sleep infinity).
+        // TRUSTED_DOCKER task 保留 sandbox 供 PATH/TRIAGE 复用；短生命周期 test JVM
+        // 否则会留下 veyrion-trusted-* 容器运行（entrypoint sleep infinity）。
         this.shutdownHook = new Thread(this::bestEffortCloseAll, "veyrion-trusted-docker-cleanup");
         try {
             Runtime.getRuntime().addShutdownHook(shutdownHook);
         } catch (IllegalStateException ignored) {
-            // JVM already shutting down — nothing to register.
+            // JVM 已在 shutdown — 无需注册。
         }
     }
 
@@ -91,14 +90,14 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
         ReadOnlyArtifactMount mount = requireTrustedRequest(request);
         verifyArtifact(mount);
         String name = "veyrion-trusted-" + UUID.randomUUID().toString().replace("-", "");
-        // Boundary: deny-all egress (--network none) + digest-pinned read-only artifact.
-        // Keep the runtime rootfs writable and run as root for compatibility with trusted
-        // applications that write logs or require root during startup. This is not hardened.
+        // 边界：deny-all egress（--network none）+ digest-pinned 只读 artifact。
+        // 保持 runtime rootfs 可写并以 root 运行，以兼容 trusted
+        // 应用写 log 或启动需 root。非 hardened。
         List<String> command = new ArrayList<>(List.of(
                 dockerExecutable, "run", "--detach", "--name", name,
                 "--label", "com.veyrion.trusted-docker=true",
                 "--network", "none",
-                // Stable hostname so Quartz AUTO / getLocalHost does not fail under deny-all.
+                // 稳定 hostname，使 Quartz AUTO / getLocalHost 在 deny-all 下不失败。
                 "--hostname", "veyrion-sandbox",
                 "--user", SANDBOX_UID + ":" + SANDBOX_GID,
                 "--tmpfs", "/tmp/veyrion-trace:rw,nosuid,nodev,size=" + request.tmpfsBytes()
@@ -155,8 +154,8 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
     public void uploadFile(String sandboxId, Path hostFile, String containerPath) {
         requireKnown(sandboxId);
         Objects.requireNonNull(hostFile, "hostFile");
-        // Keep uploads inside the dedicated trace tmpfs; stream bytes through docker exec so the
-        // host path never becomes a container mount or a model-controlled destination.
+        // upload 留在专用 trace tmpfs；经 docker exec 流式传字节，使
+        // host path 永不成为 container mount 或 model 控制的 destination。
         if (containerPath == null
                 || !containerPath.matches(TRACE_TMP + "/[A-Za-z0-9._-]{1,200}")
                 || containerPath.contains("..")) {
@@ -202,7 +201,7 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
         try {
             Runtime.getRuntime().removeShutdownHook(shutdownHook);
         } catch (IllegalStateException | SecurityException ignored) {
-            // Already shutting down or hook already ran.
+            // 已在 shutdown 或 hook 已运行。
         }
         RuntimeException primary = null;
         for (String sandboxId : List.copyOf(sandboxes.keySet())) {
@@ -221,7 +220,7 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
             try {
                 run(List.of(dockerExecutable, "rm", "--force", sandboxId), Duration.ofSeconds(30));
             } catch (RuntimeException ignored) {
-                // Best-effort process-exit cleanup.
+                // 尽力 process-exit cleanup。
             } finally {
                 sandboxes.remove(sandboxId);
             }
@@ -334,7 +333,7 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
         try {
             run(List.of(dockerExecutable, "rm", "--force", value), Duration.ofSeconds(15));
         } catch (RuntimeException ignored) {
-            // Preserve the primary policy or creation failure.
+            // 保留 primary policy 或 creation failure。
         }
     }
 

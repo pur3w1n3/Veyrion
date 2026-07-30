@@ -7,8 +7,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Server-owned runtime posture for one experiment (P0-21).
- * AI/frontend cannot supply forcedGuardRefs or enable FORCED_REACHABILITY.
+ * 单次 experiment 的服务端 owned runtime posture（P0-21）。
+ * AI/frontend 不能提供 forcedGuardRefs 或启用 FORCED_REACHABILITY。
  */
 public record RuntimePosture(
         RuntimePostureKind postureKind,
@@ -99,7 +99,7 @@ public record RuntimePosture(
                 : kind == RuntimePostureKind.FORCED_REACHABILITY;
         String track = string(map.get("identityTrackWire"));
         if (PROVENANCE_LEGACY.equals(provenance) && kind == RuntimePostureKind.FORCED_REACHABILITY) {
-            // Never invent forced posture from incomplete legacy payloads.
+            // 永不从不完整 legacy payload 发明 forced posture。
             return legacyIncomplete();
         }
         return new RuntimePosture(kind, provenance, guards, dockerOnly, track);

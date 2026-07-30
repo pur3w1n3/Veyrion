@@ -16,8 +16,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Validates provider outputs: schema, scope, budget, dedupe.
- * Rejects Finding writes and verification-status elevation.
+ * 校验 provider 输出：schema、scope、budget、dedupe。
+ * 拒绝 Finding 写与 verification-status 提升。
  */
 public final class ProviderOutputGate {
     private static final Set<String> FORBIDDEN_STATUS = Set.of(
@@ -215,7 +215,7 @@ public final class ProviderOutputGate {
             rejected.add("dedupe:detector:" + hyp.hypothesisId());
             return;
         }
-        // Force CANDIDATE — providers cannot elevate lifecycle / write Finding.
+        // 强制 CANDIDATE — provider 不能提升 lifecycle / 写 Finding。
         SecurityHypothesis clamped = new SecurityHypothesis(
                 hyp.schemaVersion(),
                 hyp.hypothesisId(),

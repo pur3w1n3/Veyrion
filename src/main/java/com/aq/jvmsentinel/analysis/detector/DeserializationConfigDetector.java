@@ -10,8 +10,8 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Skeleton: projects DESERIALIZATION sinks into CONFIG/TYPESTATE-adjacent hypotheses
- * without inventing fake dataflow sink-none rows.
+ * Skeleton：将 DESERIALIZATION sink 投影为 CONFIG/TYPESTATE-adjacent hypothesis
+ * 不发明 fake dataflow sink-none 行。
  */
 public final class DeserializationConfigDetector implements Detector {
     public static final String VERSION = "0.1.0";
@@ -55,7 +55,7 @@ public final class DeserializationConfigDetector implements Detector {
                     "deserialize-api"
             ));
         }
-        // Also surface enableDefaultTyping / polymorphic typing hints from config.
+        // 亦从 config surface enableDefaultTyping / polymorphic typing hint。
         for (String line : context.configurationLines()) {
             if (line == null) continue;
             String lower = line.toLowerCase(Locale.ROOT);

@@ -22,7 +22,7 @@ import java.sql.Timestamp;
 import java.util.Calendar;
 import java.util.Map;
 
-/** Always-empty ResultSet for dependency mock. */
+/** dependency mock 用的恒空 ResultSet。 */
 final class VeyrionMockResultSet implements ResultSet {
     private static final VeyrionMockResultSet EMPTY = new VeyrionMockResultSet();
 

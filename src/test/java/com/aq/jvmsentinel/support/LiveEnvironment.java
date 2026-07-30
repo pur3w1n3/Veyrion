@@ -34,8 +34,8 @@ public final class LiveEnvironment {
     }
 
     /**
-     * Digest-pinned TRUSTED_DOCKER runtime image, or blank when unavailable.
-     * Order: {@code VEYRION_DOCKER_RUNTIME_IMAGE}, then local sandbox-pack tag digests.
+     * 说明：Digest-pinned TRUSTED_DOCKER runtime image，不可用时空白。
+     * 顺序：{@code VEYRION_DOCKER_RUNTIME_IMAGE}，再 local sandbox-pack tag digest。
      */
     public static String resolveTrustedDockerImage() {
         String fromEnv = System.getenv("VEYRION_DOCKER_RUNTIME_IMAGE");
@@ -115,7 +115,7 @@ public final class LiveEnvironment {
                     buffer.write(chunk, 0, allowed);
                 }
                 if (buffer.size() >= maxBytes) {
-                    // Drain remainder so the child is not blocked on a full pipe.
+                    // Drain 剩余，避免子进程被满 pipe 阻塞。
                     while (in.read(chunk) >= 0) {
                         // discard
                     }

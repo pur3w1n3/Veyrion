@@ -10,8 +10,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * P0-21: merge optional PathTrace / path-debug fields into PathRun API wire maps
- * without changing {@link ApiDtos.PathRunDto} Jackson round-trip.
+ * P0-21：将可选 PathTrace / path-debug field 合并进 PathRun API wire map
+ * 不改变 {@link ApiDtos.PathRunDto} Jackson round-trip。
  */
 public final class PathDebugWireHelper {
     private PathDebugWireHelper() {
@@ -28,7 +28,7 @@ public final class PathDebugWireHelper {
         String authRequirement = PathTraceProjector.authRequirementFor(pathTrace, httpStatus(base));
         PathRunPathDebugView view = PathRunPathDebugView.fromPathTrace(pathTrace, authRequirement);
         merged.putAll(view.toMap());
-        // Flatten UI-facing PathTrace fields onto PathRun so GUI parsers need not dig nested.
+        // 将 UI 向 PathTrace field 扁平化到 PathRun，GUI parser 无需 dig nested。
         if (pathTrace.lastBusinessHop() != null && !pathTrace.lastBusinessHop().isBlank()) {
             merged.put("lastBusinessHop", pathTrace.lastBusinessHop());
         }
@@ -81,7 +81,7 @@ public final class PathDebugWireHelper {
         if (trace == null) {
             summary.put("legacyIncomplete", true);
             summary.put("exitReason", "LEGACY_DYNAMIC_INCOMPLETE");
-            // Keep wire shape stable for GUI parsers that expect arrays.
+            // 保持 wire shape 稳定，供期望 array 的 GUI parser。
             summary.put("effectRefs", List.of());
             summary.put("forcedGuardRefs", List.of());
             summary.put("parameterFlow", List.of());

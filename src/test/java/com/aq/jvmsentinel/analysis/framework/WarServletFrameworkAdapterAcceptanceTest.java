@@ -7,8 +7,8 @@ import java.nio.file.Path;
 import java.util.List;
 
 /**
- * P2 SCAFFOLDING: WarFrameworkAdapter + ServletFrameworkAdapter via SPI;
- * neutral fact contract (WAR dynamic stays disabled; adapters emit HINT only).
+ * P2 SCAFFOLDING：经 SPI 的 WarFrameworkAdapter + ServletFrameworkAdapter；
+ * 中性 fact contract（WAR dynamic 保持 disabled；adapter 仅 emit HINT）。
  */
 public final class WarServletFrameworkAdapterAcceptanceTest {
     public static void main(String[] args) {

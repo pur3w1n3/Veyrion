@@ -14,8 +14,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Acceptance: workspace audit-history delete persists, is project-scoped, and fails closed on auth.
- * CRUD UX only — does not invent VERIFIED claims.
+ * 验收：workspace audit-history delete 持久化、project-scoped、auth 上 fail-closed。
+ * 仅 CRUD UX — 不发明 VERIFIED 声称。
  */
 public final class AuditHistoryDeleteAcceptanceTest {
     private static int checks;
@@ -45,7 +45,7 @@ public final class AuditHistoryDeleteAcceptanceTest {
             check(listContains(client, server, projectA, scanA), "wrong-project delete must not remove scan");
             check(listContains(client, server, projectB, scanB), "sibling project history remains");
 
-            // Bare scans have empty child tables; delete must not require 1-row child DELETEs.
+            // 裸 scan 子表为空；delete 不得要求 1-row 子 DELETE。
             HttpResponse<String> deleted = delete(client,
                     uri(server, "/projects/" + projectA + "/scans/" + scanA), token);
             check(deleted.statusCode() == 204,
@@ -65,7 +65,7 @@ public final class AuditHistoryDeleteAcceptanceTest {
             check(deletedBare.statusCode() == 204, "second empty-dependent scan delete returns 204");
             check(!listContains(client, server, projectA, scanBare), "second deleted scan absent from list");
 
-            // Former 409 SCAN_ACTIVE case: stuck QUEUED worker task must cancel-then-delete → 204.
+            // 原 409 SCAN_ACTIVE：卡住 QUEUED worker task 须 cancel-then-delete → 204。
             String scanQueued = text(ok(createScan(client, server, token, projectA, digestA, "scan-queued")),
                     "scanId");
             HttpResponse<String> enqueued = workerEnqueue(client, server, projectA, digestA, scanQueued,

@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
- * P0-14 / P1-08 architecture dependency gates.
+ * P0-14 / P1-08 架构 dependency gate。
  *
  * <ul>
  *   <li>domain must not import control.persistence / ai.tool (exceptions in baseline file)</li>
@@ -85,8 +85,8 @@ public final class ArchitectureBaselineAcceptanceTest {
     }
 
     /**
-     * P1-08: new code must not introduce control → analysis.parser reverse dependency.
-     * Scans control, application, and adapter trees; zero exceptions allowed.
+     * P1-08：新代码不得引入 control → analysis.parser 反向依赖。
+     * 扫描 control、application、adapter 树；零 exception 允许。
      */
     private static void verifyNoControlToAnalysisParser(Path root) throws Exception {
         List<Path> roots = List.of(

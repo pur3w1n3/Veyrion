@@ -26,11 +26,10 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Bounded, sequential upload staging for backend-managed JVM artifacts.
+ * 有界、顺序的 upload staging，用于 backend-managed JVM artifact。
  *
- * <p>Session metadata may be persisted by the Control Plane. Bytes remain in
- * the controlled staging directory and are restored only after path, size,
- * offset and expiry checks.</p>
+ * <p>Session 元数据可由 Control Plane 持久化。字节留在受控 staging 目录，
+ * 仅在 path、size、offset 与 expiry 校验通过后恢复。</p>
  */
 public final class ArtifactUploadService {
     public static final int RECOMMENDED_CHUNK_BYTES = 1 * 1024 * 1024;
@@ -194,7 +193,7 @@ public final class ArtifactUploadService {
         return descriptor;
     }
 
-    /** Releases session budget only after project registration succeeds. */
+    /** 仅在 project 注册成功后释放 session budget。 */
     public synchronized void finish(String projectId, String uploadId) {
         Session session = requireSession(projectId, uploadId);
         if (session.completed == null) {
@@ -344,7 +343,7 @@ public final class ArtifactUploadService {
                 Files.deleteIfExists(part);
             }
         } catch (IOException ignored) {
-            // A failed cleanup never grants a session more lifetime or budget.
+            // 清理失败不会给 session 更多 lifetime 或 budget。
         }
     }
 

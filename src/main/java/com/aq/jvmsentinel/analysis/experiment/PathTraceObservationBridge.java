@@ -14,8 +14,8 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * P0-21: project PathTrace events into RuntimeObservation kinds for hypothesis lifecycle.
- * FORCED_REACHABILITY / INSTRUMENTATION_REACHABILITY cannot alone become DYNAMIC_CONFIRMED.
+ * P0-21：将 PathTrace event 投影为 hypothesis lifecycle 的 RuntimeObservation kind。
+ * 说明：FORCED_REACHABILITY/INSTRUMENTATION_REACHABILITY 单独不能成为 DYNAMIC_CONFIRMED。
  */
 public final class PathTraceObservationBridge {
     private PathTraceObservationBridge() {

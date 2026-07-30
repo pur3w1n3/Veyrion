@@ -7,8 +7,8 @@ import com.aq.jvmsentinel.model.PathOutcomeClass;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-15 / P0-20 regression: httpStatus=-1 / UNKNOWN / MOCK-gap must not become DYNAMIC_SUSPECTED.
- * Models the scan-7b619e8a65064fa9 flood failure mode without shipping private artifact data.
+ * P0-15 / P0-20 回归：httpStatus=-1 / UNKNOWN / MOCK-gap 不得变为 DYNAMIC_SUSPECTED。
+ * 建模 scan-7b619e8a65064fa9 洪泛失败模式，不携带私有制品数据。
  */
 public final class DynamicSuspectedNoiseGateAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

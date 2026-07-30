@@ -19,8 +19,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * P0-21: convert PathTrace events into Evidence Graph delta nodes/edges.
- * Forced-only observations stay limited (UNREACHED verification on nodes).
+ * P0-21：将 PathTrace event 转换为 Evidence Graph delta node/edge。
+ * 仅 FORCED observation 保持有限（node 上 UNREACHED verification）。
  */
 public final class PathTraceEvidenceGraphDelta {
     public static final String PRODUCER = "path-trace-evidence-delta/0.1";

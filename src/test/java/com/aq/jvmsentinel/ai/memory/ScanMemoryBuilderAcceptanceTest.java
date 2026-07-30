@@ -9,8 +9,8 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Verifies same-scan shared memory snapshot shape for AI + GUI.
- * Uses in-memory store (no SQLite Jackson encode path).
+ * 验证同 scan 共享 memory 快照形状，供 AI + GUI。
+ * 使用内存 store（无 SQLite Jackson 编码路径）。
  */
 public final class ScanMemoryBuilderAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -29,13 +29,13 @@ public final class ScanMemoryBuilderAcceptanceTest {
         var scan = new ApiDtos.ScanDto(1, project.projectId(), digest, scanId,
                 "COMPLETED", "STATIC_INFERRED", "MOCK", now, now,
                 List.of(), List.of(entry), List.of(), List.of(sink), List.of(), List.of());
-        // In-memory path: put scan directly via saveScan without artifact persistence.
+        // 内存路径：经 saveScan 直接放入 scan，无 artifact 持久化。
         try {
             store.saveScan(new ControlPlaneStore.ScanRecord(scan, Map.of(), List.of(), List.of()),
                     "local-admin");
         } catch (RuntimeException missingArtifact) {
-            // Some store builds require an artifact; fall back to reflection-free map build
-            // by injecting via requireScan after a minimal register is unavailable in-memory.
+            // 部分 store 构建需要 artifact；回退到无反射 map 构建
+            // 在内存中无法最小 register 时经 requireScan 注入。
             throw missingArtifact;
         }
 

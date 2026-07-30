@@ -112,7 +112,7 @@ export function formatCoverageDelta(delta: number): string {
   return `${sign}${percent.toFixed(0)}%`
 }
 
-/** Resolve HTTP/method+route (or entryRef) for a finding without inventing routes. */
+/** 为 finding 解析 HTTP/method+route（或 entryRef），不捏造 route。 */
 export function resolveFindingApi(
   finding: Finding,
   entries: Entry[]
@@ -155,7 +155,7 @@ export function resolveFindingApi(
 
 export type FindingPocHint = {
   kind: 'sql_card' | 'experiment_plan' | 'path_run' | 'root_cause' | 'none'
-  /** Honest provenance label — never claims VERIFIED exploit. */
+  /** 诚实的 provenance 标签 — 永不声称 VERIFIED 利用。 */
   provenance: string
   summary: string
   detailLines: string[]
@@ -169,8 +169,8 @@ function entryRefMatches(ref: string | undefined, finding: Finding, api: string,
 }
 
 /**
- * Best-effort PoC / reproduction hint from persisted materials only.
- * Missing material → kind none (UI shows honest empty state).
+ * 仅基于持久化材料的尽力 PoC / 复现提示。
+ * 缺失材料 → kind none（UI 显示诚实空态）。
  */
 export function resolveFindingPoc(
   finding: Finding,
@@ -258,7 +258,7 @@ export type EvidenceSelection =
   | { kind: 'graphNode'; node: EvidenceGraphNodeDto }
   | null
 
-/** Whether the right inspector should render for this view + selection (no empty placeholder). */
+/** 此 view + 选择是否应渲染右侧 inspector（无空占位）。 */
 export function selectionMatchesView(selection: EvidenceSelection, activeView: string): boolean {
   if (!selection) return false
   switch (activeView) {

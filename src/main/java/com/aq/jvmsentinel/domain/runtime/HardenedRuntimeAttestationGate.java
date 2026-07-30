@@ -3,11 +3,11 @@ package com.aq.jvmsentinel.domain.runtime;
 import java.util.Objects;
 
 /**
- * Fail-closed enablement gate for gVisor/Kata RuntimeAdapters (P2 SCAFFOLDING).
+ * 说明：gVisor/Kata RuntimeAdapter fail-closed 启用 gate（P2 SCAFFOLDING）。
  *
  * <p>Without a fresh, capability-matching attestation that marks the escape suite passed,
- * hardened capabilities must not be enabled. Even with a present attestation view this
- * gate never claims production isolation or opens VERIFIED.
+ * hardened capability 不得启用。即使有 present attestation view，本
+ * gate 永不声称 production isolation 或打开 VERIFIED。
  */
 public final class HardenedRuntimeAttestationGate {
     private HardenedRuntimeAttestationGate() {
@@ -48,8 +48,8 @@ public final class HardenedRuntimeAttestationGate {
     }
 
     /**
-     * Attempts to enable a hardened capability. Always fail-closed without attestation.
-     * TRUSTED_DOCKER / STATIC_ONLY are rejected (not hardened enablement targets).
+     * 尝试启用 hardened capability。无 attestation 时始终 fail-closed。
+     * 说明：TRUSTED_DOCKER/STATIC_ONLY 被拒绝（非 hardened 启用目标）。
      */
     public static EnablementDecision tryEnable(
             RuntimeCapability requested,
@@ -75,8 +75,8 @@ public final class HardenedRuntimeAttestationGate {
             return new EnablementDecision(false, requested,
                     blankOr(attestation.reasonCode(), "ESCAPE_SUITE_NOT_MARKED_PASSED"));
         }
-        // Honest scaffolding: attestation inventory may be present, but enablement stays closed
-        // until a future audited deployment wires gVisor/Kata end-to-end.
+        // 诚实 scaffolding：attestation inventory 可能存在，但启用保持关闭，
+        // 直至未来审计过的 deployment 端到端接入 gVisor/Kata。
         return new EnablementDecision(false, requested, "HARDENED_ENABLEMENT_NOT_OPEN");
     }
 

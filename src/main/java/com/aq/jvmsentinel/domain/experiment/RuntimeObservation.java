@@ -7,8 +7,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Unified runtime observation for Entry/Guard/Effect/State/Dependency/Exception (P1-06).
- * Provenance stays RUNTIME_OBSERVED; never elevates verification status by itself.
+ * 统一 runtime observation（P1-06）：Entry/Guard/Effect/State/Dependency/Exception。
+ * Provenance 保持 RUNTIME_OBSERVED；自身永不提升 verification status。
  */
 public record RuntimeObservation(
         String observationId,
@@ -41,7 +41,7 @@ public record RuntimeObservation(
         }
         incrementalSubjects = List.copyOf(incrementalSubjects == null ? List.of() : incrementalSubjects);
         if (!successfulProjection) {
-            // Empty / failed projections keep identity but must not look like hits.
+            // 空/失败 projection 保留 identity 但不得看起来像 hit。
             if (signalCode.isBlank()) {
                 signalCode = "EMPTY_OR_FAILED";
             }

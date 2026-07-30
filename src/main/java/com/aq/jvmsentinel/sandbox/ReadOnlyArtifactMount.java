@@ -4,8 +4,8 @@ import java.nio.file.Path;
 import java.util.Objects;
 
 /**
- * Operator-owned request for a digest-verified, read-only artifact mount.
- * The sandbox backend must verify the digest while materializing the mount.
+ * operator-owned 的 digest 校验、只读 artifact mount 请求。
+ * sandbox backend 在 materialize mount 时必须校验 digest。
  */
 public record ReadOnlyArtifactMount(Path source, String destination, String sha256, long sizeBytes) {
     public ReadOnlyArtifactMount {

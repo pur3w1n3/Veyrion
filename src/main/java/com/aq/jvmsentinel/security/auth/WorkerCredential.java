@@ -6,8 +6,8 @@ import java.util.Arrays;
 import java.util.Objects;
 
 /**
- * Machine credential with no operator roles or permissions.
- * It deliberately cannot be converted to or inherited from AuthContext.
+ * 无 operator role 或 permission 的机器 credential。
+ * 刻意不能转换为或继承 AuthContext。
  */
 public final class WorkerCredential implements AutoCloseable {
     private final String credentialId;

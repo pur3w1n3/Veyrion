@@ -10,8 +10,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Bounded scan facts available to non-taint detectors. Configuration lines are
- * already redacted by {@code ArtifactMetadataReader}.
+ * non-taint detector 可用的有界 scan fact。Configuration 行
+ * 已由 {@code ArtifactMetadataReader} redact。
  */
 public record DetectorContext(
         String scanId,

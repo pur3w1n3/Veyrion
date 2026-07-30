@@ -18,12 +18,12 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 /**
- * Bounded, load-free harvest of rememberMe / cookie-cipher key surfaces.
+ * 说明：rememberMe/cookie-cipher key 面有界无 load harvest。
  *
  * <p>Primary signal is {@code setCipherKey} in the same class/resource (optionally with
  * {@code CookieRememberMeManager}). Base64 string constants co-located with that call are
- * harvested as cipher material. Well-known default dictionaries only <em>label</em> weak
- * keys — they are not a detection gate.
+ * harvest 为 cipher 材料。Well-known default dictionary 仅 <em>label</em> weak
+ * key — 非 detection gate。
  *
  * <p>Produces material facts only — never encrypts rememberMe payloads or elevates VERIFIED.
  */
@@ -49,8 +49,8 @@ public final class RememberMeCipherHarvester {
     private static final Pattern QUOTED_BASE64_CIPHER = Pattern.compile(
             "[\"']([A-Za-z0-9+/]{16,44}={1,2})[\"']");
     /**
-     * Unquoted Base64 with non-alphabet boundaries so {@code setCipherKey2AvV…} does not
-     * swallow the method name into the candidate.
+     * 非 alphabet 边界的 unquoted Base64，使 {@code setCipherKey2AvV…} 不
+     * 将 method 名吞入 candidate。
      */
     private static final Pattern BOUND_BASE64_CIPHER = Pattern.compile(
             "(?<![A-Za-z0-9+/])([A-Za-z0-9+/]{16,44}={1,2})(?![A-Za-z0-9+/=])");
@@ -99,7 +99,7 @@ public final class RememberMeCipherHarvester {
                 scanned++;
                 byte[] bytes = readLimited(zip, 64 * 1024);
                 String latin = new String(bytes, StandardCharsets.ISO_8859_1);
-                // Primary gate: setCipherKey must appear in this entry.
+                // 主 gate：setCipherKey 须出现在本 entry。
                 boolean setKey = latin.contains("setCipherKey");
                 if (!setKey) {
                     continue;
@@ -167,7 +167,7 @@ public final class RememberMeCipherHarvester {
             if (!hit.setCipherKeyPresent()) {
                 continue;
             }
-            // CookieRememberMeManager co-location → rememberMe; otherwise generic COOKIE name.
+            // 说明：CookieRememberMeManager 共位 → rememberMe；否则 generic COOKIE 名。
             String cookieName = hit.rememberMeManagerPresent() ? "rememberMe" : "COOKIE";
             if (hit.hasKeyValue()) {
                 out.add(new IdentityMaterial(
@@ -232,7 +232,7 @@ public final class RememberMeCipherHarvester {
         if (value == null || value.length() < 16 || value.length() > 44) {
             return false;
         }
-        // Canonical AES key Base64 lengths (16-byte / 32-byte) with padding.
+        // 规范 AES key Base64 长度（16-byte / 32-byte）含 padding。
         if (value.length() == 24 && value.endsWith("==")) {
             return true;
         }
@@ -242,7 +242,7 @@ public final class RememberMeCipherHarvester {
         if (!value.contains("=")) {
             return false;
         }
-        // Other padded lengths: require +/ or digit to cut classpath / identifier noise.
+        // 其他 padded 长度：要求 +/ 或 digit 以 cut classpath / identifier 噪声。
         for (int i = 0; i < value.length(); i++) {
             char c = value.charAt(i);
             if (c == '+' || c == '/' || (c >= '0' && c <= '9')) {

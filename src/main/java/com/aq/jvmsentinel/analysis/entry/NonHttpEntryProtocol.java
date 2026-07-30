@@ -5,8 +5,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Classifies entry protocols so unknown / WebSocket surfaces stay UNREACHED
- * instead of being mislabeled as HTTP probe targets.
+ * 分类 entry protocol，使 unknown / WebSocket 面保持 UNREACHED
+ * 而非误标为 HTTP probe target。
  */
 public final class NonHttpEntryProtocol {
     private static final Set<String> HTTP_FAMILY = Set.of("HTTP", "HTTPS");

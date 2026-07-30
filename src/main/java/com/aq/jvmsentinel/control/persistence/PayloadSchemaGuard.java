@@ -5,8 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /**
- * Ensures persisted JSON payloads carry {@code schemaVersion >= 1} after V015.
- * Models that omit the field stay unchanged; persistence wraps/unwraps the version.
+ * 确保持久化 JSON payload 在 V015 后携带 {@code schemaVersion >= 1}。
+ * 省略该字段的 model 保持不变；持久化层包装/解包版本。
  */
 public final class PayloadSchemaGuard {
     public static final int MIN_SCHEMA_VERSION = 1;

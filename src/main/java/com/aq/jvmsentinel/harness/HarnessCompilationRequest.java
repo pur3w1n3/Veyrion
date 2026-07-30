@@ -4,8 +4,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Fixed Worker-side javac request. The only classpath entry is the digest-verified original JAR;
- * decompiler output directories cannot be represented by this contract.
+ * 固定 Worker 侧 javac 请求。唯一 classpath 条目为 digest 校验过的原始 JAR；
+ * decompiler 输出目录不能由本 contract 表示。
  */
 public record HarnessCompilationRequest(int schemaVersion, String artifactDigest,
                                         String originalJarPath, boolean originalJarReadOnly,
@@ -41,7 +41,7 @@ public record HarnessCompilationRequest(int schemaVersion, String artifactDigest
         }
     }
 
-    /** Arguments are passed directly to a process API by an isolated Worker, never to a shell. */
+    /** 参数由隔离 Worker 直接传给 process API，永不传给 shell。 */
     public List<String> javacArguments(String verifiedOriginalJarDigest) {
         if (!artifactDigest.equals(verifiedOriginalJarDigest)) {
             throw new SecurityException("original JAR digest mismatch");

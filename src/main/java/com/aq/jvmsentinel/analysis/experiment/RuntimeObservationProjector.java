@@ -10,15 +10,15 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Projects PathRun-like facts into a unified RuntimeObservation and marks
- * minimal incremental detector subjects (P1-06).
+ * 将 PathRun-like fact 投影为统一 RuntimeObservation 并标记
+ * 最小增量 detector subject（P1-06）。
  */
 public final class RuntimeObservationProjector {
     private RuntimeObservationProjector() {
     }
 
     /**
-     * Failed / empty projection: successfulProjection=false, lifecycle must not change.
+     * 失败/空 projection：successfulProjection=false，lifecycle 不得变更。
      */
     public static RuntimeObservation emptyOrFailed(String hypothesisId,
                                                    ExperimentPlanKind planKind,
@@ -101,7 +101,7 @@ public final class RuntimeObservationProjector {
             return signalHint.trim().toUpperCase(Locale.ROOT);
         }
         String outcome = outcomeClass == null ? "" : outcomeClass.trim().toUpperCase(Locale.ROOT);
-        // GUARD_DIFF maps AUTH_CHALLENGE → GUARD_DENY (counter); other kinds keep AUTH_CHALLENGE.
+        // GUARD_DIFF 映射 AUTH_CHALLENGE → GUARD_DENY（counter）；其他 kind 保持 AUTH_CHALLENGE。
         if ("AUTH_CHALLENGE".equals(outcome) && planKind != ExperimentPlanKind.GUARD_DIFF) {
             return "AUTH_CHALLENGE";
         }

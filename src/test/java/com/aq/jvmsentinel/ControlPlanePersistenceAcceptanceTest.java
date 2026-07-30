@@ -251,11 +251,11 @@ public final class ControlPlanePersistenceAcceptanceTest {
                     "verified_findings")) {
                 statement.executeUpdate("DROP TABLE IF EXISTS " + table);
             }
-            // Strip additive columns so V018/V019 re-apply cleanly on the V001 base tables.
+            // 剥离 additive column，使 V018/V019 在 V001 base table 上干净 re-apply。
             try {
                 statement.executeUpdate("ALTER TABLE findings DROP COLUMN root_cause_json");
             } catch (Exception ignored) {
-                // Column absent on older shapes.
+                // 旧 shape 上 column 缺失。
             }
             statement.executeUpdate("DELETE FROM schema_migrations WHERE version>=2");
         }

@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Sensitive effect / sink-like capability. Not limited to fixed API signatures.
+ * 敏感 effect / sink-like capability。不限于固定 API signature。
  *
  * <p>Stable id: {@code effect:{sinkDtoId}}.
  */

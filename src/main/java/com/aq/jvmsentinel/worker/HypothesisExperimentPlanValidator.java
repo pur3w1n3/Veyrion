@@ -8,8 +8,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Server gate for hypothesis-bound experiment plans (P1-06).
- * Extends ExperimentPlan safety rules without altering P0-08 plan identity semantics.
+ * 假设绑定实验计划的服务端门禁（P1-06）。
+ * 扩展 ExperimentPlan 安全规则，不改变 P0-08 计划身份语义。
  */
 public final class HypothesisExperimentPlanValidator {
     private static final Set<String> DESTRUCTIVE = Set.of(

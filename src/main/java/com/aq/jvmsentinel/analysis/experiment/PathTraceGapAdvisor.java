@@ -11,8 +11,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * P0-21: deterministic PATH/TRIAGE suggestions from PathTrace gaps.
- * Suggestions are advisory only — server still compiles and authorizes ExperimentPlans.
+ * P0-21：从 PathTrace gap 产生确定性 PATH/TRIAGE 建议。
+ * 建议仅为 advisory — 服务端仍编译并授权 ExperimentPlan。
  */
 public final class PathTraceGapAdvisor {
     public static final String PRODUCER = "path-trace-gap-advisor/0.1";

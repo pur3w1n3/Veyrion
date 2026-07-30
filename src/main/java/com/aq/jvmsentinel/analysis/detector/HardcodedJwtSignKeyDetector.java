@@ -22,9 +22,9 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 /**
- * Surfaces well-known / hardcoded JWT signing keys embedded in artifact classes or nested
- * framework JARs (e.g. Blade {@code JwtProperties} default). CONFIG family only — never
- * elevates DYNAMIC_CONFIRMED / VERIFIED.
+ * 已 surface 的 artifact class 或 nested framework JAR 中嵌入 well-known/hardcoded JWT signing key
+ *（如 Blade {@code JwtProperties} 默认）。仅 CONFIG family — 永不
+ * 提升 DYNAMIC_CONFIRMED / VERIFIED。
  */
 public final class HardcodedJwtSignKeyDetector implements Detector {
     public static final String VERSION = "0.1.0";
@@ -148,7 +148,7 @@ public final class HardcodedJwtSignKeyDetector implements Detector {
                 considerBytes(nestLabel + "!" + name, bytes, dictionary, hits, seen);
             }
         } catch (IOException ignored) {
-            // Nested optional.
+            // Nested 可选。
         }
     }
 

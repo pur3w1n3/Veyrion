@@ -23,7 +23,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Dependency-free, fail-closed OpenSandbox lifecycle and Execd protocol adapter. */
+/** 无依赖、fail-closed 的 OpenSandbox lifecycle 与 Execd protocol adapter。 */
 public final class OpenSandboxClient implements SandboxRuntimeClient {
     private static final Set<String> SAFE_ENDPOINT_HEADERS = Set.of(
             "x-opensandbox-access-token", "x-opensandbox-endpoint-token");
@@ -43,7 +43,7 @@ public final class OpenSandboxClient implements SandboxRuntimeClient {
 
     public SandboxHandle create(SandboxRequest request) {
         java.util.Objects.requireNonNull(request, "request");
-        // Attestation is deployment-owned configuration, so reject missing capability before creating anything.
+        // Attestation 为 deployment-owned 配置，创建任何东西前先 reject 缺失 capability。
         config.runtimeAttestation().require(config, request);
         if (request.readOnlyArtifacts().size() != 1) {
             throw OpenSandboxException.capability(
@@ -335,7 +335,7 @@ public final class OpenSandboxClient implements SandboxRuntimeClient {
             Object candidate = JsonCodec.parseObject(response.body()).get("code");
             if (candidate instanceof String value && value.matches("[A-Z][A-Z0-9_]{0,63}")) code = value;
         } catch (RuntimeException ignored) {
-            // Error bodies are untrusted and never copied into exception messages.
+            // 错误 body 不可信，永不复制进 exception message。
         }
         throw new OpenSandboxException(code, response.status(),
                 "OpenSandbox returned HTTP " + response.status(), null);

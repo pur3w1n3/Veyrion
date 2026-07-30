@@ -4,8 +4,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * AI-proposed, server-gated experiment plan for one entry × track.
- * Models propose; the server validates budget and safety before execution.
+ * AI 提议、服务端 gate 的单 entry × track 实验计划。
+ * 模型提议；服务端在执行前校验 budget 与 safety。
  */
 public record ExperimentPlan(
         String planId,

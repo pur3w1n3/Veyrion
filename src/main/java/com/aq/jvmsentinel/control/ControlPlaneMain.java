@@ -4,7 +4,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 
-/** Small local launcher for the dependency-free Control Plane. */
+/** 无额外依赖 Control Plane 的本地小型启动器。 */
 public final class ControlPlaneMain {
     private ControlPlaneMain() { }
 

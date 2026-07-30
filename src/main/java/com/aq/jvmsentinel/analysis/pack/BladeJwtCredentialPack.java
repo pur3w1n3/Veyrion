@@ -11,7 +11,7 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * Optional thin AnalysisPack for SpringBlade-like JWT credential experiment shapes
+ * 可选薄 AnalysisPack，SpringBlade-like JWT credential 实验 shape
  * (non-destructive templates). Not a first-class product path — same SPI as any pack.
  *
  * <p>Does not mint or expose commercial defaults as FACT. Well-known aliases live on
@@ -20,7 +20,7 @@ import java.util.Optional;
 public final class BladeJwtCredentialPack implements AnalysisPack {
     /**
      * @deprecated Detection dictionary owned by {@link SpringBladeAdapter}; pack keeps
-     * the alias for fixture alignment only.
+     * alias 仅 fixture 对齐。
      */
     @Deprecated
     public static final String DEFAULT_SECRET = SpringBladeAdapter.WELL_KNOWN_COMMERCIAL_SIGN_KEY;

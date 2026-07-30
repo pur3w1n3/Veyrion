@@ -9,11 +9,11 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Bounded Security IR / Evidence Graph container (P1-02).
+ * 有界 Security IR / Evidence Graph 容器（P1-02）。
  *
- * <p>Projection is read-only and fail-closed on budgets: when node/edge caps are hit,
- * {@code truncated=true} and {@code stopReason} explain the bound. Never elevates
- * verification status or invents FACT provenance.
+ * <p>投影只读且在 budget 上 fail-closed：达到 node/edge 上限时，
+ * {@code truncated=true} 且 {@code stopReason} 说明 bound。永不提升
+ * verification status 或发明 FACT provenance。
  */
 public record EvidenceGraph(
         int schemaVersion,
@@ -65,7 +65,7 @@ public record EvidenceGraph(
     }
 
     /**
-     * Findings whose evidenceRefs intersect this node's refs (node → finding reverse join).
+     * evidenceRefs 与本 node ref 相交的 finding（node → finding 反向 join）。
      */
     public List<String> findingIdsForNode(
             String nodeId, List<Map<String, Object>> findingMaps) {
@@ -117,7 +117,7 @@ public record EvidenceGraph(
     }
 
     /**
-     * Legacy EntryDto vs EntryNode count gap (AUTH filter rows, budget truncation, …).
+     * Legacy EntryDto 与 EntryNode 计数 gap（AUTH filter 行、budget 截断、…）。
      */
     public record CompatibilityGap(
             int entryDtoCount,
@@ -158,8 +158,8 @@ public record EvidenceGraph(
     }
 
     /**
-     * Restore an authoritative graph from {@link #toMap()} wire form (StaticFactSnapshot persistence).
-     * Unknown node kinds are skipped fail-closed (not invented as FACT).
+     * 从 {@link #toMap()} wire 形式恢复权威 graph（StaticFactSnapshot persistence）。
+     * 未知 node kind fail-closed 跳过（不发明为 FACT）。
      */
     @SuppressWarnings("unchecked")
     public static EvidenceGraph fromMap(Map<String, Object> map) {

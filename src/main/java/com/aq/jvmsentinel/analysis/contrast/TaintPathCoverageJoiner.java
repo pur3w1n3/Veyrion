@@ -11,8 +11,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Deterministically joins static taint-path methods to bounded branch coverage observations.
- * A branch hit proves method reachability only; it never proves sink execution or exploitability.
+ * 确定性 join 静态 taint-path method 与有界 branch coverage observation。
+ * branch hit 仅证明 method reachability；永不证明 sink execution 或 exploitability。
  */
 public final class TaintPathCoverageJoiner {
     public static final String STOP_DYNAMIC_BRANCH_REACHED = "DYNAMIC_BRANCH_REACHED";

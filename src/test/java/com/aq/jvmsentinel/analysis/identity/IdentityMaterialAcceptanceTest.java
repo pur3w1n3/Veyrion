@@ -22,8 +22,8 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 
 /**
- * RememberMe cipher-key detection + Cookie-channel identity materials (acceptance only).
- * Fixture mirrors kvf {@code ShiroConfig#setCipherKey(Base64.decode("2AvVhdsgUs0FSA3SDFAdag=="))}.
+ * 说明：RememberMe cipher-key detection + Cookie-channel identity 材料（仅 acceptance）。
+ * Fixture 镜像 kvf {@code ShiroConfig#setCipherKey(Base64.decode("2AvVhdsgUs0FSA3SDFAdag=="))}。
  */
 public final class IdentityMaterialAcceptanceTest {
     public static void main(String[] args) throws Exception {
@@ -51,8 +51,8 @@ public final class IdentityMaterialAcceptanceTest {
 
     private static Path fixtureShiroConfigJar() throws Exception {
         Path jar = Files.createTempFile("veyrion-shiro-cipher-", ".jar");
-        // Latin-1 blob containing the same class-constant strings present in kvf ShiroConfig.class
-        // Separate Utf8-like constants (NUL between) — mirrors real .class constant-pool layout.
+        // 含 kvf ShiroConfig.class 中相同 class-constant 字符串的 Latin-1 blob
+        // 分离 Utf8-like constant（NUL 间隔）— 镜像真实 .class constant-pool layout。
         String latin = "Lorg/apache/shiro/web/mgt/CookieRememberMeManager;\0"
                 + "setCipherKey\0"
                 + "\"2AvVhdsgUs0FSA3SDFAdag==\"\0"
@@ -76,7 +76,7 @@ public final class IdentityMaterialAcceptanceTest {
             jos.putNextEntry(new JarEntry("BOOT-INF/classes/com/example/CustomShiroConfig.class"));
             jos.write(latin.getBytes(StandardCharsets.ISO_8859_1));
             jos.closeEntry();
-            // Dictionary string alone in another class must NOT create a hit without setCipherKey.
+            // 另一 class 中仅 dictionary 字符串无 setCipherKey 不得产生 hit。
             jos.putNextEntry(new JarEntry("BOOT-INF/classes/com/example/Unrelated.class"));
             jos.write(("noise " + RememberMeCipherHarvester.WELL_KNOWN_SHIRO_DEFAULT_CIPHER_KEY)
                     .getBytes(StandardCharsets.ISO_8859_1));
@@ -206,7 +206,7 @@ public final class IdentityMaterialAcceptanceTest {
     }
 
     /**
-     * Acceptance: rememberMe cipher hyp becomes a finding with STATIC_INFERRED + hypothesisId
+     * 验收：rememberMe cipher hyp 成为带 STATIC_INFERRED + hypothesisId 的 finding
      * (UI/report must not look sink-only when hyp-rmc exists).
      */
     private static void cipherHypProjectsToStaticInferredFinding(Path jar) {
@@ -244,7 +244,7 @@ public final class IdentityMaterialAcceptanceTest {
                                 && f.hypothesisId().startsWith("hyp-rmc-")
                                 && ApiDtos.STATIC_INFERRED.equals(f.verificationStatus())),
                 "companion UNSAFE_DESERIALIZATION_SURFACE from rememberMe also projects STATIC_INFERRED");
-        // Generic deser-config hyp (not rememberMe detector) must not project via this path.
+        // 通用 deser-config hyp（非 rememberMe detector）不得经此 path 投影。
         SecurityHypothesis genericDeser = new SecurityHypothesis(
                 SecurityHypothesis.SCHEMA_VERSION,
                 "hyp-deser-scan-x-1",
@@ -261,7 +261,7 @@ public final class IdentityMaterialAcceptanceTest {
     }
 
     /**
-     * Blade JwtProperties default sign-key lives in nested blade-starter-jwt; outer-only scans missed it
+     * 说明：Blade JwtProperties default sign-key 在 nested blade-starter-jwt；仅 outer scan 会遗漏
      * (scan-c6b91763704c4aed: empty bladeAuthHeader / AUTH_CHALLENGE on FORCED).
      */
     private static Path fixtureBladeJwtNestedJar() throws Exception {

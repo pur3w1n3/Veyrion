@@ -28,7 +28,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
-/** File-backed root key store. Root key bytes never pass through a repository/database API. */
+/** 文件 backed root key store。root key 字节永不经过 repository/database API。 */
 public final class RootKeyStore {
     private static final int KEY_BYTES = 32;
     private static final Set<PosixFilePermission> OWNER_ONLY =

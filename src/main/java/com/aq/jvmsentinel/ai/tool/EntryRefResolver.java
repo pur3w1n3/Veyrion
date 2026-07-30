@@ -10,17 +10,17 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Canonicalizes AI / PathRun entry references onto scan {@link ApiDtos.EntryDto#id()}.
+ * 将 AI / PathRun entry 引用规范化为 scan {@link ApiDtos.EntryDto#id()}。
  *
- * <p>Accepted forms:
+ * <p>接受形式：
  * <ul>
- *   <li>{@code entry:&lt;scanEntryId&gt;} — preferred (e.g. {@code entry:entry-ann-1})</li>
- *   <li>bare {@code &lt;scanEntryId&gt;} when it uniquely matches a scan entry id</li>
- *   <li>{@code entry:METHOD:route} when that method+route uniquely matches one HTTP entry</li>
+ *   <li>{@code entry:<scanEntryId>} — 首选（如 {@code entry:entry-ann-1}）</li>
+ *   <li>裸 {@code <scanEntryId>} — 当唯一匹配 scan entry id 时</li>
+ *   <li>{@code entry:METHOD:route} — 当 method+route 唯一匹配一个 HTTP entry 时</li>
  * </ul>
  *
- * <p>Stable codes: {@code ENTRYPOINT_REF_MUST_BE_ENTRY}, {@code ENTRYPOINT_NOT_FOUND},
- * {@code ENTRYPOINT_REF_AMBIGUOUS}.
+ * <p>稳定 code：{@code ENTRYPOINT_REF_MUST_BE_ENTRY}、{@code ENTRYPOINT_NOT_FOUND}、
+ * {@code ENTRYPOINT_REF_AMBIGUOUS}。
  */
 public final class EntryRefResolver {
     public static final String CODE_MUST_BE_ENTRY = "ENTRYPOINT_REF_MUST_BE_ENTRY";
@@ -62,8 +62,8 @@ public final class EntryRefResolver {
     }
 
     /**
-     * HTTP PathRun wire form used by TraceProjectionService:
-     * {@code entry:METHOD:/route}.
+     * HTTP PathRun wire 形式，TraceProjectionService 使用：
+     * {@code entry:METHOD:/route}。
      */
     public static String methodRouteRef(ApiDtos.EntryDto entry) {
         Objects.requireNonNull(entry, "entry");
@@ -73,9 +73,9 @@ public final class EntryRefResolver {
     }
 
     /**
-     * All equivalent join keys for a raw entry ref (canonical id, METHOD:route, bare id).
-     * Used by StaticDynamicContraster so {@code entry:entry-ann-*} joins PathRuns keyed as
-     * {@code entry:POST:/foo}.
+     * 原始 entry ref 的全部等价 join key（规范 id、METHOD:route、裸 id）。
+     * StaticDynamicContraster 使用，使 {@code entry:entry-ann-*} 可 join 以
+     * {@code entry:POST:/foo} 为 key 的 PathRun。
      */
     public static List<String> joinKeys(List<ApiDtos.EntryDto> entries, String rawRef) {
         LinkedHashSet<String> keys = new LinkedHashSet<>();
@@ -91,7 +91,7 @@ public final class EntryRefResolver {
                 keys.add(methodRouteRef(resolution.entry()));
             }
         }
-        // Also accept METHOD:route even when catalog resolve fails (orphan PathRun).
+        // catalog resolve 失败时也接受 METHOD:route（孤儿 PathRun）。
         String methodRoute = extractMethodRouteKey(rawRef);
         if (!methodRoute.isBlank()) {
             keys.add(methodRoute);
@@ -134,7 +134,7 @@ public final class EntryRefResolver {
             if (byBareId != null) {
                 return resolved(byBareId);
             }
-            // Raw routes / invented paths are not entry refs.
+            // 裸 route / 臆造 path 不是 entry ref。
             return unresolved(Status.MUST_BE_ENTRY, CODE_MUST_BE_ENTRY);
         }
 

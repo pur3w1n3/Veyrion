@@ -3,10 +3,10 @@ package com.aq.jvmsentinel.sandbox;
 import java.nio.file.Path;
 
 /**
- * Minimal lifecycle surface consumed by authorized artifact executors.
+ * 授权 artifact executor 消费的最小 lifecycle 面。
  *
- * <p>Implementations remain deployment-owned. A runtime implementation cannot grant itself
- * permission or select a stronger capability than the task requires.</p>
+ * <p>实现仍为 deployment-owned。runtime 实现不能自行授予
+ * permission 或选择强于 task 要求的 capability。</p>
  */
 public interface SandboxRuntimeClient extends AutoCloseable {
     SandboxHandle create(SandboxRequest request);
@@ -14,8 +14,8 @@ public interface SandboxRuntimeClient extends AutoCloseable {
     CommandResult command(String sandboxId, CommandRequest request);
 
     /**
-     * Copies a host file into the sandbox. Used for large probe plans that must not be inlined
-     * into {@code docker exec} (Windows CreateProcess command-line limit).
+     * 将 host file 复制进 sandbox。用于不能内联进
+     * {@code docker exec} 的大 probe plan（Windows CreateProcess 命令行限制）。
      */
     default void uploadFile(String sandboxId, Path hostFile, String containerPath) {
         throw new UnsupportedOperationException("uploadFile is not supported by this sandbox client");

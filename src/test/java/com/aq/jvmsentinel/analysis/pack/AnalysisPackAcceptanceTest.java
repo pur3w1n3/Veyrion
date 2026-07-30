@@ -7,7 +7,7 @@ import com.aq.jvmsentinel.model.IdentityTrack;
 import java.util.List;
 
 /**
- * P1-02: optional multi-header JWT + Flowable deploy AnalysisPack shapes
+ * P1-02：可选 multi-header JWT + Flowable deploy AnalysisPack shape
  * (non-destructive templates only; not a first-class Blade product path).
  */
 public final class AnalysisPackAcceptanceTest {

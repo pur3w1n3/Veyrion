@@ -18,7 +18,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Typed provider outputs. Finding writes and verification elevation are rejected by the gate.
+ * 类型化 provider 输出。Finding 写与 verification 提升被 gate 拒绝。
  */
 public final class ProviderContribution {
     private ProviderContribution() {
@@ -166,8 +166,8 @@ public final class ProviderContribution {
     }
 
     /**
-     * Detector output is a {@link SecurityHypothesis} candidate only — never a Finding,
-     * and lifecycle is clamped to {@link HypothesisLifecycle#CANDIDATE} by the gate.
+     * Detector 输出仅为 {@link SecurityHypothesis} 候选 — 永非 Finding，
+     * lifecycle 由 gate 钳制为 {@link HypothesisLifecycle#CANDIDATE}。
      */
     public record Detector(
             String providerId,

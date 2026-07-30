@@ -6,8 +6,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * One IR/trace fragment staged before atomic publish.
- * Payload digest covers canonical UTF-8 of sorted key=value lines for determinism.
+ * 原子发布前 staged 的单条 IR/trace 片段。
+ * Payload digest 覆盖排序 key=value 行的 canonical UTF-8 以保证确定性。
  */
 public record IrChunk(
         int schemaVersion,

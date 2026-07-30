@@ -4,8 +4,8 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Workspace-scoped provider/model configuration persistence.
- * Credential material is intentionally absent; use ProviderCredentialRepository separately.
+ * workspace 作用域的 provider/model 配置 persistence。
+ * 刻意不含 credential 材料；请单独使用 ProviderCredentialRepository。
  */
 public interface ProviderRepository {
     void saveProvider(ProviderContracts.ProviderDefinition provider);

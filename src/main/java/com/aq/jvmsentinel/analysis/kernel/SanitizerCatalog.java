@@ -4,8 +4,8 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * Minimal known sanitizer / validator markers for kernel summaries and taint hooks.
- * Matching is declarative only; it does not prove runtime neutralization.
+ * kernel summary 与 taint hook 的最小 known sanitizer / validator marker。
+ * Matching 仅 declarative；不证明 runtime neutralization。
  */
 public final class SanitizerCatalog {
     private SanitizerCatalog() {

@@ -26,10 +26,10 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P1-08: Control Plane query/write ports accept Test Analyzer-style unknown-language nodes
- * and expose findings / PathRuns / providers / createScan projection via application.port
- * without JVM-only required fields.
- * Declared scope = incremental port decoupling, not a ControlPlaneServer big-bang rewrite.
+ * 说明：P1-08：Control Plane query/write port 接受 Test Analyzer unknown-language node
+ * 并经 application.port 暴露 finding / PathRun / provider / createScan 投影
+ * 无 JVM-only 必填 field。
+ * 声明 scope = 增量 port 解耦，非 ControlPlaneServer big-bang 重写。
  */
 public final class ControlPlaneDecoupleAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -269,7 +269,7 @@ public final class ControlPlaneDecoupleAcceptanceTest {
     }
 
     private static URI uri(ControlPlaneServer server, String path) {
-        // baseUri is /api/v1 without trailing slash — must concatenate, not URI.resolve.
+        // baseUri 为 /api/v1 无 trailing slash — 须 concatenate，非 URI.resolve。
         return URI.create(server.baseUri() + path);
     }
 
@@ -280,7 +280,7 @@ public final class ControlPlaneDecoupleAcceptanceTest {
                 try {
                     Files.deleteIfExists(path);
                 } catch (Exception ignored) {
-                    // best-effort cleanup
+                    // 尽力 cleanup
                 }
             });
         }

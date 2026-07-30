@@ -186,7 +186,7 @@ public final class LoopbackHttpProbeAcceptanceTest {
         });
         server.createContext("/slow", exchange -> {
             try {
-                // Must exceed FAST_READ_TIMEOUT_MS (1500) so wave-2 recovery stays covered.
+                // 必须超过 FAST_READ_TIMEOUT_MS（1500），以覆盖 wave-2 恢复路径。
                 Thread.sleep(1_800);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();

@@ -12,9 +12,9 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Builds a bounded, serializable CFG from method IR sites.
- * Uses callEdges / memberAccesses / resolved call-graph evidence as block anchors;
- * does not claim full branch or exception fidelity.
+ * 从 method IR site 构建有界、可序列化 CFG。
+ * 以 callEdges / memberAccesses / resolved call-graph evidence 为 block anchor；
+ * 不声称完整 branch 或 exception fidelity。
  */
 public final class CfgBuilder {
     public static final int GAP_THRESHOLD = 8;
@@ -71,7 +71,7 @@ public final class CfgBuilder {
             }
             blocks.add(block.withSuccessors(successors));
         }
-        // Annotate call-site adjacency without inventing targets outside observed blocks.
+        // 标注 call-site adjacency，不发明 observed block 外 target。
         for (int i = 0; i + 1 < blocks.size(); i++) {
             CfgBasicBlock current = blocks.get(i);
             if (current.evidenceRefs().stream().anyMatch(ref -> ref.contains("@bci-"))) {
@@ -139,7 +139,7 @@ public final class CfgBuilder {
                 }
             }
         }
-        // Fall back to the first method that owns observed sites matching the needle.
+        // Fallback 到拥有匹配 needle 的 observed site 的首个 method。
         Set<String> candidates = new LinkedHashSet<>();
         for (BytecodeFactIndex.CallEdge edge : nullSafe(callEdges)) {
             if (evidenceMatchesNeedle(edge.evidence(), needle)) {

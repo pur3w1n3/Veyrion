@@ -12,8 +12,8 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Parses PATH / TRIAGE {@code nextExperiments} blocks into sandbox_probe-consumable steps.
- * Rejects AUTH_GAP-only narratives without PathRun or entry references.
+ * 将 PATH / TRIAGE {@code nextExperiments} 块解析为 sandbox_probe 可消费步骤。
+ * 拒绝无 PathRun 或 entry 引用的纯 AUTH_GAP 叙事。
  */
 public final class NextExperimentSteps {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -39,7 +39,7 @@ public final class NextExperimentSteps {
             JsonNode root = JSON.readTree(extractJsonObject(conclusionJson));
             JsonNode array = root.path("nextExperiments");
             if (!array.isArray() || array.isEmpty()) {
-                // Also accept nextValidationSteps alias.
+                // 亦接受 nextValidationSteps 别名。
                 array = root.path("nextValidationSteps");
             }
             if (!array.isArray()) {
@@ -78,7 +78,7 @@ public final class NextExperimentSteps {
                 && text(item, "techniqueId").isBlank()) {
             throw new IllegalArgumentException("AUTH_GAP_NARRATIVE_WITHOUT_PATHRUN");
         }
-        // STATIC_ONLY contrast may inform planning but must not claim bypass/confirmed.
+        // STATIC_ONLY 对比可指导规划，但不得声称 bypass/confirmed。
         boolean claimsBypass = objectiveLower.contains("已绕过") || objectiveLower.contains("bypass confirmed")
                 || objectiveLower.contains("已确认绕过") || objectiveLower.contains("confirmed bypass");
         boolean staticOnlyClaim = objectiveLower.contains("static_only")

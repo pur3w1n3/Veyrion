@@ -37,14 +37,14 @@ import java.util.concurrent.Executors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-/** Main-style acceptance checks for digest-pinned external executable JAR execution. */
+/** 主流程式验收：摘要钉死的外部可执行 JAR 执行。 */
 public final class ExternalArtifactTaskExecutorAcceptanceTest {
     private static final String IMAGE =
             "registry.example/veyrion/external-runtime@sha256:" + "c".repeat(64);
     private static final String FEATURES = String.join(",",
             "lifecycle-v1", "execd-command-v1", "network-deny-v1", "resource-budget-v1",
-            // OpenSandbox hardened attestation still requires non-root-v1; TRUSTED_DOCKER local
-            // Docker uses container-root-v1 separately in LocalDockerTrustedSandboxClient.
+            // OpenSandbox 加固 attestation 仍要求 non-root-v1；TRUSTED_DOCKER 本地
+            // Docker 在 LocalDockerTrustedSandboxClient 中单独使用 container-root-v1。
             "non-root-v1", "read-only-rootfs-v1", "writable-tmp-v1",
             "controlled-tmpfs-v1", "digest-pinned-readonly-artifact-v1");
 
@@ -382,11 +382,11 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
             if (command.startsWith("rm -f ") && command.contains(".snapshot")) {
                 return new CommandResult(null, "", "", 0);
             }
-            // Optional probe: if [ -f path ]; then cp ...; else 0
+            // 可选探针：if [ -f path ]; then cp ...; else 0
             if (command.startsWith("if [ -f ")) {
                 return new CommandResult(null, data == null ? "0\n" : data.length + "\n", "", 0);
             }
-            // Required: cp -f <path> <path>.snapshot && wc -c < <path>.snapshot
+            // 必需：cp -f <path> <path>.snapshot && wc -c < <path>.snapshot
             if (command.startsWith("cp -f ") && command.contains(".snapshot")
                     && command.contains("wc -c < ")) {
                 return data == null

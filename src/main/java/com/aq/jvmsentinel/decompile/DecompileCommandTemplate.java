@@ -4,8 +4,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Fixed argv templates for a Worker executor. No shell string or caller-supplied option is
- * accepted, and the tool digest must be verified by the Worker before using these arguments.
+ * Worker executor 的固定 argv 模板。不接受 shell 字符串或调用方提供的 option，
+ * Worker 使用前必须校验 tool digest。
  */
 public final class DecompileCommandTemplate {
     public static final String JAVA = "/opt/java/bin/java";

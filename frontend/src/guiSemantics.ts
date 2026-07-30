@@ -1,10 +1,10 @@
 /**
- * P1-23 GUI semantics contract — labels/views/download artifacts must stay consistent
- * across report, PathRun, and export surfaces. Asserted by GuiSemanticsContractAcceptanceTest.
+ * P1-23 GUI 语义合同 — labels/views/download 制品须在
+ * report、PathRun 与 export 面保持一致。由 GuiSemanticsContractAcceptanceTest 断言。
  *
- * Audited scope = contract tests (not manual visual regression).
- * Production privacy / retention / MODEL_THINKING durable policy remains deferred with SSO
- * (ProductionFeatures.DISABLED / ADR-0003 PROPOSED).
+ * 审计范围 = 合同测试（非手动视觉回归）。
+ * 生产 privacy / retention / MODEL_THINKING 持久策略仍与 SSO 一并延期
+ *（ProductionFeatures.DISABLED / ADR-0003 PROPOSED）。
  */
 
 export const GUI_CONTRACT_AUDIT = {
@@ -37,7 +37,7 @@ export const DOWNLOAD_ARTIFACTS = {
   }
 } as const
 
-/** Results sub-views from GUI_DESIGN §2 / §4 — not interchangeable with downloads. */
+/** 来自 GUI_DESIGN §2 / §4 的 Results 子视图 — 与 downloads 不可互换。 */
 export const RESULTS_VIEW_IDS = [
   'report',
   'findings',
@@ -57,8 +57,8 @@ export const RESULTS_VIEW_IDS = [
 export type ResultsViewId = (typeof RESULTS_VIEW_IDS)[number]
 
 /**
- * Hidden from ResultsSubnav chrome (P1-25 report UX).
- * IDs remain in RESULTS_VIEW_IDS for P1-23 contract + API prefetch; panels are not shown.
+ * 自 ResultsSubnav chrome 隐藏（P1-25 report UX）。
+ * ID 仍留在 RESULTS_VIEW_IDS 供 P1-23 合同 + API prefetch；面板不展示。
  */
 export const RESULTS_VIEWS_HIDDEN_FROM_NAV = ['evidenceGraph', 'coverage'] as const
 
@@ -143,7 +143,7 @@ export const RESULTS_VIEW_META: Record<ResultsViewId, { zh: string; en: string; 
   }
 }
 
-/** Pipeline / job terminal and blocked states that must be text-visible (not color-only). */
+/** 须文本可见（非仅颜色）的 pipeline / job 终态与阻塞状态。 */
 export const PIPELINE_STATUS_LABELS = {
   BLOCKED: { zh: '已阻断', en: 'Blocked' },
   WORKER_UNAVAILABLE: { zh: '无 Worker / Worker 不可用', en: 'Worker unavailable' },

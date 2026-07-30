@@ -5,8 +5,8 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Persistence boundary for encrypted provider credentials.
- * Implementations must never store a root key or expose records through public API DTOs.
+ * 加密 provider credential 的 persistence 边界。
+ * 实现不得存储 root key 或通过 public API DTO 暴露 record。
  */
 public interface ProviderCredentialRepository {
     void save(StoredCredential credential);

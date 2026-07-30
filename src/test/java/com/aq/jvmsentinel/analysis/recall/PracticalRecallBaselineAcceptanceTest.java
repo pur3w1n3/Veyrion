@@ -11,8 +11,8 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-15: open-source selectable practical recall catalog + metrics gate.
- * Local JARs are optional; without them scores are NOT_EVALUABLE (not a production recall claim).
+ * P0-15：开源可选 practical recall catalog + metrics gate。
+ * Local JAR 可选；无则 score 为 NOT_EVALUABLE（非 production recall 声称）。
  */
 public final class PracticalRecallBaselineAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -107,7 +107,7 @@ public final class PracticalRecallBaselineAcceptanceTest {
                         try {
                             Files.deleteIfExists(path);
                         } catch (IOException ignored) {
-                            // best-effort cleanup
+                            // 尽力 cleanup
                         }
                     });
         }

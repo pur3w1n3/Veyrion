@@ -18,9 +18,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Deterministic sink-perspective projection of existing {@link BytecodeFactIndex.TaintPath}
- * plus unbound sinks into static contrast rows (status {@link ContrastStatus#UNKNOWN}
- * until {@link StaticDynamicContraster} joins PathRuns).
+ * 现有 {@link BytecodeFactIndex.TaintPath} 的确定性 sink 视角投影
+ * 加 unbound sink 为 static contrast 行（status {@link ContrastStatus#UNKNOWN}
+ * 直至 {@link StaticDynamicContraster} join PathRun）。
  *
  * <p>True reverse BFS from sinks is intentionally out of scope for this MVP slice.
  */
@@ -82,8 +82,8 @@ public final class StaticContrastProjector {
         List<Sink> sinkList = sinks == null ? List.of() : sinks;
         for (Sink sink : sinkList) {
             if (coveredSinkIds.contains(sink.id())) continue;
-            // AUTH_GAP stays secondary — still project so ledger can show STATIC_ONLY honesty,
-            // but do not invent taint paths.
+            // AUTH_GAP 保持 secondary — 仍投影以便 ledger 显示 STATIC_ONLY 诚实，
+            // 但不发明 taint path。
             total++;
             if (rows.size() >= MAX_ROWS) {
                 truncated = true;
@@ -136,8 +136,8 @@ public final class StaticContrastProjector {
     }
 
     /**
-     * Runtime projection from persisted scan DTO (no BytecodeFactIndex in store).
-     * Recovers taintPathId from sink.source {@code taint-path=} and evidence
+     * 从 persisted scan DTO 的 runtime 投影（store 中无 BytecodeFactIndex）。
+     * 从 sink.source {@code taint-path=} 与 evidence 恢复 taintPathId
      * {@code classfile-taint:*}.
      */
     public Projection projectFromScan(
@@ -153,7 +153,7 @@ public final class StaticContrastProjector {
                         com.aq.jvmsentinel.model.VerificationStatus.STATIC_INFERRED));
             }
         }
-        // Reconstruct minimal TaintPath stubs from evidence so entryRefs + taintPathId are filled.
+        // 从 evidence 重建最小 TaintPath stub，填充 entryRefs + taintPathId。
         List<BytecodeFactIndex.TaintPath> reconstructed = new ArrayList<>();
         if (evidence != null) {
             for (ApiDtos.EvidenceDto item : evidence.values()) {
@@ -191,7 +191,7 @@ public final class StaticContrastProjector {
                 }
                 String sourceOwner = "";
                 String sourceMethod = "";
-                // Prefer matching sink that references this taint path for category / handler.
+                // 优先匹配引用本 taint path 的 sink 以得 category / handler。
                 String category = "UNKNOWN";
                 for (Sink sink : modelSinks) {
                     if (sink.source() != null && sink.source().contains("taint-path=" + pathId)) {
@@ -199,10 +199,10 @@ public final class StaticContrastProjector {
                         break;
                     }
                 }
-                // Source handler from annotation evidence on linked entry is resolved later;
-                // leave empty source so projectFromTaint still creates the row via sink loop
-                // when we only have evidence — emit a stub path with empty source that is
-                // skipped by empty-handler entry lookup, then sink loop recovers taint-path=.
+                // linked entry 上 annotation evidence 的 source handler 稍后解析；
+                // source 留空以便 projectFromTaint 仍经 sink loop 创建行
+                // 仅 evidence 时 — emit stub path，空 source，
+                // 被 empty-handler entry lookup 跳过，随后 sink loop 恢复 taint-path=。
                 reconstructed.add(new BytecodeFactIndex.TaintPath(
                         pathId,
                         sourceOwner.isBlank() ? "_" : sourceOwner,
@@ -217,9 +217,9 @@ public final class StaticContrastProjector {
                         "STATIC_INFERRED"));
             }
         }
-        // When reconstructed paths have placeholder source, prefer sink-source projection only.
+        // 重建 path 有 placeholder source 时，仅优先 sink-source 投影。
         if (!reconstructed.isEmpty()) {
-            // Drop placeholder taint stubs — sink.source already carries taint-path=.
+            // 丢弃 placeholder taint stub — sink.source 已带 taint-path=。
             reconstructed = List.of();
         }
         return projectFromTaint(reconstructed, modelSinks, entries, evidence);
@@ -258,7 +258,7 @@ public final class StaticContrastProjector {
                 addEntryAliases(refs, entry);
             }
         }
-        // AUTH_GAP sinks encode "Class#method METHOD /route" in symbol — match declaring class#method.
+        // AUTH_GAP sink 在 symbol 编码 "Class#method METHOD /route" — 匹配 declaring class#method。
         if (refs.isEmpty() && sink.symbol() != null && sink.symbol().contains("#")) {
             String symbol = sink.symbol();
             int hash = symbol.indexOf('#');

@@ -6,8 +6,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Deployment-operator attestation for the OpenSandbox server configuration.
- * The standard lifecycle API does not report secure_runtime, so untrusted response data must not grant capability.
+ * OpenSandbox server 配置的 deployment-operator attestation。
+ * 标准 lifecycle API 不报告 secure_runtime，不可信 response 数据不得授予 capability。
  */
 public record RuntimeAttestation(String protocolVersion, WorkerCapability capability, String runtime,
                                  boolean egressDefaultDeny, boolean nonRoot, boolean readOnlyRootFilesystem,

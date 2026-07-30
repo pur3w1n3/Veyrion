@@ -10,8 +10,8 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * Process-local registry of versioned analysis providers.
- * Collect routes all outputs through {@link ProviderOutputGate}.
+ * 版本化 analysis provider 的进程内 registry。
+ * Collect 将所有输出路由经 {@link ProviderOutputGate}。
  */
 public final class ProviderRegistry {
     private static final CopyOnWriteArrayList<AnalysisProvider> PROVIDERS = new CopyOnWriteArrayList<>();
@@ -44,8 +44,8 @@ public final class ProviderRegistry {
     }
 
     /**
-     * Unregisters a provider. Only contributions from its {@link AnalysisProvider#declaredScope()}
-     * disappear on the next {@link #collect(ProviderContext)}; other providers are unaffected.
+     * 注销 provider。仅其 {@link AnalysisProvider#declaredScope()} 的 contribution
+     * 在下次 {@link #collect(ProviderContext)} 消失；其他 provider 不受影响。
      */
     public static boolean unregister(AnalysisProvider provider) {
         if (provider == null) return false;
@@ -72,8 +72,8 @@ public final class ProviderRegistry {
     }
 
     /**
-     * Collect contributions from all registered providers, gated by schema/scope/budget/dedupe.
-     * Providers cannot write Findings; status elevation is clamped/rejected.
+     * 从所有注册 provider collect contribution，经 schema/scope/budget/dedupe gate。
+     * Provider 不能写 Finding；status 提升被钳制/拒绝。
      */
     public static ProviderBundle collect(ProviderContext context) {
         Objects.requireNonNull(context, "context");

@@ -11,7 +11,7 @@ import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.List;
 
-/** Focused contract checks that do not require Control Plane integration or a Docker daemon. */
+/** 聚焦的合同检查，无需 Control Plane 集成或 Docker 守护进程。 */
 public final class TrustedDockerBuildingBlocksAcceptanceTest {
     private static final String IMAGE =
             "registry.example/veyrion/runtime@sha256:" + "c".repeat(64);

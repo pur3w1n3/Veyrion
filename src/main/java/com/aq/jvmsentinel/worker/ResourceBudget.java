@@ -1,6 +1,6 @@
 package com.aq.jvmsentinel.worker;
 
-/** Hard upper bounds supplied by the control plane, never by the analyzed artifact. */
+/** 由控制面提供的硬上限，永不由被分析制品提供。 */
 public record ResourceBudget(long maxWallClockSeconds, long maxCpuMillis, long maxMemoryBytes,
                              long maxDiskBytes, long maxTraceBytes) {
     public ResourceBudget {

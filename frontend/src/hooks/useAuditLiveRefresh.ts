@@ -23,12 +23,16 @@ const shouldKeepLive = (
   if (task && ACTIVE_TASK.has(task.status)) return true
   const scanJobs = jobs.filter((job) => job.scanId === scanId)
   if (scanJobs.some((job) => ACTIVE_JOB.has(job.status))) return true
+  // 操作员暂停保留游标；继续轮询以保持 resume/status 新鲜。
+  if (scan?.pipelineStatus === 'PAUSED' || scan?.pipelineStatus === 'RUNNING' || scan?.pipelineArmed) {
+    return true
+  }
   if (scan && TERMINAL_SCAN.has(scan.status)) return false
-  // Dynamic observation failed/cancelled with no follow-up AI job: stop polling.
+  // 动态观测失败/取消且无后续 AI job：停止轮询。
   if (task && (task.status === 'FAILED' || task.status === 'CANCELLED')) return false
-  // Keep refreshing across inter-stage gaps (previous stage done, next job not
-  // created yet). Stop when a terminal failure/block means the pipeline cannot
-  // advance — otherwise the UI required a tab switch to resume.
+  // 跨 stage 间隙持续刷新（上一 stage 完成、下一 job 尚未
+  // 创建）。终态失败/阻塞表示流水线无法推进时停止 —
+  // 否则 UI 需切换标签页才能恢复。
   if (scanJobs.length === 0) return scan == null || !TERMINAL_SCAN.has(scan.status)
   const allTerminal = scanJobs.every((job) => TERMINAL_JOB.has(job.status))
   if (!allTerminal) return true
@@ -39,9 +43,9 @@ const shouldKeepLive = (
 }
 
 /**
- * Live sync for audit execution / process views.
- * Prefer Control Plane SSE to trigger GET refreshes; fall back to bounded
- * polling while the scan or any job/task is non-terminal.
+ * 审计执行 / 过程视图的 live 同步。
+ * 优先 Control Plane SSE 触发 GET 刷新；scan 或任意 job/task 非终态时
+ * 回退到有界轮询。
  */
 export function useAuditLiveRefresh({
   projectId,
@@ -153,7 +157,7 @@ export function useAuditLiveRefresh({
       }
     }
 
-    // SSE only hints; onReconcile already GETs the scan. refreshNow reloads jobs/tasks.
+    // SSE 仅提示；onReconcile 已 GET scan。refreshNow 重载 jobs/tasks。
     const unsubscribe = api.subscribe(scanId, () => undefined, {
       onReconcile: (next) => {
         if (closed) return
@@ -167,12 +171,12 @@ export function useAuditLiveRefresh({
         })
       },
       onError: () => {
-        // EventSource retries on its own; ensure polling covers gaps when SSE is flaky.
+        // EventSource 自行重试；SSE 不稳定时确保轮询覆盖间隙。
         if (!closed && !sseAlive) schedulePoll()
       }
     })
 
-    // Always start bounded polling; SSE accelerates updates when available.
+    // 始终启动有界轮询；SSE 可用时加速更新。
     schedulePoll()
 
     return () => {

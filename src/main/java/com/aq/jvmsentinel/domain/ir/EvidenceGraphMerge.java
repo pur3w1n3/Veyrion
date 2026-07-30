@@ -7,7 +7,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Merges supplemental IR nodes into an existing Evidence Graph without elevating status.
+ * 将补充 IR node 合并进现有 Evidence Graph，不提升 status。
  */
 public final class EvidenceGraphMerge {
     private EvidenceGraphMerge() {

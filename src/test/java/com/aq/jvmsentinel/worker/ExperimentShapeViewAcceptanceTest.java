@@ -5,7 +5,7 @@ import com.aq.jvmsentinel.control.ApiDtos;
 import java.util.List;
 import java.util.Map;
 
-/** P2-04: one PathRun → normalized debug shape for humans and AI. */
+/** P2-04：一条 PathRun → 供人类与 AI 使用的规范化调试形状。 */
 public final class ExperimentShapeViewAcceptanceTest {
     public static void main(String[] args) {
         ApiDtos.PathRunDto run = new ApiDtos.PathRunDto(

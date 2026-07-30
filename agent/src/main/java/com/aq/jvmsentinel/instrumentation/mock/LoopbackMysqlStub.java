@@ -25,9 +25,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Bounded MySQL classic-protocol substitute for driver startup and harmless query progression.
- * Supported commands are handshake/auth, COM_QUERY, COM_STMT_PREPARE/EXECUTE/CLOSE, ping and quit.
- * It neither implements SQL semantics nor represents a real MySQL server.
+ * 有界 MySQL classic-protocol 替身，供 driver 启动与无害 query 推进。
+ * 支持 handshake/auth、COM_QUERY、COM_STMT_PREPARE/EXECUTE/CLOSE、ping 与 quit。
+ * 不实现 SQL 语义，也不代表真实 MySQL server。
  */
 public final class LoopbackMysqlStub implements AutoCloseable {
     private static final int MAX_CLIENTS = 64;
@@ -311,8 +311,8 @@ public final class LoopbackMysqlStub implements AutoCloseable {
         if (normalized.matches("select\\s+1(?:\\s*;)?")) return "1";
         if (normalized.contains("@@version") || normalized.contains("version()")) return "8.0.36-veyrion-mock";
         if (normalized.contains("database()")) return "veyrion";
-        // Connector/J asks the server for transaction/read-only variables during pool startup.
-        // Empty scalars are not protocol-compatible and fail Druid connection acquisition.
+        // Connector/J 在 pool 启动时向 server 查询 transaction/read-only 变量。
+        // 空 scalar 与协议不兼容，会导致 Druid 连接获取失败。
         if (normalized.contains("transaction_isolation")
                 || normalized.contains("tx_isolation")) return "REPEATABLE-READ";
         if (normalized.contains("@@session.transaction_read_only")

@@ -8,8 +8,8 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * P0-17: structured sandbox startup / readiness failure classification.
- * Diagnostics are evidence for Dynamic Diagnostics / coverage gaps — never findings.
+ * P0-17：结构化沙箱启动 / 就绪失败分类。
+ * 诊断为 Dynamic Diagnostics / coverage gap 的证据 — 永非 finding。
  */
 public final class SandboxStartupDiagnostics {
     public enum FailureClass {

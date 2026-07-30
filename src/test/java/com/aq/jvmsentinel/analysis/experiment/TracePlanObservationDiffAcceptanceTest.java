@@ -14,7 +14,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * TracePlan vs PathTrace diff acceptance (PATH/TRIAGE injection + probe priority).
+ * 说明：TracePlan vs PathTrace diff 验收（PATH/TRIAGE 注入+probe 优先级）。
  */
 public final class TracePlanObservationDiffAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

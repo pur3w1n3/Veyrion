@@ -19,8 +19,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Minimal, bounded classfile parser. It intentionally understands only the
- * constant-pool and annotation-related structures needed by pre-analysis.
+ * 最小有界 classfile parser。刻意仅理解
+ * pre-analysis 所需的 constant-pool 与 annotation 相关结构。
  */
 final class ClassFileMetadataParser {
     private static final int MAX_CONSTANT_POOL_ENTRIES = 65_535;
@@ -47,8 +47,8 @@ final class ClassFileMetadataParser {
         } catch (MalformedClassFile ignored) {
             return ClassMetadata.invalid(fallbackClassName);
         } catch (RuntimeException ignored) {
-            // Parser defects and malformed lengths must not escape as allocation
-            // requests or turn an invalid class into executable behavior.
+            // Parser 缺陷与畸形 length 不得逃逸为 allocation
+            // 请求，也不得将无效 class 变为可执行行为。
             return ClassMetadata.invalid(fallbackClassName);
         }
     }

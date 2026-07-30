@@ -9,29 +9,28 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Server-only verification gate.
+ * 仅服务端验证门禁。
  *
- * <p>H3 (SQL dataflow): may upgrade {@code DYNAMIC_SUSPECTED → DYNAMIC_CONFIRMED} when a
- * malicious fragment is present in actual JDBC/mock SQL without parameterization.
+ * <p>H3（SQL 数据流）：当恶意片段出现在实际 JDBC/mock SQL 且未参数化时，
+ * 可将 {@code DYNAMIC_SUSPECTED → DYNAMIC_CONFIRMED} 升级。
  *
- * <p>P2 family fail-closed: Guard / State / Typestate / other non-SQL-dataflow families are
- * capped at {@code DYNAMIC_SUSPECTED} until an independent family audit lands. Models cannot
- * invoke this upgrade.
+ * <p>P2 family fail-closed：Guard / State / Typestate / 其他非 SQL 数据流 family
+ * 上限为 {@code DYNAMIC_SUSPECTED}，直至独立 family 审计落地。模型不能调用此升级。
  */
 public final class DynamicConfirmedGate {
     private DynamicConfirmedGate() { }
 
     /**
-     * SQL dataflow H3 path (default). Equivalent to
-     * {@link #evaluate(PathRun, String, HypothesisFamily)} with {@link HypothesisFamily#DATAFLOW}.
+     * SQL 数据流 H3 路径（默认）。等价于
+     * {@link #evaluate(PathRun, String, HypothesisFamily)} 且 {@link HypothesisFamily#DATAFLOW}。
      */
     public static VerificationStatus evaluate(PathRun run, String probeMarker) {
         return evaluate(run, probeMarker, HypothesisFamily.DATAFLOW);
     }
 
     /**
-     * Family-aware evaluation. Non-{@link HypothesisFamily#DATAFLOW} families never return
-     * {@link VerificationStatus#DYNAMIC_CONFIRMED} (P2 scaffolding / unaudited).
+     * 按 family 评估。非 {@link HypothesisFamily#DATAFLOW} family 永不返回
+     * {@link VerificationStatus#DYNAMIC_CONFIRMED}（P2 脚手架 / 未审计）。
      */
     public static VerificationStatus evaluate(PathRun run, String probeMarker,
                                               HypothesisFamily family) {
@@ -40,7 +39,7 @@ public final class DynamicConfirmedGate {
         if (!allowsDynamicConfirmed(resolved)) {
             return VerificationStatus.DYNAMIC_SUSPECTED;
         }
-        // H3 requires same-PathRun statement evidence + replayable evidence refs (P0-06).
+        // H3 要求同 PathRun 语句证据 + 可重放 evidence refs（P0-06）。
         if (run.sqlEvents().isEmpty()) return VerificationStatus.DYNAMIC_SUSPECTED;
         if (run.evidenceRefs() == null || run.evidenceRefs().isEmpty()) {
             return VerificationStatus.DYNAMIC_SUSPECTED;
@@ -54,10 +53,10 @@ public final class DynamicConfirmedGate {
         boolean hit = false;
         boolean parameterizedBlock = false;
         for (SqlEvent event : run.sqlEvents()) {
-            // Protocol listen/meta must never satisfy H3; only statement text counts.
+            // 协议 listen/meta 永不能满足 H3；仅语句文本计数。
             if (!isStatementEvidence(event)) continue;
-            // Fail-closed: MOCK metadata flags / maliciousFragmentPresent alone cannot upgrade.
-            // H3 requires the probe marker to appear in actual statement SQL text.
+            // Fail-closed：仅凭 MOCK 元数据标志 / maliciousFragmentPresent 不能升级。
+            // H3 要求探针 marker 出现在实际语句 SQL 文本中。
             String sql = event.sqlText() == null ? "" : event.sqlText().toLowerCase(Locale.ROOT);
             if (!sql.contains(needle)) continue;
             hit = true;
@@ -84,8 +83,8 @@ public final class DynamicConfirmedGate {
     }
 
     /**
-     * Clamp a proposed status for a hypothesis family. Non-SQL-dataflow families cannot exceed
-     * {@link VerificationStatus#DYNAMIC_SUSPECTED}; {@code VERIFIED} remains globally closed.
+     * 为 hypothesis family 钳制提议状态。非 SQL 数据流 family 不能超过
+     * {@link VerificationStatus#DYNAMIC_SUSPECTED}；{@code VERIFIED} 全局关闭。
      */
     public static VerificationStatus capForFamily(VerificationStatus proposed,
                                                   HypothesisFamily family) {
@@ -102,8 +101,8 @@ public final class DynamicConfirmedGate {
     }
 
     /**
-     * Only the SQL dataflow H3 path may reach {@code DYNAMIC_CONFIRMED} until independent
-     * Guard/State/Typestate (and other non-SQL) family audits complete.
+     * 在独立 Guard/State/Typestate（及其他非 SQL）family 审计完成前，
+     * 仅 SQL 数据流 H3 路径可达 {@code DYNAMIC_CONFIRMED}。
      */
     public static boolean allowsDynamicConfirmed(HypothesisFamily family) {
         return family == HypothesisFamily.DATAFLOW;

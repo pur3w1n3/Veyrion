@@ -14,7 +14,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-07 residual: ControlPlaneStore.attachTriageFinding keeps structured rootCause for dashboard.
+ * P0-07 残余：ControlPlaneStore.attachTriageFinding 为 dashboard 保留结构化 rootCause。
  */
 public final class TriageFindingAttachAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

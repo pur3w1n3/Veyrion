@@ -2,7 +2,7 @@ package com.aq.jvmsentinel.model;
 
 import java.util.Objects;
 
-/** D1 SQL observation attached to a PathRun. */
+/** 附加到 PathRun 的 D1 SQL observation。 */
 public record SqlEvent(
         String sqlText,
         String parameterSummary,

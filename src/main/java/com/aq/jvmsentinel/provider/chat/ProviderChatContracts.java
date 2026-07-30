@@ -11,8 +11,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Provider-neutral, bounded chat turns. Assistant wire content is retained so a
- * provider adapter can continue a tool exchange without reconstructing model output.
+ * provider 中立、有界的 chat turn。保留 assistant wire content，以便
+ * provider adapter 继续 tool 交换而无需重建 model 输出。
  */
 public final class ProviderChatContracts {
     public static final int MAX_RESPONSE_BYTES = 1_048_576;
@@ -38,8 +38,8 @@ public final class ProviderChatContracts {
     }
 
     /**
-     * The wire message is a defensive copy of a validated assistant message. It
-     * contains only provider-recognized content and cannot carry credentials or authority.
+     * wire message 为已校验 assistant message 的防御性副本。
+     * 仅含 provider 识别的 content，不能携带 credential 或 authority。
      */
     public static final class AssistantTurn implements ChatTurn {
         private final ProviderProtocol protocol;
@@ -68,8 +68,8 @@ public final class ProviderChatContracts {
     }
 
     /**
-     * Results are ordered against the preceding assistant calls by the adapter.
-     * Error state comes exclusively from canonical server-side ToolResult status.
+     * result 由 adapter 按 preceding assistant call 排序。
+     * 错误状态仅来自 canonical 服务端 ToolResult status。
      */
     public static final class ToolResultsTurn implements ChatTurn {
         private final ProviderProtocol protocol;
@@ -114,7 +114,7 @@ public final class ProviderChatContracts {
             }
         }
 
-        /** Only TOOL_USE responses can return calls to orchestration. */
+        /** 仅 TOOL_USE 响应可向 orchestration 返回 call。 */
         public List<ToolCall> executableCalls() {
             return stopReason == StopReason.TOOL_USE ? assistant.calls() : List.of();
         }

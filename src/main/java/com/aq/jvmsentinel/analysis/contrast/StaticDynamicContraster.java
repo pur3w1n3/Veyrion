@@ -14,13 +14,13 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Joins static contrast rows to PathRuns by {@code entryRef × track}.
+ * 按 {@code entryRef × track} 将 static contrast 行 join PathRun。
  *
  * <p>Entry refs are joined through {@link EntryRefResolver} aliases so
  * {@code entry:entry-ann-*} rows match PathRuns keyed as {@code entry:METHOD:/route}.
  *
  * <p>All-401 / AUTH_CHALLENGE PathRuns yield {@link ContrastStatus#STATIC_ONLY} —
- * never MATCHED and never a bypass-confirmed claim.
+ * 永非 MATCHED，永非 bypass-confirmed 声称。
  */
 public final class StaticDynamicContraster {
     public static final String STOP_AUTH_CHALLENGE_ONLY = "PATHRUN_AUTH_CHALLENGE_ONLY";
@@ -164,8 +164,8 @@ public final class StaticDynamicContraster {
     }
 
     /**
-     * STATIC_ONLY / unmatched rows must never be narrated as bypassed/confirmed.
-     * Returns true when text claims a confirmed bypass for a STATIC_ONLY context.
+     * STATIC_ONLY/unmatched 行永不得叙述为 bypassed/confirmed。
+     * 文本对 STATIC_ONLY 上下文声称 confirmed bypass 时返回 true。
      */
     public static boolean claimsBypassConfirmed(String text) {
         if (text == null || text.isBlank()) return false;
@@ -198,7 +198,7 @@ public final class StaticDynamicContraster {
                 if (Boolean.TRUE.equals(run.entryHit())
                         && (run.parameterBound() == null
                         || Boolean.TRUE.equals(run.parameterBound()))) {
-                    // Stronger match — keep scanning for completeness.
+                    // 更强 match — 继续扫描以求完整。
                 } else {
                     anyPartial = true;
                 }
@@ -213,7 +213,7 @@ public final class StaticDynamicContraster {
             return new ContrastDecision(ContrastStatus.PARTIAL, refs, preferredTrack, STOP_PARTIAL_BIND);
         }
         if (anyChallenge) {
-            // All 401 / AUTH_CHALLENGE — static candidate remains unconfirmed.
+            // 全部 401 / AUTH_CHALLENGE — 静态候选仍 unconfirmed。
             return new ContrastDecision(ContrastStatus.STATIC_ONLY, refs, preferredTrack,
                     STOP_AUTH_CHALLENGE_ONLY);
         }

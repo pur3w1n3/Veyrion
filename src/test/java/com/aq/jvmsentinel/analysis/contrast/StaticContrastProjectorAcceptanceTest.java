@@ -24,7 +24,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * Acceptance: taint sinks project to contrast rows with entryRefs / taintPathId.
+ * Acceptance：taint sink 投影为带 entryRefs / taintPathId 的 contrast 行。
  */
 public final class StaticContrastProjectorAcceptanceTest {
     public static void main(String[] args) throws Exception {
@@ -73,7 +73,7 @@ public final class StaticContrastProjectorAcceptanceTest {
                             paths.stream().anyMatch(path -> path.id().equals(row.taintPathId()))),
                     "taintPathId matches BytecodeFactIndex.TaintPath.id");
 
-            // Budget truncation is explicit and testable.
+            // Budget truncation 显式且可测。
             List<Sink> many = new java.util.ArrayList<>();
             for (int i = 0; i < StaticContrastProjector.MAX_ROWS + 5; i++) {
                 many.add(new Sink("sink-extra-" + i, "FILE", "x.Y#z", "unbound", 0.5,
@@ -93,7 +93,7 @@ public final class StaticContrastProjectorAcceptanceTest {
     }
 
     private static void fixtures(Path root) throws Exception {
-        // Minimal reuse of InterproceduralTaintAcceptanceTest shape.
+        // 最小复用 InterproceduralTaintAcceptanceTest shape。
         write(root, "org/springframework/web/bind/annotation/RestController.java", """
                 package org.springframework.web.bind.annotation;
                 import java.lang.annotation.*;

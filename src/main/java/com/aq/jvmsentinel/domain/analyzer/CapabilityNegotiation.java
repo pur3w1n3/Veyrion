@@ -6,8 +6,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Analyzer offers capabilities; Control Plane accepts a subset.
- * Unknown capabilities fail closed — they are never silently ignored.
+ * Analyzer 提供 capability；Control Plane 接受子集。
+ * 未知 capability fail-closed — 永不静默忽略。
  */
 public record CapabilityNegotiation(
         int schemaVersion,
@@ -51,7 +51,7 @@ public record CapabilityNegotiation(
     }
 
     /**
-     * Accept only known capabilities that the offer includes and the server allows.
+     * 仅接受 offer 包含且服务端允许的已知 capability。
      */
     public Set<AnalyzerCapability> accept(Set<AnalyzerCapability> serverAllowed) {
         Objects.requireNonNull(serverAllowed, "serverAllowed");

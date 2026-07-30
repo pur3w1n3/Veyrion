@@ -26,19 +26,19 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 /**
- * Bounded, load-free auth-surface query over a registered JAR/WAR.
- * Returns FACT-shaped observations for AI tools; never executes classes,
- * never opens network, and never elevates verification status.
+ * 对已注册 JAR/WAR 的有界、无 load auth-surface 查询。
+ * 返回 AI tool 的 FACT 形 observation；永不执行 class、
+ * 永不打开 network，永不提升 verification status。
  *
- * <p>Core harvest uses generic JWT/secret property patterns and auth filter/annotation
- * signals. Optional {@link com.aq.jvmsentinel.analysis.framework.FrameworkAdapter}
- * dictionaries contribute known-weak-key HINTs for in-artifact matching only — never
- * silent mint sources for a general platform.
+ * <p>核心 harvest 使用通用 JWT/secret property pattern 与 auth filter/annotation
+ * signal。可选 {@link com.aq.jvmsentinel.analysis.framework.FrameworkAdapter}
+ * dictionary 仅为 artifact 内匹配贡献 known-weak-key HINT — 永不
+ * 作为通用 platform 的 silent mint source。
  */
 public final class AuthCodeQueryService {
     /**
      * @deprecated Detection dictionary moved to {@link SpringBladeAdapter#WELL_KNOWN_COMMERCIAL_SIGN_KEY};
-     * kept as a fixture/compat alias — not a core mint source.
+     * 作为 fixture/compat alias 保留 — 非 core mint source。
      */
     @Deprecated
     public static final String WELL_KNOWN_BLADE_COMMERCIAL_SIGN_KEY =
@@ -111,11 +111,11 @@ public final class AuthCodeQueryService {
     }
 
     /**
-     * Redacted candidate for AI / tool output. Never carries raw secret bytes.
+     * AI / tool 输出的 redacted 候选。永不携带 raw secret 字节。
      *
      * @param classification FACT when value was present in artifact config/class;
-     *                       RULE_GENERATED when alias matched a well-known dictionary
-     *                       entry found in the artifact; HINT for adapter-only notes
+     *                       alias 匹配 well-known dictionary 时为 RULE_GENERATED
+     *                       artifact 中找到 entry；adapter-only note 为 HINT
      */
     public record SecretCandidateHint(
             String alias,
@@ -171,7 +171,7 @@ public final class AuthCodeQueryService {
         }
 
         /**
-         * Compact constructor for callers that omit secondary header name / materials.
+         * 省略次要 header 名 / 材料的 caller 用的紧凑 constructor。
          */
         public AuthCodeQueryResult(
                 boolean multiHeaderAuthSurface,
@@ -217,7 +217,7 @@ public final class AuthCodeQueryService {
     }
 
     /**
-     * Adapter-owned well-known key HINTs for FRAMEWORK_ADAPTER_CONTEXT (not FACT).
+     * 说明：FRAMEWORK_ADAPTER_CONTEXT adapter-owned well-known key HINT（非 FACT）。
      * @deprecated Prefer {@link FrameworkAdapterRegistry#wellKnownSecretDictionaries()}.
      */
     @Deprecated
@@ -423,7 +423,7 @@ public final class AuthCodeQueryService {
 
         List<String> techniques = new ArrayList<>();
         if (cipherMaterial) {
-            // Cookie-channel rememberMe cipher material — not JWT; AI may use CUSTOM_POC/Cookie.
+            // 说明：Cookie-channel rememberMe cipher 材料 — 非 JWT；AI 可用 CUSTOM_POC/Cookie。
             techniques.add("REMEMBER_ME_COOKIE");
             techniques.add("CUSTOM_POC");
         }
@@ -567,7 +567,7 @@ public final class AuthCodeQueryService {
                 }
             }
         } catch (IOException ignored) {
-            // Nested optional.
+            // Nested 可选。
         }
     }
 
@@ -700,7 +700,7 @@ public final class AuthCodeQueryService {
             if (name == null || name.isBlank()) continue;
             if (matchesAdapterAuthPath(evidenceLower, adapter.authClassPathSignals())
                     || adapter.preferSecondaryAuthHeader(null)) {
-                // Prefer adapters whose path signals appear in this evidence blob.
+                // 优先 path signal 出现在本 evidence blob 的 adapter。
                 if (matchesAdapterAuthPath(evidenceLower, adapter.authClassPathSignals())
                         || looksMultiHeaderHint(evidenceLower)) {
                     acc.secondaryAuthHeaderName = name.trim();

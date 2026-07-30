@@ -11,11 +11,11 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Second-language static LanguageAnalyzer stub (JavaScript / ECMAScript).
+ * 第二语言静态 LanguageAnalyzer stub（JavaScript / ECMAScript）。
  *
  * <p>Speaks the out-of-process Analyzer contract and emits non-JVM {@code ProgramNode}
- * fragments. Does not embed a JS parser in the Control Plane and grants no RuntimeAdapter
- * or dynamic-execution rights (ADR-0001).
+ * 片段。不在 Control Plane 嵌入 JS parser，也不授予 RuntimeAdapter
+ * 或 dynamic-execution 权限（ADR-0001）。
  */
 public final class TestJsLanguageAnalyzer {
     public static final String ANALYZER_ID = "test-js-language-analyzer";

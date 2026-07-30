@@ -1,0 +1,17 @@
+package com.aq.jvmsentinel.ai.context;
+
+/** 用户 prompt 各上下文块的内联行数上限。 */
+public final class AiPromptLimits {
+    public static final int PRIOR_ROLE_SUMMARY_CHARS = 2_048;
+    public static final int MAX_PRE_ENTRY_PROMPT_ROWS = 40;
+    /** 紧凑默认；可通过 scan_memory_get / facts_search 加深。 */
+    public static final int MAX_PATH_RUN_PROMPT_ROWS = 12;
+    public static final int MAX_BYPASS_POC_PROMPT_ROWS = 16;
+    public static final int MAX_CONSTRAINT_PROMPT_ROWS = 24;
+    public static final int MAX_TAINT_PATH_SUMMARY_ROWS = 8;
+    public static final int MAX_FUZZ_CATEGORY_PROMPT_ROWS = 6;
+    public static final int MAX_COVERAGE_GAP_PROMPT_ROWS = 20;
+
+    private AiPromptLimits() {
+    }
+}

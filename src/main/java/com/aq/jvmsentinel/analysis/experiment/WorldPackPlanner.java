@@ -11,7 +11,7 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * P0-21: plan World Pack manifests for OBSERVE_FAIL and MOCK_CONTINUE dependency strategies.
+ * P0-21：为 OBSERVE_FAIL 与 MOCK_CONTINUE dependency 策略规划 World Pack manifest。
  */
 public final class WorldPackPlanner {
     public static final String PRODUCER = WorldPackManifest.PRODUCER;
@@ -34,12 +34,12 @@ public final class WorldPackPlanner {
     }
 
     /**
-     * Resolves the Docker JVM dependency mode for the <em>exploration</em> stage
+     * 解析 <em>exploration</em> stage 的 Docker JVM dependency mode
      * (primary dynamic registration / cold start). Always {@link WorldPackDependencyMode#MOCK_CONTINUE}
-     * so deny-all jars can bind HTTP under protocol-agnostic stubs before probes run.
+     * 使 deny-all jar 在 probe 运行前可在 protocol-agnostic stub 下绑定 HTTP。
      *
      * <p>Confirmation ({@link WorldPackDependencyMode#OBSERVE_FAIL}) is a separate stage —
-     * use {@link #resolveRuntimeDependencyMode(Iterable, WorldPackExecutionStage)} with
+     * 使用 {@link #resolveRuntimeDependencyMode(Iterable, WorldPackExecutionStage)} 与
      * {@link WorldPackExecutionStage#CONFIRMATION}. Never branch on MySQL/PostgreSQL/vendor.</p>
      */
     public static WorldPackDependencyMode resolveRuntimeDependencyMode(
@@ -48,8 +48,8 @@ public final class WorldPackPlanner {
     }
 
     /**
-     * Stage-driven World Pack mode for one Docker JVM. Mode follows execution stage only;
-     * posture mix and database vendor must not select the mode.
+     * 单 Docker JVM 的 stage 驱动 World Pack mode。Mode 仅随 execution stage；
+     * posture mix 与 database vendor 不得选择 mode。
      *
      * @param plans reserved for future stage narrowing (ignored for mode selection today)
      */

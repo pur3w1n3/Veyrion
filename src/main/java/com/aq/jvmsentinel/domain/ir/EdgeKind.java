@@ -1,7 +1,7 @@
 package com.aq.jvmsentinel.domain.ir;
 
 /**
- * Evidence Graph edge kinds (P1-02). Language-neutral; JVM call descriptors stay in extensions.
+ * 说明：Evidence Graph edge kind（P1-02）；语言中立，JVM call descriptor 留在 extension。
  */
 public enum EdgeKind {
     CALL,

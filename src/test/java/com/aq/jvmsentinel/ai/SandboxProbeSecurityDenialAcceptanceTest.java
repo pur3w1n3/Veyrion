@@ -17,8 +17,8 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-14: sandbox_probe rejects command/image/mount/network/UID/budget overflow fields
- * (schema additionalProperties=false / UNKNOWN_ARGUMENT).
+ * P0-14：sandbox_probe 拒绝 command/image/mount/network/UID/budget 溢出字段
+ * （schema additionalProperties=false / UNKNOWN_ARGUMENT）。
  */
 public final class SandboxProbeSecurityDenialAcceptanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();

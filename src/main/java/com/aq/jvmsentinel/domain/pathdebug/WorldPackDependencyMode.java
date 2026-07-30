@@ -4,9 +4,9 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * World Pack dependency strategy.
- * OBSERVE_FAIL: real failure, keep prior path.
- * MOCK_CONTINUE: stub/seed continues deeper exploration with MOCK provenance.
+ * World Pack dependency 策略。
+ * OBSERVE_FAIL：真实 failure，保留 prior path。
+ * 说明：MOCK_CONTINUE：stub/seed 以 MOCK provenance 继续更深探索。
  */
 public enum WorldPackDependencyMode {
     OBSERVE_FAIL,

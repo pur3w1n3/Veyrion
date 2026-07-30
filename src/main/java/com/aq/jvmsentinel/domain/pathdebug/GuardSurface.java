@@ -5,8 +5,8 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Static catalog entry for a FORCED_REACHABILITY-eligible guard surface.
- * Refs are server-owned ({@code GUARD:AUTH:<simpleName>}); AI/frontend cannot supply them.
+ * FORCED_REACHABILITY 合格 guard surface 的静态 catalog entry。
+ * Ref 为服务端 owned（{@code GUARD:AUTH:<simpleName>}）；AI/frontend 不能提供。
  */
 public record GuardSurface(
         String ref,

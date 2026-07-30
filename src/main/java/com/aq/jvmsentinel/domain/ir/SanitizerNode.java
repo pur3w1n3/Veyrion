@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Encoding / parameterization / whitelist / reject-branch sanitizer or validator.
+ * 说明：Encoding/parameterization/whitelist/reject-branch sanitizer 或 validator。
  *
  * <p>Stable id: {@code sanitizer:{key}}. Minimal projection may leave this empty.
  */

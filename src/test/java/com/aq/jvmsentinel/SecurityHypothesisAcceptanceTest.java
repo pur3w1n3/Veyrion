@@ -27,7 +27,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * P0-12: SQL sink + AUTH_GAP project to DATAFLOW + GUARD_COVERAGE hypotheses without sink-none.
+ * 说明：P0-12：SQL sink+AUTH_GAP 投影为 DATAFLOW+GUARD_COVERAGE hypothesis，无 sink-none。
  */
 public final class SecurityHypothesisAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

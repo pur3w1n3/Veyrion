@@ -4,7 +4,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 
-/** Bounded result manifest returned by the isolated Worker; source contents are not embedded. */
+/** 隔离 Worker 返回的有界结果 manifest；不嵌入源码内容。 */
 public record DecompileResult(int schemaVersion, String taskId, String artifactDigest,
                               String primaryToolDigest, String validationToolDigest,
                               long wallClockMillis, long cpuMillis, long outputBytes,

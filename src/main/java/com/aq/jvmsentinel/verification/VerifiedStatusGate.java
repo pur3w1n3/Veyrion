@@ -7,13 +7,13 @@ import java.time.Instant;
 import java.util.Objects;
 
 /**
- * Fail-closed gate before any path may claim {@link VerificationStatus#VERIFIED}.
- * Ordinary {@link WorkerCapability#TRUSTED_DOCKER} never qualifies; health without
- * hardened release evidence keeps dynamic verification disabled for VERIFIED.
+ * 任一路径声称 {@link VerificationStatus#VERIFIED} 前的 fail-closed 门禁。
+ * 普通 {@link WorkerCapability#TRUSTED_DOCKER} 永不符合；无加固 release 证据的 health
+ * 对 VERIFIED 保持动态验证禁用。
  *
- * <p>MVP-6 scaffolding: escape-suite attestation may be inspected, but VERIFIED
- * remains closed until a future deployment wires escape-suite attestation end-to-end
- * (reason {@code VERIFIED_GATE_NOT_OPEN}).</p>
+ * <p>MVP-6 脚手架：可检查 escape-suite attestation，但 VERIFIED
+ * 在未来部署端到端接入 escape-suite attestation 前保持关闭
+ *（原因 {@code VERIFIED_GATE_NOT_OPEN}）。</p>
  */
 public final class VerifiedStatusGate {
     private VerifiedStatusGate() { }
@@ -34,9 +34,9 @@ public final class VerifiedStatusGate {
     }
 
     /**
-     * Evaluates whether VERIFIED may be issued. Requires hardened capability,
-     * an enabled sandbox release decision, and an eligible replay match.
-     * Never upgrades MOCK / TRUSTED_DOCKER observations alone.
+     * 评估是否可签发 VERIFIED。需要 hardened capability、
+     * 已启用的 sandbox release 决策，以及合格的 replay 匹配。
+     * 永不单独将 MOCK / TRUSTED_DOCKER 观测升级。
      */
     public static Decision evaluate(WorkerCapability capability,
                                     SandboxReleaseGate.ReleaseDecision release,
@@ -64,7 +64,7 @@ public final class VerifiedStatusGate {
             return denied(capability, "REPLAY_EVIDENCE_INELIGIBLE");
         }
         if (!"DYNAMIC_SUSPECTED".equals(replay.verificationStatus())) {
-            // Replay gate itself never issues VERIFIED; keep belt-and-suspenders.
+            // Replay 门禁本身永不签发 VERIFIED；双重保险。
             return denied(capability, "REPLAY_STATUS_NOT_PROMOTABLE");
         }
         if (attestation == null || !attestation.present() || !attestation.fresh()
@@ -75,8 +75,8 @@ public final class VerifiedStatusGate {
                     : attestation.reasonCode();
             return denied(capability, reason);
         }
-        // Honest scaffolding: even with all inputs + attestation file, VERIFIED stays
-        // closed until a future deployment wires escape-suite attestation end-to-end.
+        // 诚实脚手架：即使具备全部输入 + attestation 文件，VERIFIED 仍
+        // 在未来部署端到端接入 escape-suite attestation 前保持关闭。
         return new Decision(false, VerificationStatus.DYNAMIC_SUSPECTED.name(),
                 "VERIFIED_GATE_NOT_OPEN", "HARDENED_PENDING_VERIFIED");
     }
@@ -85,7 +85,7 @@ public final class VerifiedStatusGate {
         return denied(WorkerCapability.TRUSTED_DOCKER, "TRUSTED_DOCKER_NEVER_VERIFIED");
     }
 
-    /** Hardened runtime path used by health / capability probes (never opens VERIFIED alone). */
+    /** health / capability 探针使用的 hardened runtime 路径（永不单独打开 VERIFIED）。 */
     public static Decision forHardenedRuntime(WorkerCapability capability) {
         if (capability != WorkerCapability.HARDENED_GVISOR
                 && capability != WorkerCapability.HARDENED_KATA) {

@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-04: AUTH code_query / multi-PoC diversity / authPass identity gates (pure unit slice).
+ * P0-04：AUTH code_query / 多 PoC 多样化 / authPass 身份闸门（纯单元切片）。
  */
 public final class AuthMultiRoundGateAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -79,7 +79,7 @@ public final class AuthMultiRoundGateAcceptanceTest {
                 "confirm AUTH pass identity");
         check(AuthBypassFeasibility.CODE_QUERY_REQUIRED.equals("AUTH_CODE_QUERY_REQUIRED"),
                 "code_query gate code");
-        // Touch ApiDtos schema constant so finding/report consumers stay aligned.
+        // 触及 ApiDtos schema 常量以保持 finding/report 消费者对齐。
         check(ApiDtos.SCHEMA_VERSION >= 1, "API schema version present");
     }
 

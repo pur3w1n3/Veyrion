@@ -17,7 +17,7 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-05: PATH/TRIAGE sandbox_probe requires track/objective/(coverageGapRef).
+ * P0-05：PATH/TRIAGE sandbox_probe 要求 track/objective/(coverageGapRef)。
  */
 public final class PathTriageProbeGateAcceptanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();

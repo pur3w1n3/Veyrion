@@ -8,8 +8,8 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Public/domain DTOs for provider configuration.
- * None of these contracts can carry plaintext secrets or encrypted credential material.
+ * provider 配置的 public/domain DTO。
+ * 这些 contract 均不能携带明文 secret 或加密 credential 材料。
  */
 public final class ProviderContracts {
     public static final int SCHEMA_VERSION = 1;
@@ -64,16 +64,16 @@ public final class ProviderContracts {
     }
 
     public enum ProviderKind {
-        /** Explicit OpenAI Chat Completions protocol. */
+        /** 显式 OpenAI Chat Completions protocol。 */
         OPENAI_CHAT(ProviderProtocol.OPENAI_CHAT),
-        /** Explicit Anthropic Messages protocol. */
+        /** 显式 Anthropic Messages protocol。 */
         ANTHROPIC_MESSAGES(ProviderProtocol.ANTHROPIC_MESSAGES),
-        /** Legacy persisted value; protocol-compatible with OPENAI_CHAT. */
+        /** Legacy 持久化值；protocol 与 OPENAI_CHAT 兼容。 */
         @Deprecated
         OPENAI_COMPATIBLE(ProviderProtocol.OPENAI_CHAT),
-        /** Legacy persisted value. Azure routing is not inferred from the OpenAI protocol. */
+        /** Legacy 持久化值。Azure routing 不能从 OpenAI protocol 推断。 */
         AZURE_OPENAI(null),
-        /** Existing loopback-only compatibility boundary; uses the OpenAI wire shape. */
+        /** 现有仅 loopback 兼容边界；使用 OpenAI wire shape。 */
         LOCAL(ProviderProtocol.OPENAI_CHAT);
 
         private final ProviderProtocol protocol;
@@ -112,8 +112,8 @@ public final class ProviderContracts {
     }
 
     /**
-     * A remote inventory is discovery data only. It neither allowlists a model nor proves
-     * chat, tool-use, structured-output, context-window, or any other runtime capability.
+     * 远程 inventory 仅为 discovery 数据。既不 allowlist model，也不证明
+     * 说明：chat/tool-use/structured-output/context-window 或其他 runtime capability。
      */
     public record ModelInventory(int schemaVersion, String workspaceId, String providerId,
                                  ProviderProtocol protocol, List<ModelDefinition> models,

@@ -10,8 +10,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Read-only coverage matrix for a scan (P0-13). Aggregates known gaps; never invents coverage.
- * SUCCESS / COMPLETED must never be interpreted as safe or secure.
+ * scan 的只读 coverage matrix（P0-13）。聚合已知 gap；永不发明 coverage。
+ * SUCCESS / COMPLETED 永不得解读为 safe 或 secure。
  */
 public record CoverageMatrix(
         int schemaVersion,
@@ -221,7 +221,7 @@ public record CoverageMatrix(
             map.put("DIRECT", direct);
             map.put("CHA", cha);
             map.put("UNRESOLVED", unresolved);
-            // UNRESOLVED is a gap count, never covered.
+            // UNRESOLVED 为 gap 计数，永非 covered。
             map.put("unresolvedIsGap", true);
             return map;
         }
@@ -334,7 +334,7 @@ public record CoverageMatrix(
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("neverTreatSuccessAsSafe", neverTreatSuccessAsSafe);
             map.put("gapsNeverCountAsCovered", gapsNeverCountAsCovered);
-            // Explicit: SUCCESS/COMPLETED ≠ safe/secure.
+            // 显式：SUCCESS/COMPLETED ≠ safe/secure。
             map.put("scanSuccessMeans", "analysis_finished_not_safe");
             return map;
         }

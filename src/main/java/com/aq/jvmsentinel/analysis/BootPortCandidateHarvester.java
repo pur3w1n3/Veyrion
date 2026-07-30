@@ -10,8 +10,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * P0-17: harvest candidate application HTTP ports from Boot config lines / manifest text.
- * Dependency ports (3306/6379/5432/…) are never returned as application candidates.
+ * P0-17：从 Boot config 行 / manifest 文本 harvest 候选 application HTTP port。
+ * 依赖 port（3306/6379/5432/…）永不作为 application 候选返回。
  */
 public final class BootPortCandidateHarvester {
     private static final Set<Integer> DEPENDENCY_PORTS = Set.of(
@@ -90,7 +90,7 @@ public final class BootPortCandidateHarvester {
             }
         }
         if (candidates.isEmpty()) {
-            // Common Boot default remains a soft candidate for readiness ordering only.
+            // 常见 Boot 默认 port 仍仅作为 readiness 排序的 soft 候选。
             candidates.add(8080);
         }
         return new Harvest(new ArrayList<>(candidates), new ArrayList<>(rejected), startClass,

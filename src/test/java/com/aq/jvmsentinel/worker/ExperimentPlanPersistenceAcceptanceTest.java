@@ -21,7 +21,7 @@ import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-/** Experiment plans survive Control Plane restart (V014). */
+/** 实验计划在 Control Plane 重启后仍保留（V014）。 */
 public final class ExperimentPlanPersistenceAcceptanceTest {
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("exp-plan-persist");

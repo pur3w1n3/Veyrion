@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-/** Workspace-scoped, default-deny operator authorization. */
+/** workspace 作用域、默认 deny 的 operator 授权。 */
 public final class Authorizer {
     private static final Map<OperatorRole, Set<Permission>> DEFAULT_MATRIX = matrix();
     private final Map<OperatorRole, Set<Permission>> rolePermissions;
@@ -38,8 +38,8 @@ public final class Authorizer {
     }
 
     /**
-     * Boundary helper for untyped credential ingress. WorkerCredential and every other
-     * non-operator type are denied before role evaluation.
+     * 无类型 credential 入口的边界 helper。WorkerCredential 及所有其他
+     * 非 operator 类型在 role 评估前即 deny。
      */
     public Decision authorizeCredential(Object candidate, String workspaceId, Permission permission) {
         if (!(candidate instanceof AuthContext context)) {

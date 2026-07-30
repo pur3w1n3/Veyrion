@@ -6,7 +6,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Strict server-side lifecycle gate for hypothesis experiments (P1-06).
+ * hypothesis experiment 的严格服务端 lifecycle gate（P1-06）。
  *
  * <ul>
  *   <li>Failed / empty projections never change lifecycle.</li>

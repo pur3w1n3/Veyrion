@@ -7,12 +7,12 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * CI gate runner for curated main-style acceptance tests.
- * Fails closed when zero tests execute or zero assertions are recorded.
+ * 精选 main-style acceptance test 的 CI gate runner。
+ * 零 test 执行或零 assertion 记录时 fail-closed。
  */
 public final class AcceptanceTestRunner {
     /**
-     * Curated P0 gate: coordinator-first for fast signal, then persistence and lifecycle.
+     * 精选 P0 gate：coordinator 优先快速 signal，再 persistence 与 lifecycle。
      */
     static final List<String> GATE_CLASSES = List.of(
             "com.aq.jvmsentinel.SchemaContractAcceptanceTest",
@@ -166,7 +166,7 @@ public final class AcceptanceTestRunner {
                 return counter.get();
             }
         } catch (ReflectiveOperationException ignored) {
-            // fall through
+            // 穿透
         }
         return 0;
     }

@@ -44,9 +44,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 /**
- * P1-07: out-of-process Analyzer / Runtime contract — same-process Fake regression plus a
- * real {@link ProcessBuilder} subprocess {@link com.aq.jvmsentinel.domain.analyzer.TestAnalyzerProcessMain}
- * that submits minimal IR through {@link AnalyzerIngress}.
+ * P1-07：进程外 Analyzer / Runtime contract — 同进程 Fake regression 加
+ * 真实 {@link ProcessBuilder} 子进程 {@link com.aq.jvmsentinel.domain.analyzer.TestAnalyzerProcessMain}
+ * 经 {@link AnalyzerIngress} 提交最小 IR。
  */
 public final class TestAnalyzerAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -169,8 +169,8 @@ public final class TestAnalyzerAcceptanceTest {
     }
 
     /**
-     * Real subprocess: ProcessBuilder launches {@link TestAnalyzerProcessMain}; parent ingests
-     * the written chunk envelope through AnalyzerIngress (out-of-process contract proof).
+     * 真实子进程：ProcessBuilder launch {@link TestAnalyzerProcessMain}；父进程 ingest
+     * 经 AnalyzerIngress 的 written chunk envelope（进程外 contract 证明）。
      */
     @SuppressWarnings("unchecked")
     private static void subprocessAnalyzerPublishesMinimalIr() throws Exception {
@@ -287,7 +287,7 @@ public final class TestAnalyzerAcceptanceTest {
             check(ex.reason() == AnalyzerRejectReason.ARTIFACT_DIGEST_MISMATCH,
                     "offer artifactDigest must match scope");
         }
-        // Commit path: wrong scope identity (includes artifact) fails closed as SCOPE_MISMATCH.
+        // Commit path：错误 scope identity（含 artifact）fail-closed 为 SCOPE_MISMATCH。
         expectReject(AnalyzerRejectReason.SCOPE_MISMATCH, ingress -> {
             String sessionId = ingress.openSession(session(scope, ALLOWED, Instant.now().plusSeconds(60)));
             AnalyzerScope otherArtifact = new AnalyzerScope(
@@ -337,7 +337,7 @@ public final class TestAnalyzerAcceptanceTest {
                     1, "test-analyzer", "0.1.0", List.of("testlang"),
                     List.of("application/x-veyrion-test"), offered, AnalyzerSchemaRange.v1Only(),
                     ARTIFACT, POLICY, scope, List.of());
-            // Server does not allow PROGRAM_IR in this scenario
+            // 本场景服务端不允许 PROGRAM_IR
             ingress.negotiate(negotiation, EnumSet.of(AnalyzerCapability.DIAGNOSTIC));
         });
     }
@@ -350,7 +350,7 @@ public final class TestAnalyzerAcceptanceTest {
             IrChunk chunk1 = IrChunk.create(scope, 1, IrChunk.KIND_ENTRY, Map.of(
                     "id", StableNodeIds.entry("e1"), "protocol", "HTTP", "address", "/x"));
             ingress.stageChunk(sessionId, chunk0);
-            // Manifest claims both chunks but only chunk0 staged
+            // Manifest 声称两 chunk 但仅 chunk0 staged
             IrChunkManifest forged = new IrChunkManifest(
                     List.of(chunk0.toRef(), chunk1.toRef()),
                     chunk0.payloadBytes() + chunk1.payloadBytes(),
@@ -373,7 +373,7 @@ public final class TestAnalyzerAcceptanceTest {
             IrChunk chunk1 = IrChunk.create(scope, 1, IrChunk.KIND_ENTRY, Map.of(
                     "id", StableNodeIds.entry("dup-e"), "protocol", "HTTP", "address", "/d"));
             ingress.stageChunk(sessionId, chunk1);
-            // Re-stage sequence 1 → DUPLICATE_CHUNK (containsKey before contiguous check).
+            // 说明：Re-stage sequence 1→DUPLICATE_CHUNK（contiguous check 前 containsKey）。
             ingress.stageChunk(sessionId, chunk1);
         });
     }
@@ -434,7 +434,7 @@ public final class TestAnalyzerAcceptanceTest {
         AnalyzerIngress.CommitResult first = ingress.commit(sessionId, submission);
         check(first.published() && !first.idempotentReplay(), "first publish ok");
 
-        // Replay on a new session after prior publish — same submissionId
+        // 先前 publish 后新 session replay — 相同 submissionId
         String session2 = ingress.openSession(session(scope, ALLOWED, Instant.now().plusSeconds(60)));
         for (IrChunk chunk : chunks) {
             ingress.stageChunk(session2, chunk);
@@ -558,7 +558,7 @@ public final class TestAnalyzerAcceptanceTest {
             ingress.stageChunk(sessionId, chunk);
         }
         ingress.commit(sessionId, analyzer.successSubmission(chunks));
-        // Drop ingress/analyzer; store still serves history
+        // 丢弃 ingress/analyzer；store 仍服务 history
         check(store.findByScanId(scope.scanId()).size() == 1,
                 "removing Analyzer does not erase published evidence");
     }

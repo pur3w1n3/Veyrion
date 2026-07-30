@@ -3,7 +3,7 @@ package com.aq.jvmsentinel.ai;
 import java.util.List;
 import java.util.Optional;
 
-/** Workspace-scoped persistence boundary for AI data-flow state. */
+/** AI 数据流状态的 workspace 作用域持久化边界。 */
 public interface AiJobRepository {
     void save(AiContracts.AiJob job);
     Optional<AiContracts.AiJob> find(String workspaceId, String jobId);

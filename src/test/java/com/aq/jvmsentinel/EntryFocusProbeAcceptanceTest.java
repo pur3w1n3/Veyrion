@@ -20,8 +20,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * Acceptance for P0-01 single-entry focus-probe API:
- * unauthorized → 403, authorized → 202 DYNAMIC_SUSPECTED, idempotent replay → 200, busy → 409.
+ * P0-01 单 entry focus-probe API 的 acceptance：
+ * 未授权 → 403，已授权 → 202 DYNAMIC_SUSPECTED，幂等 replay → 200，busy → 409。
  */
 public final class EntryFocusProbeAcceptanceTest {
     public static void main(String[] args) throws Exception {
@@ -89,7 +89,7 @@ public final class EntryFocusProbeAcceptanceTest {
                 check("DYNAMIC_SUSPECTED".equals(replayBody.get("verificationStatus")),
                         "idempotent replay stays DYNAMIC_SUSPECTED");
 
-                // First task remains QUEUED (no worker), so a second key must fail closed busy.
+                // 首 task 仍 QUEUED（无 worker），第二 key 须 fail-closed busy。
                 HttpResponse<String> busy = request(client, focusUri, "POST",
                         "{\"authorized\":true,\"maxRequests\":1}", token, "focus-busy");
                 check(busy.statusCode() == 409, "busy scan rejects second focus-probe");

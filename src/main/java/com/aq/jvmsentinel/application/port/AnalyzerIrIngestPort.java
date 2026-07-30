@@ -5,10 +5,10 @@ import com.aq.jvmsentinel.domain.ir.ProgramNode;
 import java.util.List;
 
 /**
- * Accepts LanguageAnalyzer / Test Analyzer style ProgramNode overlays (P1-08).
+ * 接受 LanguageAnalyzer / Test Analyzer 风格的 ProgramNode overlay（P1-08）。
  *
- * <p>Nodes are language-agnostic; unknown {@code language} and namespaced
- * {@code extensions} are preserved for query/display and never elevate verification status.
+ * <p>节点与语言无关；未知 {@code language} 与 namespaced
+ * {@code extensions} 保留供查询/展示，且不得提升 verification status。
  */
 public interface AnalyzerIrIngestPort {
     void ingestProgramNodes(String scanId, List<ProgramNode> nodes);

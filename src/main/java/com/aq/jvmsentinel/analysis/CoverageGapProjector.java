@@ -14,7 +14,7 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Projects STATIC_ONLY / uncovered taint steps into bounded CoverageGap hints for PATH_EXPLORATION.
+ * 将 STATIC_ONLY / uncovered taint step 投影为有界 CoverageGap hint，供 PATH_EXPLORATION。
  */
 public final class CoverageGapProjector {
     public static final int MAX_GAPS = 16;

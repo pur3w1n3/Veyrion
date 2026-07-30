@@ -5,11 +5,10 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Explicit observation probes for trusted fixture or application integration.
+ * 可信 fixture 或应用集成的显式观测探针。
  *
- * <p>Events emitted through this public API are always {@code APPLICATION_REPORTED}. Automatic bytecode
- * instrumentation uses a separate path. Because the Agent shares a JVM with the target, even instrumented
- * events remain suspect until an out-of-process Worker validates and replays the trace.</p>
+ * <p>经此公共 API 发出的事件恒为 {@code APPLICATION_REPORTED}。自动字节码
+ * 插桩走独立路径。因 Agent 与目标共享 JVM，即使插桩事件在进程外 Worker 校验并重放轨迹前仍属可疑。</p>
  */
 public final class AgentRuntime {
     private static volatile EventWriter writer;
@@ -18,14 +17,14 @@ public final class AgentRuntime {
             ThreadLocal.withInitial(() -> false);
     private static final ThreadLocal<CoverageState> COVERAGE_STATE =
             ThreadLocal.withInitial(CoverageState::new);
-    /** Per-request correlation for HTTP→JDBC join (P0-06). */
+    /** 每条请求的 HTTP→JDBC 关联（P0-06）。 */
     private static final ThreadLocal<String> REQUEST_CORRELATION =
             ThreadLocal.withInitial(() -> "");
     private static final ThreadLocal<Integer> REQUEST_CORRELATION_DEPTH =
             ThreadLocal.withInitial(() -> 0);
     /**
-     * Per-request METHOD_HOP budget. XSS wrappers (HTMLFilter) otherwise flood maxEvents
-     * before FORCED probes record Controller→Service hops.
+     * 每条请求的 METHOD_HOP 预算。否则 XSS 包装（HTMLFilter）会在 FORCED 探针
+     * 记录 Controller→Service 跳转前耗尽 maxEvents。
      */
     private static final ThreadLocal<Integer> METHOD_HOP_COUNT =
             ThreadLocal.withInitial(() -> 0);
@@ -77,8 +76,8 @@ public final class AgentRuntime {
     }
 
     /**
-     * Maps instrumented call sites to PathDebug effectKind while keeping top-level
-     * eventType inside the agent-jsonl whitelist.
+     * 将插桩 call site 映射到 PathDebug effectKind，同时保持顶层
+     * eventType 在 agent-jsonl 白名单内。
      */
     static String primaryEffectKind(String eventType, String targetClass, String targetMethod) {
         String owner = targetClass == null ? "" : targetClass;
@@ -152,15 +151,15 @@ public final class AgentRuntime {
                 Map.of("captureMode", captureMode, "operation", methodName));
     }
 
-    /** Instrumented observation with additional sanitized detail fields (route, SQL, etc.). */
+    /** 带额外净化 detail 字段（route、SQL 等）的插桩观测。 */
     public static void recordTransformedDetail(String eventType, String className, String methodName,
                                                Map<String, String> detail) {
         recordInstrumented(eventType, className, methodName, detail);
     }
 
     /**
-     * Starts (or nests inside) an HTTP request coverage scope. Public because Byte Buddy advice is
-     * inlined into application and framework classes.
+     * 启动（或嵌套于）HTTP 请求 coverage 范围。公开因 Byte Buddy advice
+     * 内联到应用与框架类。
      */
     public static boolean beginCoverageRequest() {
         if (!coverageEnabled) return false;
@@ -174,8 +173,8 @@ public final class AgentRuntime {
     }
 
     /**
-     * Whether an application METHOD_HOP should be recorded. Drops XSS/CGLIB noise and
-     * enforces a per-request hop cap so FORCED PathTraces keep meaningful business hops.
+     * 是否应记录应用 METHOD_HOP。丢弃 XSS/CGLIB 噪声并
+     * 强制执行每请求 hop 上限，使 FORCED PathTrace 保留有意义的业务跳转。
      */
     public static boolean shouldRecordMethodHop(String className, String methodName) {
         if (className == null || className.isBlank()) {
@@ -194,7 +193,7 @@ public final class AgentRuntime {
                 || lower.endsWith("xssfilter")) {
             return false;
         }
-        // Keep filter/guard surfaces for GUARD_DECISION; MethodHopAdvice is application-only.
+        // 保留 filter/guard 面供 GUARD_DECISION；MethodHopAdvice 仅应用层。
         int count = METHOD_HOP_COUNT.get();
         if (count >= MAX_METHOD_HOPS_PER_REQUEST) {
             return false;
@@ -203,10 +202,10 @@ public final class AgentRuntime {
         return true;
     }
 
-    /** Bind server-observed correlation id for the active HTTP request scope. */
+    /** 为 active HTTP 请求范围绑定服务端观测的 correlation id。 */
     public static void bindRequestCorrelation(String correlationId) {
-        // Every HTTP Advice enter owns one balanced scope, even if that layer cannot
-        // access the request header. Otherwise a blank nested view clears the outer id.
+        // 每条 HTTP Advice enter 拥有一个平衡 scope，即使该层无法
+        // 访问 request header。否则空白嵌套视图会清除外层 id。
         int prior = REQUEST_CORRELATION_DEPTH.get();
         REQUEST_CORRELATION_DEPTH.set(prior + 1);
         if (prior == 0) {
@@ -238,15 +237,15 @@ public final class AgentRuntime {
     }
 
     /**
-     * Ends an HTTP scope and emits compact coverage events when the outermost boundary returns.
-     * Prefer the no-arg form from Byte Buddy advice so {@code disableClassFormatChanges} paths
-     * do not depend on {@code @Advice.Enter} locals (boolean enter breaks HTTP advice weaving).
+     * 结束 HTTP scope，在最外层边界返回时发出紧凑 coverage 事件。
+     * 优先 Byte Buddy advice 的无参形式，使 {@code disableClassFormatChanges} 路径
+     * 不依赖 {@code @Advice.Enter} 局部变量（boolean enter 会破坏 HTTP advice 织入）。
      */
     public static void endCoverageRequest() {
         endCoverageRequest(coverageEnabled);
     }
 
-    /** Ends an HTTP scope when {@code entered} is true (legacy Advice.Enter boolean path). */
+    /** 当 {@code entered} 为 true 时结束 HTTP scope（旧 Advice.Enter boolean 路径）。 */
     public static void endCoverageRequest(boolean entered) {
         if (!entered || !coverageEnabled) return;
         CoverageState state = COVERAGE_STATE.get();
@@ -271,7 +270,7 @@ public final class AgentRuntime {
         }
     }
 
-    /** Records one reached conditional-branch or switch site in the active request scope. */
+    /** 在 active 请求范围内记录一处已到达的条件分支或 switch 站点。 */
     public static void recordBranchHit(String className, String methodDescriptor, int branchIndex) {
         if (!coverageEnabled || branchIndex < 0) return;
         CoverageState state = COVERAGE_STATE.get();
@@ -320,8 +319,8 @@ public final class AgentRuntime {
 
     static boolean record(String eventType, String className, String methodName, Map<String, String> detail) {
         EventWriter current = writer;
-        // Application-reported JDBC/HTTP helpers must carry request correlation when bound so
-        // Worker PathRun windows can join SQL statements to the probe that produced them (H3).
+        // 应用上报的 JDBC/HTTP helper 在绑定时须携带 request correlation，以便
+        // Worker PathRun 窗口将 SQL 语句关联到产生它们的探针（H3）。
         return current != null && !current.isStopped()
                 && current.writeApplication(eventType, className, methodName, withCorrelation(detail));
     }

@@ -8,9 +8,9 @@ import java.time.Instant;
 import java.util.Objects;
 
 /**
- * Worker-facing bridge: map {@link WorkerCapability} HARDENED_GVISOR/KATA onto
- * {@link RuntimeCapability#GVISOR}/{@link RuntimeCapability#KATA} and refuse enablement
- * without escape-suite attestation (P2 SCAFFOLDING, always fail-closed).
+ * Worker 侧桥接：将 {@link WorkerCapability} HARDENED_GVISOR/KATA 映射到
+ * {@link RuntimeCapability#GVISOR}/{@link RuntimeCapability#KATA}，无 escape-suite attestation 则拒绝启用
+ *（P2 SCAFFOLDING，始终 fail-closed）。
  */
 public final class HardenedWorkerEnablement {
     private HardenedWorkerEnablement() {

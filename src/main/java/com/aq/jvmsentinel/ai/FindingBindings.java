@@ -24,10 +24,10 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Server-gated PATH → REPORT contract: per-finding API + honest PoC bindings.
+ * 服务端闸门的 PATH → REPORT 合同：逐 finding API + 诚实 PoC 绑定。
  *
- * <p>Never invents VERIFIED exploits. FORCED PathRuns become
- * {@code INSTRUMENTATION_REACHABILITY} experiment hints, not anonymous exploit proof.</p>
+ * <p>绝不捏造 VERIFIED 利用。FORCED PathRun 变为
+ * {@code INSTRUMENTATION_REACHABILITY} 实验提示，非匿名 exploit 证明。</p>
  */
 public final class FindingBindings {
     public static final int MAX_BINDINGS = 48;
@@ -92,11 +92,11 @@ public final class FindingBindings {
             pathRunRefs = List.copyOf(pathRunRefs == null ? List.of() : pathRunRefs);
             reportRole = normalizeReportRole(reportRole);
             if ("VERIFIED".equals(status) || ApiDtos.DYNAMIC_CONFIRMED.equals(status)) {
-                // Bindings must not mint elevation; callers pass through only server status.
+                // binding 不得铸造提升；调用方仅透传服务端 status。
             }
         }
 
-        /** Backward-compatible overload (defaults to PRIMARY). */
+        /** 向后兼容重载（默认 PRIMARY）。 */
         public Binding(
                 String findingId,
                 String hypothesisId,
@@ -162,7 +162,7 @@ public final class FindingBindings {
         }
         String status = finding.verificationStatus() == null || finding.verificationStatus().isBlank()
                 ? ApiDtos.STATIC_INFERRED : finding.verificationStatus();
-        // Never elevate via bindings.
+        // binding 绝不提升。
         if ("VERIFIED".equals(status)) {
             status = ApiDtos.STATIC_INFERRED;
         }
@@ -193,10 +193,10 @@ public final class FindingBindings {
     }
 
     /**
-     * Default unauthenticated / AUTH_GAP endpoints with no follow-on cooperation and no
-     * reachable RCE-class impact are {@link #REPORT_ROLE_RISK_POINT} (report bottom).
-     * High-impact properties and evidenced cooperation chains stay {@link #REPORT_ROLE_PRIMARY}.
-     */
+ * 默认未鉴权 / AUTH_GAP 端点，无后续配合链且无可达 RCE 类影响时，
+ * 为 {@link #REPORT_ROLE_RISK_POINT}（报告底部）。
+ * 高影响属性与有证据配合链保留 {@link #REPORT_ROLE_PRIMARY}。
+ */
     static String classifyReportRole(
             ApiDtos.FindingDto finding, PocBinding poc, List<String> pathRunRefs) {
         if (finding == null) return REPORT_ROLE_PRIMARY;
@@ -418,7 +418,7 @@ public final class FindingBindings {
         if (raw == null || raw.isBlank()) raw = finding.entry();
         EntryRefResolver.Resolution resolution = EntryRefResolver.resolve(catalog, raw);
         if (resolution.resolved()) return resolution.entry();
-        // Try METHOD:route form from finding.entry
+        // 尝试 finding.entry 的 METHOD:route 形式
         if (finding.entry() != null && !finding.entry().isBlank()) {
             resolution = EntryRefResolver.resolve(catalog, finding.entry());
             if (resolution.resolved()) return resolution.entry();
@@ -655,8 +655,8 @@ public final class FindingBindings {
     }
 
     /**
-     * Ensures the report Markdown leads with a locale-pure Vulnerabilities section built from bindings.
-     */
+ * 确保报告 Markdown 以 locale-pure 漏洞章节开头，由 bindings 构建。
+ */
     public static EnforceResult enforceReportSection(
             String summaryMarkdown, List<Binding> bindings, AiOutputLanguage language) {
         boolean zh = language != AiOutputLanguage.EN;
@@ -683,7 +683,7 @@ public final class FindingBindings {
         String merged;
         if (cleaned.regionMatches(true, skipBom(cleaned), sectionHeader, 0, sectionHeader.length())
                 || cleaned.contains(sectionHeader)) {
-            // Replace thin section by prepending server section and keeping the rest.
+            // 前置服务端章节并保留其余内容，替换薄弱章节。
             merged = rendered + "\n" + cleaned;
         } else {
             merged = rendered + "\n" + cleaned;
@@ -774,7 +774,7 @@ public final class FindingBindings {
         if (body == null || body.isBlank() || wrongHeader == null) return body == null ? "" : body;
         int idx = body.indexOf(wrongHeader);
         if (idx < 0) return body;
-        // Keep content after wrong header's first line block until next ## of correct language — simple drop.
+        // 错误标题首行块之后到下一正确语言 ## 之前的内容——简单丢弃。
         return body.substring(0, idx) + body.substring(idx + wrongHeader.length());
     }
 
@@ -793,7 +793,7 @@ public final class FindingBindings {
         return value == null ? "" : value;
     }
 
-    /** Merge AI-provided bindings with server assembly; server fills gaps, never elevates. */
+    /** 合并 AI 提供的 binding 与服务端装配；服务端填缺口，绝不提升。 */
     public static List<Binding> mergePreferringServer(List<Binding> ai, List<Binding> server) {
         if (server == null || server.isEmpty()) {
             return ai == null ? List.of() : List.copyOf(ai);
@@ -811,7 +811,7 @@ public final class FindingBindings {
                 byId.put(key, binding);
                 continue;
             }
-            // Prefer server PoC when AI omitted steps; keep AI description if richer and locale-consistent.
+            // AI 缺步骤时优先服务端 PoC；AI 描述更丰富且 locale 一致则保留。
             if (existing.poc().steps().isEmpty() && !binding.poc().steps().isEmpty()) {
                 byId.put(key, binding);
             }

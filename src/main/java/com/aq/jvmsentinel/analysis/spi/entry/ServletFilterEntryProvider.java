@@ -11,8 +11,8 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * P2 scaffolding EntryProvider for Servlet / Filter surfaces.
- * Returns empty when no interface/superclass/fixture class-name hit.
+ * Servlet / Filter 面的 P2 scaffolding EntryProvider。
+ * 无 interface/superclass/fixture class-name hit 时返回空。
  */
 public final class ServletFilterEntryProvider implements EntryProvider {
     public static final String ID = "skeleton-servlet-filter-entry";

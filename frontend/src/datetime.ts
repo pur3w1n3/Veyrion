@@ -1,6 +1,6 @@
 /**
- * Display-layer datetime helpers. API wire format stays ISO-8601 UTC;
- * UI converts to the browser's local timezone for readable labels.
+ * 展示层 datetime helper。API wire 格式保持 ISO-8601 UTC；
+ * UI 转换为浏览器本地时区以便阅读。
  */
 
 const pad2 = (value: number): string => String(value).padStart(2, '0')
@@ -14,10 +14,10 @@ const parseInstant = (value: string): Date | undefined => {
 }
 
 /**
- * Format an API timestamp for UI display.
- * - ZH (default): `yyyy年MM月dd日 HH:mm:ss` in local time
- * - EN: `yyyy-MM-dd HH:mm:ss` in local time
- * Invalid or empty input is returned unchanged (or empty string).
+ * 将 API 时间戳格式化为 UI 展示。
+ * - ZH（默认）：本地时间 `yyyy年MM月dd日 HH:mm:ss`
+ * - EN：本地时间 `yyyy-MM-dd HH:mm:ss`
+ * 无效或空输入原样返回（或空字符串）。
  */
 export function formatDisplayDateTime(
   value: string | undefined | null,

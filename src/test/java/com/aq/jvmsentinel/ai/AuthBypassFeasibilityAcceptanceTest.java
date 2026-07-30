@@ -35,10 +35,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * AUTH AI-authored bypass PoCs are schema-gated, persisted, injected into DYNAMIC,
- * and invalid candidates are rejected. Auth-surface scans reject silent empty PoCs
- * (re-ask / RULE_GENERATED seed). Non-empty feasibility forces DYNAMIC sandbox_probe
- * attempt (re-ask / server auto-enqueue).
+ * AUTH 模型编写的 bypass PoC 经 schema 闸门、持久化并注入 DYNAMIC，
+ * 无效候选被拒绝。鉴权面 scan 拒绝静默空 PoC
+ * （re-ask / RULE_GENERATED 种子）。非空 feasibility 强制 DYNAMIC sandbox_probe
+ * 尝试（re-ask / 服务端自动入队）。
  */
 public final class AuthBypassFeasibilityAcceptanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -259,7 +259,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
                 "DYNAMIC prompt includes AI auth material for attempt");
     }
 
-    /** JWT / AUTH_GAP surface + empty AUTH conclusion → re-ask then RULE_GENERATED drafts. */
+    /** JWT / AUTH_GAP 面 + 空 AUTH 结论 → re-ask 后 RULE_GENERATED 草稿。 */
     private static void authSurfaceEmptyPocsTriggersReAskThenSeed() throws Exception {
         Path root = Files.createTempDirectory("veyrion-auth-surface");
         ControlPlaneStore store = ControlPlaneStore.sqlite(root.resolve("state.db"), root);
@@ -318,7 +318,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
             if (requestText.contains(AuthBypassFeasibility.ENFORCEMENT_REQUIRED)) {
                 sawRepair.set(true);
             }
-            // Satisfy AUTH_CODE_QUERY_REQUIRED once, then keep omitting bypassPoCs so seed path runs.
+            // 满足 AUTH_CODE_QUERY_REQUIRED 一次，然后继续省略 bypassPoCs 以走种子路径。
             if (requestText.contains("\"code_query\"") && codeQueryCalls.get() == 0
                     && (requestText.contains(AuthBypassFeasibility.CODE_QUERY_REQUIRED)
                     || n == 1)) {
@@ -350,7 +350,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
                     throw new IllegalStateException(encodeFailure);
                 }
             }
-            // Always omit structured bypassPoCs so server must re-ask then seed.
+            // 始终省略结构化 bypassPoCs，迫使服务端 re-ask 后种子。
             String body = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
                     + "\"content\":\"鉴权模型：疑似 JWT，但本次不输出 PoC JSON。\"}}]}";
             return new ProviderChatTransport.Response(200,
@@ -394,7 +394,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         }
     }
 
-    /** Surface detector with JWT finding but zero entries still reports incomplete (no silent OK). */
+    /** JWT finding 但零 entry 时 surface 检测器仍报 incomplete（无静默 OK）。 */
     private static void authSurfaceEmptyRejectedWithoutSeedWhenNoEntries() {
         var finding = new ApiDtos.FindingDto(1, "p", "d".repeat(64), "scan-x",
                 "finding-jwt", "JWT utility", "low", "STATIC_INFERRED",
@@ -439,7 +439,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         check("entry:e2".equals(top.get(0).entryRef()), "auth-material entry preferred");
     }
 
-    /** Non-empty AUTH feasibility + narrative-only DYNAMIC → re-ask → sandbox_probe. */
+    /** 非空 AUTH feasibility + 叙事-only DYNAMIC → re-ask → sandbox_probe。 */
     private static void dynamicNonEmptyFeasibilityRequiresProbeOrReAsk() throws Exception {
         Path root = Files.createTempDirectory("veyrion-dyn-probe");
         ControlPlaneStore store = ControlPlaneStore.sqlite(root.resolve("state.db"), root);
@@ -537,7 +537,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         ChatTransport dynTransport = (provider, credential, request, limits) -> {
             int n = calls.incrementAndGet();
             String text = request.toString();
-            // Repair turn is distinct from role-prompt mention of the same code.
+            // repair 轮次与 role-prompt 提及同一 code 不同。
             boolean repairTurn = text.contains("工具阶段已重新打开")
                     || text.contains("Tool phase is re-opened");
             if (repairTurn) {
@@ -630,7 +630,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
                 "audit event DYNAMIC_POC_ATTEMPT_REQUIRED emitted");
     }
 
-    /** Narrative-only after re-ask → server auto-enqueues focused probes (AUTH-seed analogue). */
+    /** re-ask 后仍叙事-only → 服务端自动入队聚焦探针（AUTH-seed 类比）。 */
     private static void dynamicZeroProbeAfterReAskAutoEnqueues() throws Exception {
         Path root = Files.createTempDirectory("veyrion-dyn-auto");
         ControlPlaneStore store = ControlPlaneStore.sqlite(root.resolve("state.db"), root);
@@ -720,7 +720,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         AtomicInteger autoEnqueues = new AtomicInteger();
         ChatTransport dynTransport = (provider, credential, request, limits) -> {
             calls.incrementAndGet();
-            // Always narrative-only so re-ask then server seed/auto-enqueue fires.
+            // 始终叙事-only 以触发 re-ask 后服务端种子/自动入队。
             String body = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\","
                     + "\"content\":\"仅叙事，不调用工具。\"}}]}";
             return new ProviderChatTransport.Response(200,
@@ -730,7 +730,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
                 (projectId, artifactDigest, scanId) -> List.of(),
                 (scanId, scope, principalId, jobId, toolCallId, entrypointRef, candidateInputs, maxRequests,
                         techniqueId, authorizationHeader, bladeAuthHeader, experimentPlanId) -> {
-                    // Auto-enqueue uses synthetic toolCallId dyn-poc-N under the real AI job id.
+                    // 自动入队在真实 AI job id 下使用合成 toolCallId dyn-poc-N。
                     if (toolCallId != null && toolCallId.startsWith("dyn-poc-")) {
                         autoEnqueues.incrementAndGet();
                     }
@@ -765,7 +765,7 @@ public final class AuthBypassFeasibilityAcceptanceTest {
         }
     }
 
-    /** P0-05: zero dynamic PathRun evidence cannot yield DYNAMIC_CONTRAST / confirmed. */
+    /** P0-05：零动态 PathRun 证据不得产生 DYNAMIC_CONTRAST / confirmed。 */
     private static void bypassConfirmRequiresDynamicEvidence() throws Exception {
         List<AuthBypassCandidate> claimed = List.of(AuthBypassCandidate.of(
                 "entry:entry-ai", "ALG_NONE",

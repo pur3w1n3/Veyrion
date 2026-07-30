@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-21: WorldPackPlanner acceptance.
+ * P0-21：WorldPackPlanner 验收。
  */
 public final class WorldPackPlannerAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

@@ -15,8 +15,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * MVP-1 acceptance: BRANCH_COVERAGE allowlist, PathRun branchHitMap join, ranking, ledger round.
- * Live Docker JAR coverage remains optional via VEYRION_TEST_ARTIFACT_JAR (not required here).
+ * MVP-1 验收：BRANCH_COVERAGE allowlist、PathRun branchHitMap join、排序、ledger round。
+ * 说明：Live Docker JAR coverage 经 VEYRION_TEST_ARTIFACT_JAR 仍可选（此处不要求）。
  */
 public final class BranchCoverageAcceptanceTest {
     public static void main(String[] args) {

@@ -1,6 +1,9 @@
 package com.aq.jvmsentinel.ai;
 
 import com.aq.jvmsentinel.AcceptanceAssertions;
+import com.aq.jvmsentinel.ai.prompt.AiPromptLanguage;
+import com.aq.jvmsentinel.ai.prompt.AiRolePrompts;
+import com.aq.jvmsentinel.ai.prompt.AiSystemPrompt;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
 import com.aq.jvmsentinel.domain.pathdebug.RuntimePosture;
@@ -15,7 +18,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * PATH findingBindings + REPORT locale-pure Vulnerabilities section from FORCED/STATIC materials.
+ * PATH findingBindings + 由 FORCED/STATIC 材料构建 REPORT locale-pure 漏洞章节。
  */
 public final class FindingBindingsAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -129,11 +132,8 @@ public final class FindingBindingsAcceptanceTest {
     }
 
     private static void languageInstructionLocalePure() throws Exception {
-        Method languageInstruction = AiJobOrchestrator.class.getDeclaredMethod(
-                "languageInstruction", AiOutputLanguage.class);
-        languageInstruction.setAccessible(true);
-        String zh = (String) languageInstruction.invoke(null, AiOutputLanguage.ZH_CN);
-        String en = (String) languageInstruction.invoke(null, AiOutputLanguage.EN);
+        String zh = AiPromptLanguage.languageInstruction(AiOutputLanguage.ZH_CN);
+        String en = AiPromptLanguage.languageInstruction(AiOutputLanguage.EN);
         check(zh.contains("locale-pure") || zh.contains("不得夹杂"),
                 "ZH languageInstruction requires locale purity");
         check(zh.contains("## Vulnerabilities"), "ZH forbids English ## Vulnerabilities");
@@ -141,13 +141,8 @@ public final class FindingBindingsAcceptanceTest {
                 "EN languageInstruction requires locale purity");
         check(en.contains("## 漏洞相关"), "EN forbids Chinese ## 漏洞相关");
 
-        Method roleInstruction = AiJobOrchestrator.class.getDeclaredMethod(
-                "roleInstruction",
-                com.aq.jvmsentinel.provider.AgentRole.class,
-                AiOutputLanguage.class);
-        roleInstruction.setAccessible(true);
-        String reportZh = (String) roleInstruction.invoke(
-                null, com.aq.jvmsentinel.provider.AgentRole.REPORT_GENERATION, AiOutputLanguage.ZH_CN);
+        String reportZh = AiRolePrompts.roleInstruction(
+                com.aq.jvmsentinel.provider.AgentRole.REPORT_GENERATION, AiOutputLanguage.ZH_CN);
         check(reportZh.contains("FINDING_BINDINGS_FACTS") || reportZh.contains("findingBindings"),
                 "ZH REPORT consumes FINDING_BINDINGS_FACTS / findingBindings");
         check(reportZh.contains("locale-pure") || reportZh.contains("禁止英文专章"),

@@ -6,7 +6,7 @@ import java.lang.instrument.Instrumentation;
 import java.util.Map;
 
 /**
- * Minimal Java 17 observation agent. It is not a sandbox or a security boundary.
+ * 最小 Java 17 观测 agent。非沙箱，也非安全边界。
  */
 public final class VeyrionAgent {
     private VeyrionAgent() {

@@ -1,6 +1,6 @@
 package com.aq.jvmsentinel.security.auth;
 
-/** Explicit operator permissions; absence from a role mapping means deny. */
+/** 显式 operator permission；role 映射中缺失即 deny。 */
 public enum Permission {
     READ_SECURITY_CONFIGURATION,
     MANAGE_PROVIDERS,

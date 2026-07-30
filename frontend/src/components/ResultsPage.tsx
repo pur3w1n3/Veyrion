@@ -106,8 +106,8 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
     setShowAuthGap(false)
   }, [projectId, snapshot?.scanId])
 
-  // Prefetch coverage + evidence-graph summaries on scan mount so subnav badges
-  // match EvidenceSummaryStrip without requiring a tab click (GUI_DESIGN §4.1).
+  // scan 挂载时预取 coverage + evidence-graph summary，使 subnav badge
+  // 与 EvidenceSummaryStrip 一致，无需点击 tab（GUI_DESIGN §4.1）。
   useEffect(() => {
     let active = true
     setCoverage(undefined)
@@ -277,7 +277,7 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       case 'coverage':
         return {
           label,
-          // Server coverage matrix only — 0 means no gaps (or not yet loaded).
+          // 仅服务端 coverage matrix — 0 表示无 gap（或尚未加载）。
           count: coverage?.gaps?.total ?? 0,
           blurb
         }
@@ -335,7 +335,7 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
   }
 
   useEffect(() => {
-    // Evidence graph / coverage matrix removed from workbench chrome; bounce stale deep-links.
+    // 已从 workbench chrome 移除 evidence graph / coverage matrix；bounce 陈旧 deep-link。
     if (activeView === 'evidenceGraph' || activeView === 'coverage') {
       setActiveView('findings')
     }

@@ -12,18 +12,18 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Optional thin SpringBlade / BladeX adapter — contributes route/class signals and a
- * secondary-header HINT ({@code Blade-Auth}) like any other FrameworkAdapter.
- * Not a first-class product path; control plane / identity / AUTH stay JVM-generic.
+ * 可选薄 SpringBlade / BladeX adapter — 贡献 route/class signal 与
+ * 次要 header HINT（{@code Blade-Auth}），同其他 FrameworkAdapter。
+ * 非 first-class 产品路径；control plane / identity / AUTH 保持 JVM-generic。
  *
  * <p>{@link #suggestJwtSecret} never returns commercial defaults for silent minting.
- * Well-known aliases are HINT-only via {@link #jwtSecretHintNotes()} / {@link #wellKnownSecretHints()};
- * AI must call {@code code_query} to harvest material from the authorized artifact.
+ * Well-known alias 仅 HINT，经 {@link #jwtSecretHintNotes()} / {@link #wellKnownSecretHints()}；
+ * AI 须调用 {@code code_query} 从 authorized artifact harvest 材料。
  */
 public final class SpringBladeAdapter implements FrameworkAdapter {
     /**
-     * Historical Blade/JwtProperties commercial default — adapter detection dictionary only.
-     * Do not treat as FACT or mint unless harvested from the artifact.
+     * 历史 Blade/JwtProperties commercial default — 仅 adapter detection dictionary。
+     * 除非从 artifact harvest，否则不作 FACT 或 mint。
      */
     public static final String WELL_KNOWN_COMMERCIAL_SIGN_KEY =
             "bladexisapowerfulmicroservicearchitectureupgradedandoptimizedfromacommercialproject";
@@ -74,7 +74,7 @@ public final class SpringBladeAdapter implements FrameworkAdapter {
 
     @Override
     public boolean preferSecondaryAuthHeader(SyntheticIdentityService.MaterialBundle materials) {
-        // Framework HINT: this adapter's surface typically dual-channels a secondary auth header.
+        // Framework HINT：本 adapter 面通常双 channel 次要 auth header。
         if (materials == null) return true;
         return materials.preferSecondaryAuthHeader() || materials.multiHeaderAuthSurface();
     }
@@ -127,7 +127,7 @@ public final class SpringBladeAdapter implements FrameworkAdapter {
 
     @Override
     public List<AuthBypassTechnique> defaultBypassTechniques() {
-        // Library order for AI; DEFAULT_SECRET_HS256 only mintable after harvest.
+        // AI 的 library 顺序；DEFAULT_SECRET_HS256 仅 harvest 后可 mint。
         return List.of(
                 AuthBypassTechnique.MISSING_AUTH,
                 AuthBypassTechnique.EMPTY_BEARER,

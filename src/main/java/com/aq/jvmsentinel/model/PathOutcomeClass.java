@@ -1,7 +1,7 @@
 package com.aq.jvmsentinel.model;
 
 /**
- * Probe/Agent outcome taxonomy. AI may only cite these codes; it cannot invent new ones.
+ * Probe/Agent outcome 分类。AI 仅能引用这些 code；不能发明新 code。
  */
 public enum PathOutcomeClass {
     COLD_START,
@@ -13,8 +13,8 @@ public enum PathOutcomeClass {
     TRANSPORT_ERROR,
     PROBE_BUDGET,
     UNKNOWN,
-    /** Identity could not be synthesized for this track. */
+    /** 无法为本 track 合成 identity。 */
     IDENTITY_UNAVAILABLE,
-    /** Probe received an HTTP response that is not otherwise classified. */
+    /** Probe 收到未另行分类的 HTTP 响应。 */
     HTTP_OBSERVED
 }

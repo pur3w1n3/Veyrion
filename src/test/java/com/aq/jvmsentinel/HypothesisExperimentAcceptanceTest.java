@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
- * P1-06: hypothesis-driven ExperimentPlan kinds, server default candidates, and lifecycle gate.
+ * P1-06：hypothesis 驱动 ExperimentPlan kind、服务端 default 候选与 lifecycle gate。
  */
 public final class HypothesisExperimentAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -119,7 +119,7 @@ public final class HypothesisExperimentAcceptanceTest {
                             plan.expectedSignals().isEmpty() && plan.counterSignals().isEmpty()),
                     "plans declare expected/counter signals");
 
-            // Factory is server-owned (no model): same inputs → same plan ids.
+            // Factory 服务端 owned（无 model）：相同 input → 相同 plan id。
             List<HypothesisExperimentPlan> again = DefaultExperimentPlanFactory.fromHypothesis(
                     dataflow, "entry:entry-1", IdentityTrack.UNAUTH);
             check(again.get(0).experimentPlanId().equals(
@@ -142,7 +142,7 @@ public final class HypothesisExperimentAcceptanceTest {
             check(binding.planKind() == ExperimentPlanKind.REACHABILITY, "binding carries planKind");
             check("probe-1".equals(binding.probeAttemptId()), "binding carries probeAttemptId");
 
-            // Failed / empty projection must not change lifecycle.
+            // 失败/空 projection 不得变更 lifecycle。
             RuntimeObservation failed = RuntimeObservationProjector.emptyOrFailed(
                     "hyp-df-1", ExperimentPlanKind.REACHABILITY, "FAILED");
             HypothesisExperimentGate.Decision failedDecision =
@@ -162,7 +162,7 @@ public final class HypothesisExperimentAcceptanceTest {
             check(store.hypothesis("hyp-df-1").lifecycle() == HypothesisLifecycle.CANDIDATE,
                     "lifecycle stays CANDIDATE after empty projection");
 
-            // Successful expected signal → SUPPORTED + incremental subjects.
+            // 成功 expected signal → SUPPORTED + incremental subject。
             RuntimeObservation supportedObs = RuntimeObservationProjector.fromPathRunProjection(
                     "pathrun-support-1", "hyp-df-1", ExperimentPlanKind.REACHABILITY, "COMPLETED",
                     true, false, "ENTRY_HIT", List.of("ev-runtime-1"), true);
@@ -177,7 +177,7 @@ public final class HypothesisExperimentAcceptanceTest {
             check(incremental.stream().anyMatch(ref -> "hyp-df-1".equals(ref.hypothesisId())),
                     "incremental subjects bind hypothesisId");
 
-            // Already SUPPORTED cannot be re-elevated / contradicted by another observation.
+            // 已 SUPPORTED 不能被另一 observation re-elevate / contradict。
             RuntimeObservation second = RuntimeObservationProjector.fromPathRunProjection(
                     "pathrun-support-2", "hyp-df-1", ExperimentPlanKind.REACHABILITY, "AUTH_CHALLENGE",
                     false, false, "AUTH_CHALLENGE", List.of("ev-runtime-2"), true);
@@ -187,7 +187,7 @@ public final class HypothesisExperimentAcceptanceTest {
             check(store.hypothesis("hyp-df-1").lifecycle() == HypothesisLifecycle.SUPPORTED,
                     "SUPPORTED stays SUPPORTED");
 
-            // Counter signal on another hypothesis → CONTRADICTED.
+            // 另一 hypothesis 上 counter signal → CONTRADICTED。
             HypothesisExperimentPlan guardPlan = generated.stream()
                     .filter(plan -> "hyp-gc-1".equals(plan.hypothesisId())
                             && plan.planKind() == ExperimentPlanKind.GUARD_DIFF)
@@ -203,7 +203,7 @@ public final class HypothesisExperimentAcceptanceTest {
             check(store.hypothesis("hyp-gc-1").lifecycle() == HypothesisLifecycle.CONTRADICTED,
                     "lifecycle CANDIDATE→CONTRADICTED");
 
-            // Gate never invents VERIFIED / DYNAMIC_CONFIRMED lifecycle values.
+            // Gate 永不发明 VERIFIED / DYNAMIC_CONFIRMED lifecycle 值。
             Set<String> lifecycles = Arrays.stream(HypothesisLifecycle.values())
                     .map(Enum::name)
                     .collect(Collectors.toSet());
@@ -218,9 +218,9 @@ public final class HypothesisExperimentAcceptanceTest {
     }
 
     /**
-     * P1-06 wiring: PathRun success via {@link ControlPlaneStore#replacePathRunsForTask}
+     * P1-06 接线：PathRun 成功经 {@link ControlPlaneStore#replacePathRunsForTask}
      * / {@link ControlPlaneStore#applyPathRunHypothesisObservations} advances lifecycle;
-     * failed PathRuns do not.
+     * 失败 PathRun 不。
      */
     private static void pathRunProjectionAdvancesLifecycle() throws Exception {
         Path root = Files.createTempDirectory("veyrion-hyp-pathrun");
@@ -267,7 +267,7 @@ public final class HypothesisExperimentAcceptanceTest {
                     .findFirst()
                     .orElseThrow();
 
-            // Failed PathRun (empty evidence) must not change lifecycle.
+            // 失败 PathRun（空 evidence）不得变更 lifecycle。
             ApiDtos.PathRunDto failedRun = new ApiDtos.PathRunDto(
                     ApiDtos.SCHEMA_VERSION, "pathrun-fail-1", scanId, "entry:entry-pr",
                     IdentityTrack.UNAUTH.name(), "attempt-fail",
@@ -279,7 +279,7 @@ public final class HypothesisExperimentAcceptanceTest {
             check(store.hypothesis("hyp-pr-df").lifecycle() == HypothesisLifecycle.CANDIDATE,
                     "PathRun failure keeps CANDIDATE");
 
-            // Successful expected ENTRY_HIT → SUPPORTED via replacePathRunsForTask callback.
+            // 成功 expected ENTRY_HIT → SUPPORTED，经 replacePathRunsForTask callback。
             ApiDtos.PathRunDto supportedRun = new ApiDtos.PathRunDto(
                     ApiDtos.SCHEMA_VERSION, "pathrun-ok-1", scanId, "entry:entry-pr",
                     IdentityTrack.UNAUTH.name(), "attempt-ok",
@@ -296,7 +296,7 @@ public final class HypothesisExperimentAcceptanceTest {
             check(!store.drainPendingIncrementalSubjects().isEmpty(),
                     "PathRun success queues incremental subjects");
 
-            // Counter signal via AUTH_CHALLENGE on GUARD_DIFF → CONTRADICTED.
+            // GUARD_DIFF 上 AUTH_CHALLENGE counter signal → CONTRADICTED。
             ApiDtos.PathRunDto contraRun = new ApiDtos.PathRunDto(
                     ApiDtos.SCHEMA_VERSION, "pathrun-contra-pr", scanId, "entry:entry-pr",
                     IdentityTrack.UNAUTH.name(), "attempt-contra",
@@ -313,7 +313,7 @@ public final class HypothesisExperimentAcceptanceTest {
             check(store.hypothesis("hyp-pr-gc").lifecycle() == HypothesisLifecycle.CONTRADICTED,
                     "PathRun counter CANDIDATE→CONTRADICTED");
 
-            // Must not invent VERIFIED / DYNAMIC_CONFIRMED on hypothesis lifecycle.
+            // hypothesis lifecycle 上不得发明 VERIFIED / DYNAMIC_CONFIRMED。
             check(store.hypothesis("hyp-pr-df").lifecycle() == HypothesisLifecycle.SUPPORTED,
                     "supported hypothesis stays SUPPORTED (not VERIFIED)");
             check(store.hypothesis("hyp-pr-gc").lifecycle() != HypothesisLifecycle.DISMISSED,

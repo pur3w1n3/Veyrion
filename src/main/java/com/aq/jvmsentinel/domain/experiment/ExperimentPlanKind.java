@@ -4,8 +4,8 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * Experiment plan kinds from PATH_EXPERIMENT_MODEL §6.2 (P1-06).
- * Unknown wire values stay empty — never invent a kind that elevates verification.
+ * 来自 PATH_EXPERIMENT_MODEL §6.2 的 experiment plan kind（P1-06）。
+ * 未知 wire 值保持空 — 永不发明会提升 verification 的 kind。
  */
 public enum ExperimentPlanKind {
     REACHABILITY,

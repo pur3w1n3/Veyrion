@@ -13,9 +13,9 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P1-21: AUTH identity-track fail-closed contrasts for MISSING_AUTH, empty Bearer,
- * ALG_NONE, IDENTITY_UNAVAILABLE, and AUTH_CONFIRM hypothesis/contrast/insufficient
- * three-state (fixture; not live Docker production orchestration).
+ * P1-21：MISSING_AUTH、空 Bearer 等的 AUTH identity-track fail-closed 对比，
+ * 说明：ALG_NONE/IDENTITY_UNAVAILABLE/AUTH_CONFIRM hypothesis/contrast/insufficient
+ * 三态（fixture；非 live Docker production orchestration）。
  */
 public final class AuthIdentityTrackAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -70,7 +70,7 @@ public final class AuthIdentityTrackAcceptanceTest {
         check(!emptyBearer.provenance().contains("IDENTITY_UNAVAILABLE"),
                 "EMPTY_BEARER is not IDENTITY_UNAVAILABLE");
 
-        // AI-authored empty bearer literal must stay on bypass track, not collapse to MISSING_AUTH.
+        // AI 撰写空 bearer literal 须 stay bypass track，不 collapse 到 MISSING_AUTH。
         ProbePlanService.AuthMaterialized aiEmpty =
                 ProbePlanService.materializeAiPocAuth("EMPTY_BEARER", "Bearer ", null, null);
         check(aiEmpty.track() == IdentityTrack.BYPASS_CANDIDATE,
@@ -131,7 +131,7 @@ public final class AuthIdentityTrackAcceptanceTest {
                 "2xx pass-gate → HTTP_OBSERVED");
         check(PathOutcomeClass.IDENTITY_UNAVAILABLE.name().equals("IDENTITY_UNAVAILABLE"),
                 "IDENTITY_UNAVAILABLE remains a first-class outcome code");
-        // AUTH_CONFIRM distinction: challenge alone never upgrades verification.
+        // AUTH_CONFIRM 区分：仅 challenge 永不升级 verification。
         check(PathOutcomeClassifier.classify(401, "", "unauthorized")
                         != PathOutcomeClass.HTTP_OBSERVED,
                 "challenge must not be misclassified as pass-gate");
@@ -142,8 +142,8 @@ public final class AuthIdentityTrackAcceptanceTest {
     }
 
     /**
-     * AUTH_CONFIRM three-state: HYPOTHESIS / DYNAMIC_CONTRAST / INSUFFICIENT_EVIDENCE.
-     * Fixture-only; never elevates to VERIFIED.
+     * AUTH_CONFIRM 三态：HYPOTHESIS / DYNAMIC_CONTRAST / INSUFFICIENT_EVIDENCE。
+     * 仅 fixture；永不提升到 VERIFIED。
      */
     private static void authConfirmHypothesisContrastInsufficientThreeState() {
         AuthBypassFeasibility.BypassConfirmation hypothesis =

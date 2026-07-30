@@ -7,9 +7,9 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P1-23: responsive / long-text layout contract — TS + CSS declare max-width,
- * overflow, and word-break rules for narrow viewports.
- * Audited scope = contract tests (not manual visual regression).
+ * P1-23：响应式/长文本 layout contract — TS + CSS 声明 max-width，
+ * overflow 与 word-break 规则供窄 viewport。
+ * 审计 scope = contract test（非手动 visual regression）。
  */
 public final class GuiLayoutContractAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

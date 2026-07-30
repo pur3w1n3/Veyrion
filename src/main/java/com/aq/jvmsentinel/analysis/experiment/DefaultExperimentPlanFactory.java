@@ -12,8 +12,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Server-side default ExperimentPlan candidates from SecurityHypothesis (P1-06).
- * Deterministic; models must not author these defaults.
+ * 从 SecurityHypothesis 产生的服务端默认 ExperimentPlan 候选（P1-06）。
+ * 确定性；模型不得撰写这些 default。
  */
 public final class DefaultExperimentPlanFactory {
     public static final String PRODUCER = "server-default-experiment-plan/0.1";

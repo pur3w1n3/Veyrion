@@ -12,9 +12,9 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Detects guard dominance / auth annotation inconsistency within a declaring class:
- * some mapped entries declare guards while sibling entries on the same class do not.
- * Does not restate AUTH_GAP as sink-none; emits GUARD_INCONSISTENCY hypotheses.
+ * 检测 declaring class 内 guard dominance / auth annotation 不一致：
+ * 部分 mapped entry 声明 guard 而同 class sibling 未声明。
+ * 不以 sink-none 重述 AUTH_GAP；emit GUARD_INCONSISTENCY hypothesis。
  */
 public final class GuardConsistencyDetector implements Detector {
     public static final String VERSION = "0.1.0";

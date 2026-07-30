@@ -24,7 +24,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Executor;
 
-/** Minimal Connection that records SQL and returns empty results (MOCK / RULE_GENERATED). */
+/** 记录 SQL 并返回空结果的最小 Connection（MOCK / RULE_GENERATED）。 */
 final class VeyrionMockConnection implements Connection {
     private final String url;
     private boolean closed;
@@ -305,8 +305,8 @@ final class VeyrionMockConnection implements Connection {
     }
 
     /**
-     * Record statement SQL for PathRun/H3. In OBSERVE_FAIL the caller must throw after this
-     * returns so the request keeps pre-failure PathTrace evidence and exits on dependency.
+     * 为 PathRun/H3 记录语句 SQL。OBSERVE_FAIL 下调用方须在此
+     * 返回后抛错，使请求保留失败前 PathTrace 证据并在依赖处退出。
      */
     void observeSql(String sql) {
         String text = sql == null ? "" : sql;

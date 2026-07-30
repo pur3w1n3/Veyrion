@@ -7,7 +7,7 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Server gate for AI-proposed experiment plans. Rejects unsafe or over-budget plans.
+ * AI 提议实验计划的服务端门禁。拒绝不安全或超预算计划。
  */
 public final class ExperimentPlanValidator {
     private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of(
@@ -45,7 +45,7 @@ public final class ExperimentPlanValidator {
             }
         }
         if (plan.track() == IdentityTrack.BYPASS_CANDIDATE && !plan.authRequired()) {
-            // Allowed: bypass candidates may probe without claiming authRequired.
+            // 允许：bypass 候选可在不声明 authRequired 的情况下探针。
         }
     }
 }

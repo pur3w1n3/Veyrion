@@ -12,8 +12,8 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Surfaces hardcoded rememberMe / cookie-cipher keys as CONFIG/TYPESTATE hypotheses.
- * Not a Fastjson / generic DESERIALIZATION sink projection — category is cipher-key config.
+ * 已 surface 的 hardcoded rememberMe/cookie-cipher key 为 CONFIG/TYPESTATE hypothesis。
+ * 非 Fastjson / 通用 DESERIALIZATION sink 投影 — category 为 cipher-key config。
  */
 public final class HardcodedRememberMeCipherDetector implements Detector {
     public static final String VERSION = "0.1.0";
@@ -67,8 +67,8 @@ public final class HardcodedRememberMeCipherDetector implements Detector {
             }
         }
 
-        // Config/evidence fallback when artifact path is unavailable (tests / legacy).
-        // Primary signal remains setCipherKey; dictionary labels are secondary.
+        // artifact path 不可用时的 config/evidence fallback（test / legacy）。
+        // 主 signal 仍为 setCipherKey；dictionary label 为 secondary。
         if (hits.isEmpty()) {
             for (String line : context.configurationLines()) {
                 if (line == null || line.isBlank()) continue;

@@ -6,8 +6,8 @@ import com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis;
 import java.util.List;
 
 /**
- * Non-taint (and general) static detector contract (P1-05).
- * Detectors emit {@link SecurityHypothesis} only — never elevate verification status.
+ * non-taint（及通用）静态 detector contract（P1-05）。
+ * Detector 仅 emit {@link SecurityHypothesis} — 永不提升 verification status。
  */
 public interface Detector {
     String id();

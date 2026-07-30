@@ -9,9 +9,9 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Normalizes one PathRun into a single human/AI debug shape:
- * HTTP line, bind flags, SQL texts, stop reason, dependency mode.
- * Never upgrades verification status.
+ * 将一条 PathRun 规范化为单一 human/AI 调试形状：
+ * HTTP 行、bind 标志、SQL 文本、stop reason、dependency 模式。
+ * 永不升级验证状态。
  */
 public final class ExperimentShapeView {
     private ExperimentShapeView() { }

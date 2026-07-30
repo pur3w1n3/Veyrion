@@ -2,13 +2,13 @@ package com.aq.jvmsentinel.worker;
 
 import java.util.Objects;
 
-/** Versioned task contract. It expresses a requirement; it never mutates host permissions. */
+/** 版本化任务合同。表达需求；永不改变宿主权限。 */
 public record WorkerTaskSpec(int schemaVersion, String projectId, String artifactDigest, String scanId,
                              String taskId, String targetEntryId, boolean authorized,
                              ResourceBudget resourceBudget, NetworkPolicy networkPolicy,
                              WorkerCapability requiredCapability) {
     /**
-     * v1 source compatibility. The removed fixture discriminator may only be false.
+     * v1 源码兼容。已移除的 fixture 判别器仅可为 false。
      */
     public WorkerTaskSpec(int schemaVersion, String projectId, String artifactDigest, String scanId,
                           String taskId, String targetEntryId, boolean authorized, boolean fixtureOnly,

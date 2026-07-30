@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-18: entry × 0-n parameter compilation with empty-input rationale.
+ * 说明：P0-18：entry×0-n parameter 编译，含 empty-input rationale。
  */
 public final class EntryParameterExperimentCompilerAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

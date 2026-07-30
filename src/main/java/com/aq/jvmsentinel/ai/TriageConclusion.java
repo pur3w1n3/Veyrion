@@ -14,9 +14,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Parses and serializes VULNERABILITY_TRIAGE conclusion JSON with structured rootCause,
- * top-level evidenceRefs, and counterevidence. Fail-closed to INSUFFICIENT_EVIDENCE when
- * required fields are missing — never routes through AUTH bypass PoC serialization.
+ * 解析并序列化 VULNERABILITY_TRIAGE 结论 JSON，含结构化 rootCause、
+ * 顶层 evidenceRefs 与 counterevidence。缺必填字段时 fail-closed 为 INSUFFICIENT_EVIDENCE——
+ * 绝不走 AUTH bypass PoC 序列化路径。
  */
 public final class TriageConclusion {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -158,7 +158,7 @@ public final class TriageConclusion {
         String classification = insufficient
                 ? INSUFFICIENT_EVIDENCE
                 : (parsed == null ? SUPPORTED : parsed.classification());
-        // Keep INFERENCE as a deprecated alias only when explicitly present on older payloads.
+        // 仅当旧 payload 显式存在时保留 INFERENCE 作 deprecated 别名。
         if (CLASSIFICATION_INFERENCE.equals(classification)) {
             classification = SUPPORTED;
         }
@@ -234,7 +234,7 @@ public final class TriageConclusion {
         return resolveClassification(classification, List.of(), List.of(), false);
     }
 
-    /** Wire-safe map for FindingDto.rootCause (includes optional counterevidence). */
+    /** FindingDto.rootCause 的 wire-safe map（含可选 counterevidence）。 */
     public static Map<String, Object> toRootCauseMap(ParseResult parsed) {
         if (parsed == null || parsed.rootCause() == null) return Map.of();
         Map<String, Object> map = new LinkedHashMap<>(rootCauseToMap(parsed.rootCause()));

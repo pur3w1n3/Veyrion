@@ -5,11 +5,11 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Second-language RuntimeAdapter skeleton for JavaScript / Node.
+ * JavaScript / Node 的第二语言 RuntimeAdapter 骨架。
  *
  * <p>Static LanguageAnalyzer support does <strong>not</strong> imply dynamic capability.
- * Default construction declares no observe/probe/launch capabilities; dynamic profiles are
- * rejected until an independently audited capability set is supplied (ADR-0001).
+ * 默认构造不声明 observe/probe/launch capability；dynamic profile
+ * 在提供独立审计过的 capability set 前拒绝（ADR-0001）。
  */
 public final class JsRuntimeAdapter implements RuntimeAdapter {
     public static final String RUNTIME_KIND = "NODE_JS";
@@ -57,8 +57,8 @@ public final class JsRuntimeAdapter implements RuntimeAdapter {
     }
 
     /**
-     * Bind a server-fixed profile only when this adapter actually declares a matching
-     * dynamic capability. Static-only adapters reject all dynamic bind attempts.
+     * 仅当本 adapter 实际声明匹配
+     * dynamic capability 时绑定服务端固定 profile。仅 static adapter 拒绝所有 dynamic bind 尝试。
      */
     @Override
     public RuntimeRunProfile bindProfile(RuntimeRunProfile profile) {

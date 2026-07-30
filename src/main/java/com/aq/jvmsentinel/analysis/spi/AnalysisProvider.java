@@ -3,8 +3,8 @@ package com.aq.jvmsentinel.analysis.spi;
 import java.util.Set;
 
 /**
- * Base contract for versioned analysis providers. Providers emit IR/hypothesis
- * contributions only; they must not write Findings or elevate verification status.
+ * 版本化 analysis provider 的基础 contract。Provider emit IR/hypothesis
+ * contribution 仅；不得写 Finding 或提升 verification status。
  */
 public interface AnalysisProvider {
     int SCHEMA_VERSION = 1;

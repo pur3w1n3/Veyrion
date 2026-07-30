@@ -17,8 +17,8 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * Immutable, versioned substitution data.  Deliberately contains no sandbox,
- * network-forwarding, host-path, database-connection or process-execution permission.
+ * 不可变、版本化的 substitution 数据。刻意不包含 sandbox、
+ * 说明：network-forwarding/host-path/database-connection 或 process-execution 权限。
  */
 public record DependencySubstitutionPolicy(
         int schemaVersion,
@@ -174,7 +174,7 @@ public record DependencySubstitutionPolicy(
         }
     }
 
-    /** Exact normalized-SQL rule; no dialect emulation and no database connection string. */
+    /** 精确 normalized-SQL 规则；无 dialect 仿真，无 database connection string。 */
     public record JdbcRule(String normalizedSql, List<String> columns, List<List<String>> rows,
                            Provenance provenance) implements Serializable {
         @Serial private static final long serialVersionUID = 1L;
@@ -212,7 +212,7 @@ public record DependencySubstitutionPolicy(
         }
     }
 
-    /** Relative POSIX-style tmpfs path only. */
+    /** 仅相对 POSIX 风格 tmpfs path。 */
     public record FileGrant(String relativePath, boolean readable, boolean writable,
                             String seedContent, Provenance provenance) implements Serializable {
         @Serial private static final long serialVersionUID = 1L;
@@ -237,7 +237,7 @@ public record DependencySubstitutionPolicy(
         }
     }
 
-    /** Exact argv match for a harmless simulated result; it never grants execution. */
+    /** 精确 argv 匹配无害模拟结果；永不授予 execution。 */
     public record ProcessSimulation(List<String> argv, int exitCode, String stdout, String stderr,
                                     Provenance provenance) implements Serializable {
         @Serial private static final long serialVersionUID = 1L;

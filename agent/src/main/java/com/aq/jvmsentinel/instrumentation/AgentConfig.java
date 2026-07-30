@@ -13,7 +13,7 @@ public final class AgentConfig {
     public static final String TRACE_DIR_AUTHORIZED_PROPERTY = "veyrion.sandbox.traceDir.authorized";
     public static final String COVERAGE_ENABLED_PROPERTY = "veyrion.coverage.enabled";
     public static final String WORLD_PACK_DEPENDENCY_MODE_PROPERTY = "veyrion.worldPack.dependencyMode";
-    /** Comma-separated binary type names for FORCED_REACHABILITY allowlist (server-owned). */
+    /** FORCED_REACHABILITY 白名单的二进制类型名 CSV（服务端拥有）。 */
     public static final String FORCED_GUARD_TYPE_NAMES_PROPERTY =
             "veyrion.sandbox.forcedGuardTypeNames";
     static final String TRACE_FILE_NAME = "agent-events.jsonl";
@@ -24,10 +24,10 @@ public final class AgentConfig {
     private static final int DEFAULT_MAX_EVENTS = 10_000;
     private static final int MAX_MAX_EVENTS = 100_000;
     /**
-     * Never rewrite call sites / branch coverage inside these prefixes. HTTP surfaces
-     * (Servlet/Filter/Interceptor) still match via {@code isHttpObservabilityType} and receive
-     * HTTP-only advice. Empty {@code classPrefix} otherwise instruments the whole fat JAR and
-     * VerifyError (StackMapTable) commonly surfaces in Druid/Spring auto-config.
+     * 永不重写这些前缀内的 call site / 分支 coverage。HTTP 面
+     *（Servlet/Filter/Interceptor）仍经 {@code isHttpObservabilityType} 匹配并仅接收 HTTP advice。
+     * 空 {@code classPrefix} 否则会插桩整个 fat JAR，
+     * 常见于 Druid/Spring auto-config 场景的 VerifyError（StackMapTable）。
      */
     private static final List<String> BUILT_IN_EXCLUDES = List.of(
             "com/aq/jvmsentinel/instrumentation/",
@@ -58,7 +58,7 @@ public final class AgentConfig {
     final List<String> excludedPrefixes;
     final boolean dependencyMock;
     final boolean coverageEnabled;
-    /** OBSERVE_FAIL: JDBC fails after DEPENDENCY_FAILURE; MOCK_CONTINUE: stub continues. */
+    /** OBSERVE_FAIL：DEPENDENCY_FAILURE 后 JDBC 失败；MOCK_CONTINUE：stub 继续。 */
     final String worldPackDependencyMode;
 
     private AgentConfig(Path traceFile, long maxBytes, int maxEvents, String classPrefix,

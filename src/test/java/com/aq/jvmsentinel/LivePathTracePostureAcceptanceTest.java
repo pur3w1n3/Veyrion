@@ -30,10 +30,10 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Live TRUSTED_DOCKER PathTrace posture acceptance on an authorized Boot-shaped fixture.
- * Asserts UNAUTH / COVERAGE_POSTURE / FORCED_REACHABILITY experiment plans execute and
- * PathRun wire carries path-debug fields without elevating VERIFIED.
- * Docker/image unavailable → SKIP with fixture-free compile-time contract still recorded.
+ * 在 authorized Boot-shaped fixture 上 live TRUSTED_DOCKER PathTrace posture acceptance。
+ * 断言 UNAUTH / COVERAGE_POSTURE / FORCED_REACHABILITY experiment plan 执行且
+ * PathRun wire 携带 path-debug field，不提升 VERIFIED。
+ * Docker/image 不可用 → SKIP，仍记录无 fixture compile-time contract。
  */
 public final class LivePathTracePostureAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -187,8 +187,8 @@ public final class LivePathTracePostureAcceptanceTest {
                     }
                 }
                 check(sawNonVerified, "live PathTrace never VERIFIED");
-                // Path-debug enrichment is best-effort when projection succeeds; at minimum
-                // experimentPlanId from posture plans must appear on at least one PathRun.
+                // projection 成功时 path-debug enrichment 尽力而为；至少
+                // posture plan 的 experimentPlanId 须出现在至少一个 PathRun。
                 boolean sawPlanId = pathRuns.stream().anyMatch(run -> {
                     Object id = run.get("experimentPlanId");
                     return id != null && !String.valueOf(id).isBlank();

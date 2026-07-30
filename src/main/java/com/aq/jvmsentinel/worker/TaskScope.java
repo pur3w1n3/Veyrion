@@ -1,6 +1,6 @@
 package com.aq.jvmsentinel.worker;
 
-/** Immutable project/artifact/scan/task authorization scope. */
+/** 不可变的 project/artifact/scan/task 授权范围。 */
 public record TaskScope(String projectId, String artifactDigest, String scanId, String taskId) {
     public TaskScope {
         projectId = WorkerContracts.id(projectId, "projectId");

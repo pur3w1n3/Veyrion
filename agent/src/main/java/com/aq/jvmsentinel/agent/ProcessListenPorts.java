@@ -14,14 +14,14 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Lists TCP listen ports owned by one process by correlating {@code /proc/<pid>/fd}
- * socket inodes with {@code /proc/net/tcp{,6}} LISTEN rows.
+ * 通过关联 {@code /proc/<pid>/fd}
+ * socket inode 与 {@code /proc/net/tcp{,6}} LISTEN 行，列出单进程拥有的 TCP 监听端口。
  *
- * <p>Used inside the deny-all Docker sandbox instead of guessing common HTTP ports.</p>
+ * <p>用于 deny-all Docker 沙箱内，而非猜测常见 HTTP 端口。</p>
  */
 public final class ProcessListenPorts {
     private static final Pattern SOCKET_INODE = Pattern.compile("socket:\\[(\\d+)]");
-    /** Linux TCP state 0A = LISTEN. */
+    /** Linux TCP state 0A = LISTEN。 */
     private static final String LISTEN_STATE = "0A";
 
     private ProcessListenPorts() { }
@@ -46,7 +46,7 @@ public final class ProcessListenPorts {
         Set<Integer> ports = new LinkedHashSet<>();
         collectListenPorts(Path.of("/proc/net/tcp"), inodes, ports);
         collectListenPorts(Path.of("/proc/net/tcp6"), inodes, ports);
-        // Prefer the process-local net tables when present (same mount namespace usually).
+        // 存在时优先进程本地 net 表（通常同 mount namespace）。
         collectListenPorts(proc.resolve("net/tcp"), inodes, ports);
         collectListenPorts(proc.resolve("net/tcp6"), inodes, ports);
         return ports;
@@ -62,7 +62,7 @@ public final class ProcessListenPorts {
                     Matcher matcher = SOCKET_INODE.matcher(target.toString());
                     if (matcher.matches()) inodes.add(matcher.group(1));
                 } catch (IOException | SecurityException ignored) {
-                    // Skip unreadable descriptors.
+                    // 跳过不可读 descriptor。
                 }
             }
         }
@@ -78,7 +78,7 @@ public final class ProcessListenPorts {
             String line;
             while ((line = reader.readLine()) != null) {
                 String[] columns = line.trim().split("\\s+");
-                // local_address remote_address st ... inode
+                // /proc/net/tcp 列：local_address remote_address st ... inode
                 if (columns.length < 10) continue;
                 if (!LISTEN_STATE.equalsIgnoreCase(columns[3])) continue;
                 String inode = columns[9];

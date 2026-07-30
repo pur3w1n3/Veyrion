@@ -26,7 +26,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-03: independent probeAttemptId, payload-hash conflict, and effective-attempt counting.
+ * P0-03：独立 probeAttemptId、payload-hash 冲突与有效 attempt 计数。
  */
 public final class ProbeAttemptIdentityAcceptanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();

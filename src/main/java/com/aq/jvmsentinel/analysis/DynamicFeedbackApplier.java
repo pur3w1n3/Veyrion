@@ -9,8 +9,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Applies dynamic PathRun observations back as bounded evidence updates.
- * Never opens VERIFIED; max DYNAMIC_SUSPECTED / DYNAMIC_CONFIRMED via server gates.
+ * 将 dynamic PathRun observation 应用为有界 evidence 更新。
+ * 不打开 VERIFIED；至多 DYNAMIC_SUSPECTED / DYNAMIC_CONFIRMED，经服务端 gate。
  */
 public final class DynamicFeedbackApplier {
     public static final String EVIDENCE_KIND = "DYNAMIC_TAINT_UPDATE";
@@ -57,7 +57,7 @@ public final class DynamicFeedbackApplier {
         if (VerificationStatus.DYNAMIC_CONFIRMED.name().equals(run.verificationStatus())) {
             return VerificationStatus.DYNAMIC_CONFIRMED.name();
         }
-        // DynamicConfirmedGate remains the only path to DYNAMIC_CONFIRMED.
+        // DynamicConfirmedGate 仍是 DYNAMIC_CONFIRMED 的唯一路径。
         return VerificationStatus.DYNAMIC_SUSPECTED.name();
     }
 }

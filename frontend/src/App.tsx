@@ -72,7 +72,7 @@ export default function App() {
       const next = await api.listProjects()
       setProjects(next)
       setProjectApiError(undefined)
-      // Keep an explicit selection only; never auto-switch to the first workspace on load.
+      // 仅保持显式选择；加载时永不自动切到首个 workspace。
       setProjectId((current) =>
         current && next.some((project) => project.projectId === current) ? current : ''
       )
@@ -96,8 +96,8 @@ export default function App() {
   useEffect(() => { setFocusedScanId(undefined) }, [projectId])
   useEffect(() => { void refreshDashboard() }, [refreshDashboard])
 
-  // Results view is not mounted with useAuditLiveRefresh; keep path runs / findings fresh here.
-  // SSE triggers GET reconcile; bounded polling covers stages that emit no scan events.
+  // Results 视图未挂载 useAuditLiveRefresh；在此保持 path run / finding 新鲜。
+  // SSE 触发 GET reconcile；有界 polling 覆盖不 emit scan event 的阶段。
   useEffect(() => {
     const scanId = focusedScanId ?? (snapshot?.scanId && snapshot.scanId !== 'unscanned' ? snapshot.scanId : undefined)
     if (!projectId || !scanId || view !== 'results') return

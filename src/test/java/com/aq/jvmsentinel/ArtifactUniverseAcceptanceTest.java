@@ -36,8 +36,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * P1-01: Artifact Universe scopes, nested Boot dependency gaps, unresolved dynamics,
- * coverage matrix summary, and runtime diff hook.
+ * 说明：P1-01：Artifact Universe scope/nested Boot dependency gap/unresolved dynamic，
+ * coverage matrix 摘要与 runtime diff hook。
  */
 public final class ArtifactUniverseAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -191,7 +191,7 @@ public final class ArtifactUniverseAcceptanceTest {
             check(matrix.gaps().unknown() > 0 || matrix.gaps().unresolved() > 0,
                     "universe gaps contribute to coverage gaps");
 
-            // P1-01: runtime-loaded class fixture merges into scan facts + CoverageMatrix.
+            // 说明：P1-01：runtime-loaded class fixture 合并进 scan fact+CoverageMatrix。
             List<String> runtimeFixture = List.of(
                     "com.example.universe.AppController",
                     "com.example.universe.RuntimeOnlyLoaded");
@@ -284,7 +284,7 @@ public final class ArtifactUniverseAcceptanceTest {
             zos.putNextEntry(new ZipEntry("BOOT-INF/lib/fat-lib.jar"));
             zos.write(fatNestedJar);
             zos.closeEntry();
-            // Duplicate application class under a second archive path → MULTI_VERSION_CLASS gap.
+            // 第二 archive path 下 duplicate application class → MULTI_VERSION_CLASS gap。
             Path appClass = classes.resolve("com/example/universe/AppController.class");
             if (Files.isRegularFile(appClass)) {
                 zos.putNextEntry(new ZipEntry("com/example/universe/AppController.class"));

@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * First-class path experiment session: scanId + entryId + track + attemptId.
+ * 一等 path 实验 session：scanId + entryId + track + attemptId。
  */
 public record PathRun(
         String pathRunId,

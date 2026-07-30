@@ -9,8 +9,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Bounded method summary used for bottom-up effect/guard/sanitizer propagation.
- * Provenance is inference; never a FACT upgrade.
+ * 用于 bottom-up effect/guard/sanitizer 传播的有界 method summary。
+ * Provenance 为 inference；永非 FACT 升级。
  */
 public record MethodSummary(
         String owner,

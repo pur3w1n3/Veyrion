@@ -6,16 +6,15 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * High-signal JVM invocation catalog derived from the project Java audit checklist.
+ * 源自项目 Java audit checklist 的高信号 JVM invocation catalog。
  *
- * <p>A match means only that a sensitive API call is present in bytecode. It does
- * not establish attacker control, runtime reachability, unsafe configuration, or
- * exploitability. Broad keywords such as {@code parse}, {@code read}, and
- * {@code execute} are deliberately never matched without an owner constraint.
+ * <p>匹配仅表示 bytecode 中存在敏感 API 调用。不
+ * 建立 attacker control、runtime reachability、unsafe configuration 或
+ * exploitability 签名。{@code parse}、{@code read}、
+ * {@code execute} 等宽泛 keyword 刻意在无 owner constraint 时不匹配。
  *
- * <p>Kinds are ordered primary-first. One call site may carry multiple security
- * effects (for example JDBC URL → SSRF + COMMAND + CLASS_LOADING). Consumers that
- * need a single label use {@link Match#category()}; full sets use {@link Match#kinds()}.
+ * <p>Kind 按 primary-first 排序。单 call site 可携带多种 security
+ * effect（如 JDBC URL → SSRF + COMMAND + CLASS_LOADING）。需要单 label 的消费者用 {@link Match#category()}；完整集合用 {@link Match#kinds()}。
  */
 final class JvmSinkSignatures {
     private static final List<Rule> RULES = List.of(
@@ -124,7 +123,7 @@ final class JvmSinkSignatures {
             exact("handlebars-inline", "TEMPLATE", "com.github.jknack.handlebars.Handlebars", 0.74,
                     "compileInline"),
 
-            // JNDI lookup often implies remote class loading / deserialization side-effects.
+            // JNDI lookup 常隐含 remote class loading / deserialization 副作用。
             exactKinds("jndi-initial-context", List.of("JNDI", "CLASS_LOADING", "DESERIALIZATION"),
                     "javax.naming.InitialContext", 0.94, "lookup", "doLookup"),
             exactKinds("jndi-context", List.of("JNDI", "CLASS_LOADING", "DESERIALIZATION"),
@@ -141,7 +140,7 @@ final class JvmSinkSignatures {
             exact("class-for-name", "CLASS_LOADING", "java.lang.Class", 0.86, "forName", "newInstance"),
             exact("class-loader", "CLASS_LOADING", "java.lang.ClassLoader", 0.92,
                     "loadClass", "defineClass", "findClass"),
-            // URLClassLoader loads bytecode from a URL → CLASS_LOADING primary, SSRF secondary.
+            // URLClassLoader 从 URL 加载 bytecode → CLASS_LOADING 主、SSRF 次。
             exactKinds("url-class-loader", List.of("CLASS_LOADING", "SSRF"),
                     "java.net.URLClassLoader", 0.92, "loadClass", "findClass", "<init>"),
             exact("unsafe-define-class", "CLASS_LOADING", "sun.misc.Unsafe", 0.96,
@@ -151,7 +150,7 @@ final class JvmSinkSignatures {
 
             exact("jdbc-statement", "SQL", "java.sql.Statement", 0.88,
                     "execute", "executeQuery", "executeUpdate", "executeLargeUpdate", "addBatch"),
-            // Controllable JDBC URL: network fetch (SSRF), driver feature RCE (COMMAND), driver/class load.
+            // 可控 JDBC URL：network fetch（SSRF）、driver feature RCE（COMMAND）、driver/class load。
             exactKinds("jdbc-connection-url", List.of("SSRF", "COMMAND", "CLASS_LOADING"),
                     "java.sql.DriverManager", 0.90, "getConnection"),
             exactKinds("jdbc-driver-connect", List.of("SSRF", "COMMAND", "CLASS_LOADING"),
@@ -235,7 +234,7 @@ final class JvmSinkSignatures {
             exact("jakarta-servlet-redirect", "REDIRECT", "jakarta.servlet.http.HttpServletResponse", 0.84,
                     "sendRedirect"),
 
-            // JWT / token APIs — presence only; not proof of missing verification or exploitability.
+            // JWT / token API — 仅 presence；非 missing verification 或 exploitability 证明。
             exact("jjwt-parser-parse", "JWT", "io.jsonwebtoken.JwtParser", 0.88,
                     "parse", "parseClaimsJws", "parseClaimsJwt", "parseSignedClaims"),
             exact("jjwt-parser-builder", "JWT", "io.jsonwebtoken.JwtParserBuilder", 0.80, "build"),
@@ -250,7 +249,7 @@ final class JvmSinkSignatures {
             prefix("blade-secure-token", "AUTH", "org.springblade.core.secure.", 0.78,
                     "getUser", "getUserId", "getClientId", "parseToken"),
 
-            // Flowable / Activiti / Camunda BPMN deploy + expression surfaces (presence only).
+            // BPMN deploy+expression 面 Flowable/Activiti/Camunda（仅 presence）。
             exact("flowable-create-deployment", "BPMN_DEPLOY",
                     "org.flowable.engine.RepositoryService", 0.90, "createDeployment"),
             exact("flowable-deployment-deploy", "BPMN_DEPLOY",
@@ -289,10 +288,10 @@ final class JvmSinkSignatures {
 
     static Match match(BytecodeFactIndex.CallEdge edge) {
         if (edge == null || edge.kind() == BytecodeFactIndex.EdgeKind.UNRESOLVED) return null;
-        // Executable Spring Boot archives carry launcher infrastructure outside
-        // BOOT-INF/classes. Its class loading, archive I/O, and URL handlers are
-        // implementation mechanics rather than application sinks and previously
-        // dominated results for every Boot artifact.
+        // 可执行 Spring Boot archive 在
+        // BOOT-INF/classes 外携带 launcher 基础设施。其 class loading、archive I/O 与 URL handler 为
+        // 实现机制而非 application sink，此前
+        // 对每个 Boot artifact 的结果占主导。
         if (edge.callerOwner().startsWith("org.springframework.boot.loader.")) return null;
         for (Rule rule : RULES) {
             if (rule.matches(edge)) return new Match(rule.id, rule.kinds, rule.confidence);

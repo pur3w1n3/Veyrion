@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * classPrefix must cover app root so FORCED PathTraces record Service/Util/Repository hops.
+ * classPrefix 须覆盖应用根，使 FORCED PathTrace 记录 Service/Util/Repository 跳转。
  */
 public final class InstrumentationClassPrefixAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

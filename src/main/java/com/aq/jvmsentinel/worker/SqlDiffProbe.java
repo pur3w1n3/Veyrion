@@ -7,8 +7,8 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * D2 differential helper: benign vs metachar SQL structure comparison.
- * Structural influence → DYNAMIC_SUSPECTED at most (never VERIFIED).
+ * D2 差分辅助：良性 vs 元字符 SQL 结构比较。
+ * 结构影响 → 最多 DYNAMIC_SUSPECTED（永非 VERIFIED）。
  */
 public final class SqlDiffProbe {
     public static final String META_MARKER = "'\"veyrion-sqli-meta";

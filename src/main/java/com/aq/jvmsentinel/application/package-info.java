@@ -1,7 +1,7 @@
 /**
- * Application use-case ports and orchestration facades (P1-08).
+ * Application 用例 port 与编排 facade（P1-08）。
  *
- * <p>Depends on {@code domain} / contracts only. Must not import HTTP servers, SQLite
- * adapters, ASM parsers, or {@code analysis.parser}.
+ * <p>仅依赖 {@code domain} / contract。不得 import HTTP server、SQLite
+ * adapter、ASM parser 或 {@code analysis.parser}。
  */
 package com.aq.jvmsentinel.application;

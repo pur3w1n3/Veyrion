@@ -23,7 +23,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Startup restore hydrates probe plans from durable V026 payloads without identity harvest.
+ * 启动 restore 从 durable V026 payload 水合 probe plan，无需 identity harvest。
  */
 public final class ProbePlanRestoreAcceptanceTest {
     private ProbePlanRestoreAcceptanceTest() { }
@@ -119,7 +119,7 @@ public final class ProbePlanRestoreAcceptanceTest {
                 taskId, project.projectId(), digest, scanId, entryId, inputsJson, maxRequests,
                 planHash, now, ProbePlanService.serializePlanPayload(storedPlan)));
 
-        // Legacy row without payload must be skipped, not rebuilt via harvest.
+        // 无 payload 的遗留行须跳过，不得经 harvest 重建。
         store.persistProbePlan(new SQLiteControlPlanePersistence.ProbePlanData(
                 "task-dynamic-legacy02", project.projectId(), digest, scanId, entryId, inputsJson,
                 maxRequests, planHash, now, null));

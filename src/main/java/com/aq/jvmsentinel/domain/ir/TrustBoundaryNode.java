@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Trust boundary / untrusted origin (parameter, header, cookie, message, file, …).
+ * Trust boundary / 不可信 origin（parameter、header、cookie、message、file、…）。
  *
  * <p>Stable id: {@code trust:{entryId}:{param}}.
  */

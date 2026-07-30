@@ -29,8 +29,8 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Compatible projection of existing scan facts into a minimal {@link EvidenceGraph}.
- * Does not mutate {@link StaticFactSnapshot} persistence; reads only.
+ * 现有 scan fact 到最小 {@link EvidenceGraph} 的兼容投影。
+ * 不 mutate {@link StaticFactSnapshot} persistence；仅读。
  */
 public final class EvidenceGraphProjector {
     private EvidenceGraphProjector() {
@@ -370,7 +370,7 @@ public final class EvidenceGraphProjector {
                     }
                 }
             }
-            // Guarantee finding evidence refs are joinable on at least one node.
+            // 保证 finding evidence ref 至少在一个 node 可 join。
             for (String ref : finding.evidenceRefs()) {
                 if (ref == null || ref.isBlank()) continue;
                 if (builder.nodesByEvidence.containsKey(ref)) continue;
@@ -395,7 +395,7 @@ public final class EvidenceGraphProjector {
             String runtimeId = StableNodeIds.runtime(run.pathRunId());
             String subject = "";
             if (run.entrypointRef() != null && !run.entrypointRef().isBlank()) {
-                // entrypointRef may be id or route; prefer entry: prefix when it looks like an id.
+                // entrypointRef 可为 id 或 route；像 id 时优先 entry: 前缀。
                 subject = run.entrypointRef().startsWith("entry:")
                         ? run.entrypointRef()
                         : StableNodeIds.entry(run.entrypointRef());

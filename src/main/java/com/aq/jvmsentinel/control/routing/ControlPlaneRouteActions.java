@@ -8,7 +8,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.Map;
 
-/** Package-visible handler surface used by {@link RouteTable}. */
+/** 由 {@link RouteTable} 使用的包可见 handler 表面。 */
 public interface ControlPlaneRouteActions {
     final class RouteException extends RuntimeException {
         public final int status;
@@ -41,6 +41,7 @@ public interface ControlPlaneRouteActions {
     void retryAuditStage(HttpExchange exchange, String projectId) throws IOException;
     void createScan(HttpExchange exchange, String projectId) throws IOException;
     void listScans(HttpExchange exchange, String projectId) throws IOException;
+    void updateScan(HttpExchange exchange, String scanId) throws IOException;
     void deleteScan(HttpExchange exchange, String projectId, String scanId) throws IOException;
     void dashboard(HttpExchange exchange, String projectId) throws IOException;
     void listEvidence(HttpExchange exchange, String projectId) throws IOException;

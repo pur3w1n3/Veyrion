@@ -17,7 +17,7 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * P0-21: project agent-like event summaries and PathRun facts into PathTrace without full trace store.
+ * P0-21：将 agent-like event summary 与 PathRun fact 投影为 PathTrace，无需完整 trace store.
  */
 public final class PathTraceProjector {
     public static final String PRODUCER = "path-trace-projector/0.1";
@@ -126,7 +126,7 @@ public final class PathTraceProjector {
             }
         }
         if (truncated) {
-            // preserve effects observed before truncation
+            // 保留 truncation 前观测的 effect
         } else if (exitReason == TraceExitReason.UNKNOWN && hasEffectBeforeExit(events, effectRefs)) {
             exitReason = TraceExitReason.DEPENDENCY_UNAVAILABLE;
         }

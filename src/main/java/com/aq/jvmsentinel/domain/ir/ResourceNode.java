@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * External resource / dependency lifecycle subject (DB, HTTP client, file, …).
+ * 外部 resource / dependency lifecycle 主体（DB、HTTP client、file、…）。
  *
  * <p>Stable id: {@code resource:{dependencyId}}.
  */

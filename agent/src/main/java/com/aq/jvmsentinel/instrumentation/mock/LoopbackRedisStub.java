@@ -25,9 +25,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Bounded Redis RESP2/RESP3 substitute on loopback. It intentionally implements only the
- * startup/cache command subset listed in {@link #dispatch(List, Session)} and rejects every
- * unknown command. It is not a complete Redis implementation or a security boundary.
+ * loopback 上有界 Redis RESP2/RESP3 替身。有意仅实现
+ * {@link #dispatch(List, Session)} 列出的 startup/cache 命令子集，并拒绝所有
+ * 未知命令。非完整 Redis 实现，亦非 security boundary。
  */
 public final class LoopbackRedisStub implements AutoCloseable {
     private static final int MAX_CLIENTS = 64;

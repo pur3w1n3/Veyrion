@@ -19,8 +19,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * P0-18: compile entry × 0-n parameter space into server-owned experiment plans.
- * Empty query/body is a legal shape and must carry empty-input rationale.
+ * P0-18：将 entry × 0-n parameter space 编译为服务端 owned experiment plan。
+ * 空 query/body 为合法 shape，须携带 empty-input rationale。
  */
 public final class EntryParameterExperimentCompiler {
     public static final String PRODUCER = "entry-parameter-experiment-compiler/0.1";
@@ -106,8 +106,8 @@ public final class EntryParameterExperimentCompiler {
     }
 
     /**
-     * Unify entry signatures, hypothesis families, DynamicProbe ExperimentPlans and AUTH PoC
-     * entry hints into server-owned compiled experiments (P0-18).
+     * 统一 entry signature、hypothesis family、DynamicProbe ExperimentPlan 与 AUTH PoC
+     * entry hint 为服务端 owned compiled experiment（P0-18）。
      */
     public static List<CompiledExperiment> compileUnified(
             List<ApiDtos.EntryDto> entries,

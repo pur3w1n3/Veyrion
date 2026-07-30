@@ -7,7 +7,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Program element: class, method, field, instruction, config, or resource symbol.
+ * 程序元素：class、method、field、instruction、config 或 resource symbol。
  *
  * <p>Stable id: {@code program:{elementKind}:{key}} via {@link StableNodeIds}.
  */

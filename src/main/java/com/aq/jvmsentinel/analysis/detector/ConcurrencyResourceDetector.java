@@ -14,10 +14,10 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * P2 CONCURRENCY detector: TOCTOU / race / lock-window heuristics.
- * Does not elevate verification status; resource open/close typestate remains
+ * 说明：P2 CONCURRENCY detector 启发式：TOCTOU/race/lock-window。
+ * 不提升 verification status；resource open/close typestate 仍
  * {@link ResourceLifecycleDetector}.
- * Declared AUDITED for heuristic recall (positive/negative/holdout); not a real race prover.
+ * 声明 AUDITED 用于启发式 recall（positive/negative/holdout）；非真实 race prover。
  */
 public final class ConcurrencyResourceDetector implements Detector {
     public static final String VERSION = "0.2.0-audited-heuristic";

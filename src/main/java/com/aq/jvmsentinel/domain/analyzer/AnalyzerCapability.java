@@ -4,7 +4,7 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * Negotiated Analyzer capabilities. Unknown values are rejected during negotiation
+ * 协商后的 Analyzer capability。未知值在协商时被拒绝
  * (closed for authorization of what may be published).
  */
 public enum AnalyzerCapability {

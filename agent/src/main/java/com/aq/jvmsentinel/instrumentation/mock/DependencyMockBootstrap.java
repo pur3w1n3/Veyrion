@@ -7,7 +7,7 @@ import java.lang.instrument.Instrumentation;
 import java.util.Map;
 import java.util.jar.JarFile;
 
-/** Enables in-sandbox JDBC driver registration and loopback Redis stub. */
+/** 启用沙箱内 JDBC driver 注册与 loopback Redis stub。 */
 public final class DependencyMockBootstrap {
     private static volatile LoopbackRedisStub redisStub;
     private static volatile LoopbackMysqlStub mysqlStub;
@@ -18,9 +18,9 @@ public final class DependencyMockBootstrap {
     public static void install(Instrumentation instrumentation, boolean dependencyMock,
                                String worldPackDependencyMode) {
         boolean observeFail = "OBSERVE_FAIL".equalsIgnoreCase(worldPackDependencyMode);
-        // OBSERVE_FAIL still needs the mock JDBC driver so Statement.execute* can record SQL
-        // text (H3 / PathTrace) and then fail closed. Skip Redis/MySQL success stubs that
-        // would continue business past unavailable real dependencies.
+        // OBSERVE_FAIL 仍需要 mock JDBC driver，以便 Statement.execute* 记录 SQL
+        // 文本（H3 / PathTrace）后 fail-closed。跳过会在真实依赖不可用时
+        // 继续业务的 Redis/MySQL 成功 stub。
         if (observeFail) {
             try {
                 JarFile agentJar = agentJarFile();

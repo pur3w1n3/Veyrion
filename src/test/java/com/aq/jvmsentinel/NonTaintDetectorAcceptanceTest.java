@@ -45,8 +45,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * P1-05: non-taint detector skeleton — positive/negative fixtures, merge with projector,
- * no sink-none AUTH representation, AcceptanceTestRunner gate.
+ * 说明：P1-05：non-taint detector 骨架 — positive/negative fixture 与 projector merge，
+ * 无 sink-none AUTH 表示，AcceptanceTestRunner gate。
  */
 public final class NonTaintDetectorAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -127,7 +127,7 @@ public final class NonTaintDetectorAcceptanceTest {
                 DetectorRecallGate.evaluate(full, holdoutCtx, holdoutExpected);
         check(holdoutPass.passed(), "holdout recall gate passes with full registry");
 
-        // Independent remove-detector → fail proofs for the first-batch trio.
+        // 独立 remove-detector → 首批 trio 的 fail 证明。
         assertRemoveFails(full, mutationCtx, DetectorIds.GUARD_CONSISTENCY,
                 Set.of(GuardConsistencyDetector.PROPERTY), "mutation/guard");
         assertRemoveFails(full, mutationCtx, DetectorIds.OWNERSHIP_IDOR,

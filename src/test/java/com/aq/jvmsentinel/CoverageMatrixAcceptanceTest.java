@@ -35,7 +35,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * P0-13: Coverage Matrix projection honesty, checksum stability, and recall-gate skeleton.
+ * P0-13：Coverage Matrix 投影诚实、checksum 稳定与 recall-gate 骨架。
  */
 public final class CoverageMatrixAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -67,8 +67,8 @@ public final class CoverageMatrixAcceptanceTest {
     }
 
     /**
-     * P0-13 mutation/holdout: compute real TP/FP/FN from CoverageMatrix vs baseline groundTruth.
-     * Suppressing a required detector must fail the recall gate (FN &gt; 0).
+     * P0-13 mutation/holdout：从 CoverageMatrix 对 baseline groundTruth 计算真实 TP/FP/FN。
+     * Suppress 必需 detector 须使 recall gate 失败（FN &gt; 0）。
      */
     private static void verifyMutationAndHoldoutBaselines() throws Exception {
         JsonNode mutation = loadBaseline("baselines/p0-13-mutation-sql-variant.json");
@@ -291,7 +291,7 @@ public final class CoverageMatrixAcceptanceTest {
                     uri(server, "/scans/" + scanId), "GET", "", token));
             check(detail.get("coverage") instanceof Map<?, ?>, "GET scan includes coverage");
 
-            // Live fixture should surface SQL + AUTH_GAP detector families when present.
+            // Live fixture 存在时应 surface SQL + AUTH_GAP detector family。
             Object detectors = endpoint.get("detectors");
             check(detectors instanceof List<?>, "detectors array present");
             boolean hasDataflow = false;

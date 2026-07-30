@@ -4,9 +4,9 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * D3 replayable SQL experiment card: identity track, bounded inputs, SQL before/after,
- * and stop conditions. Default verification is at most {@link VerificationStatus#DYNAMIC_SUSPECTED};
- * only the server H3 gate may raise {@link VerificationStatus#DYNAMIC_CONFIRMED}.
+ * D3 可 replay 的 SQL 实验 card：identity track、有界 input、SQL before/after
+ * 与 stop condition。默认 verification 至多 {@link VerificationStatus#DYNAMIC_SUSPECTED}；
+ * 仅服务端 H3 gate 可提升为 {@link VerificationStatus#DYNAMIC_CONFIRMED}。
  */
 public record SqlExperimentCard(
         String cardId,

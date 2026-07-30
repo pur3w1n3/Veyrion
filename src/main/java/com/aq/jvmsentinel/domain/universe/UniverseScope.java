@@ -1,7 +1,7 @@
 package com.aq.jvmsentinel.domain.universe;
 
 /**
- * Ownership / provenance scope for Artifact Universe nodes (P1-01).
+ * Artifact Universe node 的 ownership / provenance scope（P1-01）。
  */
 public enum UniverseScope {
     APPLICATION,

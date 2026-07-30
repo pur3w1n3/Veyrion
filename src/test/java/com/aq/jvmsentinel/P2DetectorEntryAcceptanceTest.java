@@ -42,9 +42,9 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P2: STATE/CONCURRENCY detectors with positive/negative + mutation/holdout DetectorRecallGate
+ * 说明：P2：STATE/CONCURRENCY detector + mutation/holdout DetectorRecallGate
  * (declared AUDITED heuristic depth), family DYNAMIC_CONFIRMED fail-closed gate,
- * and Servlet/WebFlux/Listener/Scheduled/WebSocket EntryProvider scaffolding.
+ * 与 Servlet/WebFlux/Listener/Scheduled/WebSocket EntryProvider scaffolding。
  */
 public final class P2DetectorEntryAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

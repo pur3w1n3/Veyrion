@@ -279,7 +279,7 @@ public final class PipelineRestartRecoveryAcceptanceTest {
                 try {
                     Files.deleteIfExists(path);
                 } catch (java.io.IOException ignored) {
-                    // Windows may keep the SQLite WAL briefly locked after close.
+                    // Windows 可能在 close 后短暂锁定 SQLite WAL。
                     path.toFile().deleteOnExit();
                 }
             }

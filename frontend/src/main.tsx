@@ -4,7 +4,7 @@ import App from './App'
 import { LAYOUT_CONTRACT, NARROW_VIEWPORT_CLASS } from './layoutContract'
 import './styles.css'
 
-/** Apply narrow class when viewport matches layout contract breakpoint. */
+/** 视口匹配 layout contract 断点时应用 narrow class。 */
 const syncNarrowViewportClass = () => {
   const narrow = window.matchMedia(`(max-width: ${LAYOUT_CONTRACT.narrowBreakpointPx}px)`).matches
   document.body.classList.toggle(NARROW_VIEWPORT_CLASS, narrow)

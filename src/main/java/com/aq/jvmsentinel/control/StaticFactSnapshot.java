@@ -17,10 +17,10 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Persisted static analysis facts for a scan: bounded BytecodeFactIndex IR plus taint paths,
- * analysis coverage, Artifact Universe (P1-01), optional runtime-loaded class list, and
- * authoritative Evidence Graph wire (P1-02). Stored in {@code taint_graphs.graph_json}
- * (schemaVersion=4 write; schemaVersion=1|2|3|4 read).
+ * scan 的持久化静态分析事实：有界 BytecodeFactIndex IR、污点 path、
+ * 分析 coverage、Artifact Universe（P1-01）、可选 runtime 加载类列表，以及
+ * 权威 Evidence Graph wire（P1-02）。存储于 {@code taint_graphs.graph_json}
+ *（schemaVersion=4 写入；schemaVersion=1|2|3|4 读取）。
  */
 public record StaticFactSnapshot(
         String coverageStatus,
@@ -90,7 +90,7 @@ public record StaticFactSnapshot(
                 ? Map.of() : Map.copyOf(evidenceGraphWire);
     }
 
-    /** Compatibility constructor: empty IR lists (schema v1 shape). */
+    /** 兼容构造函数：空 IR 列表（schema v1 形态）。 */
     public StaticFactSnapshot(
             String coverageStatus,
             List<BytecodeFactIndex.TaintPath> taintPaths,
@@ -100,7 +100,7 @@ public record StaticFactSnapshot(
                 ArtifactUniverse.empty(), List.of(), Map.of());
     }
 
-    /** Compatibility constructor: schema v2 IR without universe. */
+    /** 兼容构造函数：schema v2 IR，无 universe。 */
     public StaticFactSnapshot(
             String coverageStatus,
             List<BytecodeFactIndex.TaintPath> taintPaths,
@@ -118,7 +118,7 @@ public record StaticFactSnapshot(
                 ArtifactUniverse.empty(), List.of(), Map.of());
     }
 
-    /** Compatibility constructor: schema v3 IR with universe. */
+    /** 兼容构造函数：schema v3 IR，含 universe。 */
     public StaticFactSnapshot(
             String coverageStatus,
             List<BytecodeFactIndex.TaintPath> taintPaths,
@@ -232,7 +232,7 @@ public record StaticFactSnapshot(
         return evidenceGraph().isPresent();
     }
 
-    /** Universe with any deferred runtime-loaded class diff applied (coverage projection). */
+    /** 应用任意 deferred runtime 加载类 diff 后的 universe（coverage 投影）。 */
     public ArtifactUniverse effectiveArtifactUniverse() {
         if (runtimeLoadedClasses.isEmpty()) {
             return artifactUniverse;
@@ -253,7 +253,7 @@ public record StaticFactSnapshot(
                 analysisCoverage);
     }
 
-    /** True when persisted IR includes at least one method fact (schema v2+). */
+    /** 持久化 IR 含至少一个 method fact 时为 true（schema v2+）。 */
     public static boolean hasNonEmptyMethodsIr(StaticFactSnapshot snapshot) {
         return snapshot != null && !snapshot.methods().isEmpty();
     }
@@ -345,14 +345,14 @@ public record StaticFactSnapshot(
     }
 
     /**
-     * Contrast/PATH taint-path authority.
+     * Contrast/PATH 污点 path 权威来源。
      * <ul>
-     *   <li>When a static-facts row exists ({@code facts.isPresent()}), return persisted
-     *       {@code taintPaths} only — never merge empty-step sink stubs, even if the list
-     *       is empty or steps are empty under COMPLETE/TRUNCATED.</li>
-     *   <li>When no facts row ({@code facts.isEmpty()}), fall back to
-     *       {@link ContrastLedger#taintPathsFromSinks}; callers must treat coverage as
-     *       {@link #LEGACY_INCOMPLETE}.</li>
+     *   <li>存在 static-facts 行时（{@code facts.isPresent()}），仅返回持久化
+     *       {@code taintPaths} — 即使列表为空或 COMPLETE/TRUNCATED 下 step 为空，
+     *       也不合并空 step sink stub。</li>
+     *   <li>无 facts 行时（{@code facts.isEmpty()}），回退到
+     *       {@link ContrastLedger#taintPathsFromSinks}；调用方须将 coverage 视为
+     *       {@link #LEGACY_INCOMPLETE}。</li>
      * </ul>
      */
     public static List<BytecodeFactIndex.TaintPath> resolveContrastTaintPaths(
@@ -363,7 +363,7 @@ public record StaticFactSnapshot(
         return facts.get().taintPaths();
     }
 
-    /** Coverage for contrast/PATH consumers: missing facts row is always LEGACY_INCOMPLETE. */
+    /** contrast/PATH 消费者的 coverage：缺失 facts 行恒为 LEGACY_INCOMPLETE。 */
     public static String resolveContrastCoverageStatus(Optional<StaticFactSnapshot> facts) {
         return facts.map(StaticFactSnapshot::coverageStatus).orElse(LEGACY_INCOMPLETE);
     }

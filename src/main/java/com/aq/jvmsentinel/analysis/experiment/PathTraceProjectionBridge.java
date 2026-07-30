@@ -15,7 +15,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * P0-21: project PathRun facts and agent event summaries into PathTrace.
+ * P0-21：将 PathRun fact 与 agent event summary 投影为 PathTrace。
  */
 public final class PathTraceProjectionBridge {
     private PathTraceProjectionBridge() {
@@ -52,8 +52,8 @@ public final class PathTraceProjectionBridge {
                     List.of()));
             parameterFlow.add(new PathTrace.ParameterFlowStep("request", run.entrypointRef(), "", ""));
         }
-        // Keep chronological order. Drop CLASS_LOAD flood and duplicate GUARD noise so the
-        // TRACE budget retains Controller→Service→Util→Repository→Guard→Effect before failure.
+        // 保持时间序。丢弃 CLASS_LOAD flood 与重复 GUARD 噪声，使
+        // TRACE budget 在 failure 前保留 Controller→Service→Util→Repository→Guard→Effect。
         List<PathTraceProjector.EventSummary> windowSummaries = new ArrayList<>();
         for (AgentJsonlTraceConverter.AgentEvent event :
                 windowEvents == null ? List.<AgentJsonlTraceConverter.AgentEvent>of() : windowEvents) {
@@ -262,7 +262,7 @@ public final class PathTraceProjectionBridge {
                 || "INSTRUMENTATION_ERROR".equals(event.eventType())) {
             Map<String, String> detail = event.detail();
             String kind = detail == null ? "" : detail.getOrDefault("pathDebugKind", "");
-            // Keep only if sensor explicitly tagged a path-debug kind other than METHOD_HOP noise.
+            // 仅当 sensor 显式标记非 METHOD_HOP 噪声的 path-debug kind 时保留。
             return kind.isBlank() || "METHOD_HOP".equals(kind);
         }
         return false;

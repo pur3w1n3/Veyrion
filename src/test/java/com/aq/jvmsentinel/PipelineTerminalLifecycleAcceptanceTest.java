@@ -31,7 +31,7 @@ import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
 
 /**
- * P0-02: BLOCKED, cancel, stale QUEUED dynamic, and retry prerequisite/idempotency terminals.
+ * 说明：P0-02：BLOCKED/cancel/stale QUEUED dynamic/retry 前置/idempotency terminal。
  */
 public final class PipelineTerminalLifecycleAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -41,6 +41,7 @@ public final class PipelineTerminalLifecycleAcceptanceTest {
         cancelExpectedJobRecordsAttemptAndDisarms();
         staleQueuedDynamicBecomesDynamicDisabled();
         retryRequiresPrerequisiteAndIdempotency();
+        pauseResumeAndRestartFromStage();
         System.out.println("PipelineTerminalLifecycleAcceptanceTest passed ("
                 + ASSERTIONS.get() + " assertions)");
     }
@@ -113,7 +114,7 @@ public final class PipelineTerminalLifecycleAcceptanceTest {
         String token = "p002-cancel-token";
         String keys = UUID.randomUUID().toString();
         HttpClient client = HttpClient.newHttpClient();
-        // Hang until interrupted so cancel always races ahead of provider completion.
+        // Hang 直至 interrupt，使 cancel 总在 provider 完成前 race。
         try (ControlPlaneServer server = new ControlPlaneServer(root, 0, token, database,
                 (provider, credential) -> { throw new AssertionError("inventory unused"); },
                 (provider, credential, request, limits) -> {
@@ -349,6 +350,86 @@ public final class PipelineTerminalLifecycleAcceptanceTest {
         }
     }
 
+    private static void pauseResumeAndRestartFromStage() throws Exception {
+        Path root = Files.createTempDirectory("veyrion-p002-pause-");
+        Path database = root.resolve("control.db");
+        String token = "p002-pause-token";
+        String keys = UUID.randomUUID().toString();
+        HttpClient client = HttpClient.newHttpClient();
+        try (ControlPlaneServer server = server(root, database, token).start()) {
+            String projectId = text(ok(send(client, uri(server, "/projects"), "POST",
+                    "{\"name\":\"pause resume\"}", token, keys + "-project")), "projectId");
+            Path artifact = executableControllerJar(root);
+            String artifactId = text(ok(send(client, uri(server, "/projects/" + projectId + "/artifacts"),
+                    "POST", "{\"path\":\"" + escape(artifact.toString()) + "\"}",
+                    token, keys + "-artifact")), "artifactId");
+            String providerId = text(ok(send(client, uri(server, "/providers"), "POST",
+                    "{\"name\":\"pause provider\",\"kind\":\"OPENAI_CHAT\","
+                            + "\"baseUrl\":\"http://127.0.0.1:3996\",\"model\":\"m\","
+                            + "\"apiKey\":\"secret\"}", token, keys + "-provider")), "providerId");
+            for (String role : List.of("PRE_ANALYSIS", "AUTH_ANALYSIS", "PATH_EXPLORATION",
+                    "DYNAMIC_VERIFICATION", "VULNERABILITY_TRIAGE", "REPORT_GENERATION")) {
+                ok(send(client, uri(server, "/projects/" + projectId + "/role-assignments/" + role),
+                        "PATCH", "{\"providerId\":\"" + providerId + "\",\"model\":\"m\"}",
+                        token, keys + "-bind-" + role));
+            }
+            Map<String, Object> audit = ok(send(client,
+                    uri(server, "/projects/" + projectId + "/audit-runs"), "POST",
+                    "{\"artifactId\":\"" + artifactId + "\",\"authorized\":true,"
+                            + "\"aiAuthorized\":true,\"outputLanguage\":\"ZH_CN\","
+                            + "\"networkMode\":\"DENY\",\"dangerousActionMode\":\"DRY_RUN\"}",
+                    token, keys + "-audit"));
+            String scanId = text(audit, "scanId");
+            String jobId = text(object(audit, "preAnalysisJob"), "aiJobId");
+            long armedDeadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            boolean running = false;
+            while (System.nanoTime() < armedDeadline) {
+                Map<String, Object> current = okGet(client, uri(server, "/scans/" + scanId), token);
+                if ("RUNNING".equals(current.get("pipelineStatus"))
+                        || Boolean.TRUE.equals(current.get("pipelineArmed"))) {
+                    running = true;
+                    break;
+                }
+                Thread.sleep(40);
+            }
+            check(running, "audit-run arms pipeline before pause");
+            Map<String, Object> paused = ok(send(client, uri(server, "/scans/" + scanId), "PATCH",
+                    "{\"action\":\"pause\",\"authorized\":true}", token, keys + "-pause"));
+            check("PAUSED".equals(paused.get("pipelineStatus")), "pause projects PAUSED status");
+            check("PRE_ANALYSIS".equals(paused.get("pipelineStage"))
+                            || paused.get("pipelineStage") != null,
+                    "pause retains pipeline stage");
+            check("OPERATOR_PAUSED".equals(paused.get("pipelineStopReason")),
+                    "pause stop reason is OPERATOR_PAUSED");
+            Map<String, Object> jobAfterPause = okGet(client, uri(server, "/ai-jobs/" + jobId), token);
+            check(List.of("CANCELLED", "COMPLETED", "FAILED", "BLOCKED")
+                            .contains(String.valueOf(jobAfterPause.get("status"))),
+                    "pause terminalizes or races past the expected AI job");
+            Map<String, Object> resumed = ok(send(client, uri(server, "/scans/" + scanId), "PATCH",
+                    "{\"action\":\"resume\",\"authorized\":true,\"aiAuthorized\":true,"
+                            + "\"outputLanguage\":\"ZH_CN\"}",
+                    token, keys + "-resume"));
+            check("RUNNING".equals(resumed.get("pipelineStatus"))
+                            || Boolean.TRUE.equals(resumed.get("pipelineArmed")),
+                    "resume re-arms pipeline");
+            Map<String, Object> restart = ok(send(client,
+                    uri(server, "/projects/" + projectId + "/audit-stage-retries"), "POST",
+                    "{\"scanId\":\"" + scanId + "\",\"stage\":\"PRE_ANALYSIS\",\"authorized\":true,"
+                            + "\"aiAuthorized\":true,\"outputLanguage\":\"ZH_CN\"}",
+                    token, keys + "-restart-pre"));
+            check(Boolean.TRUE.equals(restart.get("pipelineArmed"))
+                            || restart.get("aiJob") != null,
+                    "restart-from PRE_ANALYSIS creates a new armed attempt");
+            Map<String, Object> stopped = ok(send(client, uri(server, "/scans/" + scanId), "PATCH",
+                    "{\"action\":\"cancel\",\"authorized\":true}", token, keys + "-cancel"));
+            check("STOPPED".equals(stopped.get("pipelineStatus"))
+                            || "OPERATOR_CANCELLED".equals(stopped.get("pipelineStopReason")),
+                    "cancel stops the pipeline");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
     private static ControlPlaneServer server(Path root, Path database, String token) {
         return new ControlPlaneServer(root, 0, token, database,
                 (provider, credential) -> { throw new AssertionError("inventory unused"); },
@@ -515,7 +596,7 @@ public final class PipelineTerminalLifecycleAcceptanceTest {
     }
 
     /**
-     * Read-only GET helper: retries only transient {@code 409 PERSISTENCE_REJECTED}
+     * 只读 GET helper：仅重试 transient {@code 409 PERSISTENCE_REJECTED}
      * (SQLite busy during concurrent AI/cancel writes). Real conflicts still fail.
      */
     private static Map<String, Object> okGet(HttpClient client, URI uri, String token) throws Exception {

@@ -1,20 +1,20 @@
 package com.aq.jvmsentinel.model;
 
 /**
- * Static↔dynamic contrast for a sink/entry row. Never upgrades verification:
- * MATCHED is still at most {@code DYNAMIC_SUSPECTED}.
+ * sink/entry 行的 static↔dynamic 对比。永不升级 verification：
+ * MATCHED 至多仍为 {@code DYNAMIC_SUSPECTED}。
  */
 public enum ContrastStatus {
-    /** Static candidate aligns with a pass-gate PathRun on the same entry×track. */
+    /** 静态候选与同一 entry×track 的 pass-gate PathRun 对齐。 */
     MATCHED,
-    /** PathRun exists for the entry×track but bind/sink touch is incomplete. */
+    /** entry×track 存在 PathRun 但 bind/sink touch 不完整。 */
     PARTIAL,
-    /** Static reachability/gap with no usable pass-gate PathRun (e.g. all 401). */
+    /** 静态 reachability/gap，无可用 pass-gate PathRun（如全部 401）。 */
     STATIC_ONLY,
-    /** A method on the static taint path emitted at least one dynamic branch hit. */
+    /** 静态 taint path 上的 method 至少产生一次 dynamic branch hit。 */
     DYNAMIC_REACHED,
-    /** PathRun without a matching static sink row. */
+    /** 无匹配静态 sink 行的 PathRun。 */
     DYNAMIC_ONLY,
-    /** Insufficient data to classify. */
+    /** 数据不足，无法分类。 */
     UNKNOWN
 }

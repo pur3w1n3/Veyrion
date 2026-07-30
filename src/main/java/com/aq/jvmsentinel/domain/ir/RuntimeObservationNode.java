@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Runtime observation projected from PathRun / worker events.
+ * 从 PathRun / worker event 投影的 runtime observation。
  *
  * <p>Stable id: {@code runtime:{pathRunId}}.
  */

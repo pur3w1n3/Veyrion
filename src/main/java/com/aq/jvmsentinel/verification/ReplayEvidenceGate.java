@@ -11,10 +11,10 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Fail-closed comparison of two independently completed executions of the original artifact.
+ * 对原始制品两次独立完成执行的 fail-closed 比较。
  *
- * <p>A successful comparison creates a replayable candidate only. It never upgrades Agent or
- * substituted-dependency observations to VERIFIED.</p>
+ * <p>成功比较仅创建可重放候选。永不将 Agent 或
+ * 替代依赖观测升级为 VERIFIED。</p>
  */
 public final class ReplayEvidenceGate {
     private static final Set<String> DEPENDENCY_MODES =

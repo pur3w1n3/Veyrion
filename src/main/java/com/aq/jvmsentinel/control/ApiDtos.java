@@ -6,10 +6,10 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 
-/** Versioned wire DTOs exposed by {@link ControlPlaneServer}. */
+/** 由 {@link ControlPlaneServer} 暴露的带版本 wire DTO。 */
 public final class ApiDtos {
     public static final int SCHEMA_VERSION = 1;
-    /** Event envelopes currently share the v1 wire contract; scope is still carried explicitly. */
+    /** 事件 envelope 当前共享 v1 wire contract；scope 仍显式携带。 */
     public static final int EVENT_SCHEMA_VERSION = SCHEMA_VERSION;
     public static final String STATIC_INFERRED = "STATIC_INFERRED";
     public static final String DYNAMIC_SUSPECTED = "DYNAMIC_SUSPECTED";
@@ -56,7 +56,7 @@ public final class ApiDtos {
             }
         }
 
-        /** Primary UI label: original basename, else short artifact id. */
+        /** 主 UI 标签：原始 basename，否则短 artifact id。 */
         public String displayName() {
             return originalFileName != null ? originalFileName : artifactId;
         }
@@ -181,7 +181,7 @@ public final class ApiDtos {
                              List<String> evidenceRefs, int evidenceCount, double confidence,
                              String dependencyMode, Map<String, Object> rootCause,
                              String hypothesisId, String securityProperty) {
-        /** Compatibility constructor when MVP-5 rootCause / P0-12 hypothesis fields are absent. */
+        /** 兼容构造函数：MVP-5 rootCause / P0-12 hypothesis 字段缺失时。 */
         public FindingDto(int schemaVersion, String projectId, String artifactDigest,
                           String scanId, String findingId, String title, String severity,
                           String verificationStatus, String entrypointId, String entry,
@@ -193,7 +193,7 @@ public final class ApiDtos {
                     evidenceRefs, evidenceCount, confidence, dependencyMode, null, "", "");
         }
 
-        /** Compatibility constructor when P0-12 hypothesis fields are absent. */
+        /** 兼容构造函数：P0-12 hypothesis 字段缺失时。 */
         public FindingDto(int schemaVersion, String projectId, String artifactDigest,
                           String scanId, String findingId, String title, String severity,
                           String verificationStatus, String entrypointId, String entry,
@@ -451,7 +451,7 @@ public final class ApiDtos {
         }
     }
 
-    /** Wire-safe copy of RootCauseAnalysis-shaped maps for FindingDto / HTTP. */
+    /** FindingDto / HTTP 用的 RootCauseAnalysis 形 map 的 wire 安全副本。 */
     private static Map<String, Object> copyRootCause(Map<String, Object> rootCause) {
         if (rootCause == null || rootCause.isEmpty()) return null;
         Map<String, Object> copy = new LinkedHashMap<>();

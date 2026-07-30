@@ -15,7 +15,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * P0-21: compile entry × 0-n parameters × posture into server-owned experiment plans.
+ * P0-21：将 entry × 0-n parameter × posture 编译为服务端 owned experiment plan。
  */
 public final class PostureExperimentCompiler {
     public static final String PRODUCER = "posture-experiment-compiler/0.1";
@@ -259,8 +259,8 @@ public final class PostureExperimentCompiler {
     }
 
     /**
-     * ProbeTarget.experimentPlanId must match {@code [A-Za-z0-9_.:/-]{1,128}}.
-     * Entry ids can be long route keys — hash the overflow instead of failing registration.
+     * 说明：ProbeTarget.experimentPlanId 须匹配 {@code [A-Za-z0-9_.:/-]{1,128}}。
+     * Entry id 可为长 route key — 对 overflow hash 而非 registration 失败。
      */
     static String boundedPlanId(String entryId, RuntimePostureKind kind) {
         String posture = kind == null ? "unauth" : kind.name().toLowerCase(Locale.ROOT);

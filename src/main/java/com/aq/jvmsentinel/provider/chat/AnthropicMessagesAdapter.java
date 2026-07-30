@@ -18,7 +18,7 @@ import java.util.Set;
 
 import static com.aq.jvmsentinel.provider.chat.ProviderChatContracts.StopReason;
 
-/** Pure, bounded adapter for Anthropic Messages tool-use JSON. */
+/** 纯、有界的 Anthropic Messages tool-use JSON adapter。 */
 public final class AnthropicMessagesAdapter {
     public ObjectNode buildRequest(String model, int maxTokens, String systemPrompt,
                                    List<ProviderChatContracts.ChatTurn> turns,

@@ -10,8 +10,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Independent recall gate for P1-05 non-taint detectors.
- * Removing a detector that owns an expected securityProperty must fail the gate.
+ * 说明：P1-05 non-taint detector 独立 recall gate。
+ * 移除拥有期望 securityProperty 的 detector 须使 gate 失败。
  */
 public final class DetectorRecallGate {
     private DetectorRecallGate() {
@@ -24,7 +24,7 @@ public final class DetectorRecallGate {
     }
 
     /**
-     * Passes when every expected securityProperty appears at least once in {@code hypotheses}.
+     * 每个期望 securityProperty 在 {@code hypotheses} 至少出现一次则 pass。
      */
     public static Result evaluate(List<SecurityHypothesis> hypotheses, Set<String> expectedProperties) {
         Objects.requireNonNull(expectedProperties, "expectedProperties");
@@ -47,7 +47,7 @@ public final class DetectorRecallGate {
     }
 
     /**
-     * Runs {@code registry} against {@code context} and evaluates expected properties.
+     * 对 {@code context} 运行 {@code registry} 并评估期望 property。
      */
     public static Result evaluate(DetectorRegistry registry,
                                   DetectorContext context,

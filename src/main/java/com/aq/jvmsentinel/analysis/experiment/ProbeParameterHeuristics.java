@@ -6,9 +6,9 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Bounded, charset-safe sample values for dynamic probe query/body binding.
- * Prefers honest exploration literals over empty input when a named parameter exists.
- * Values must survive {@code ProbeTarget.query} wire charset {@code [A-Za-z0-9_=&%./{}:-]}.
+ * 说明：dynamic probe query/body binding 有界 charset-safe 样本值。
+ * 存在命名 parameter 时优先诚实 exploration literal 而非空 input。
+ * 值须 survive {@code ProbeTarget.query} wire charset {@code [A-Za-z0-9_=&%./{}:-]}。
  */
 public final class ProbeParameterHeuristics {
     private static final Set<String> EXPRESSION_NAMES = Set.of(
@@ -38,7 +38,7 @@ public final class ProbeParameterHeuristics {
     }
 
     /**
-     * Explicit sample from simple {@code name=value} encodings; blank for structural
+     * 来自简单 {@code name=value} 编码的显式样本；结构性
      * {@code name=…, type=…} encodings (sample must come from heuristics).
      */
     public static String declaredSample(String raw) {
@@ -63,7 +63,7 @@ public final class ProbeParameterHeuristics {
         String lower = name.toLowerCase(Locale.ROOT);
         String route = routeHint == null ? "" : routeHint.toLowerCase(Locale.ROOT);
         if (looksExpression(lower, route)) {
-            // Numeric literal: charset-safe and accepted by QLExpress / SpEL / Aviator / MVEL.
+            // 数字 literal：charset-safe，QLExpress / SpEL / Aviator / MVEL 可接受。
             return "1";
         }
         if ("businessId".equals(name) || lower.endsWith("id") || lower.endsWith("ids")) {
@@ -98,8 +98,8 @@ public final class ProbeParameterHeuristics {
     }
 
     /**
-     * Prefer a compiled query only when it binds at least one real entry parameter name;
-     * otherwise fall back to {@code fallback} (typically {@link #buildSyntheticQuery}).
+     * 仅当 compiled query 绑定至少一个真实 entry parameter 名时优先；
+     * 否则 fallback 到 {@code fallback}（通常 {@link #buildSyntheticQuery}）。
      */
     public static String preferHonestQuery(String compiledQuery, String fallback,
                                            Iterable<String> parameterEncodings) {
@@ -147,7 +147,7 @@ public final class ProbeParameterHeuristics {
             if (sample.isBlank()) {
                 continue;
             }
-            // Keep wire-safe: drop characters outside ProbeTarget query charset.
+            // 保持 wire-safe：丢弃 ProbeTarget query charset 外字符。
             String safeSample = sample.replaceAll("[^A-Za-z0-9_%./{}:-]", "");
             if (safeSample.isBlank()) {
                 continue;

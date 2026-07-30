@@ -4,10 +4,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Sealed Security IR node hierarchy for the Evidence Graph (P1-02).
+ * Evidence Graph 的 sealed Security IR node 层次（P1-02）。
  *
  * <p>Stable IDs follow {@link StableNodeIds}. Nodes carry evidence refs and provenance
- * but never elevate verification status.
+ * 但永不提升 verification status。
  */
 public sealed interface IrNode
         permits ProgramNode, EntryNode, TrustBoundaryNode, EffectNode, GuardNode,

@@ -5,11 +5,11 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Stable Evidence Graph node ID strategy (P1-02).
+ * 稳定 Evidence Graph node ID 策略（P1-02）。
  *
  * <p>IDs are deterministic within a scan and have the form {@code {type}:{key}}.
- * They intentionally omit project/scan prefixes — those live on {@link EvidenceGraph}.
- * Keys reuse legacy DTO identities when present so findings can resolve
+ * 刻意省略 project/scan 前缀 — 那些位于 {@link EvidenceGraph}。
+ * Key 在存在时复用 legacy DTO identity，以便 finding 可解析
  * {@code entrypointId}/{@code sinkId}/evidence refs without rewriting old wire fields.
  *
  * <ul>
@@ -27,7 +27,7 @@ import java.util.Objects;
  * </ul>
  *
  * <p>Unknown producers must not invent colliding prefixes; namespaced extensions go under
- * node {@code extensions}, never into the ID namespace.
+ * 说明：node {@code extensions} 永不进入 ID namespace。
  */
 public final class StableNodeIds {
     private StableNodeIds() {

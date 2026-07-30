@@ -6,7 +6,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
-/** Versioned AI job/stage DTOs. Model output is structurally limited to INFERENCE. */
+/** 版本化 AI job/stage DTO。模型输出结构上限于 INFERENCE。 */
 public final class AiContracts {
     public static final int SCHEMA_VERSION = 1;
 
@@ -68,7 +68,7 @@ public final class AiContracts {
             evidenceRefs = boundedRefs(evidenceRefs, "evidenceRefs");
         }
 
-        /** Deliberately has no VERIFIED option. */
+        /** 故意不提供 VERIFIED 选项。 */
         public ConclusionKind classification() { return ConclusionKind.INFERENCE; }
     }
 

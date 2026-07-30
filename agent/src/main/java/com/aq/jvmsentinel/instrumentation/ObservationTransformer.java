@@ -19,7 +19,7 @@ final class ObservationTransformer implements ClassFileTransformer {
         try {
             AgentRuntime.recordClassLoad(className.replace('/', '.'));
         } catch (Throwable ignored) {
-            // Observation must not alter the loaded class or grant any capability.
+            // Observation 不得改变已加载 class 或授予任何 capability。
         } finally {
             recording.set(false);
         }

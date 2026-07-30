@@ -10,10 +10,10 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Second FrameworkAdapter skeleton for Servlet/Filter surfaces (P2 SCAFFOLDING).
+ * Servlet/Filter 面的第二 FrameworkAdapter 骨架（P2 SCAFFOLDING）。
  *
  * <p>Contributes route/class HINT signals only. Does not elevate verification status,
- * invent FACT, or enable WAR dynamic execution by itself.
+ * 发明 FACT，或自行启用 WAR dynamic execution。
  */
 public final class ServletFrameworkAdapter implements FrameworkAdapter {
     private static final Set<String> ROUTE_SIGNALS = Set.of(

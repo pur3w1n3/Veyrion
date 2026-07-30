@@ -15,7 +15,7 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.stream.Collectors;
 
-/** Acceptance checks for fair identity-track expansion under the 512 probe cap. */
+/** 512 probe 上限下公平 identity-track 展开的验收检查。 */
 public final class ControlPlaneProbeExpansionAcceptanceTest {
     public static void main(String[] args) throws Exception {
         withoutHarvestOnlyUnauthExpands();
@@ -27,7 +27,7 @@ public final class ControlPlaneProbeExpansionAcceptanceTest {
         System.out.println("ControlPlaneProbeExpansionAcceptanceTest: PASS");
     }
 
-    /** No artifact harvest → no forged ADMIN JWT; only UNAUTH probes expand. */
+    /** 无 artifact harvest → 不伪造 ADMIN JWT；仅 UNAUTH probe 展开。 */
     private static void withoutHarvestOnlyUnauthExpands() {
         List<ApiDtos.EntryDto> entries = new ArrayList<>();
         entries.add(entry(0, "/admin/token"));
@@ -47,7 +47,7 @@ public final class ControlPlaneProbeExpansionAcceptanceTest {
                 "without harvest ADMIN JWT tracks are not silently forged");
     }
 
-    /** Harvested sign-key restores multi-track expansion under the 512 cap. */
+    /** harvest 到 sign-key 后，512 上限内恢复 multi-track 展开。 */
     private static void withHarvestMultiTrackExpansionRespectsCap() throws Exception {
         Path jar = writeHarvestJar();
         try {
@@ -96,7 +96,7 @@ public final class ControlPlaneProbeExpansionAcceptanceTest {
         }
     }
 
-    /** MISSING_AUTH must probe without Authorization / secondary auth and without inventing a bearer. */
+    /** MISSING_AUTH 须无 Authorization / secondary auth 探针，且不伪造 bearer。 */
     private static void missingAuthMaterializesUnauthenticated() {
         ProbePlanService.AuthMaterialized omitted =
                 ControlPlaneServer.materializeAiPocAuth("MISSING_AUTH", null, null);
@@ -154,8 +154,8 @@ public final class ControlPlaneProbeExpansionAcceptanceTest {
     }
 
     /**
-     * DEFAULT_SECRET_HS256 mints only after artifact harvest; without a key → IDENTITY_UNAVAILABLE.
-     * With harvested key + multi-header surface → dual-write Authorization + secondary auth.
+     * DEFAULT_SECRET_HS256 仅在 artifact harvest 后 mint；无 key → IDENTITY_UNAVAILABLE。
+     * harvest key + multi-header surface → 双写 Authorization + secondary auth。
      */
     private static void defaultSecretHs256DualWritesBladeAuth() throws Exception {
         ProbePlanService.AuthMaterialized unavailable =

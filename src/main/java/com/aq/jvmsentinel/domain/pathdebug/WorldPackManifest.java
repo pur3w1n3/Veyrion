@@ -7,7 +7,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * World Pack manifest: profile/env/license/files/schema/seed/dependency stubs (P0-21).
+ * 说明：World Pack manifest：profile/env/license/files/schema/seed/dependency stub（P0-21）。
  */
 public record WorldPackManifest(
         int schemaVersion,

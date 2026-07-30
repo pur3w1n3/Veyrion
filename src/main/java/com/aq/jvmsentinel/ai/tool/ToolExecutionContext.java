@@ -11,8 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Server-bound scope and budget. No value in this object is read from a model
- * ToolCall, and role allowlists cannot be supplied or extended by callers.
+ * 服务端绑定的 scope 与 budget。本对象中无值来自模型
+ * ToolCall，调用方不能提供或扩展 role allowlist。
  */
 public final class ToolExecutionContext {
     private static final Map<AgentRole, Set<String>> ROLE_TOOLS = Map.of(

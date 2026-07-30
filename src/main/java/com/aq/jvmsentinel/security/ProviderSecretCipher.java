@@ -12,7 +12,7 @@ import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Objects;
 
-/** AES-256-GCM encryption for provider credentials with scope-bound AAD. */
+/** provider credential 的 AES-256-GCM 加密，AAD 绑定 scope。 */
 public final class ProviderSecretCipher {
     public static final int FORMAT_VERSION = 1;
     private static final int NONCE_BYTES = 12;

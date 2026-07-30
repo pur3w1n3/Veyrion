@@ -1,7 +1,7 @@
 /**
- * Pipeline / job / attempt orchestration boundary (P1-08 skeleton).
+ * Pipeline/job/attempt 编排边界（P1-08 骨架）。
  *
- * <p>Existing coordinators remain under {@code ai} / {@code control} during migration.
- * This package marks the target home for language-neutral orchestration ports.
+ * <p>迁移期间现有 coordinator 仍位于 {@code ai} / {@code control}。
+ * 本 package 标记 language-neutral orchestration port 的目标归属。
  */
 package com.aq.jvmsentinel.orchestration;

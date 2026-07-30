@@ -6,9 +6,9 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * AI-authored auth-bypass feasibility PoC. AUTH_ANALYSIS / triage judges and authors
- * the payload; the server validates schema/bounds; DYNAMIC_VERIFICATION executes and
- * traces outcomes. Never alone upgrades verification status.
+ * AI 撰写的 auth-bypass 可行性 PoC。AUTH_ANALYSIS / triage 评判并撰写
+ * payload；服务端校验 schema/bounds；DYNAMIC_VERIFICATION 执行并
+ * 追踪 outcome。单独永不升级 verification status。
  */
 public record AuthBypassCandidate(
         String entryRef,
@@ -17,12 +17,12 @@ public record AuthBypassCandidate(
         String rationale,
         List<String> evidenceRefs,
         double confidence,
-        /** Token / header material for loopback probe (AI-authored; may be JWT). */
+        /** loopback probe 的 token / header 材料（AI 撰写；可为 JWT）。 */
         String authorizationHeader,
         /**
-         * Optional secondary auth-channel material (wire name {@code bladeAuthHeader} kept for
-         * compatibility; semantically {@code secondaryAuthorizationHeader}). Empty means
-         * Authorization-only unless the probe layer dual-writes from harvest hints.
+         * 可选次要 auth-channel 材料（wire 名 {@code bladeAuthHeader} 为
+         * 兼容保留；语义为 {@code secondaryAuthorizationHeader}）。空表示
+         * 仅 Authorization，除非 probe 层从 harvest hint 双写。
          */
         String bladeAuthHeader,
         String query,
@@ -70,18 +70,18 @@ public record AuthBypassCandidate(
                 confidence, authorizationHeader, bladeAuthHeader, query, bodyHint);
     }
 
-    /** True when the model supplied probe-usable auth material (not only a label). */
+    /** 模型提供了 probe 可用的 auth 材料（不仅是 label）时为 true。 */
     public boolean hasAuthMaterial() {
         return authorizationHeader != null && !authorizationHeader.isBlank();
     }
 
-    /** Schema-gate AI auth material without constructing a full candidate. */
+    /** schema-gate AI auth 材料，不构造完整 candidate。 */
     public static void validateAuthMaterialOnly(String authorizationHeader) {
         normalizeAuthMaterial(authorizationHeader);
         rejectDestructive(authorizationHeader == null ? "" : authorizationHeader);
     }
 
-    /** Probe-layer token body: strips a leading Bearer scheme if the model included it. */
+    /** Probe 层 token body：若模型包含则剥离 leading Bearer scheme。 */
     public String probeAuthToken() {
         if (!hasAuthMaterial()) return "";
         String value = authorizationHeader.trim();
@@ -91,7 +91,7 @@ public record AuthBypassCandidate(
         return value;
     }
 
-    /** Generic alias for {@link #bladeAuthHeader()}. */
+    /** {@link #bladeAuthHeader()} 的通用别名。 */
     public String secondaryAuthorizationHeader() {
         return bladeAuthHeader == null ? "" : bladeAuthHeader;
     }
@@ -100,7 +100,7 @@ public record AuthBypassCandidate(
         return probeSecondaryAuth();
     }
 
-    /** Probe-layer secondary-channel token body. */
+    /** Probe 层次要 channel token body。 */
     public String probeSecondaryAuth() {
         if (bladeAuthHeader != null && !bladeAuthHeader.isBlank()) {
             String value = bladeAuthHeader.trim();
@@ -141,7 +141,7 @@ public record AuthBypassCandidate(
         if (text.length() > MAX_AUTH_HEADER) {
             throw new IllegalArgumentException("authorization material exceeds bound");
         }
-        // Allow JWT / base64url / Bearer / common header token charset.
+        // 允许 JWT / base64url / Bearer / 常见 header token charset。
         if (!text.isEmpty() && !text.matches("[\\x20-\\x7E]{1," + MAX_AUTH_HEADER + "}")) {
             throw new IllegalArgumentException("authorization material charset rejected");
         }

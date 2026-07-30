@@ -6,7 +6,7 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Objects;
 
-/** Immutable trace chain element whose digest covers all security-relevant fields. */
+/** 不可变轨迹链元素，其摘要覆盖所有安全相关字段。 */
 public record TraceChunk(int schemaVersion, TaskScope scope, long sequence, String previousDigest,
                          Instant emittedAt, byte[] payload, String digest) {
     public TraceChunk {

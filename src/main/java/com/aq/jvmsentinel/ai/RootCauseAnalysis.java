@@ -3,7 +3,7 @@ package com.aq.jvmsentinel.ai;
 import java.util.List;
 import java.util.Objects;
 
-/** Structured root-cause output for VULNERABILITY_TRIAGE / REPORT_GENERATION. */
+/** VULNERABILITY_TRIAGE / REPORT_GENERATION 的结构化 root-cause 输出。 */
 public record RootCauseAnalysis(
         List<AttackStep> attackPath,
         String rootCauseStatement,

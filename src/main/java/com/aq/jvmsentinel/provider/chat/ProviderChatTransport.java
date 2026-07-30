@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Explicit HTTP(S), no-redirect transport for bounded provider chat calls. */
+/** 显式 HTTP(S)、无 redirect 的 transport，用于有界 provider chat 调用。 */
 public final class ProviderChatTransport implements ChatTransport {
     private static final int MAX_KEY_BYTES = 4_096;
     private static final int MAX_ERROR_BODY_BYTES = 8_192;
@@ -308,7 +308,7 @@ public final class ProviderChatTransport implements ChatTransport {
         try {
             if (input != null) input.close();
         } catch (IOException ignored) {
-            // Rejected response.
+            // 已拒绝的 response。
         }
     }
 

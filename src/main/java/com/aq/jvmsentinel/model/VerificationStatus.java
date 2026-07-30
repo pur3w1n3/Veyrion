@@ -3,7 +3,7 @@ package com.aq.jvmsentinel.model;
 public enum VerificationStatus {
     STATIC_INFERRED,
     DYNAMIC_SUSPECTED,
-    /** Malicious SQL fragment reached the actual JDBC/mock statement without filtering. */
+    /** 恶意 SQL 片段未经过滤到达实际 JDBC/mock statement。 */
     DYNAMIC_CONFIRMED,
     VERIFIED,
     UNREACHED

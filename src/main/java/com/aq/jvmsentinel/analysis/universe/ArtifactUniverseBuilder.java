@@ -26,9 +26,9 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * Builds a bounded {@link ArtifactUniverse} from archive layout + {@link BytecodeFactIndex}.
- * Nested Boot {@code BOOT-INF/lib} jars are expanded one layer with a per-jar class budget;
- * deeper nesting and budget hits become explicit {@link CoverageGap}s.
+ * 从 archive layout + {@link BytecodeFactIndex} 构建有界 {@link ArtifactUniverse}。
+ * 嵌套 Boot {@code BOOT-INF/lib} jar 展开一层，每 jar 有 class budget；
+ * 更深 nesting 与 budget hit 成为显式 {@link CoverageGap}。
  */
 public final class ArtifactUniverseBuilder {
     public static final int MAX_CLASSES = 2_000;
@@ -79,7 +79,7 @@ public final class ArtifactUniverseBuilder {
         } else {
             walkArchive(descriptor, methodFieldByClass, classes, dependencies, resources, configs,
                     gaps, truncateReasons);
-            // Ensure fact-index classes not seen in archive walk still appear (e.g. path quirks).
+            // 确保 archive walk 未见 fact-index class 仍出现（如 path quirk）。
             Set<String> seen = new LinkedHashSet<>();
             for (ArtifactUniverse.ClassNode node : classes) {
                 seen.add(node.className());
@@ -102,7 +102,7 @@ public final class ArtifactUniverseBuilder {
         appendProtocolGaps(protocols, gaps);
         appendMultiVersionClassGaps(classes, gaps, truncateReasons);
 
-        // Gaps are expected coverage honesty signals; incomplete only means budget/IO/analysis stop.
+        // Gap 为期望 coverage 诚实 signal；incomplete 仅意味 budget/IO/analysis stop。
         boolean incomplete = !truncateReasons.isEmpty() || !facts.analysisCoverage().complete();
         if (!facts.analysisCoverage().complete()) {
             for (String reason : facts.analysisCoverage().stopReasons()) {
@@ -307,9 +307,9 @@ public final class ArtifactUniverseBuilder {
     }
 
     /**
-     * Same binary class name under distinct archive paths → MULTI_VERSION_CLASS gap.
-     * Nested BOOT-INF/lib jars are not expanded, so duplicates are typically from
-     * BOOT-INF/classes plus a root/META duplicate or repeated class entries.
+     * 不同 archive path 下相同 binary class 名 → MULTI_VERSION_CLASS gap。
+     * 嵌套 BOOT-INF/lib jar 不展开，duplicate 通常来自
+     * BOOT-INF/classes 加 root/META duplicate 或重复 class entry。
      */
     private static void appendMultiVersionClassGaps(
             List<ArtifactUniverse.ClassNode> classes,
@@ -456,8 +456,8 @@ public final class ArtifactUniverseBuilder {
     }
 
     /**
-     * One-layer expand: enumerate .class entries inside a nested Boot/WEB-INF lib jar.
-     * Does not open jars nested inside that jar. Class budgets produce explicit gaps.
+     * 一层展开：枚举 nested Boot/WEB-INF lib jar 内 .class entry。
+     * 不打开该 jar 内 nested jar。Class budget 产生显式 gap。
      */
     private static NestedExpandResult expandNestedLibOneLayer(
             ZipFile outer,

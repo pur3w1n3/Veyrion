@@ -21,9 +21,9 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * P0-15: selectable open-source practical recall samples.
- * Artifacts are never vendored; local digests are optional. Without a local JAR,
- * scoring returns {@code NOT_EVALUABLE} and must not be claimed as production recall.
+ * P0-15：可选开源 practical recall sample。
+ * Artifact 永不 vendored；local digest 可选。无 local JAR 时，
+ * scoring 返回 {@code NOT_EVALUABLE}，不得声称 production recall。
  */
 public final class PracticalRecallSampleCatalog {
     public static final String BASELINE_RESOURCE = "/baselines/p0-15-practical-oss-samples.json";
@@ -289,9 +289,9 @@ public final class PracticalRecallSampleCatalog {
     }
 
     /**
-     * Resolve optional local artifact under a samples root directory.
-     * Prefers {@link Sample#artifactGlob()} matches, skips wrapper/sources/javadoc jars,
-     * prefers larger bootable jars under {@code target/}, and breaks ties by path.
+     * 在 samples root 目录下解析可选 local artifact。
+     * 优先 {@link Sample#artifactGlob()} 匹配，跳过 wrapper/sources/javadoc jar，
+     * 优先 {@code target/} 下更大 bootable jar，path 打破平局。
      */
     public static Path resolveLocalArtifact(Path samplesRoot, Sample sample) {
         if (samplesRoot == null || sample == null) return null;

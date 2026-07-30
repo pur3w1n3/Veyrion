@@ -1,8 +1,8 @@
 package com.aq.jvmsentinel.analysis.identity;
 
 /**
- * Neutral identity-material kinds. Framework names are never required fields —
- * adapters/harvesters may cite them only in provenance notes.
+ * 中性 identity-material kind。Framework 名永非必填 field —
+ * adapter/harvester 仅在 provenance note 引用。
  */
 public enum IdentityMaterialKind {
     /** Symmetric/HMAC signing material usable for BEARER minting. */

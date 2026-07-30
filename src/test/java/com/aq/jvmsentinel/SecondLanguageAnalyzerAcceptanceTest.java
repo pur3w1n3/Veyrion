@@ -35,9 +35,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 /**
- * P2: second-language static LanguageAnalyzer + RuntimeAdapter skeleton.
- * Proves non-JVM IR reuses the same store/hypothesis/coverage/GUI degrade path,
- * and that static analyzer support does not grant dynamic RuntimeAdapter capability.
+ * P2：第二语言静态 LanguageAnalyzer + RuntimeAdapter 骨架。
+ * 证明 non-JVM IR 复用相同 store/hypothesis/coverage/GUI degrade path，
+ * 且 static analyzer 支持不授予 dynamic RuntimeAdapter capability。
  */
 public final class SecondLanguageAnalyzerAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -180,7 +180,7 @@ public final class SecondLanguageAnalyzerAcceptanceTest {
                     "dynamic capability denied without audited caps");
         }
 
-        // Even an explicitly capability-bearing adapter still rejects untrusted overrides.
+        // 即使显式 capability-bearing adapter 仍拒绝不可信 override。
         JsRuntimeAdapter withObserve = new JsRuntimeAdapter("20", Set.of("OBSERVE"));
         check(withObserve.supportsDynamicExecution(), "explicit OBSERVE is dynamic");
         try {
@@ -218,7 +218,7 @@ public final class SecondLanguageAnalyzerAcceptanceTest {
                 try {
                     Files.deleteIfExists(path);
                 } catch (Exception ignored) {
-                    // best-effort
+                    // 尽力而为
                 }
             });
         }

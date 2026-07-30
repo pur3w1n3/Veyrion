@@ -20,9 +20,9 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P1-24: OpenAI/Anthropic outbound error classification, budget bounds, disabled kinds,
- * and DNS/metadata rejection via loopback — without live external providers.
- * Declared AUDITED scope = loopback outbound reject/budget (not external-network interop).
+ * 说明：P1-24：OpenAI/Anthropic outbound 错误分类/budget bound/disabled kind，
+ * 与经 loopback 的 DNS/metadata 拒绝 — 无 live 外部 provider。
+ * 声明 AUDITED scope = loopback outbound reject/budget（非 external-network interop）。
  */
 public final class ProviderOutboundBoundaryAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -43,7 +43,7 @@ public final class ProviderOutboundBoundaryAcceptanceTest {
     }
 
     private static void auditedScopeIsLoopbackNotExternalNetwork() {
-        // Fixture transports must stay on loopback; this suite never dials public DNS/IP.
+        // Fixture transport 须 stay loopback；本 suite 永不 dial 公网 DNS/IP。
         ProviderDefinition loopback = definition(ProviderKind.OPENAI_CHAT,
                 URI.create("http://127.0.0.1:9"));
         check("127.0.0.1".equals(loopback.endpoint().getHost()),

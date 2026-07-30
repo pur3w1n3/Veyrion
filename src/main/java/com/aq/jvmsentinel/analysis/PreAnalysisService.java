@@ -29,7 +29,7 @@ public final class PreAnalysisService {
     private static final int MAX_DISPLAY_VALUE = 256;
 
     public PreAnalysisResult analyze(PreAnalysisInput input) {
-        // P1-03: ensure versioned default providers are installed (thin SPI; discovery stays here).
+        // P1-03：确保安装版本化 default provider（薄 SPI；discovery 留在此）。
         ProviderRegistry.ensureDefaults();
         List<Evidence> evidence = new ArrayList<>();
         List<Entrypoint> entries = new ArrayList<>();
@@ -92,10 +92,10 @@ public final class PreAnalysisService {
             if (className == null || className.isBlank()) {
                 continue;
             }
-            // Class-name rules are a last-resort fallback for malformed or otherwise
-            // unreadable classfiles. Applying them to valid framework classes (for
-            // example Spring Boot's File/Launcher infrastructure) produces noisy,
-            // unbound pseudo-findings that are not evidence of application behavior.
+            // Class-name 规则为 malformed 或 otherwise
+            // 不可读 classfile 的最后 fallback。应用于有效 framework class（如
+            // 说明：Spring Boot File/Launcher 基础设施会产生噪声、
+            // 无 bound 伪 finding，非 application 行为证据。
             if (classesWithValidAnnotationMetadata.contains(className)) {
                 continue;
             }
@@ -258,7 +258,7 @@ public final class PreAnalysisService {
                         permissions.add(new PermissionRequirement(entryId, combinedPermission.roles(),
                                 List.of(), combinedPermission.states(), List.of(permissionEvidenceId), 1.0));
                     } else if (sinks.size() < MAX_DISCOVERED_SINKS) {
-                        // Mapped entry without recognizable auth annotation — gap signal only.
+                        // 无 recognizable auth annotation 的 mapped entry — 仅 gap signal。
                         String gapEvidenceId = "auth-gap-" + index;
                         evidence.add(new Evidence(gapEvidenceId, ProvenanceKind.FACT,
                                 "classfile-annotation:" + metadata.className() + "#" + safeSymbol(method.name()),

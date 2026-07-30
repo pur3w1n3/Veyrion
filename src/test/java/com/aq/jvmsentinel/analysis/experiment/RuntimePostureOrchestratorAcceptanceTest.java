@@ -11,7 +11,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-21: RuntimePostureOrchestrator acceptance.
+ * 说明：P0-21：RuntimePostureOrchestrator 验收。
  */
 public final class RuntimePostureOrchestratorAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

@@ -10,8 +10,8 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Explains T2+T3 identity-track budget allocation for dashboard / AI facts.
- * Does not execute probes and never upgrades verification status.
+ * 为 dashboard / AI 事实解释 T2+T3 身份轨预算分配。
+ * 不执行探针，且永不升级验证状态。
  */
 public final class ProbeBudgetExplainer {
     private ProbeBudgetExplainer() { }

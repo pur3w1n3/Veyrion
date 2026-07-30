@@ -9,9 +9,9 @@ import java.time.Instant;
 import java.util.Objects;
 
 /**
- * Optional on-disk escape-suite attestation hook for MVP-6 scaffolding.
- * Presence alone never opens VERIFIED; {@link VerifiedStatusGate} remains fail-closed
- * until a future release wires end-to-end attestation + escape suite.
+ * MVP-6 脚手架的可选磁盘 escape-suite attestation 钩子。
+ * 仅凭存在永不开 VERIFIED；{@link VerifiedStatusGate} 保持 fail-closed，
+ * 直至未来 release 端到端接入 attestation + escape suite。
  */
 public final class EscapeSuiteAttestation {
     public static final String ENV_PATH = "VEYRION_ESCAPE_ATTESTATION_PATH";

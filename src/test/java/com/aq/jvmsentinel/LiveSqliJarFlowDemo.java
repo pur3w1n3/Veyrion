@@ -38,8 +38,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * Manual demo (not gate): scan a vulnerable Boot-shaped JAR end-to-end and print
- * static findings + live PathTrace / verification outcomes after P0-21 wiring fixes.
+ * 手动 demo（非 gate）：端到端 scan 脆弱 Boot-shaped JAR 并打印
+ * P0-21 接线修复后的 static finding + live PathTrace / verification outcome。
  */
 public final class LiveSqliJarFlowDemo {
     private LiveSqliJarFlowDemo() {
@@ -106,7 +106,7 @@ public final class LiveSqliJarFlowDemo {
                         URI.create(server.baseUri() + "/scans/" + scanId + "/dynamic-tasks"),
                         Map.of("authorized", true), token), "taskId");
 
-                // Prefer control-plane registration (exploration stage → MOCK_CONTINUE).
+                // 优先 control-plane 注册（exploration stage → MOCK_CONTINUE）。
                 ExternalArtifactTaskExecutor.ArtifactRegistration registration =
                         server.requireLocalArtifact(
                                 new TaskScope(projectId, digest, scanId, taskId));
@@ -124,7 +124,7 @@ public final class LiveSqliJarFlowDemo {
                 ExternalArtifactTaskExecutor executor = new ExternalArtifactTaskExecutor(
                         control, sandbox,
                         scope -> {
-                            // Re-bind with SQLi-focused probes while keeping resolved World Pack mode.
+                            // 保持 resolved World Pack mode 时用 SQLi 聚焦 probe 重绑。
                             return new ExternalArtifactTaskExecutor.ArtifactRegistration(
                                     registration.projectId(), registration.sha256(),
                                     registration.path(), registration.sizeBytes(),
@@ -162,7 +162,7 @@ public final class LiveSqliJarFlowDemo {
                     try {
                         sandbox.close();
                     } catch (RuntimeException ignored) {
-                        // best-effort: demo must not leave veyrion-trusted-* containers
+                        // 尽力：demo 不得留下 veyrion-trusted-* 容器
                     }
                 }
             }
@@ -307,11 +307,11 @@ public final class LiveSqliJarFlowDemo {
     }
 
     /**
-     * Prefer /search probes and stamp META_MARKER query for H3-style observation.
+     * 优先 /search probe 并 stamp META_MARKER query 供 H3 风格 observation。
      */
     private static List<ExternalArtifactTaskExecutor.ProbeTarget> forceSqliProbes(
             List<ExternalArtifactTaskExecutor.ProbeTarget> fromPlan) {
-        // ProbeTarget query charset forbids raw quotes; percent-encode the H3 marker.
+        // 说明：ProbeTarget query charset 禁止 raw quote；percent-encode H3 marker。
         String marker = "q=" + java.net.URLEncoder.encode(
                 SqlDiffProbe.META_MARKER, StandardCharsets.UTF_8);
         String benign = "q=benign";
@@ -439,7 +439,7 @@ public final class LiveSqliJarFlowDemo {
                             bindCorrelation(exchange.getRequestHeaders());
                             String q = queryParam(exchange.getRequestURI().getRawQuery(), "q");
                             String sql = "SELECT id FROM users WHERE name='" + q + "'";
-                            // Cross-method call chain for sensor hops (Controller→Service→Repo pattern).
+                            // sensor hop 的 cross-method call chain（Controller→Service→Repo 模式）。
                             app.UserService service = new app.UserService();
                             service.search(sql);
                             byte[] body = ("ok:" + sql.hashCode()).getBytes(StandardCharsets.UTF_8);

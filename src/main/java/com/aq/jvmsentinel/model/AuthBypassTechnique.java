@@ -4,8 +4,8 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * Optional known technique labels. AI may author arbitrary PoC material; these ids
- * are only fallbacks when the model names a known technique without supplying headers.
+ * 可选已知 technique label。AI 可撰写任意 PoC 材料；这些 id
+ * 仅在模型命名已知 technique 但未提供 header 时作 fallback。
  */
 public enum AuthBypassTechnique {
     MISSING_AUTH(IdentityTrack.UNAUTH),

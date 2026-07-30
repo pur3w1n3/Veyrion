@@ -10,7 +10,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** P0-05 residual: PATH/TRIAGE only consumable projected PathRuns enter next-round conclusions. */
+/** P0-05 残余：PATH/TRIAGE 仅可消费已投影 PathRun 进入下一轮结论。 */
 public final class PathTriageEffectiveProbeAcceptanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

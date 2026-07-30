@@ -4,11 +4,11 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Read-only scan summary query (P1-08). HTTP adapters project to legacy {@code /api/v1} maps.
+ * 只读 scan 摘要查询（P1-08）。HTTP adapter 投影为 legacy {@code /api/v1} map。
  */
 public interface ScanQueryPort {
     boolean exists(String scanId);
 
-    /** Neutral scan view map; empty when the scan is missing. */
+    /** 中性 scan 视图 map；scan 缺失时为空。 */
     Optional<Map<String, Object>> scanView(String scanId);
 }

@@ -13,9 +13,9 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * P2 STATE detector: cross-request state machine / repeat-submit / quota heuristics.
- * Emits {@link HypothesisFamily#STATE} candidates only — never elevates verification status.
- * Declared AUDITED for heuristic recall (positive/negative/holdout); not a full state-machine solver.
+ * P2 STATE detector 启发式：cross-request state machine/repeat-submit/quota。
+ * 仅 emit {@link HypothesisFamily#STATE} 候选 — 永不提升 verification status。
+ * 声明 AUDITED 用于启发式 recall；非完整 state-machine solver。
  */
 public final class StateSequenceDetector implements Detector {
     public static final String VERSION = "0.2.0-audited-heuristic";

@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-21: PostureExperimentCompiler acceptance.
+ * 说明：P0-21：PostureExperimentCompiler 验收。
  */
 public final class PostureExperimentCompilerAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

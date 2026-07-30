@@ -27,7 +27,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-11: versioned code_query kinds with IR fail-closed and AUTH gate semantics.
+ * P0-11：版本化 code_query kind，IR fail-closed 与 AUTH 门禁语义。
  */
 public final class CodeQueryKindAcceptanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -279,8 +279,8 @@ public final class CodeQueryKindAcceptanceTest {
     }
 
     private static void authGateRequiresMethodOrGuardWhenIrMethodsPresent() {
-        // Reflection-safe contract: without IR methods, any SUCCESS counts; with IR methods,
-        // only METHOD_VIEW / GUARD_QUERY kinds count. Simulate via hasNonEmptyMethodsIr + kind check.
+        // 反射安全合同：无 IR methods 时任一 SUCCESS 计数；有 IR methods 时，
+        // 仅 METHOD_VIEW / GUARD_QUERY kind 计数。经 hasNonEmptyMethodsIr + kind 检查模拟。
         StaticFactSnapshot legacy = new StaticFactSnapshot(
                 StaticFactSnapshot.LEGACY_INCOMPLETE, List.of(),
                 BytecodeFactIndex.AnalysisCoverage.empty());
@@ -420,7 +420,7 @@ public final class CodeQueryKindAcceptanceTest {
 
         @Override
         public void close() throws Exception {
-            // best-effort temp cleanup
+            // best-effort 临时清理
             try {
                 Files.walk(root)
                         .sorted((a, b) -> b.compareTo(a))
@@ -428,11 +428,11 @@ public final class CodeQueryKindAcceptanceTest {
                             try {
                                 Files.deleteIfExists(path);
                             } catch (Exception ignored) {
-                                // ignore
+                                // 忽略
                             }
                         });
             } catch (Exception ignored) {
-                // ignore
+                // 忽略
             }
         }
     }

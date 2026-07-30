@@ -6,13 +6,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Small, dependency-free JSON codec used by the local control plane.
+ * 本地 control plane 使用的无额外依赖 JSON codec。
  *
- * <p>This is intentionally a strict subset of JSON (objects, arrays, strings,
- * booleans, null and finite numbers).  It is not used to parse arbitrary
- * artifact content; request bodies are bounded before they reach this class.
- * Keeping the codec here avoids adding a runtime dependency to the Java 17
- * metadata-only slice.</p>
+ * <p>有意实现 JSON 的严格子集（object、array、string、
+ * boolean、null 与有限 number）。不用于解析任意 artifact 内容；
+ * request body 到达本类前已受界。codec 放在此处可避免向 Java 17
+ * 仅元数据切片添加 runtime 依赖。</p>
  */
 public final class JsonCodec {
     private JsonCodec() { }
@@ -227,7 +226,7 @@ public final class JsonCodec {
 
         private Number parseNumber() {
             int start = position;
-            if (consume('-')) { /* optional sign */ }
+            if (consume('-')) { /* 可选符号 */ }
             if (atEnd()) throw error("invalid number");
             if (consume('0')) {
                 if (!atEnd() && Character.isDigit(input.charAt(position))) throw error("leading zero in number");

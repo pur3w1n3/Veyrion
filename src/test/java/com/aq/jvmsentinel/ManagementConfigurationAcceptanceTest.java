@@ -236,7 +236,7 @@ public final class ManagementConfigurationAcceptanceTest {
             tampered.verifyProviderCredential(providerId);
             throw new AssertionError("tampered ciphertext was accepted");
         } catch (ProviderSecretCipher.SecretIntegrityException expected) {
-            // AES-GCM authentication fails closed.
+            // AES-GCM authentication 失败时 fail-closed。
         }
 
         System.out.println("ManagementConfigurationAcceptanceTest: PASS");

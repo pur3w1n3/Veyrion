@@ -12,10 +12,10 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * Registry of {@link FrameworkAdapter} implementations.
+ * {@link FrameworkAdapter} 实现的 registry。
  * {@link SpringMvcAdapter} is the default always-match baseline; optional adapters
  * ({@link SpringBladeAdapter}, {@link ServletFrameworkAdapter}, {@link WarFrameworkAdapter})
- * contribute the same SPI signals when they match. Test-only adapters may be injected.
+ * 匹配时贡献相同 SPI signal。可注入仅 test adapter。
  */
 public final class FrameworkAdapterRegistry {
     private static final CopyOnWriteArrayList<FrameworkAdapter> ADAPTERS = new CopyOnWriteArrayList<>(
@@ -47,7 +47,7 @@ public final class FrameworkAdapterRegistry {
                 }
             }
         }
-        // Platform rememberMe cipher dictionary (not JWT mint material).
+        // 说明：Platform rememberMe cipher dictionary（非 JWT mint 材料）。
         for (AuthCodeQueryService.WellKnownKey key
                 : com.aq.jvmsentinel.analysis.identity.RememberMeCipherHarvester.dictionary()) {
             if (key != null && seen.add(key.alias() + "|" + key.value() + "|" + key.usage())) {
@@ -78,8 +78,8 @@ public final class FrameworkAdapterRegistry {
     }
 
     /**
-     * Secondary auth header name from the first matched adapter that prefers one;
-     * empty when none.
+     * 来自首个 prefer 的 matched adapter 的次要 auth header 名；
+     * 无则为空。
      */
     public static String secondaryAuthHeaderName(Path artifactPath, List<String> routes) {
         for (FrameworkAdapter adapter : matching(artifactPath, routes)) {
@@ -101,7 +101,7 @@ public final class FrameworkAdapterRegistry {
                 if (lower.contains(signal.toLowerCase(Locale.ROOT))) return true;
             }
         }
-        // Preserve prior generic high-value tokens used by ProbePlanService.
+        // 保留 ProbePlanService 先前使用的 generic 高价值 token。
         return lower.contains("admin") || lower.contains("upload") || lower.contains("deploy")
                 || lower.contains("token") || lower.contains("exec") || lower.contains("flowable")
                 || lower.contains("bpmn") || lower.contains("oauth")

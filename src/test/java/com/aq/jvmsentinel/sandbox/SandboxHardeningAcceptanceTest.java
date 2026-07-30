@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * P2 SCAFFOLDING: each hardening requirement has a fail-closed rejection assertion
+ * P2 SCAFFOLDING：每条 hardening 要求有 fail-closed 拒绝断言
  * (release evidence checklist + existing Worker deny-network / attestation paths).
  */
 public final class SandboxHardeningAcceptanceTest {
@@ -181,7 +181,7 @@ public final class SandboxHardeningAcceptanceTest {
         try {
             action.run();
         } catch (RuntimeException expected) {
-            // OpenSandboxException / IllegalArgumentException / SecurityException.
+            // 说明：OpenSandboxException/IllegalArgumentException/SecurityException。
             AcceptanceAssertions.record();
             return;
         }

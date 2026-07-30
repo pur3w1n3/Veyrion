@@ -29,8 +29,8 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Manual Docker demo: kvf Shiro JAR under FORCED_REACHABILITY + session seed.
- * Always releases retained sandboxes in {@code finally}. Not a VERIFIED claim.
+ * 手动 Docker demo：FORCED_REACHABILITY + session seed 下 kvf Shiro JAR。
+ * 始终在 {@code finally} 释放 retained sandbox。非 VERIFIED 声称。
  */
 public final class LiveKvfForcedReachabilityDemo {
     private static final String DEFAULT_KVF =
@@ -194,7 +194,7 @@ public final class LiveKvfForcedReachabilityDemo {
             }
         }
         List<ExternalArtifactTaskExecutor.ProbeTarget> out = new ArrayList<>();
-        // Prefer QLExpress expression-injection surface (exact /generator/check/code).
+        // 优先 QLExpress expression-injection 面（精确 /generator/check/code）。
         forced.stream()
                 .filter(p -> p.route() != null
                         && p.route().replace('\\', '/').endsWith("/generator/check/code"))
@@ -221,7 +221,7 @@ public final class LiveKvfForcedReachabilityDemo {
         if (out.isEmpty()) {
             return probes.stream().limit(4).collect(Collectors.toList());
         }
-        // Always include one UNAUTH twin for contrast when present.
+        // 存在时始终包含一个 UNAUTH twin 作对比。
         probes.stream()
                 .filter(p -> "UNAUTH".equals(p.track()))
                 .filter(p -> out.stream().anyMatch(f -> f.route().equals(p.route())))

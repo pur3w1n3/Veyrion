@@ -10,8 +10,8 @@ import java.util.Optional;
 import java.util.function.Function;
 
 /**
- * PathRun query backed by store existence + server merge projection callback (P1-08).
- * Keeps merge/trace projection out of domain while HTTP goes through the port.
+ * 基于 store 存在性 + 服务端 merge 投影回调的 PathRun 查询（P1-08）。
+ * merge/trace 投影留在 domain 之外，HTTP 经 port 访问。
  */
 public final class DelegatingPathRunQueryAdapter implements PathRunQueryPort {
     private final ControlPlaneStore store;

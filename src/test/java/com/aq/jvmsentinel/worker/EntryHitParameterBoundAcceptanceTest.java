@@ -15,8 +15,8 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-02: PathRun entryHit / parameterBound must be honest — prefer event detail,
- * never invent parameterBound=true, distinguish REACHED_NO_BIND (404) from business 2xx.
+ * P0-02：PathRun entryHit / parameterBound 须诚实 — 优先 event detail，
+ * 永不捏造 parameterBound=true，区分 REACHED_NO_BIND（404）与业务 2xx。
  */
 public final class EntryHitParameterBoundAcceptanceTest {
     private static final String DIGEST = "c".repeat(64);

@@ -5,7 +5,7 @@ import com.aq.jvmsentinel.domain.coverage.CoverageMatrix;
 import java.util.Optional;
 
 /**
- * Read-only Coverage Matrix query (P1-08). SUCCESS is never mapped to safe/secure.
+ * 只读 Coverage Matrix 查询（P1-08）。SUCCESS 永不等同于 safe/secure。
  */
 public interface CoverageQueryPort {
     Optional<CoverageMatrix> coverage(String scanId);

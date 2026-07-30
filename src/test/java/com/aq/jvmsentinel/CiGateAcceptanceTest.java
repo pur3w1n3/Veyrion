@@ -16,7 +16,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
- * P0-14: migration order + pinned checksum consistency (UTF-8 content, same as persistence)
+ * P0-14：migration 顺序 + pinned checksum 一致性（UTF-8 内容，同 persistence）
  * + Allowed paths matching semantics used by scripts/ci-gates.ps1.
  */
 public final class CiGateAcceptanceTest {
@@ -59,7 +59,7 @@ public final class CiGateAcceptanceTest {
                     "checksum mismatch for " + name + " (file rewritten?)");
         }
 
-        // Sample: persistence class still lists the same migration resource names in order.
+        // 示例：persistence class 仍按序列出相同 migration resource 名。
         Path persistence = root.resolve(
                 "src/main/java/com/aq/jvmsentinel/control/persistence/SQLiteControlPlanePersistence.java");
         check(Files.isRegularFile(persistence), "SQLiteControlPlanePersistence present");
@@ -77,7 +77,7 @@ public final class CiGateAcceptanceTest {
     }
 
     /**
-     * Allowed paths mode: empty changed set → skip OK; out-of-allowlist path → fail semantics.
+     * Allowed paths mode：空 changed set → skip OK；allowlist 外 path → fail 语义。
      */
     private static void verifyAllowedPathsGate(Path root) throws Exception {
         Path example = root.resolve("contracts/task-allowed-paths.example.txt");

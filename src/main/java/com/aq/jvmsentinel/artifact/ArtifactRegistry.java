@@ -67,17 +67,15 @@ public final class ArtifactRegistry {
     }
 
     /**
-     * Applies the complete artifact validation policy without publishing the
-     * descriptor. This is used before an upload is atomically installed in
-     * managed content storage.
+     * 应用完整 artifact 校验策略但不发布 descriptor。
+     * 用于 upload 原子安装到 managed content storage 之前。
      */
     public ArtifactDescriptor validate(Path input) {
         return inspect(input, null, null);
     }
 
     /**
-     * Validates bytes stored under an internal temporary name while deriving
-     * the artifact type solely from a separately validated display filename.
+     * 校验内部临时名存储的字节，artifact 类型仅由单独校验过的 display filename 推导。
      */
     public ArtifactDescriptor validate(Path input, String fileName) {
         String displayName = Objects.requireNonNull(fileName, "fileName");
@@ -85,18 +83,16 @@ public final class ArtifactRegistry {
     }
 
     /**
-     * Registers an already installed managed copy. Unlike legacy path
-     * registration, the managed descriptor takes precedence for future
-     * digest lookups so an earlier client-owned source path cannot leak back
-     * into an upload registration.
+     * 注册已安装的 managed 副本。与 legacy path 注册不同，
+     * managed descriptor 在后续 digest 查找中优先，
+     * 避免较早的 client-owned source path 泄漏回 upload 注册。
      */
     public ArtifactDescriptor registerManaged(Path input) {
         return registerManaged(input, null);
     }
 
     /**
-     * Registers a managed content-addressed copy while preserving the original
-     * upload/display basename for UI labels.
+     * 注册 content-addressed managed 副本，同时保留原始 upload/display basename 供 UI 标签。
      */
     public ArtifactDescriptor registerManaged(Path input, String originalFileName) {
         ArtifactDescriptor descriptor = inspect(input, null, originalFileName);
@@ -104,7 +100,7 @@ public final class ArtifactRegistry {
         return descriptor;
     }
 
-    /** Resolved root used for backend-managed storage only. */
+    /** 仅用于 backend-managed storage 的 resolved root。 */
     public Path allowedRoot() {
         return allowedRoot;
     }
@@ -160,7 +156,7 @@ public final class ArtifactRegistry {
         return sha256 == null ? null : byDigest.get(sha256);
     }
 
-    /** Fails closed if the source file changed after registration. */
+    /** 注册后 source file 若变更则 fail-closed。 */
     public void verifyUnchanged(ArtifactDescriptor descriptor) {
         Objects.requireNonNull(descriptor, "descriptor");
         Path path = descriptor.normalizedPath();

@@ -3,7 +3,7 @@ package com.aq.jvmsentinel.security.auth;
 import java.util.Objects;
 import java.util.Set;
 
-/** Authenticated human/operator context scoped to exactly one workspace. */
+/** 精确绑定单一 workspace 的已认证 human/operator 上下文。 */
 public final class AuthContext {
     private final String operatorId;
     private final String workspaceId;

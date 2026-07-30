@@ -12,8 +12,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Computes real TP/FP/FN/TN from a CoverageMatrix against baseline ground-truth families.
- * Metrics are never stub placeholders — suppress/clear of a positive family yields FN and recall failure.
+ * 从 CoverageMatrix 对 baseline ground-truth family 计算真实 TP/FP/FN/TN。
+ * Metric 永非 stub placeholder — suppress/clear positive family 产生 FN 与 recall failure。
  */
 public final class CoverageBaselineMetrics {
     private CoverageBaselineMetrics() {
@@ -111,8 +111,8 @@ public final class CoverageBaselineMetrics {
     }
 
     /**
-     * Gate: every positive family must be covered (recall == 1 for the positive set)
-     * and no negative family may fire. Suppressing a required detector fails this gate.
+     * Gate：每个 positive family 须 covered（positive set recall == 1）
+     * 且 negative family 不得 fire。suppress 必需 detector 则 gate 失败。
      */
     public static GateResult evaluateGate(CoverageMatrix matrix, GroundTruth truth) {
         Metrics metrics = evaluate(matrix, truth);

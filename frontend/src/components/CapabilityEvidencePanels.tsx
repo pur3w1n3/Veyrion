@@ -8,7 +8,7 @@ import type {
 import { HYPOTHESIS_FAMILIES, normalizeHypothesisFamily } from '../api'
 import { Notice } from './Common'
 
-/** Renders namespaced extensions without language-specific branching. */
+/** 渲染 namespaced extension，无语言特定分支。 */
 export function UnknownExtensionView({
   extensions,
   language,

@@ -11,15 +11,14 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * P0-21: COVERAGE_POSTURE identity injection and FORCED_REACHABILITY guard handling.
- * Only active inside authorized Docker sandboxes; never on host execution.
+ * P0-21：COVERAGE_POSTURE 身份注入与 FORCED_REACHABILITY guard 处理。
+ * 仅在已授权 Docker 沙箱内激活；永不在宿主执行。
  *
- * <p>FORCED_REACHABILITY short-circuits <em>recognized</em> auth/role/permission/license
- * filters by continuing the {@code FilterChain} and skipping the filter body, or by forcing
- * AccessControl {@code isAccessAllowed} to true. When
- * {@code veyrion.sandbox.forcedGuardTypeNames} is non-empty, only those runtime types are
- * forced (heuristics remain the fallback when the allowlist is empty). Never targets
- * sanitizers or infrastructure / container filters.
+ * <p>FORCED_REACHABILITY 通过继续 {@code FilterChain} 并跳过 filter 体，
+ * 或强制 AccessControl {@code isAccessAllowed} 为 true，短路<em>已识别</em>的 auth/role/permission/license
+ * filter。当 {@code veyrion.sandbox.forcedGuardTypeNames} 非空时，仅强制那些 runtime 类型
+ *（白名单为空时启发式仍为回退）。永不针对
+ * sanitizer 或 infrastructure / container filter。
  */
 public final class FrameworkBoundaryAdapter {
     static final String DOCKER_PROPERTY = "veyrion.sandbox.docker";
@@ -70,8 +69,8 @@ public final class FrameworkBoundaryAdapter {
     }
 
     /**
-     * Inject scan Principal / SecurityContext / session seed for COVERAGE_POSTURE
-     * (and FORCED as a best-effort identity seed before guard short-circuit).
+     * 为 COVERAGE_POSTURE（及 FORCED 在 guard short-circuit 前的尽力 identity seed）
+     * 注入 scan Principal / SecurityContext / session seed。
      */
     public static void applyCoveragePosture(Object request, String posture) {
         if (!sandboxEnabled() || request == null) {
@@ -86,7 +85,7 @@ public final class FrameworkBoundaryAdapter {
             request.getClass().getMethod("setAttribute", String.class, Object.class)
                     .invoke(request, REQUEST_ATTR_POSTURE, posture);
         } catch (Throwable ignored) {
-            // Servlet API shape varies; attribute injection is best-effort.
+            // Servlet API shape 各异；attribute 注入为尽力而为。
         }
         seedHttpSession(request);
         seedSpringSecurityContext();
@@ -98,8 +97,8 @@ public final class FrameworkBoundaryAdapter {
     }
 
     /**
-     * DecisionShape-aligned rewrite mode. FORCED rewrites returns only through these modes —
-     * never arbitrary {@code Object.preHandle} or sanitizer filters.
+     * 与 DecisionShape 对齐的 rewrite mode。FORCED rewrite 仅通过这些 mode 返回 —
+     * 永不任意 {@code Object.preHandle} 或 sanitizer filter。
      */
     public enum ForceRewriteMode {
         NONE,
@@ -110,10 +109,10 @@ public final class FrameworkBoundaryAdapter {
     }
 
     /**
-     * When FORCED and this type is an eligible auth guard, continue the filter chain and
-     * signal callers to skip the original filter body ({@code skipOn} non-default).
+     * FORCED 且本类型为合格 auth guard 时，继续 filter chain 并
+     * 信号调用方跳过原始 filter body（{@code skipOn} 非默认）。
      *
-     * @return {@code true} when the original method should be skipped
+     * @return 原始 method 应跳过时为 {@code true}
      */
     public static boolean forcePastRecognizedFilter(String posture, String className,
                                                     String methodName, Object[] args) {
@@ -128,8 +127,8 @@ public final class FrameworkBoundaryAdapter {
     }
 
     /**
-     * When FORCED and this type is an eligible AccessControl decision method, skip the original
-     * body so advice can return {@code true} (isAccessAllowed).
+     * FORCED 且本类型为合格 AccessControl decision method 时，跳过原始
+     * body，以便 advice 返回 {@code true}（isAccessAllowed）。
      */
     public static boolean forceAccessAllowed(String posture, String className, String methodName) {
         if (!forcedReachabilityActive(posture)) {
@@ -139,8 +138,8 @@ public final class FrameworkBoundaryAdapter {
     }
 
     /**
-     * Map (type, method) to the only allowed FORCED rewrite shapes.
-     * Requires eligibility (allowlist or heuristics) first.
+     * 将 (type, method) 映射到唯一允许的 FORCED rewrite shape。
+     * 先要求 eligibility（allowlist 或启发式）。
      */
     public static ForceRewriteMode rewriteMode(String className, String methodName) {
         if (className == null || methodName == null || !isForceEligibleGuard(className, methodName)) {
@@ -165,8 +164,8 @@ public final class FrameworkBoundaryAdapter {
     }
 
     /**
-     * Allowlist from control-plane catalog when non-empty; otherwise name heuristics.
-     * Container / infrastructure exclusions always apply.
+     * allowlist 非空时来自 control-plane catalog；否则 name 启发式。
+     * 容器/基础设施排除始终适用。
      */
     public static boolean isForceEligibleGuard(String className, String methodName) {
         if (className == null) {
@@ -232,9 +231,9 @@ public final class FrameworkBoundaryAdapter {
     }
 
     /**
-     * Recognized auth / role / permission / license / feature guard surfaces eligible for
-     * FORCED short-circuit when the control-plane allowlist is empty. Intentionally excludes
-     * infrastructure filters (CORS, encoding, …).
+     * 说明：control-plane allowlist 为空时，符合 FORCED short-circuit 的已识别
+     * 说明：auth/role/permission/license/feature guard surface。刻意排除
+     * 说明：infrastructure filter（CORS、encoding、…）。
      */
     public static boolean isRecognizedAuthGuard(String className, String methodName) {
         if (className == null) {
@@ -254,8 +253,8 @@ public final class FrameworkBoundaryAdapter {
                 || "authorize".equals(methodName)
                 || "isAccessAllowed".equals(methodName)
                 || "check".equals(methodName) && lower.contains("security"))) {
-            // Method-name signal alone is insufficient for PreAuthorize on non-guard types;
-            // keep package / simple-name gates below for filter types.
+            // 仅 method 名 signal 对 non-guard 类型上的 PreAuthorize 不足；
+            // filter 类型仍保留下方 package / simple-name gate。
             if ("isAccessAllowed".equals(methodName)
                     && (lower.contains("shiro") || simpleContainsAny(simple,
                     "accesscontrol", "loginfilter", "userfilter", "authfilter",
@@ -268,9 +267,9 @@ public final class FrameworkBoundaryAdapter {
                 return true;
             }
         }
-        // Shiro: only authc/authz decision filters — never the outer AbstractShiroFilter
-        // that establishes Subject / session. Skipping the container filter after
-        // continueFilterChain commonly hangs or starves the request.
+        // Shiro：仅 authc/authz decision filter — 永不 outer AbstractShiroFilter
+        // 建立 Subject / session。continueFilterChain 后跳过 container filter
+        // 常导致 hang 或 request 饿死。
         if (lower.startsWith("org.apache.shiro.web.filter.authc.")
                 || lower.startsWith("org.apache.shiro.web.filter.authz.")
                 || (lower.contains("shiro") && simpleContainsAny(simple,
@@ -307,9 +306,9 @@ public final class FrameworkBoundaryAdapter {
     }
 
     /**
-     * FORCED short-circuit for Spring {@code HandlerInterceptor#preHandle}.
-     * Eligible when allowlist/heuristics recognize the interceptor as an auth guard.
-     * Refuses non-interceptor shapes (no arbitrary {@code Object.preHandle}).
+     * 说明：Spring {@code HandlerInterceptor#preHandle} 的 FORCED 短路。
+     * allowlist/启发式识别 interceptor 为 auth guard 时合格。
+     * 拒绝 non-interceptor shape（无任意 {@code Object.preHandle}）。
      */
     public static boolean forceInterceptorPreHandle(String posture, String className,
                                                     String methodName) {
@@ -320,8 +319,8 @@ public final class FrameworkBoundaryAdapter {
     }
 
     /**
-     * FORCED fail-open for Spring method security interceptors ({@code @PreAuthorize} wall).
-     * Separate {@code forceMode=METHOD_SECURITY_FAIL_OPEN}; still INSTRUMENTATION_REACHABILITY.
+     * 说明：Spring method security interceptor（{@code @PreAuthorize} wall）的 FORCED fail-open。
+     * 独立 {@code forceMode=METHOD_SECURITY_FAIL_OPEN}；仍为 INSTRUMENTATION_REACHABILITY。
      */
     public static boolean forceMethodSecurity(String posture, String className, String methodName) {
         if (!forcedReachabilityActive(posture)) {
@@ -367,7 +366,7 @@ public final class FrameworkBoundaryAdapter {
         if (allowlist.contains(className)) {
             return true;
         }
-        // Accept slash-form tokens from some catalogs.
+        // 接受部分 catalog 的 slash 形式 token。
         String slash = className.replace('.', '/');
         if (allowlist.contains(slash)) {
             return true;
@@ -386,8 +385,8 @@ public final class FrameworkBoundaryAdapter {
     }
 
     /**
-     * Outer container filters that must keep running under FORCED so the framework can
-     * bind Subject/SecurityContext; only nested auth decision filters are short-circuited.
+     * FORCED 下必须继续运行的 outer container filter，以便 framework 绑定
+     * 说明：Subject/SecurityContext；仅 nested auth decision filter 被短路。
      */
     private static boolean isAuthContainerFilter(String simple, String lower) {
         return simpleContainsAny(simple,
@@ -397,7 +396,7 @@ public final class FrameworkBoundaryAdapter {
                 || lower.endsWith(".abstractshirofilter");
     }
 
-    /** Invoke {@code FilterChain.doFilter(request, response)} when args look like a filter call. */
+    /** args 形如 filter 调用时 invoke {@code FilterChain.doFilter(request, response)}。 */
     public static boolean continueFilterChain(Object[] args) {
         if (args == null || args.length < 3) {
             return false;
@@ -435,7 +434,7 @@ public final class FrameworkBoundaryAdapter {
             session.getClass().getMethod("setAttribute", String.class, Object.class)
                     .invoke(session, "veyrion.scan.authenticated", Boolean.TRUE);
         } catch (Throwable ignored) {
-            // optional
+            // 可选
         }
     }
 
@@ -460,7 +459,7 @@ public final class FrameworkBoundaryAdapter {
                     .invoke(context, auth);
             holder.getMethod("setContext", context.getClass()).invoke(null, context);
         } catch (Throwable ignored) {
-            // Spring Security optional.
+            // Spring Security 可选。
         }
     }
 
@@ -481,8 +480,8 @@ public final class FrameworkBoundaryAdapter {
     }
 
     /**
-     * Best-effort Shiro Subject bind when a SecurityManager is already present.
-     * Does not encrypt rememberMe cookies; session seed for COVERAGE/FORCED only.
+     * SecurityManager 已存在时的尽力 Shiro Subject bind。
+     * 不加密 rememberMe cookie；仅 COVERAGE/FORCED 的 session seed。
      */
     private static void seedShiroSubjectBestEffort() {
         try {
@@ -496,7 +495,7 @@ public final class FrameworkBoundaryAdapter {
             if (Boolean.TRUE.equals(authenticated)) {
                 return;
             }
-            // login with token if possible — many apps require realm; keep best-effort only.
+            // 可能时用 token login — 许多应用需 realm；仅尽力而为。
             try {
                 Class<?> tokenClass = Class.forName(
                         "org.apache.shiro.authc.UsernamePasswordToken");
@@ -506,10 +505,10 @@ public final class FrameworkBoundaryAdapter {
                                 Class.forName("org.apache.shiro.authc.AuthenticationToken"))
                         .invoke(subject, token);
             } catch (Throwable ignoredLogin) {
-                // Realm may reject; FORCED filter skip remains the primary path.
+                // Realm 可能拒绝；FORCED filter skip 仍是主路径。
             }
         } catch (Throwable ignored) {
-            // Shiro optional.
+            // Shiro 可选。
         }
     }
 

@@ -5,8 +5,8 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Guard kinds eligible for FORCED_REACHABILITY. Sanitizer / SQL parameterization /
- * file-type / business state-machine invariants are never forceable.
+ * 符合 FORCED_REACHABILITY 的 guard kind。Sanitizer / SQL parameterization /
+ * 说明：file-type/business state-machine invariant 永不可 force。
  */
 public enum ForcedGuardKind {
     AUTH,

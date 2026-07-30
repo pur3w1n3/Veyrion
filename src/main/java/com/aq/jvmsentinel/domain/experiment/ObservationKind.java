@@ -3,7 +3,7 @@ package com.aq.jvmsentinel.domain.experiment;
 import java.util.Locale;
 
 /**
- * Unified RuntimeObservation subject kinds (P1-06).
+ * 统一的 RuntimeObservation subject kind（P1-06）。
  */
 public enum ObservationKind {
     ENTRY,

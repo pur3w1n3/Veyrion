@@ -8,7 +8,7 @@ import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Process-local worker for explicitly authorized internal JARs on the deny-all Docker backend. */
+/** 在 deny-all Docker 后端上、针对显式授权内部 JAR 的进程内 worker。 */
 public final class LocalArtifactWorkerLoop implements AutoCloseable {
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration IDLE_DELAY = Duration.ofMillis(500);
@@ -77,7 +77,7 @@ public final class LocalArtifactWorkerLoop implements AutoCloseable {
         return executed;
     }
 
-    /** Releases a scan-scoped retained sandbox after TRIAGE or pipeline abandon. */
+    /** TRIAGE 或流水线放弃后释放某 scan 的保留沙箱。 */
     public void releaseRetainedForScan(String projectId, String artifactDigest, String scanId) {
         executor.releaseRetainedForScan(projectId, artifactDigest, scanId);
     }

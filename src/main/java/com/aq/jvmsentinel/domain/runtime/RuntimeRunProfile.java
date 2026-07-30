@@ -5,10 +5,10 @@ import java.util.Objects;
 import java.util.regex.Pattern;
 
 /**
- * Server-fixed RuntimeAdapter run profile (P1-07).
+ * 服务端固定的 RuntimeAdapter run profile（P1-07）。
  *
- * <p>Command template, image digest, mounts, UID, network mode and budget are produced only
- * by Control Plane registered templates. Model/frontend/Analyzer strings cannot supply them.
+ * <p>command template、image digest、mount、UID、network mode 与 budget 仅由
+ * Control Plane 注册 template 产生。Model/frontend/Analyzer 字符串不能提供。
  */
 public record RuntimeRunProfile(
         int schemaVersion,
@@ -61,7 +61,7 @@ public record RuntimeRunProfile(
     }
 
     /**
-     * Factory used by Control Plane templates only.
+     * 仅 Control Plane template 使用的 factory。
      */
     public static RuntimeRunProfile serverFixed(
             String runtimeKind,

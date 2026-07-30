@@ -18,7 +18,7 @@ import java.util.Set;
 
 import static com.aq.jvmsentinel.provider.chat.ProviderChatContracts.StopReason;
 
-/** Pure, bounded adapter for OpenAI Chat Completions tool-use JSON. */
+/** 纯、有界的 OpenAI Chat Completions tool-use JSON adapter。 */
 public final class OpenAiChatCompletionsAdapter {
     public ObjectNode buildRequest(String model, String systemPrompt,
                                    List<ProviderChatContracts.ChatTurn> turns,
@@ -84,10 +84,10 @@ public final class OpenAiChatCompletionsAdapter {
             throw ChatProtocolSupport.invalid("unknown OpenAI assistant content block");
         }
 
-        // DeepSeek-style thinking models require their opaque reasoning token
-        // field to be echoed with the assistant tool-call message on the next
-        // request. Keep it only in this bounded in-memory wire turn: it is not
-        // exposed as canonical text, persisted, audited, or sent to tools.
+        // DeepSeek 风格 thinking model 要求 opaque reasoning token
+        // 字段在下一轮 request 中与 assistant tool-call message 一并回显。
+        // 仅保留在本有界 in-memory wire turn：不作为 canonical text 暴露、
+        // 不持久化、不审计、不发给 tool。
         JsonNode reasoningContent = message.get("reasoning_content");
         if (reasoningContent != null && !reasoningContent.isNull()) {
             if (!reasoningContent.isTextual()

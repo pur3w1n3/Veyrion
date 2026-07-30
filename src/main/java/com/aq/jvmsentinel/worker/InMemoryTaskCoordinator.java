@@ -13,8 +13,7 @@ import java.util.UUID;
 import java.util.function.Consumer;
 
 /**
- * Synchronized reference coordinator. It provides contract semantics only and does not launch processes
- * or alter a worker host's configured capabilities.
+ * 同步参考协调器。仅提供合同语义，不启动进程，也不改变 worker 宿主已配置的能力。
  */
 public final class InMemoryTaskCoordinator {
     private static final int MAX_TASKS = 20_000;
@@ -146,9 +145,9 @@ public final class InMemoryTaskCoordinator {
     }
 
     /**
-     * Control-plane authority cancel: clears QUEUED/LEASED/RUNNING/PAUSED without a worker lease.
-     * Used to supersede stuck or abandoned dynamic tasks before an operator stage retry.
-     * Terminal tasks are returned unchanged (idempotent).
+     * 控制面权威取消：无 worker 租约时清除 QUEUED/LEASED/RUNNING/PAUSED。
+     * 用于操作员 stage 重试前 supersede 卡住或已放弃的动态任务。
+     * 终态任务原样返回（幂等）。
      */
     public synchronized TaskSnapshot controlPlaneCancel(TaskScope scope, StopReason reason,
                                                         String idempotencyKey) {
@@ -175,8 +174,8 @@ public final class InMemoryTaskCoordinator {
     }
 
     /**
-     * Marks a still-QUEUED task as FAILED (pre-lease rejection or post-reclaim abandonment).
-     * Keeps EXTERNAL_ARTIFACT_REJECTED and similar failures out of the active set.
+     * 将仍为 QUEUED 的任务标为 FAILED（租约前拒绝或回收后放弃）。
+     * 使 EXTERNAL_ARTIFACT_REJECTED 等失败不留在 active 集合中。
      */
     public synchronized TaskSnapshot failQueued(TaskScope scope, StopReason reason, String failureCode,
                                                 String idempotencyKey) {
@@ -221,8 +220,8 @@ public final class InMemoryTaskCoordinator {
     }
 
     /**
-     * Drops a terminal task from the in-memory coordinator after durable history deletion.
-     * Active leases must be cancelled first (fail-closed).
+     * 持久化历史删除后，从内存协调器丢弃终态任务。
+     * 须先取消 active 租约（fail-closed）。
      */
     public synchronized void forget(TaskScope scope) {
         Objects.requireNonNull(scope, "scope");

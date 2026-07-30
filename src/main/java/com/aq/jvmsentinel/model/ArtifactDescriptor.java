@@ -25,7 +25,7 @@ public record ArtifactDescriptor(
         originalFileName = sanitizeOriginalFileName(originalFileName);
     }
 
-    /** Prefer the original upload/path basename for UI labels. */
+    /** UI 标签优先使用原始 upload/path basename。 */
     public String displayName() {
         return originalFileName != null ? originalFileName : artifactId;
     }

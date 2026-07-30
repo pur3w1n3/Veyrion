@@ -25,17 +25,17 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Strict, read-only projection of completed authorized artifact traces into public DTOs.
- * It never changes task state and never creates VERIFIED evidence.
+ * 对已授权制品完成轨迹的严格只读投影为公共 DTO。
+ * 不改变任务状态，也不创建 VERIFIED 证据。
  */
 public final class TraceProjectionService {
     private static final int MAX_PROJECTED_TASKS = 20_000;
     private static final int MAX_PROJECTED_EVIDENCE = 100_000;
     private static final int MAX_CHUNKS = 10_000;
     /**
-     * Must stay aligned with {@link AgentJsonlTraceConverter} / agent {@code maxEvents}
-     * (up to 100_000). Real Spring Boot JARs under coverage emit far more than 10k lines;
-     * projecting below the ingest ceiling fail-closed with PROJECTION_FAILED.
+     * 须与 {@link AgentJsonlTraceConverter} / agent {@code maxEvents}
+     *（最高 100_000）对齐。coverage 下真实 Spring Boot JAR 远多于 1 万行；
+     * 低于摄入上限投影会 fail-closed 为 PROJECTION_FAILED。
      */
     private static final int MAX_EVENTS = 100_000;
     private static final int MAX_LINE_BYTES = 64 * 1024;
@@ -43,10 +43,10 @@ public final class TraceProjectionService {
     private final InMemoryTraceStore traces;
     private final Map<TaskScope, Projection> projections = new ConcurrentHashMap<>();
     private final Map<String, ApiDtos.EvidenceDto> evidence = new ConcurrentHashMap<>();
-    /** Optional taskId → experimentPlanId binder (P0-08). */
+    /** 可选 taskId → experimentPlanId 绑定器（P0-08）。 */
     private final Map<String, String> taskExperimentPlanIds = new ConcurrentHashMap<>();
 
-    /** Optional experimentPlanId → posture plan resolver (P0-21). */
+    /** 可选 experimentPlanId → posture plan 解析器（P0-21）。 */
     private java.util.function.Function<String, PostureExperimentCompiler.CompiledPostureExperiment> posturePlans =
             ignored -> null;
 
@@ -78,7 +78,7 @@ public final class TraceProjectionService {
     }
 
     /**
-     * Revalidates and publishes one immutable projection. Invalid traces fail closed and are not retained.
+     * 重新校验并发布一条不可变投影。无效轨迹 fail-closed 且不保留。
      */
     public synchronized Projection publishCompleted(TaskSnapshot snapshot) {
         Projection projection = project(snapshot);
@@ -108,7 +108,7 @@ public final class TraceProjectionService {
         return project(snapshot, manifest, chunks);
     }
 
-    /** Visible for contract tests and alternate immutable trace backends. */
+    /** 供合同测试与替代不可变轨迹后端使用。 */
     public Projection project(TaskSnapshot snapshot, TraceManifest manifest, List<TraceChunk> chunks) {
         requireEligible(snapshot);
         return projectBody(snapshot, manifest, chunks);
@@ -125,12 +125,12 @@ public final class TraceProjectionService {
         Map<String, ApiDtos.EvidenceDto> projectedEvidence = new LinkedHashMap<>();
         Map<String, List<ApiDtos.PathStepDto>> routeSteps = new LinkedHashMap<>();
         Map<String, List<String>> routeRefs = new LinkedHashMap<>();
-        // Request-window SQL only (P0-06): never copy the full task JDBC list onto every HTTP PathRun.
-        // When correlationId is present on HTTP/JDBC, only same-correlation SQL joins the PathRun.
+        // 仅 request-window SQL（P0-06）：勿将完整任务 JDBC 列表复制到每条 HTTP PathRun。
+        // correlationId 存在于 HTTP/JDBC 时，仅同 correlation SQL 加入 PathRun。
         List<PendingSql> pendingSql = new ArrayList<>();
         List<SqlEvent> orphanSql = new ArrayList<>();
-        // Sensor path-debug events (METHOD_HOP/GUARD/EFFECT/DEPENDENCY) buffered until the
-        // matching probe HTTP PathRun is closed — same correlation window as request SQL.
+        // Sensor path-debug 事件（METHOD_HOP/GUARD/EFFECT/DEPENDENCY）缓冲至
+        // 匹配的探针 HTTP PathRun 关闭 — 与 request SQL 相同的 correlation 窗口。
         List<PendingWindowEvent> pendingWindowEvents = new ArrayList<>();
         List<ApiDtos.PathRunDto> pathRuns = new ArrayList<>();
         List<PathTrace> pathTraces = new ArrayList<>();
@@ -219,15 +219,15 @@ public final class TraceProjectionService {
                 List<PendingSql> retained = new ArrayList<>();
                 for (PendingSql pending : pendingSql) {
                     if (httpCorr.isBlank()) {
-                        // Request-window mode: consume all pending SQL into the next HTTP PathRun.
+                        // Request-window 模式：将所有 pending SQL 消费进下一条 HTTP PathRun。
                         windowSql.add(pending.event());
                     } else if (pending.correlationId().isBlank()) {
-                        // HTTP is correlated; uncorrelated SQL must not cross-attach.
+                        // HTTP 已关联；未关联 SQL 不得跨挂。
                         orphanSql.add(pending.event());
                     } else if (httpCorr.equals(pending.correlationId())) {
                         windowSql.add(pending.event());
                     } else {
-                        // Keep other correlations for a later HTTP PathRun.
+                        // 保留其他 correlation 供后续 HTTP PathRun。
                         retained.add(pending);
                     }
                 }
@@ -276,8 +276,8 @@ public final class TraceProjectionService {
                     snapshot.spec().requiredCapability().name(),
                     snapshot.spec().requiredCapability().name() + "_COMPLETED"));
         }
-        // Flood / cold-start tasks may emit JDBC/Agent evidence without HTTP events.
-        // Still materialize one PathRun so AI tools and dashboard retain SQL detail.
+        // 洪泛 / 冷启动任务可能无 HTTP 事件仍产生 JDBC/Agent 证据。
+        // 仍物化一条 PathRun，以便 AI 工具与 dashboard 保留 SQL 细节。
         if (pathRuns.isEmpty()) {
             ApiDtos.PathRunDto taskRun = taskLevelPathRun(snapshot, refs, orphanSql);
             pathRuns.add(taskRun);
@@ -290,8 +290,8 @@ public final class TraceProjectionService {
     }
 
     /**
-     * Events that enrich PathTrace beyond HTTP/SQL PathRun heuristics.
-     * Plain JDBC statement rows stay on PathRun.sqlEvents to avoid double-counting.
+     * 在 HTTP/SQL PathRun 启发式之外丰富 PathTrace 的事件。
+     * 普通 JDBC 语句行留在 PathRun.sqlEvents，避免重复计数。
      */
     static boolean isPathTraceWindowEvent(AgentJsonlTraceConverter.AgentEvent event) {
         if (event == null) return false;
@@ -317,7 +317,7 @@ public final class TraceProjectionService {
             if (corr.isBlank()) {
                 window.add(item.event());
             } else if (item.correlationId().isBlank()) {
-                // Correlated HTTP: uncorrelated sensor events must not cross-attach.
+                // 已关联 HTTP：未关联 sensor 事件不得跨挂。
                 continue;
             } else if (corr.equals(item.correlationId())) {
                 window.add(item.event());
@@ -340,7 +340,7 @@ public final class TraceProjectionService {
                 .toList();
     }
 
-    /** Drops projected paths/evidence for one task after durable scan history deletion. */
+    /** 持久化 scan 历史删除后丢弃某任务的投影 paths/evidence。 */
     public void forget(TaskScope scope) {
         Objects.requireNonNull(scope, "scope");
         Projection prior = projections.remove(scope);
@@ -468,10 +468,10 @@ public final class TraceProjectionService {
     }
 
     /**
-     * P0-20: DYNAMIC_SUSPECTED only when a real HTTP/effect observation exists.
-     * {@code httpStatus=-1}, UNKNOWN/timeout/MOCK-gap/no-bind, AUTH_CHALLENGE (401/403 wall)
-     * without effect, and empty signals stay UNREACHED. Auth-wall floods are diagnostics
-     * ({@code outcomeClass=AUTH_CHALLENGE} retained for contrast); they are not suspected vulns.
+     * P0-20：仅当存在真实 HTTP/effect 观测时为 DYNAMIC_SUSPECTED。
+     * {@code httpStatus=-1}、UNKNOWN/timeout/MOCK-gap/no-bind、无 effect 的 AUTH_CHALLENGE（401/403 墙）
+     * 及空信号保持 UNREACHED。Auth 墙洪泛为诊断
+     *（保留 {@code outcomeClass=AUTH_CHALLENGE} 供 contrast）；非 suspected 漏洞。
      */
     static String verificationStatusFor(PathOutcomeClass outcome, int httpStatus) {
         return verificationStatusFor(outcome, httpStatus, null, false);
@@ -485,7 +485,7 @@ public final class TraceProjectionService {
         if (httpStatus < 0) {
             return ApiDtos.UNREACHED;
         }
-        // Auth challenge alone (filter hit, no business bind/effect) is not a success path.
+        // 仅 Auth 挑战（filter 命中、无业务 bind/effect）不算成功路径。
         if (outcome == PathOutcomeClass.AUTH_CHALLENGE) {
             return hasEffectOrSqlSignal
                     ? VerificationStatus.DYNAMIC_SUSPECTED.name()
@@ -510,8 +510,8 @@ public final class TraceProjectionService {
     }
 
     /**
-     * Prefer explicit event detail; otherwise honest status heuristics.
-     * Never invent {@code parameterBound=true} without observation or Spring handler evidence.
+     * 优先显式 event detail；否则诚实的 status 启发式。
+     * 无观测或 Spring handler 证据时永不捏造 {@code parameterBound=true}。
      */
     static Boolean resolveEntryHit(Map<String, String> detail, int status) {
         Boolean explicit = parseTriState(detail == null ? null : detail.get("entryHit"));
@@ -519,7 +519,7 @@ public final class TraceProjectionService {
         if (status == 404 || status == 405) return Boolean.FALSE;
         if (status == 401 || status == 403) return Boolean.TRUE;
         if (status >= 200 && status < 400) return Boolean.TRUE;
-        // Timeout / connect / other statuses: unknown rather than inventing a hit.
+        // 超时 / 连接 / 其他 status：未知而非捏造 hit。
         return null;
     }
 
@@ -531,7 +531,7 @@ public final class TraceProjectionService {
         if (springBoundRouteKeys != null && routeKey != null && springBoundRouteKeys.contains(routeKey)) {
             return Boolean.TRUE;
         }
-        // 2xx with only synthetic empty/marker request still leaves binding unobserved.
+        // 仅合成空/marker 请求的 2xx 仍使 binding 未观测。
         return null;
     }
 
@@ -554,9 +554,9 @@ public final class TraceProjectionService {
     }
 
     /**
-     * D2: when a task PathRun carries both a benign statement and a META_MARKER statement,
-     * attach a bounded structure-influence summary. Never upgrades to VERIFIED; H3 remains
-     * sole DYNAMIC_CONFIRMED upgrade via {@link DynamicConfirmedGate}.
+     * D2：任务 PathRun 同时携带良性语句与 META_MARKER 语句时，
+     * 附加有界 structure-influence 摘要。永不升级 VERIFIED；H3 仍为
+     * 经 {@link DynamicConfirmedGate} 的唯一 DYNAMIC_CONFIRMED 升级路径。
      */
     static PathRun applyD2Differential(PathRun run) {
         if (run == null || run.sqlEvents() == null || run.sqlEvents().size() < 2) {
@@ -577,7 +577,7 @@ public final class TraceProjectionService {
         }
         if (benign == null || meta == null) return run;
         SqlDiffProbe.DiffResult diff = SqlDiffProbe.compare(benign, meta);
-        // D2 itself is capped at DYNAMIC_SUSPECTED; preserve any prior H3 DYNAMIC_CONFIRMED.
+        // D2 本身上限为 DYNAMIC_SUSPECTED；保留先前 H3 DYNAMIC_CONFIRMED。
         String tag = "D2: structureInfluenced=" + diff.structureInfluenced() + " (MOCK)";
         String base = run.requestSummary() == null ? "" : run.requestSummary().trim();
         if (base.contains("D2: structureInfluenced=")) return run;
@@ -611,8 +611,8 @@ public final class TraceProjectionService {
     }
 
     /**
-     * BRANCH_COVERAGE events flush after their HTTP observation; attach hits to the latest PathRun.
-     * Encoding: COMMA_SEPARATED_HIT_INDICES in detail.hits (chunked by EventWriter limits).
+     * BRANCH_COVERAGE 事件在其 HTTP 观测后 flush；将 hit 挂到最新 PathRun。
+     * 编码：detail.hits 中的 COMMA_SEPARATED_HIT_INDICES（按 EventWriter 上限分块）。
      */
     public static ApiDtos.PathRunDto mergeBranchCoverage(
             ApiDtos.PathRunDto run, AgentJsonlTraceConverter.AgentEvent event) {
@@ -654,9 +654,9 @@ public final class TraceProjectionService {
     }
 
     /**
-     * Projects only statement-level JDBC observations into PathRun.sqlEvents (D1).
-     * Protocol listen/handshake meta ({@code port=6379}, {@code sqlClass=…,bytes=N}, Redis RESP,
-     * auth accept) stays on dependency evidence steps and must not pretend to be SQL text.
+     * 仅将语句级 JDBC 观测投影到 PathRun.sqlEvents（D1）。
+     * 协议 listen/handshake 元数据（{@code port=6379}、{@code sqlClass=…,bytes=N}、Redis RESP、
+     * auth accept）留在 dependency evidence 步骤，不得伪装为 SQL 文本。
      */
     static String correlationId(Map<String, String> detail) {
         if (detail == null) return "";
@@ -706,7 +706,7 @@ public final class TraceProjectionService {
         return truncate("sqlClass=" + sqlClass + ",outcome=" + outcome, 512);
     }
 
-    /** True only when detail carries truncated statement text usable for D1–D3 / H3. */
+    /** 仅当 detail 携带可用于 D1–D3 / H3 的截断语句文本时为 true。 */
     static boolean isStatementSqlObservation(Map<String, String> detail) {
         if (detail == null) return false;
         String sql = detail.get("sql");
@@ -805,8 +805,8 @@ public final class TraceProjectionService {
     }
 
     /**
-     * Pre-complete validation (P0-06): project while task is still RUNNING so bad traces
-     * can fail closed before lifecycle becomes COMPLETED.
+     * 完成前校验（P0-06）：任务仍为 RUNNING 时投影，以便坏轨迹
+     * 在 lifecycle 变为 COMPLETED 前 fail-closed。
      */
     public Projection validateProjectable(TaskSnapshot snapshot) {
         Objects.requireNonNull(snapshot, "snapshot");
@@ -898,8 +898,8 @@ public final class TraceProjectionService {
     private record EventWithDigest(AgentJsonlTraceConverter.AgentEvent event, String chunkDigest) { }
 
     /**
-     * Builds a bounded public view of a loopback probe. Query values are never exposed: only
-     * parameter names and value lengths cross the evidence boundary.
+     * 构建 loopback 探针的有界公共视图。Query 值永不暴露：仅
+     * 参数名与值长度跨越证据边界。
      */
     private static HttpObservation httpObservation(Map<String, String> detail, String route,
                                                    String method) {

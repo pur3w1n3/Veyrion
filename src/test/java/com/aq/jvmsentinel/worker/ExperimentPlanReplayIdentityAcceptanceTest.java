@@ -28,7 +28,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * P0-08: replay creates a new attempt while preserving immutable experimentPlanId identity.
+ * P0-08：重放创建新 attempt，同时保留不可变 experimentPlanId 身份。
  */
 public final class ExperimentPlanReplayIdentityAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

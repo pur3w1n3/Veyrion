@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Verifies server-owned audit pipeline advancement with run/stage/expected-resource identity.
+ * 验证服务端 owned audit pipeline 推进与 run/stage/expected-resource identity。
  */
 public final class AuditPipelineCoordinatorAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -38,9 +38,27 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
         skipsAuthBypassConfirmWithoutEvidence();
         staticContinuesWhenDynamicWorkerUnavailable();
         pathLoopsToObservationThenTriage();
+        operatorPauseBlocksAdvancement();
         check(AuditPipelineCoordinator.resolveObservationLoopMax() >= 0, "obs loop max resolves");
         System.out.println("AuditPipelineCoordinatorAcceptanceTest passed ("
                 + ASSERTIONS.get() + " assertions)");
+    }
+
+    private static void operatorPauseBlocksAdvancement() throws Exception {
+        Fixture fixture = new Fixture();
+        AuditPipelineCoordinator coordinator = fixture.coordinator;
+        coordinator.armForJob("scan-pause", "project-a", "operator-a", AiOutputLanguage.ZH_CN,
+                PipelineStage.PRE_ANALYSIS, "job-pause-pre");
+        Cursor paused = coordinator.operatorPause("scan-pause");
+        check(paused != null && paused.stage() == PipelineStage.PRE_ANALYSIS, "pause returns stage snapshot");
+        check(!coordinator.isArmed("scan-pause"), "pause disarms live cursor");
+        List<String> before = List.copyOf(fixture.actions);
+        coordinator.onAiJobFinished(job("job-pause-pre", "scan-pause", AgentRole.PRE_ANALYSIS, "COMPLETED"));
+        Thread.sleep(150);
+        check(fixture.actions.equals(before), "paused pipeline ignores late job completion");
+        check(fixture.authCreated.getCount() == 1, "pause does not enqueue AUTH_ANALYSIS");
+        boolean cancelled = coordinator.operatorCancel("scan-pause");
+        check(!cancelled, "cancel after pause finds no live cursor");
     }
 
     private static void happyPathAdvancesOnce() throws Exception {

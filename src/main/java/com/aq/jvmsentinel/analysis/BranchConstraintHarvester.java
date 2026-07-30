@@ -12,8 +12,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Post-process parameter / flow summaries into {@link ParameterSpec} constraints without rebuilding CFG.
- * Patterns are heuristic and labeled INFERENCE / FLOW_FRAME — never VERIFIED.
+ * 后处理 parameter / flow summary 为 {@link ParameterSpec} constraint，无需重建 CFG.
+ * Pattern 为启发式，标记 INFERENCE / FLOW_FRAME — 永非 VERIFIED。
  */
 public final class BranchConstraintHarvester {
     private static final Pattern EQUALS_LITERAL = Pattern.compile(

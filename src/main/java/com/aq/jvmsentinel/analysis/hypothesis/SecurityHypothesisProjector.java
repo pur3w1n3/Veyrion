@@ -23,9 +23,9 @@ import java.util.function.BiFunction;
 import java.util.function.Function;
 
 /**
- * Compatible projection of legacy sink findings into SecurityHypothesis (P0-12).
- * Non-AUTH_GAP sinks → DATAFLOW; AUTH_GAP → GUARD_COVERAGE (no fake sink-none).
- * High-signal non-taint detector hypotheses may also project to findings (STATIC_INFERRED only).
+ * legacy sink finding 到 SecurityHypothesis 的兼容投影（P0-12）。
+ * 非 AUTH_GAP sink → DATAFLOW；AUTH_GAP → GUARD_COVERAGE（无 fake sink-none）。
+ * 高信号 non-taint detector hypothesis 亦可投影为 finding（仅 STATIC_INFERRED）。
  */
 public final class SecurityHypothesisProjector {
     public static final String DETECTOR_VERSION = "static-sink-compat/0.1";
@@ -182,8 +182,8 @@ public final class SecurityHypothesisProjector {
     }
 
     /**
-     * Project selected high-signal non-taint detector hypotheses into findings so UI/report
-     * are not sink-only. Always {@link ApiDtos#STATIC_INFERRED}; never DYNAMIC_CONFIRMED/VERIFIED.
+     * 将选定高信号 non-taint detector hypothesis 投影为 finding，使 UI/report
+     * 非仅 sink。始终 {@link ApiDtos#STATIC_INFERRED}；永非 DYNAMIC_CONFIRMED/VERIFIED。
      *
      * <p>Currently: {@code HARDCODED_REMEMBER_ME_CIPHER_KEY}, companion
      * {@code UNSAFE_DESERIALIZATION_SURFACE} from the rememberMe cipher detector, and
@@ -222,7 +222,7 @@ public final class SecurityHypothesisProjector {
     }
 
     /**
-     * Merge sink-projected findings with selected detector-hypothesis findings (append-only).
+     * 合并 sink 投影 finding 与选定 detector-hypothesis finding（仅 append）。
      */
     public static List<ApiDtos.FindingDto> mergeFindingsWithDetectorHypotheses(
             String projectId,

@@ -190,7 +190,7 @@ public final class SecurityConfigurationAcceptanceTest {
             action.run();
             throw new AssertionError(message + " was accepted");
         } catch (SecretIntegrityException expected) {
-            // fail-closed
+            // 失败时 fail-closed
         }
     }
 

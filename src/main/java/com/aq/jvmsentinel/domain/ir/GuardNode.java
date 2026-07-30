@@ -6,8 +6,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Auth / ownership / tenant / approval guard. AUTH EntryDto rows and AUTH_GAP signals
- * project here rather than as {@link EntryNode}/{@link EffectNode} when appropriate.
+ * 说明：Auth/ownership/tenant/approval guard；AUTH EntryDto 行与 AUTH_GAP signal
+ * 在适当时投影于此，而非 {@link EntryNode}/{@link EffectNode}。
  *
  * <p>Stable id: {@code guard:{key}} (or legacy {@code guard:hyp-…} sink ids reused as-is).
  */

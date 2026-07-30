@@ -13,7 +13,7 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Skeleton: resource open without close in the same caller (FILE_READ / stream constructors).
+ * Skeleton：同一 caller 内 open 无 close（FILE_READ / stream constructor）。
  */
 public final class ResourceLifecycleDetector implements Detector {
     public static final String VERSION = "0.1.0";
@@ -81,7 +81,7 @@ public final class ResourceLifecycleDetector implements Detector {
             ));
         }
 
-        // Fallback from sink catalog FILE_READ when IR edges unavailable.
+        // IR edge 不可用时从 sink catalog FILE_READ fallback。
         if (edges.isEmpty()) {
             for (ApiDtos.SinkDto sink : context.sinks()) {
                 if (sink == null || sink.category() == null) continue;

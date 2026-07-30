@@ -1,6 +1,6 @@
 package com.aq.jvmsentinel.sandbox;
 
-/** OpenSandbox lifecycle status. Unknown future states are rejected rather than guessed. */
+/** OpenSandbox lifecycle status。未知未来 state 拒绝而非猜测。 */
 public record SandboxStatus(State state, String reason, String message) {
     public SandboxStatus {
         if (state == null) throw new NullPointerException("state");

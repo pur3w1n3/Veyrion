@@ -34,7 +34,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * P1-02: Evidence Graph projection, finding evidence-ref join, AUTH EntryDto gap, API bound.
+ * P1-02：Evidence Graph 投影、finding evidence-ref join、AUTH EntryDto gap、API bound。
  */
 public final class EvidenceGraphAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -121,7 +121,7 @@ public final class EvidenceGraphAcceptanceTest {
         check(graph.findById(StableNodeIds.entry("entry-http-1")).orElseThrow()
                         .evidenceRefs().contains("ev-entry-1"),
                 "entry carries finding evidence");
-        // Bidirectional: node → findingIds via shared evidence refs.
+        // 双向：经共享 evidence ref 的 node → findingIds。
         List<Map<String, Object>> findingMaps = List.of(Map.of(
                 "findingId", "finding-1",
                 "evidenceRefs", findings.get(0).evidenceRefs()));
@@ -265,7 +265,7 @@ public final class EvidenceGraphAcceptanceTest {
             }
             check(joined, "at least one finding evidence ref joins a graph node");
 
-            // P1-02: authoritative graph persisted in StaticFactSnapshot (schema v4).
+            // P1-02：权威 graph 持久化于 StaticFactSnapshot（schema v4）。
             Optional<StaticFactSnapshot> facts = server.store().staticFacts(scanId);
             check(facts.isPresent(), "static facts persisted");
             check(facts.get().hasPersistedEvidenceGraph(), "evidence graph persisted on snapshot");
@@ -277,7 +277,7 @@ public final class EvidenceGraphAcceptanceTest {
             check(apiNodes >= persisted.nodes().size(),
                     "API graph includes persisted authoritative nodes");
 
-            // Bidirectional live: finding → node and node → findingId.
+            // 双向 live：finding → node 与 node → findingId。
             List<Map<String, Object>> findingWire = new ArrayList<>();
             for (Object findingObj : findings) {
                 if (findingObj instanceof Map<?, ?> finding) {

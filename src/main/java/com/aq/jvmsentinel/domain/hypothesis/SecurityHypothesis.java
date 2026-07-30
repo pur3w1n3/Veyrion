@@ -5,7 +5,7 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * First-class security hypothesis (P0-12). Source/effect are required for DATAFLOW only.
+ * 一等 security hypothesis（P0-12）。source/effect 仅 DATAFLOW 必填。
  */
 public record SecurityHypothesis(
         int schemaVersion,
@@ -72,7 +72,7 @@ public record SecurityHypothesis(
         HypothesisFamily family = HypothesisFamily.parse(string(map.get("family")));
         String source = string(map.get("source"));
         String effect = string(map.get("effect"));
-        // Unknown family: keep payload readable but never invent DATAFLOW source/effect requirements.
+        // 未知 family：保持 payload 可读，但永不发明 DATAFLOW source/effect 要求。
         if (family == HypothesisFamily.DATAFLOW && (source.isBlank() || effect.isBlank())) {
             family = HypothesisFamily.UNKNOWN;
         }

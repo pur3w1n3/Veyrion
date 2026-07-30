@@ -4,7 +4,7 @@ import com.aq.jvmsentinel.worker.ResourceBudget;
 
 import java.util.Objects;
 
-/** Control-plane supplied limits for one isolated decompilation request. */
+/** Control Plane 为单次隔离 decompile 请求提供的限制。 */
 public record DecompileBudget(ResourceBudget resources, int maxOutputFiles, long maxOutputBytes) {
     public DecompileBudget {
         Objects.requireNonNull(resources, "resources");

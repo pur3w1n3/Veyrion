@@ -20,7 +20,7 @@ public final class PrimitiveEffectCatalog {
         if (o.equals("java.lang.ProcessBuilder") && (n.equals("start") || n.equals("command"))) {
             return Optional.of("EFFECT:COMMAND");
         }
-        // Controllable JDBC URL is SSRF/RCE/classload — not SQL injection.
+        // 可控 JDBC URL 为 SSRF/RCE/classload — 非 SQL injection。
         if (o.equals("java.sql.DriverManager") && n.equals("getConnection")) {
             return Optional.of("EFFECT:SSRF");
         }
@@ -61,7 +61,7 @@ public final class PrimitiveEffectCatalog {
         if (lowerName.equals("exec") && lowerOwner.contains("runtime")) {
             return Optional.of("EFFECT:COMMAND");
         }
-        // Conservative name heuristics for app wrappers that look like sinks.
+        // 像 sink 的 app wrapper 的保守 name 启发式。
         if (lowerName.contains("executequery") || lowerName.contains("rawsql")
                 || lowerName.equals("query") && lowerOwner.contains("sql")) {
             return Optional.of("EFFECT:SQL");

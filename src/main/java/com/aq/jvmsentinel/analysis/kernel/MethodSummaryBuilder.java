@@ -12,8 +12,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Bottom-up MethodSummary skeleton: seed primitive effects/sanitizers/guards from call edges,
- * then propagate custom effects to callers of summarized callees (wrapper pattern).
+ * 自底向上 MethodSummary 骨架：从 call edge seed primitive effect/sanitizer/guard，
+ * 再将 custom effect 传播到 summarized callee 的 caller（wrapper pattern）。
  */
 public final class MethodSummaryBuilder {
     public static final int MAX_METHODS = 4_096;
@@ -37,7 +37,7 @@ public final class MethodSummaryBuilder {
             String key = CfgBuilder.methodIdentity(method.owner(), method.name(), method.descriptor());
             MutableSummary summary = summaries.computeIfAbsent(key,
                     ignored -> new MutableSummary(method.owner(), method.name(), method.descriptor()));
-            // Seed from the method's own identity (IR/sink/guard heuristics), not only callees.
+            // 从 method 自身 identity（IR/sink/guard 启发式）seed，不仅 callee。
             seedFromTarget(summary, method.owner(), method.name());
         }
         Map<String, Set<String>> calleesByCaller = new HashMap<>();
@@ -52,7 +52,7 @@ public final class MethodSummaryBuilder {
                     ignored -> new MutableSummary(edge.targetOwner(), edge.targetName(), edge.targetDescriptor()));
             seedFromTarget(calleeSummary, edge.targetOwner(), edge.targetName());
             if (returnsValue(edge.targetDescriptor())) {
-                // Conservative: any parameter may influence a value-returning callee result used by caller.
+                // 保守：任一 parameter 可能影响 caller 使用的 value-returning callee 结果。
                 for (int i = 0; i < parameterCount(edge.callerDescriptor()); i++) {
                     summary.returnTaintParams.add(i);
                 }
@@ -87,7 +87,7 @@ public final class MethodSummaryBuilder {
             }
         }
 
-        // Bottom-up: wrappers that call summarized effectful callees inherit custom effects.
+        // Bottom-up：调用 summarized effectful callee 的 wrapper 继承 custom effect。
         for (int round = 0; round < MAX_PROPAGATION_ROUNDS; round++) {
             boolean changed = false;
             for (Map.Entry<String, Set<String>> entry : calleesByCaller.entrySet()) {

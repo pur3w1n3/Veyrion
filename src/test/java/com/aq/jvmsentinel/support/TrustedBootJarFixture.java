@@ -14,8 +14,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * Builds a minimal executable “Boot-shaped” JAR for TRUSTED_DOCKER live probes:
- * Main-Class hosts two HTTP routes; BOOT-INF carries Spring stubs for static entry discovery.
+ * 为 TRUSTED_DOCKER live probe 构建最小可执行“Boot-shaped”JAR：
+ * Main-Class 承载两 HTTP route；BOOT-INF 带 Spring stub 供 static entry discovery。
  */
 public final class TrustedBootJarFixture {
     public static final String MAIN_CLASS = "com.aq.veyrion.fixture.TrustedMultiEntryApp";
@@ -109,7 +109,7 @@ public final class TrustedBootJarFixture {
                              Statement statement = connection.createStatement()) {
                             statement.execute(sql);
                         } catch (Exception fallback) {
-                            // Without agent mock driver, still keep the process ready for HTTP probes.
+                            // 无 agent mock driver 仍保持进程就绪供 HTTP probe。
                         }
                     }
                     private static void bindCorrelation(Headers headers) {
@@ -146,7 +146,7 @@ public final class TrustedBootJarFixture {
             output.closeEntry();
             for (Path file : stream.filter(Files::isRegularFile).toList()) {
                 String relative = classes.relativize(file).toString().replace('\\', '/');
-                // Runtime Main-Class must load from the JAR root classpath.
+                // Runtime Main-Class 须从 JAR root classpath 加载。
                 if (relative.startsWith("com/aq/veyrion/fixture/")) {
                     output.putNextEntry(new ZipEntry(relative));
                     Files.copy(file, output);

@@ -31,7 +31,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * P0-10 residual: Controller handler binds to repository-layer sink via persisted taint paths.
+ * P0-10 残余：Controller handler 经 persisted taint path 绑定 repository-layer sink。
  */
 public final class CrossMethodFindingBindAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

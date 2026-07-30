@@ -1,6 +1,6 @@
 package com.aq.jvmsentinel.provider;
 
-/** Server-owned language choice persisted with each immutable AI job snapshot. */
+/** 服务端拥有的语言选择，与每个不可变 AI job snapshot 一并持久化。 */
 public enum AiOutputLanguage {
     ZH_CN,
     EN;

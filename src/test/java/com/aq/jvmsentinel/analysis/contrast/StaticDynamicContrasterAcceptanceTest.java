@@ -7,7 +7,7 @@ import com.aq.jvmsentinel.model.StaticContrastRow;
 import java.util.List;
 
 /**
- * Acceptance: 401-only PathRuns keep static rows as STATIC_ONLY (never bypassed).
+ * Acceptance：仅 401 PathRun 保持 static 行为 STATIC_ONLY（永非 bypassed）。
  */
 public final class StaticDynamicContrasterAcceptanceTest {
     public static void main(String[] args) {

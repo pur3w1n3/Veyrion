@@ -48,12 +48,12 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 /**
- * Versioned, in-memory Worker contract endpoint. This component coordinates task state and
- * immutable traces only; it does not provide or invoke a sandbox runtime.
+ * 带版本号的进程内 Worker 合约端点。本组件仅协调 task 状态与不可变 trace；
+ * 不提供也不调用 sandbox runtime。
  */
-final class WorkerControlPlaneApi implements HttpHandler {
+public final class WorkerControlPlaneApi implements HttpHandler {
     static final String PREFIX = "/internal/worker/v1";
-    static final int CONTRACT_VERSION = 1;
+    public static final int CONTRACT_VERSION = 1;
     private static final int MAX_BODY_BYTES = 1_500_000;
     private static final long DEFAULT_WALL_SECONDS = 900;
     private static final long DEFAULT_CPU_MILLIS = 300_000;
@@ -105,7 +105,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
                 try {
                     persistProjectedPathRuns(snapshot, projectionService.publishCompleted(snapshot));
                 } catch (RuntimeException ignored) {
-                    /* invalid persisted evidence stays fail-closed; durable PathRuns remain readable */
+                    /* 无效持久化 evidence 保持 fail-closed；持久 PathRun 仍可读 */
                 }
             }
         }
@@ -171,7 +171,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
         sendJson(exchange, 202, snapshotMap(result));
     }
 
-    synchronized TaskSnapshot enqueueFromControlPlane(WorkerTaskSpec spec, String key) {
+    public synchronized TaskSnapshot enqueueFromControlPlane(WorkerTaskSpec spec, String key) {
         validateExternalScope(spec.scope());
         TaskSnapshot result = coordinator.enqueue(spec, key);
         scopes.putIfAbsent(result.scope(), Boolean.TRUE);
@@ -186,15 +186,14 @@ final class WorkerControlPlaneApi implements HttpHandler {
         return result;
     }
 
-    synchronized List<TaskSnapshot> snapshots(String projectId, String scanId) {
+    public synchronized List<TaskSnapshot> snapshots(String projectId, String scanId) {
         List<TaskSnapshot> snapshots = new ArrayList<>();
         for (TaskScope scope : scopes.keySet()) {
             if (projectId != null && !projectId.equals(scope.projectId())) continue;
             if (scanId != null && !scanId.equals(scope.scanId())) continue;
             snapshots.add(coordinator.get(scope));
         }
-        // Newest-first stable order so operator UIs that take the last element see the
-        // chronologically latest task (not lexicographic taskId order).
+        // 最新优先的稳定排序，便于操作员 UI 取最后元素时看到时间序最新 task（非 taskId 字典序）。
         snapshots.sort(Comparator
                 .comparing(TaskSnapshot::updatedAt)
                 .thenComparing(value -> value.scope().taskId()));
@@ -202,11 +201,11 @@ final class WorkerControlPlaneApi implements HttpHandler {
     }
 
     /**
-     * Operator stage-retry supersede: cancel every in-flight dynamic task for the scan.
-     * Terminal FAILED/COMPLETED/CANCELLED tasks are left as history. Fail-closed callers
-     * must re-check {@link #hasActiveDynamicTask} before enqueueing a replacement.
+     * 操作员 stage-retry 取代：取消 scan 上所有在途 dynamic task。
+     * 终态 FAILED/COMPLETED/CANCELLED task 保留为历史。fail-closed 调用方
+     * 入队替换前必须重新检查 {@link #hasActiveDynamicTask}。
      */
-    synchronized List<TaskSnapshot> cancelActiveDynamicTasks(String projectId, String scanId) {
+    public synchronized List<TaskSnapshot> cancelActiveDynamicTasks(String projectId, String scanId) {
         List<TaskSnapshot> cancelled = new ArrayList<>();
         for (TaskSnapshot snapshot : snapshots(projectId, scanId)) {
             if (!isActiveLifecycle(snapshot.lifecycle())) continue;
@@ -218,7 +217,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
                 try {
                     terminalListener.accept(result);
                 } catch (RuntimeException ignored) {
-                    // Pipeline faults must not rewrite worker terminal state.
+                    // Pipeline 故障不得改写 worker 终态。
                 }
             }
             cancelled.add(result);
@@ -226,16 +225,16 @@ final class WorkerControlPlaneApi implements HttpHandler {
         return List.copyOf(cancelled);
     }
 
-    synchronized boolean hasActiveDynamicTask(String projectId, String scanId) {
+    public synchronized boolean hasActiveDynamicTask(String projectId, String scanId) {
         return snapshots(projectId, scanId).stream()
                 .anyMatch(snapshot -> isActiveLifecycle(snapshot.lifecycle()));
     }
 
     /**
-     * Removes terminal worker/task history for a scan after durable delete.
-     * Active leases must already be absent (fail-closed).
+     * durable delete 后移除 scan 的终态 worker/task 历史。
+     * 活跃 lease 必须已不存在（fail-closed）。
      */
-    synchronized void forgetScanHistory(String projectId, String scanId) {
+    public synchronized void forgetScanHistory(String projectId, String scanId) {
         Objects.requireNonNull(projectId, "projectId");
         Objects.requireNonNull(scanId, "scanId");
         if (hasActiveDynamicTask(projectId, scanId)) {
@@ -253,8 +252,8 @@ final class WorkerControlPlaneApi implements HttpHandler {
     }
 
     /**
-     * Fail-closed reclaim for dynamic tasks that remain {@code QUEUED} without a Worker.
-     * Emits terminal callbacks so the audit pipeline can disarm instead of waiting forever.
+     * 对仍 {@code QUEUED} 且无 Worker 的动态 task 做 fail-closed 回收。
+     * 发出终态回调，使 audit pipeline 可 disarm 而非永久等待。
      */
     synchronized List<TaskSnapshot> failStaleQueuedTasks(Duration maxQueuedAge, Instant now) {
         Objects.requireNonNull(maxQueuedAge, "maxQueuedAge");
@@ -285,7 +284,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
                 try {
                     terminalListener.accept(result);
                 } catch (RuntimeException ignored) {
-                    // Pipeline faults must not rewrite worker terminal state.
+                    // Pipeline 故障不得改写 worker 终态。
                 }
             }
             failed.add(result);
@@ -300,11 +299,11 @@ final class WorkerControlPlaneApi implements HttpHandler {
                 || lifecycle == TaskLifecycle.PAUSED;
     }
 
-    String failureDiagnostic(TaskScope scope) {
+    public String failureDiagnostic(TaskScope scope) {
         return failureDiagnostics.get(scope);
     }
 
-    String progressDetail(TaskScope scope) {
+    public String progressDetail(TaskScope scope) {
         return progressDetails.get(scope);
     }
 
@@ -366,7 +365,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
                 String workerId = requiredText(body, "workerId");
                 TaskSnapshot running = coordinator.get(scope);
                 try {
-                    // Fail closed before COMPLETED so bad traces cannot advance the pipeline (P0-06).
+                    // COMPLETED 前 fail-closed，坏 trace 不得推进 pipeline（P0-06）。
                     projectionService.validateProjectable(running);
                 } catch (IllegalArgumentException | IllegalStateException | SecurityException rejected) {
                     snapshot = coordinator.fail(scope, leaseId, workerId, StopReason.WORKER_FAILURE,
@@ -397,7 +396,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
             try {
                 persistProjectedPathRuns(snapshot, projectionService.publishCompleted(snapshot));
             } catch (IllegalArgumentException | IllegalStateException | SecurityException rejected) {
-                // Should be rare after validateProjectable; keep COMPLETED but do not advance on empty PathRuns.
+                // validateProjectable 后应罕见；保持 COMPLETED 但空 PathRun 不推进。
                 failureDiagnostics.putIfAbsent(scope,
                         "PROJECTION_PERSIST_FAILED:" + (rejected.getMessage() == null
                                 ? "unknown" : rejected.getMessage()));
@@ -408,7 +407,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
             try {
                 terminalListener.accept(snapshot);
             } catch (RuntimeException ignored) {
-                // Pipeline faults must not rewrite worker terminal state.
+                // Pipeline 故障不得改写 worker 终态。
             }
         }
         sendJson(exchange, 200, snapshotMap(snapshot));
@@ -498,7 +497,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("status", snapshot.lifecycle().name());
         payload.put("reason", snapshot.stopReason() == null ? snapshot.lifecycle().name() : snapshot.stopReason().name());
-        // P0-20: task lifecycle events never promote DYNAMIC_SUSPECTED; PathRun projection owns suspicion.
+        // P0-20：task 生命周期事件永不提升 DYNAMIC_SUSPECTED；PathRun 投影拥有 suspicion。
         payload.put("verificationStatus", ApiDtos.UNREACHED);
         payload.put("dependencyMode", ApiDtos.MOCK);
         payload.put("fixtureOnly", false);
@@ -640,7 +639,7 @@ final class WorkerControlPlaneApi implements HttpHandler {
         result.put("updatedAt", value.updatedAt().toString());
         result.put("targetEntryId", value.spec().targetEntryId());
         result.put("authorized", value.spec().authorized());
-        // v1 wire compatibility: old clients require this field. It is now invariantly false.
+        // v1 wire 兼容：旧 client 需要此字段。现恒为 false。
         result.put("fixtureOnly", false);
         result.put("requiredCapability", value.spec().requiredCapability().name());
         ResourceBudget budget = value.spec().resourceBudget();

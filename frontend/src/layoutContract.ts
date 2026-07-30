@@ -1,9 +1,9 @@
 /**
- * P1-23 GUI layout / long-text contract — narrow viewport and overflow rules.
- * Asserted by GuiLayoutContractAcceptanceTest against this file and styles.css.
+ * P1-23 GUI layout / 长文本合同 — 窄视口与溢出规则。
+ * 由 GuiLayoutContractAcceptanceTest 针对本文件与 styles.css 断言。
  */
 
-/** CSS custom properties that bound content width and control long-text wrapping. */
+/** 限定内容宽度并控制长文本换行的 CSS 自定义属性。 */
 export const LAYOUT_CSS_VARS = {
   contentMaxWidth: '--veyrion-content-max-width',
   narrowBreakpoint: '--veyrion-narrow-breakpoint',
@@ -11,10 +11,10 @@ export const LAYOUT_CSS_VARS = {
   longTextWordBreak: '--veyrion-long-text-word-break'
 } as const
 
-/** Narrow viewport class applied under the contract breakpoint (see styles.css). */
+/** 合同断点下应用的窄视口 class（见 styles.css）。 */
 export const NARROW_VIEWPORT_CLASS = 'veyrion-narrow'
 
-/** Long-text surfaces that must not overflow / overlap filters or timelines. */
+/** 不得溢出 / 与 filter 或时间线重叠的长文本面。 */
 export const LONG_TEXT_CLASSES = [
   'veyrion-long-text',
   'chat-markdown',
@@ -25,7 +25,7 @@ export const LONG_TEXT_CLASSES = [
 export const LAYOUT_CONTRACT = {
   contentMaxWidthPx: 1280,
   narrowBreakpointPx: 760,
-  /** Required CSS declarations (substring match in styles.css). */
+  /** 必需的 CSS 声明（在 styles.css 中子串匹配）。 */
   requiredRules: {
     maxWidth: 'max-width',
     overflowWrap: 'overflow-wrap',

@@ -6,8 +6,8 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Structured entry parameter. Legacy {@code List<String>} encodings remain readable via
- * {@link #fromLegacy(String)}.
+ * 结构化 entry 参数。Legacy {@code List<String>} 编码仍可通过
+ * {@link #fromLegacy(String)} 读取。
  */
 public record ParameterSpec(
         String name,

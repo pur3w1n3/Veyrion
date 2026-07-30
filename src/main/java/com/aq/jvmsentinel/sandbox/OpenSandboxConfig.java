@@ -4,7 +4,7 @@ import java.net.URI;
 import java.time.Duration;
 import java.util.Objects;
 
-/** Connection settings. Secrets are deliberately excluded from accessors and string representations. */
+/** 连接设置。accessor 与 string 表示刻意排除 secret。 */
 public final class OpenSandboxConfig {
     private final URI lifecycleBaseUri;
     private final String apiKey;

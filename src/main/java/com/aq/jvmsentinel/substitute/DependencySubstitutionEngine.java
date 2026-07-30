@@ -28,8 +28,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Offline substitution runtime.  It never opens an outbound socket, loads a JDBC
- * driver, accepts a database URL, or invokes a host process.
+ * 离线 substitution runtime。永不打开 outbound socket、加载 JDBC driver、
+ * 接受 database URL 或调用 host process。
  */
 public final class DependencySubstitutionEngine implements AutoCloseable {
     public record JdbcResult(List<String> columns, List<List<String>> rows) {

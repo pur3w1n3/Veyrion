@@ -14,7 +14,7 @@ import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 
-/** PostureExperimentCompiler plans are used when building flood probe plans. */
+/** 构建 flood probe plan 时使用 PostureExperimentCompiler plan。 */
 public final class ProbePlanPostureIntegrationAcceptanceTest {
     public static void main(String[] args) throws Exception {
         AcceptanceAssertions.reset();

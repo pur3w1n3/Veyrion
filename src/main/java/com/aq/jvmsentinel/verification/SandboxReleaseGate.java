@@ -14,10 +14,10 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Deployment-owned P0 gate for enabling external-artifact execution.
+ * 启用外部制品执行的部署侧 P0 门禁。
  *
- * <p>This class validates evidence inventory; it does not run an escape test or trust a
- * browser/target supplied assertion.</p>
+ * <p>本类校验证据清单；不运行 escape 测试，也不信任
+ * 浏览器/目标提供的 assertion。</p>
  */
 public final class SandboxReleaseGate {
     private static final Duration MAX_EVIDENCE_AGE = Duration.ofDays(30);

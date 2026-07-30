@@ -21,8 +21,8 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P1-04 gate: serializable CFG, MethodSummary bottom-up, field/return/sanitizer hooks,
- * and CFG_VIEW preferring CfgBuilder.
+ * P1-04 gate：可序列化 CFG、MethodSummary bottom-up、field/return/sanitizer hook，
+ * 与优先 CfgBuilder 的 CFG_VIEW。
  */
 public final class StaticAnalysisKernelAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -156,7 +156,7 @@ public final class StaticAnalysisKernelAcceptanceTest {
 
         List<BytecodeFactIndex.MethodFact> chainMethods = new java.util.ArrayList<>();
         List<BytecodeFactIndex.CallEdge> chainEdges = new java.util.ArrayList<>();
-        // Chain longer than MAX rounds so the final round still changes → budget stop reason.
+        // Chain 长于 MAX round 使末轮仍变化 → budget stop reason。
         int depth = MethodSummaryBuilder.MAX_PROPAGATION_ROUNDS * 3;
         for (int i = 0; i <= depth; i++) {
             String owner = "app/L" + i;
@@ -299,9 +299,9 @@ public final class StaticAnalysisKernelAcceptanceTest {
     }
 
     private static void declareLightweightKernelScope() {
-        // Declared AUDITED scope for P1-04: lightweight analysis.kernel (CfgBuilder /
-        // MethodSummary / FieldReturn) with stopReason/budget honesty — not full SSA/IFDS/points-to.
-        // ADR-0002 remains PROPOSED; suggests ACCEPTED = continue light kernel + deepen self-developed.
+        // P1-04 声明 AUDITED scope：轻量 analysis.kernel（CfgBuilder /
+        // 说明：MethodSummary/FieldReturn 含 stopReason/budget 诚实 — 非完整 SSA/IFDS/points-to。
+        // ADR-0002 仍为 PROPOSED；建议 ACCEPTED = 继续轻 kernel + 深化自研。
         check(CfgGraph.MAX_BLOCKS > 0 && MethodSummaryBuilder.MAX_PROPAGATION_ROUNDS > 0
                         && FieldReturnTaintEnhancer.PATH_BUDGET > 0,
                 "lightweight kernel declares finite budgets (not unbounded IFDS)");

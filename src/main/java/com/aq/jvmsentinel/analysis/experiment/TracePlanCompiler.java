@@ -15,7 +15,7 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * P0-21: compile static Entry/Guard/Effect facts into TracePlan observation targets.
+ * P0-21：将静态 Entry/Guard/Effect fact 编译为 TracePlan observation target。
  */
 public final class TracePlanCompiler {
     public static final String PRODUCER = TracePlan.PRODUCER;
@@ -68,8 +68,8 @@ public final class TracePlanCompiler {
     }
 
     /**
-     * Fill expectedGuards / effects / hops / parameter specs from static IR bindings.
-     * Never invents runtime FACT — provenance remains RULE_GENERATED / STATIC_SIGNATURE.
+     * 从静态 IR binding 填充 expectedGuards / effects / hops / parameter spec。
+     * 永不发明 runtime FACT — provenance 保持 RULE_GENERATED / STATIC_SIGNATURE。
      */
     public static TracePlan compileFromStaticIr(
             ApiDtos.EntryDto entry,
@@ -95,7 +95,7 @@ public final class TracePlanCompiler {
             ApiDtos.EntryDto bound = StaticFactSnapshot.findEntryForTaintSource(
                     List.of(entry), evid, path);
             if (bound == null || !entry.id().equals(bound.id())) {
-                // Also accept owner-class match when annotation binding is incomplete.
+                // annotation binding 不完整时也接受 owner-class 匹配。
                 if (!ownerMatchesEntry(entry, path.sourceOwner())) {
                     continue;
                 }
@@ -150,7 +150,7 @@ public final class TracePlanCompiler {
         }
 
         List<String> guards = new ArrayList<>(capHints(guardHints, MAX_GUARDS_PER_ENTRY));
-        // Entry-local preconditions (ROLE=…) are static guard expectations.
+        // Entry-local 前置条件（ROLE=…）为静态 guard expectation。
         if (entry.preconditions() != null) {
             for (String pre : entry.preconditions()) {
                 if (pre == null || pre.isBlank() || guards.size() >= MAX_GUARDS_PER_ENTRY) {
@@ -298,8 +298,8 @@ public final class TracePlanCompiler {
     }
 
     /**
-     * Compatible projection of legacy sink/taint path strings into expected hops/effects.
-     * Never invents FACT — provenance remains RULE_GENERATED / STATIC_SIGNATURE in TracePlan.
+     * legacy sink/taint path 字符串到 expected hop/effect 的兼容投影。
+     * 永不发明 FACT — TracePlan 中 provenance 保持 RULE_GENERATED / STATIC_SIGNATURE。
      */
     public static TracePlan compileWithLegacySinkPaths(
             ApiDtos.EntryDto entry,

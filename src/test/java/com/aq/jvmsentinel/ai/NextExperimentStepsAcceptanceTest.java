@@ -5,7 +5,7 @@ import com.aq.jvmsentinel.model.NextExperimentStep;
 import java.util.Set;
 
 /**
- * P1-05: PATH/TRIAGE nextExperiments must be PathRun-grounded and sandbox_probe-consumable.
+ * P1-05：PATH/TRIAGE nextExperiments 须基于 PathRun 且 sandbox_probe 可消费。
  */
 public final class NextExperimentStepsAcceptanceTest {
     public static void main(String[] args) {
@@ -67,7 +67,7 @@ public final class NextExperimentStepsAcceptanceTest {
         check(parsed.rejected().contains("ENTRYPOINT_NOT_FOUND"), "ENTRYPOINT_NOT_FOUND");
     }
 
-    /** STATIC_ONLY contrast must not elevate to bypassed/confirmed; AUTH_GAP gate unchanged. */
+    /** STATIC_ONLY 对比不得提升为 bypassed/confirmed；AUTH_GAP 闸门不变。 */
     private static void rejectsStaticOnlyBypassClaim() {
         String conclusion = """
                 {"nextExperiments":[{

@@ -10,8 +10,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Merges projector and detector hypotheses with stable dedupe.
- * Key: family + securityProperty + source + effect (case-insensitive).
+ * 以稳定 dedupe 合并 projector 与 detector hypothesis。
+ * 合并键：family + securityProperty + source + effect（case-insensitive）。
  */
 public final class HypothesisMerge {
     private HypothesisMerge() {

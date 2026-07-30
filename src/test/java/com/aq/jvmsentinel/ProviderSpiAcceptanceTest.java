@@ -48,8 +48,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * P1-03: versioned Provider SPI — defaults wrap PreAnalysis; TestOnly can add
- * entry/effect/guard/detector; unload is scope-isolated; gate rejects Finding/status elevation.
+ * P1-03：版本化 Provider SPI — default 包装 PreAnalysis；TestOnly 可添加
+ * 说明：entry/effect/guard/detector；unload scope 隔离；gate 拒绝 Finding/status 提升。
  */
 public final class ProviderSpiAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -75,8 +75,8 @@ public final class ProviderSpiAcceptanceTest {
     }
 
     /**
-     * P1-03: scan build path collects ProviderBundle; DefaultJvmProviders and TestOnly
-     * contributions are authoritative entry/effect/guard sources merged into the scan.
+     * 说明：P1-03：scan build path collect ProviderBundle；DefaultJvmProviders 与 TestOnly
+     * contribution 为合并进 scan 的权威 entry/effect/guard source。
      */
     private static void verifyScanBuildUsesProviderBundle(Path root, Path jar) throws Exception {
         ProviderRegistry.resetForTests();
@@ -130,7 +130,7 @@ public final class ProviderSpiAcceptanceTest {
             check(hasDefaultSql, "DefaultJvmProviders/PreAnalysis SQL effect in scan");
             check(hasCustomEffect, "TestOnly custom effect merged into scan sinks");
 
-            // Unload TestOnly: a new scan must not retain that provider's scope.
+            // Unload TestOnly：新 scan 不得保留该 provider scope。
             check(ProviderRegistry.unregister(testOnly), "TestOnly unregistered before second scan");
             Map<String, Object> scan2 = ok(send(client,
                     uri(server, "/projects/" + projectId + "/scans"), "POST",
@@ -282,7 +282,7 @@ public final class ProviderSpiAcceptanceTest {
                         "evil/1",
                         List.of(), List.of(), List.of(),
                         "", "")));
-        // Wrong scope must fail closed.
+        // 错误 scope 须 fail-closed。
         gate.acceptEffect(new ProviderContribution.Effect(
                 "evil", "evil", AnalysisProvider.SCHEMA_VERSION,
                 "wrong-project", "digest-gate", "scan-gate",

@@ -9,8 +9,8 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * P0-20: static-first finding ranking for dashboard / report.
- * Dynamic failures demote; never invents VERIFIED; never upgrades status.
+ * static-first finding 排序（P0-20；dashboard / report）。
+ * Dynamic failure 降权；永不发明 VERIFIED；永不升级 status。
  */
 public final class FindingRanker {
     private FindingRanker() {
@@ -67,7 +67,7 @@ public final class FindingRanker {
                 reasons.add("-0.40 UNREACHED");
             }
             case "VERIFIED" -> {
-                // Gate-closed scaffolding may appear; do not over-boost.
+                // 可能出现 gate-closed scaffolding；勿过度 boost。
                 score += 0.05;
                 reasons.add("+0.05 VERIFIED scaffolding");
             }

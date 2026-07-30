@@ -105,7 +105,7 @@ public final class GuardSurfaceCatalogAcceptanceTest {
             check(allowlist.typeNamesCsv().contains("SaInterceptor"),
                     "executor property carries SaInterceptor");
 
-            // Truncation visibility: when more type names than MAX, gap is recorded.
+            // Truncation 可见性：type 名超过 MAX 时记录 gap。
             List<String> many = new ArrayList<>();
             for (int i = 0; i < GuardSurfaceCatalog.MAX_TYPE_NAMES + 5; i++) {
                 many.add("com.example.guards.AuthFilter" + i);
@@ -116,7 +116,7 @@ public final class GuardSurfaceCatalogAcceptanceTest {
             check(GuardSurfaceCatalog.GAP_CATALOG_TRUNCATED.equals(truncated.gapCode()),
                     "truncation gap code is GUARD_CATALOG_TRUNCATED");
 
-            // Bytecode probe gate: sanitizers not probe-worthy.
+            // 说明：Bytecode probe gate：sanitizer 非 probe-worthy。
             check(!GuardSurfaceBytecodeProbe.looksProbeWorthy("com.example.XssFilter"),
                     "XssFilter not bytecode-probe-worthy");
             check(GuardSurfaceBytecodeProbe.looksProbeWorthy("com.example.CustomAuthWallFilter"),

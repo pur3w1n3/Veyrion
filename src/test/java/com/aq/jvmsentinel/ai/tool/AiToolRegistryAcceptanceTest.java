@@ -21,7 +21,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-/** Main-style negative acceptance checks for the canonical AI tool boundary. */
+/** 规范 AI 工具边界的 main 风格负向验收检查。 */
 public final class AiToolRegistryAcceptanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final ToolExecutionContext.Scope SCOPE =
@@ -47,6 +47,7 @@ public final class AiToolRegistryAcceptanceTest {
         bladeAuthHeaderOptionalBlankIsValid(registry, source);
         fuzzStrategyRequiresScopedSink(registry);
         terminalStatusesAreExplicit(registry);
+        scanMemoryGetAllowsSchemaRole(registry, source);
 
         System.out.println("AiToolRegistryAcceptanceTest: PASS");
     }
@@ -66,25 +67,56 @@ public final class AiToolRegistryAcceptanceTest {
 
     private static void roleAllowlistsAreFixed(AiToolRegistry registry) {
         check(names(registry, AgentRole.PRE_ANALYSIS)
-                        .equals(Set.of("facts_search", "evidence_get", "code_query")),
+                        .equals(Set.of("facts_search", "evidence_get", "code_query", "scan_memory_get")),
                 "pre-analysis allowlist");
         check(names(registry, AgentRole.AUTH_ANALYSIS)
-                        .equals(Set.of("facts_search", "evidence_get", "plan_propose", "code_query")),
+                        .equals(Set.of("facts_search", "evidence_get", "plan_propose", "code_query",
+                                "scan_memory_get")),
                 "auth-analysis allowlist");
         check(names(registry, AgentRole.PATH_EXPLORATION)
                         .equals(Set.of("facts_search", "evidence_get", "plan_propose", "code_query",
-                                "sandbox_probe")),
+                                "sandbox_probe", "scan_memory_get")),
                 "path-exploration allowlist");
         check(names(registry, AgentRole.DYNAMIC_VERIFICATION)
                         .equals(Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe",
-                                "fuzz_strategy_get")),
+                                "fuzz_strategy_get", "scan_memory_get")),
                 "dynamic-verification allowlist");
         check(names(registry, AgentRole.VULNERABILITY_TRIAGE)
-                        .equals(Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe", "code_query")),
+                        .equals(Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe",
+                                "code_query", "scan_memory_get")),
                 "vulnerability-triage allowlist");
         check(names(registry, AgentRole.REPORT_GENERATION)
-                        .equals(Set.of("facts_search", "evidence_get", "plan_propose")),
+                        .equals(Set.of("facts_search", "evidence_get", "plan_propose", "scan_memory_get")),
                 "report-generation allowlist");
+    }
+
+    /** 回归：schema 字段 role= 不得触发 MODEL_CONTROLLED_SCOPE_OR_AUTHORITY。 */
+    private static void scanMemoryGetAllowsSchemaRole(AiToolRegistry registry, FakeSource source) {
+        ObjectNode withRole = JSON.createObjectNode();
+        withRole.put("section", "FACTS");
+        withRole.put("role", "PRE_ANALYSIS");
+        ToolResult ok = registry.execute(call("mem-role", "scan_memory_get", withRole),
+                context(AgentRole.PRE_ANALYSIS, 2, 4096, 8, 4096));
+        check(ok.status() == ToolStatus.SUCCESS, "scan_memory_get with schema role= succeeds");
+        check("FACTS".equals(source.lastMemorySection), "section reaches data source");
+        check("PRE_ANALYSIS".equals(source.lastMemoryRole), "role reaches data source as slice selector");
+
+        ObjectNode sectionOnly = JSON.createObjectNode();
+        sectionOnly.put("section", "WORK");
+        ToolResult defaults = registry.execute(call("mem-default", "scan_memory_get", sectionOnly),
+                context(AgentRole.PRE_ANALYSIS, 2, 4096, 8, 4096));
+        check(defaults.status() == ToolStatus.SUCCESS, "scan_memory_get section-only succeeds");
+        check("PRE_ANALYSIS".equals(source.lastMemoryRole), "omitted role defaults to job role");
+
+        // 未声明的保留 authority 字段仍拒绝。
+        ObjectNode authority = JSON.createObjectNode();
+        authority.put("section", "FACTS");
+        authority.put("approved", true);
+        check(registry.execute(call("mem-authority", "scan_memory_get", authority),
+                context(AgentRole.PRE_ANALYSIS, 2, 4096, 8, 4096)).status() == ToolStatus.DENIED,
+                "undeclared reserved authority on scan_memory_get still denied");
+        source.lastMemorySection = null;
+        source.lastMemoryRole = null;
     }
 
     private static void promptInjectionRemainsOpaque(AiToolRegistry registry) {
@@ -280,7 +312,7 @@ public final class AiToolRegistryAcceptanceTest {
         source.probeMode = ProbeMode.NONE;
     }
 
-    /** Live bug: model passed authorizationHeader:"" for MISSING_AUTH → ARGUMENT_SCHEMA_MISMATCH. */
+    /** 线上 bug：MISSING_AUTH 时模型传 authorizationHeader:"" → ARGUMENT_SCHEMA_MISMATCH。 */
     private static void missingAuthSandboxProbeIsValid(AiToolRegistry registry, FakeSource source) {
         source.probeMode = ProbeMode.BUSY;
         source.lastTechniqueId = null;
@@ -317,7 +349,7 @@ public final class AiToolRegistryAcceptanceTest {
         source.lastBladeAuthHeader = null;
     }
 
-    /** Optional bladeAuthHeader may be blank/omitted; channels stay independent. */
+    /** 可选 bladeAuthHeader 可为 blank/省略；通道保持独立。 */
     private static void bladeAuthHeaderOptionalBlankIsValid(AiToolRegistry registry, FakeSource source) {
         source.probeMode = ProbeMode.BUSY;
         source.lastBladeAuthHeader = "sentinel";
@@ -441,10 +473,22 @@ public final class AiToolRegistryAcceptanceTest {
         private String lastTechniqueId;
         private String lastAuthorizationHeader;
         private String lastBladeAuthHeader;
+        private String lastMemorySection;
+        private String lastMemoryRole;
         private final List<ApiDtos.EntryDto> entries = List.of(
                 entry("entry-a", "GET", "/demo/a"),
                 entry("entry-shared-1", "GET", "/shared"),
                 entry("entry-shared-2", "GET", "/shared"));
+
+        @Override
+        public Optional<FactRecord> getScanMemory(ToolExecutionContext.Scope scope, String section, String role) {
+            lastMemorySection = section;
+            lastMemoryRole = role;
+            ObjectNode value = JSON.createObjectNode();
+            value.put("section", section == null ? "" : section);
+            value.put("role", role == null ? "" : role);
+            return Optional.of(new FactRecord(scope, "scan-memory:" + section, value));
+        }
 
         @Override
         public List<FactRecord> searchFacts(ToolExecutionContext.Scope scope, String kind,

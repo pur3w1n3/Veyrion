@@ -24,8 +24,8 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Multi-round OpenAI/Anthropic tool-call → final via loopback HttpServer.
- * Optional {@code VEYRION_LIVE_PROVIDER=1} may dial real providers; default never does.
+ * 多轮 OpenAI/Anthropic tool-call → 经 loopback HttpServer 到 final。
+ * 可选 {@code VEYRION_LIVE_PROVIDER=1} 可 dial 真实 provider；默认永不。
  */
 public final class LiveProviderRoundAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();

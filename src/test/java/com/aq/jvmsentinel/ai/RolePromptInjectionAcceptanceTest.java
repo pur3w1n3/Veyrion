@@ -21,8 +21,8 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Acceptance: §2.3 six-role prompt inject sections and default roleInstruction markers.
- * Captures first-round user prompts via mock ChatTransport; does not call a live LLM.
+ * 验收：§2.3 六角色 prompt 注入段与默认 roleInstruction 标记。
+ * 经 mock ChatTransport 捕获首轮 user prompt；不调用真实 LLM。
  */
 public final class RolePromptInjectionAcceptanceTest {
     private static final String API_KEY = "sk-role-prompt-inject";
@@ -94,7 +94,7 @@ public final class RolePromptInjectionAcceptanceTest {
             store.saveRoleBinding(project.projectId(), role, "openai", "gpt-test", "local-admin", now);
         }
 
-        // Seed TRIAGE conclusion so REPORT can inject fixSuggestion from prior rootCause.
+        // 种子 TRIAGE 结论以便 REPORT 从先前 rootCause 注入 fixSuggestion。
         var triageSeed = store.createAiJob(project.projectId(), AgentRole.VULNERABILITY_TRIAGE,
                 "scan-role", AiOutputLanguage.ZH_CN, true, "local-admin", now);
         store.updateAiJob(triageSeed, "COMPLETED", "OK", triageSeed.stagesJson(),

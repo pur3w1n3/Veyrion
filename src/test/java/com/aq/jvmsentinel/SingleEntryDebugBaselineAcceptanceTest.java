@@ -38,9 +38,9 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * P1-20: single-entry debug baseline with fixture strategy + mock-transport identity chain
- * AUTH / AUTH_CONFIRM → PathRun → report → replay. Declared AUDITED for mock transport only;
- * no live Docker; VERIFIED remains closed.
+ * P1-20：fixture 策略 + mock-transport identity chain 的单 entry debug baseline
+ * 说明：AUTH/AUTH_CONFIRM → PathRun → report → replay；仅 mock transport 声明 AUDITED；
+ * 无 live Docker；VERIFIED 保持关闭。
  */
 public final class SingleEntryDebugBaselineAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -163,13 +163,13 @@ public final class SingleEntryDebugBaselineAcceptanceTest {
                                 || String.valueOf(entries.get(0).get("route")).contains("focus"),
                         "fixture entry matches baseline route");
 
-                // AUTH stage (mock): plan accepted for fixed entry × UNAUTH track.
+                // AUTH stage（mock）：固定 entry × UNAUTH track 接受 plan。
                 server.acceptExperimentPlan(scanId, new ExperimentPlan(
                         planId, entryRef, IdentityTrack.UNAUTH, "GET",
                         "application/json", List.of("q"), false, "2xx", "", 2,
                         List.of("q=benign", "q=" + SqlDiffProbe.META_MARKER), "COMPLETED", ""));
 
-                // PathRun stage (mock transport): seed benign/meta SQL evidence.
+                // 说明：PathRun stage（mock transport）：seed benign/meta SQL evidence。
                 ApiDtos.PathRunDto benign = pathRun("pr-p120-b", scanId, entryRef, planId,
                         "GET /focus?q=benign",
                         "SELECT id FROM t WHERE q='benign'", false, "DYNAMIC_SUSPECTED");
@@ -180,7 +180,7 @@ public final class SingleEntryDebugBaselineAcceptanceTest {
                 server.store().replacePathRunsForTask(projectId, digest, scanId, "task-p120-seed",
                         List.of(benign, meta), Instant.now().toString());
 
-                // H3 may confirm; VERIFIED must never appear.
+                // H3 可 confirm；VERIFIED 永不得出现。
                 var modelPathRun = new com.aq.jvmsentinel.model.PathRun(
                         meta.pathRunId(), meta.scanId(), meta.entrypointRef(), IdentityTrack.UNAUTH,
                         meta.attemptId(), meta.experimentPlanId(), meta.method(), meta.contentType(),
@@ -195,7 +195,7 @@ public final class SingleEntryDebugBaselineAcceptanceTest {
                         "H3 stays within allowed max statuses");
                 check(h3 != VerificationStatus.VERIFIED, "baseline never opens VERIFIED");
 
-                // TRIAGE / D3 card identity from PathRuns.
+                // 说明：TRIAGE/D3 card identity 来自 PathRun。
                 var cards = SqlExperimentCardBuilder.fromPathRuns(scanId, List.of(benign, meta));
                 check(!cards.isEmpty(), "D3 card built from mock PathRun pair");
                 check(planId.equals(cards.get(0).experimentPlanId()),
@@ -203,7 +203,7 @@ public final class SingleEntryDebugBaselineAcceptanceTest {
                 check(!"VERIFIED".equals(cards.get(0).verificationStatus()),
                         "D3 card never claims VERIFIED");
 
-                // Replay identity (mock transport cancel + replay accept).
+                // 说明：Replay identity（mock transport cancel+replay accept）。
                 Map<String, Object> dashboard = json(request(client,
                         URI.create(base + "/projects/" + projectId + "/dashboard?scanId=" + scanId),
                         "GET", null, token, null));
@@ -215,7 +215,7 @@ public final class SingleEntryDebugBaselineAcceptanceTest {
                 check(planId.equals(cardMaps.get(0).get("experimentPlanId")),
                         "dashboard card keeps experimentPlanId");
 
-                // Report → replay identity: dashboard report/card planId must match replay.
+                // 说明：Report→replay identity：dashboard report/card planId 须匹配 replay。
                 check(planId.equals(cardMaps.get(0).get("experimentPlanId")),
                         "report/dashboard card planId is replay source identity");
                 Object reportPlan = dashboard.get("experimentPlans");
@@ -243,7 +243,7 @@ public final class SingleEntryDebugBaselineAcceptanceTest {
                                 || replayBody.get("taskId") != null,
                         "replay returns attempt/task identity");
 
-                // AUTH_CONFIRM three-state gate (mock): hypothesis / contrast / insufficient.
+                // AUTH_CONFIRM 三态 gate（mock）：hypothesis / contrast / insufficient。
                 AuthBypassFeasibility.BypassConfirmation hypothesis =
                         AuthBypassFeasibility.evaluateBypassConfirmation(
                                 "{\"summary\":\"feasibility only\"}", List.of(), List.of());
@@ -270,7 +270,7 @@ public final class SingleEntryDebugBaselineAcceptanceTest {
                                 == AuthBypassFeasibility.BypassConfirmationStatus.INSUFFICIENT_EVIDENCE,
                         "AUTH_CONFIRM claim without PathRun → INSUFFICIENT_EVIDENCE");
 
-                // AUTH contrast codes remain classifiable without live Docker.
+                // AUTH contrast code 无 live Docker 仍可分类。
                 check(PathOutcomeClassifier.classify(401, "", "unauthorized")
                                 == PathOutcomeClass.AUTH_CHALLENGE,
                         "MISSING_AUTH contrast 401 → AUTH_CHALLENGE");

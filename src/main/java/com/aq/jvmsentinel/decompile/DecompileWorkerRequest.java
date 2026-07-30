@@ -6,8 +6,7 @@ import com.aq.jvmsentinel.worker.WorkerCapability;
 import java.util.Objects;
 
 /**
- * Independent low-privilege Worker request. It is descriptive only and cannot execute a
- * decompiler in the Control Plane process.
+ * 独立低权限 Worker 请求。仅描述性，不能在 Control Plane 进程内执行 decompiler。
  */
 public record DecompileWorkerRequest(
         int schemaVersion,

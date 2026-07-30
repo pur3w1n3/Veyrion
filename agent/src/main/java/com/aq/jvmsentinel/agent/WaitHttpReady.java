@@ -15,7 +15,7 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Polls one process for LISTEN ports, classifies the first HTTP responder, and writes
+ * 轮询单进程的 LISTEN port，分类首个 HTTP 响应者并写入
  * {@code http-port.txt} / progress under the sandbox trace directory.
  *
  * <p>Args: {@code pid [traceDir]}</p>
@@ -121,7 +121,7 @@ public final class WaitHttpReady {
             Files.createDirectories(directory);
             Files.writeString(directory.resolve(name), value + "\n");
         } catch (Exception ignored) {
-            // Best-effort progress for the GUI.
+            // 尽力为 GUI 输出进度。
         }
     }
 }

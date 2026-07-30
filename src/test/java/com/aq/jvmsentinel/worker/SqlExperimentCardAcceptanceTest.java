@@ -24,7 +24,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * P1-01: D3 SQL experiment cards from PathRun pairs; GUI/API replay stays MOCK and never VERIFIED.
+ * P1-01：由 PathRun 对构建 D3 SQL 实验卡片；GUI/API 重放保持 MOCK，永非 VERIFIED。
  */
 public final class SqlExperimentCardAcceptanceTest {
     public static void main(String[] args) throws Exception {

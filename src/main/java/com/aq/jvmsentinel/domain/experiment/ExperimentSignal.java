@@ -4,7 +4,7 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Expected or counter signal declared on a hypothesis-bound experiment plan.
+ * 说明：hypothesis-bound experiment plan 上声明 expected 或 counter signal。
  */
 public record ExperimentSignal(String code, String detail) {
     public ExperimentSignal {

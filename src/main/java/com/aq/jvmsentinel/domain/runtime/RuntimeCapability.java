@@ -1,19 +1,19 @@
 package com.aq.jvmsentinel.domain.runtime;
 
 /**
- * Neutral RuntimeAdapter capability vocabulary (P2 scaffolding).
+ * 中立 RuntimeAdapter capability 词汇（P2 scaffolding）。
  *
- * <p>{@link #GVISOR} / {@link #KATA} name the hardened Worker runtimes. Presence in this
- * enum does not enable production isolation — enablement requires signed attestation and
- * remains fail-closed via {@link HardenedRuntimeAttestationGate}.
+ * <p>{@link #GVISOR} / {@link #KATA} 命名 hardened Worker runtime。出现在本
+ * enum 不启用 production isolation — 启用需 signed attestation 且
+ * 经 {@link HardenedRuntimeAttestationGate} 保持 fail-closed。
  */
 public enum RuntimeCapability {
     STATIC_ONLY,
-    /** Local trusted Boot JAR debugging only — never qualifies for VERIFIED. */
+    /** 仅本地 trusted Boot JAR 调试 — 永不符合 VERIFIED。 */
     TRUSTED_DOCKER,
-    /** Hardened gVisor Worker (scaffolding; attestation required to enable). */
+    /** Hardened gVisor Worker（scaffolding；启用需 attestation）。 */
     GVISOR,
-    /** Hardened Kata Worker (scaffolding; attestation required to enable). */
+    /** Hardened Kata Worker（scaffolding；启用需 attestation）。 */
     KATA;
 
     public boolean isHardened() {
@@ -21,7 +21,7 @@ public enum RuntimeCapability {
     }
 
     /**
-     * Wire-compatible names used by WorkerCapability ({@code HARDENED_GVISOR}/{@code HARDENED_KATA}).
+     * WorkerCapability 使用的 wire 兼容名（{@code HARDENED_GVISOR}/{@code HARDENED_KATA}）。
      */
     public String workerWireName() {
         return switch (this) {

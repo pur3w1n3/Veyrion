@@ -11,8 +11,8 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Server-only H3 gate must not be model-authoritative.
- * P1-22: same-PathRun correlation + marker SQL positive/negative fixtures (not live DB).
+ * 仅服务端 H3 门禁不得由模型授权。
+ * P1-22：同 PathRun correlation + marker SQL 正/负 fixture（非 live DB）。
  */
 public final class DynamicConfirmedGateAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -66,7 +66,7 @@ public final class DynamicConfirmedGateAcceptanceTest {
                         == VerificationStatus.DYNAMIC_SUSPECTED,
                 "entryHit=false cannot confirm");
 
-        // D2 compare is advisory/suspected only; H3 gate remains the sole DYNAMIC_CONFIRMED upgrade.
+        // D2 比较仅为 advisory/suspected；H3 门禁仍是唯一 DYNAMIC_CONFIRMED 升级。
         SqlDiffProbe.DiffResult d2 = SqlDiffProbe.compare(
                 new SqlEvent("select * from t where id='1'", "", "READ", false, false, "MOCK"),
                 new SqlEvent("select * from t where id='" + MARKER, "", "READ", false, true, "MOCK"));
@@ -75,7 +75,7 @@ public final class DynamicConfirmedGateAcceptanceTest {
                 "D2 itself never exceeds DYNAMIC_SUSPECTED");
         check(d2.status() != VerificationStatus.VERIFIED, "D2 never VERIFIED");
 
-        // P1-22: MOCK metadata / coincidence / wrong attribution must not upgrade.
+        // P1-22：MOCK 元数据 / 巧合 / 错误归因不得升级。
         PathRun flagOnly = run(new SqlEvent(
                 "select * from t where id='1'", "", "READ", false, true, "MOCK"));
         check(DynamicConfirmedGate.evaluate(flagOnly, MARKER)
@@ -103,7 +103,7 @@ public final class DynamicConfirmedGateAcceptanceTest {
                         "select * from t where id='" + MARKER, "", "READ", false, true, "MOCK")),
                 "COMPLETED", "DYNAMIC_SUSPECTED", List.of("evidence-from-other-task"),
                 "MOCK", "no credentials");
-        // Same-PathRun evidence refs required; empty refs already covered. Parameterized block:
+        // 需要同 PathRun evidence refs；空 refs 已覆盖。参数化阻断：
         PathRun parameterizedHit = run(new SqlEvent(
                 "select * from t where id=? /* '" + MARKER + " */",
                 "jdbc-placeholders", "READ", true, false, "MOCK"));
@@ -111,7 +111,7 @@ public final class DynamicConfirmedGateAcceptanceTest {
                         == VerificationStatus.DYNAMIC_SUSPECTED,
                 "parameterized statement with marker comment cannot confirm");
 
-        // D3 card construction rejects VERIFIED claims.
+        // D3 卡片构建拒绝 VERIFIED 声明。
         try {
             new com.aq.jvmsentinel.model.SqlExperimentCard(
                     "card-bad", "scan-1", "entry:GET:/x", IdentityTrack.UNAUTH, "plan:1",
@@ -136,8 +136,8 @@ public final class DynamicConfirmedGateAcceptanceTest {
     }
 
     /**
-     * End-to-end H3 fixture: positive when same PathRun carries correlationId + marker SQL;
-     * negative when marker SQL is attributed to a different correlation / PathRun.
+     * 端到端 H3 fixture：同 PathRun 携带 correlationId + marker SQL 时为正；
+     * marker SQL 归因到不同 correlation / PathRun 时为负。
      */
     private static void samePathRunCorrelationMarkerPositiveAndNegative() {
         PathRun sameCorr = new PathRun(
@@ -167,7 +167,7 @@ public final class DynamicConfirmedGateAcceptanceTest {
                         == VerificationStatus.DYNAMIC_SUSPECTED,
                 "different correlation PathRun without marker SQL → not confirmed");
 
-        // Marker SQL on a different PathRun must not confirm the benign-correlated run.
+        // 不同 PathRun 上的 marker SQL 不得确认良性关联 run。
         PathRun foreignMarker = new PathRun(
                 "pr-h3-foreign", "scan-h3", "entry:GET:/other", IdentityTrack.UNAUTH, "corr-foreign",
                 "plan:h3-e2e", "GET", "application/json",

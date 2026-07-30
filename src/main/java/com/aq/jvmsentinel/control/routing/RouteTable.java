@@ -8,8 +8,8 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Declarative HTTP route dispatch for ControlPlaneServer.
- * Handlers remain implemented by {@link ControlPlaneRouteActions}.
+ * ControlPlaneServer 的声明式 HTTP 路由分发。
+ * Handler 仍由 {@link ControlPlaneRouteActions} 实现。
  */
 public final class RouteTable {
     private RouteTable() {}
@@ -106,6 +106,11 @@ public final class RouteTable {
         }
         if (path.size() == 2 && "scans".equals(path.get(0))) {
             if ("GET".equals(method)) { actions.sendScan(exchange, path.get(1)); return; }
+            if ("PATCH".equals(method)) {
+                actions.requirePermission(exchange, Permission.RUN_SCANS);
+                actions.updateScan(exchange, path.get(1));
+                return;
+            }
             if ("DELETE".equals(method)) {
                 actions.requirePermission(exchange, Permission.RUN_SCANS);
                 actions.deleteScan(exchange, null, path.get(1));

@@ -8,8 +8,8 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P1-23: GUI semantics contract — download labels, results views, and Worker/BLOCKED
- * status text stay consistent with GUI_DESIGN (asserted against frontend sources).
+ * P1-23：GUI 语义 contract — download label、results view 与 Worker/BLOCKED
+ * status 文本与 GUI_DESIGN 一致（对 frontend source 断言）。
  */
 public final class GuiSemanticsContractAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
@@ -71,7 +71,7 @@ public final class GuiSemanticsContractAcceptanceTest {
                 "Entry Parameter Exploration view entry");
         check(results.contains("getScanCoverage") && results.contains("getEvidenceGraph"),
                 "Coverage/Evidence Graph fetched via API boundary");
-        // Subnav badges must prefetch on scan mount (not only after tab click).
+        // Subnav badge 须在 scan mount 预取（非仅 tab 点击后）。
         check(results.contains("[snapshot?.scanId]"),
                 "coverage/evidence graph prefetch keyed by scanId");
         check(semantics.contains("zh: '证据图'") || semantics.contains("zh: \"证据图\""),

@@ -34,10 +34,10 @@ import static net.bytebuddy.matcher.ElementMatchers.not;
 import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 /**
- * Startup-only instrumentation. Bootstrap classes are deliberately not transformed; calls into selected JDK
- * APIs are observed at non-bootstrap application call sites instead.
+ * 仅启动期插桩。Bootstrap 类故意不转换；对选定 JDK
+ * API 的调用改在非 bootstrap 应用 call site 观测。
  */
-/** Public so Byte Buddy advice inlined into foreign packages can call helpers/nested types. */
+/** 公开以便内联到外部包的 Byte Buddy advice 可调用 helper/嵌套类型。 */
 public final class AutomaticInstrumentation {
     private static final String[] SPRING_MAPPING_ANNOTATIONS = {
             "org.springframework.web.bind.annotation.RequestMapping",
@@ -52,8 +52,8 @@ public final class AutomaticInstrumentation {
     }
 
     static void install(Instrumentation instrumentation, AgentConfig config, EventWriter writer) {
-        // CLASS_LOAD stays classPrefix-scoped. Servlet/Filter/Interceptor HTTP capture must ignore
-        // classPrefix, otherwise auth denials never produce HTTP evidence for the target controller.
+        // CLASS_LOAD 保持 classPrefix 范围。Servlet/Filter/Interceptor HTTP 捕获须忽略
+        // classPrefix，否则 auth 拒绝永不为目标 controller 产生 HTTP 证据。
         AgentBuilder.RawMatcher applicationTypes = (type, loader, module, redefining, domain) ->
                 loader != null && (isHttpObservabilityType(type) || config.includes(type.getName()));
 
@@ -67,10 +67,10 @@ public final class AutomaticInstrumentation {
         };
 
         AgentBuilder builder = new AgentBuilder.Default().with(listener);
-        // Must allow class-format changes: FilterAdvice FORCED_REACHABILITY uses
-        // OnMethodEnter(skipOn=...) to short-circuit recognized auth filters. Branch coverage
-        // also requires format changes when enabled. (Previously Advice-only mode called
-        // disableClassFormatChanges, which silently disabled FORCED skip.)
+        // 须允许 class-format 变更：FilterAdvice FORCED_REACHABILITY 使用
+        // 经 OnMethodEnter(skipOn=...) 短路已识别 auth filter；Branch coverage
+        // 启用时亦需 format 变更。（此前仅 Advice 模式调用
+        // 调用 disableClassFormatChanges 会静默禁用 FORCED skip。）
         builder = builder
                 .type(applicationTypes)
                 .transform((builder0, type, loader, module, domain) -> {
@@ -93,10 +93,10 @@ public final class AutomaticInstrumentation {
 
     private static boolean isHttpObservabilityType(TypeDescription type) {
         if (isInterface().matches(type)) return false;
-        // Prefer hierarchy when the servlet API is visible to ByteBuddy's TypePool.
+        // 当 servlet API 对 ByteBuddy TypePool 可见时优先 hierarchy。
         if (hierarchyHttpSurface(type)) return true;
-        // Spring Boot fat JARs often hide javax/jakarta.servlet from TypePool, so hasSuperType
-        // returns false for DispatcherServlet/Filters even though they are HTTP surfaces.
+        // Spring Boot fat JAR 常对 TypePool 隐藏 javax/jakarta.servlet，hasSuperType
+        // 对 DispatcherServlet/Filter 返回 false，尽管它们是 HTTP surface。
         return shapedHttpServlet(type) || shapedHttpFilter(type) || shapedHttpInterceptor(type)
                 || shapedAccessControlDecision(type) || shapedMethodSecurityInterceptor(type);
     }
@@ -113,8 +113,8 @@ public final class AutomaticInstrumentation {
 
     private static boolean shapedHttpServlet(TypeDescription type) {
         String name = type.getName();
-        // Explicit Spring MVC surfaces: service() may be inherited, so do not require a local
-        // declaration (getDeclaredMethods misses FrameworkServlet.service on DispatcherServlet).
+        // 显式 Spring MVC surface：service() 可继承，勿要求 local
+        // 声明（getDeclaredMethods 会漏 DispatcherServlet 上 FrameworkServlet.service）。
         if (name.equals("org.springframework.web.servlet.DispatcherServlet")
                 || name.equals("org.springframework.web.servlet.FrameworkServlet")
                 || name.endsWith(".DispatcherServlet")) {
@@ -137,8 +137,8 @@ public final class AutomaticInstrumentation {
                 || name.equals("org.springframework.security.web.FilterChainProxy")) {
             return true;
         }
-        // Shiro / Spring Security filter packages often inherit doFilter; do not require a local
-        // declaration or TypePool servlet hierarchy (fat JARs hide javax/jakarta.servlet).
+        // 说明：Shiro/Spring Security filter 包常继承 doFilter；勿要求 local
+        // 声明或 TypePool servlet hierarchy（fat JAR 隐藏 javax/jakarta.servlet）。
         if (name.startsWith("org.apache.shiro.web.filter.")
                 || name.startsWith("org.apache.shiro.spring.web.")
                 || name.startsWith("org.springframework.security.web.")) {
@@ -147,7 +147,7 @@ public final class AutomaticInstrumentation {
         if (!(name.endsWith("Filter") || name.contains(".filter.") || name.contains(".Filter"))) {
             return false;
         }
-        // Subclasses often override doFilterInternal only; parent doFilter stays on OncePerRequestFilter.
+        // 子类常仅 override doFilterInternal；父 doFilter 留在 OncePerRequestFilter。
         return type.getDeclaredMethods().filter(isMethod()
                 .and(namedOneOf("doFilter", "doFilterInternal"))
                 .and(not(isAbstract()))).size() > 0;
@@ -176,7 +176,7 @@ public final class AutomaticInstrumentation {
             interceptor = hasSuperType(named("org.springframework.web.servlet.HandlerInterceptor"))
                     .matches(type);
         } catch (Throwable ignored) {
-            // Fall through to shape-based advice selection.
+            // 继续 shape-based advice 选择。
         }
         if (servlet || shapedHttpServlet(type)) {
             instrumented = instrumented.visit(Advice.to(ServletAdvice.class).on(
@@ -195,7 +195,7 @@ public final class AutomaticInstrumentation {
                     isMethod().and(named("isAccessAllowed")).and(not(isAbstract()))));
         }
         if (interceptor || shapedHttpInterceptor(type)) {
-            // preHandle: FORCED may skip body and force true (Blade TokenInterceptor etc.).
+            // preHandle：FORCED 可跳过 body 并 force true（Blade TokenInterceptor 等）。
             instrumented = instrumented.visit(Advice.to(InterceptorPreHandleAdvice.class).on(
                     isMethod().and(named("preHandle")).and(not(isAbstract()))));
             instrumented = instrumented.visit(Advice.to(InterceptorAdvice.class).on(
@@ -353,16 +353,16 @@ public final class AutomaticInstrumentation {
         }
 
         /**
-         * Returns {@code true} to skip the original filter body after FORCED continues the chain.
-         * Non-forced paths return {@code false} (default) so the real filter runs.
+         * FORCED 继续 chain 后返回 {@code true} 以跳过原 filter body。
+         * 非 FORCED 路径返回 {@code false}（默认），使真实 filter 运行。
          */
         @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class, suppress = Throwable.class)
         public static boolean enter(@Advice.Origin("#t") String className,
                                     @Advice.Origin("#m") String methodName,
                                     @Advice.This(optional = true) Object self,
                                     @Advice.AllArguments Object[] args) {
-            // Shiro auth filters inherit doFilterInternal from AdviceFilter; Origin #t is the
-            // declaring type. Prefer runtime class so LoginFilter / UserFilter are recognized.
+            // Shiro auth filter 自 AdviceFilter 继承 doFilterInternal；Origin #t 为
+            // 声明类型。优先 runtime class 以识别 LoginFilter / UserFilter。
             String runtimeType = self != null ? self.getClass().getName() : className;
             HttpRequestView view = HttpRequestView.fromArgs(args);
             AgentRuntime.bindRequestCorrelation(view.correlationId);
@@ -391,8 +391,8 @@ public final class AutomaticInstrumentation {
     }
 
     /**
-     * Spring HandlerInterceptor.preHandle under FORCED: skip original denial and return true.
-     * Does not elevate VERIFIED; provenance remains INSTRUMENTATION_REACHABILITY.
+     * FORCED 下 Spring HandlerInterceptor.preHandle：跳过原拒绝并返回 true。
+     * 不提升 VERIFIED；provenance 仍为 INSTRUMENTATION_REACHABILITY。
      */
     public static final class InterceptorPreHandleAdvice {
         private InterceptorPreHandleAdvice() {
@@ -459,8 +459,8 @@ public final class AutomaticInstrumentation {
     }
 
     /**
-     * P1: Shiro AccessControlFilter.isAccessAllowed (and app LoginFilter overrides) under FORCED.
-     * Skips the original body and forces a {@code true} return; does not continue FilterChain.
+     * P1：FORCED 下 Shiro AccessControlFilter.isAccessAllowed（及 app LoginFilter override）。
+     * 跳过原 body 并 force {@code true} 返回；不继续 FilterChain。
      */
     public static final class AccessControlAdvice {
         private AccessControlAdvice() {
@@ -512,7 +512,7 @@ public final class AutomaticInstrumentation {
             }
             AgentRuntime.bindRequestCorrelation(view.correlationId);
             AgentRuntime.beginCoverageRequest();
-            // Entering a Spring @*Mapping handler means argument resolution already succeeded.
+            // 进入 Spring @*Mapping handler 表示参数解析已成功。
             Map<String, String> detail = httpDetail("SPRING_MAPPING_ANNOTATION", view);
             detail = new LinkedHashMap<>(detail);
             detail.put("entryHit", "true");
@@ -543,7 +543,7 @@ public final class AutomaticInstrumentation {
                 if (methodValue instanceof String text) httpMethod = text;
                 if (uriValue instanceof String text) route = text;
             } catch (Throwable ignored) {
-                // Spring not on classpath or no active request.
+                // classpath 无 Spring 或无 active request。
             }
             return new String[]{httpMethod, route};
         }
@@ -569,8 +569,8 @@ public final class AutomaticInstrumentation {
         @Advice.OnMethodEnter(suppress = Throwable.class)
         public static void enter(@Advice.Origin("#t") String className,
                                  @Advice.Origin("#m") String methodName) {
-            // Drop XSS/CGLIB flood (kvf HTMLFilter alone burned ~8k events / maxEvents)
-            // so FORCED PathTraces retain Controller→Service→Repository hops.
+            // 丢弃 XSS/CGLIB 洪泛（kvf HTMLFilter 单独消耗 ~8k events / maxEvents）
+            // 以便 FORCED PathTrace 保留 Controller→Service→Repository hop。
             if (!AgentRuntime.shouldRecordMethodHop(className, methodName)) {
                 return;
             }
@@ -586,7 +586,7 @@ public final class AutomaticInstrumentation {
         @Advice.OnMethodEnter(suppress = Throwable.class)
         public static void enter(@Advice.Origin("#t") String className,
                                  @Advice.Origin("#m") String methodName) {
-            // Prefer per-request posture header via Spring RequestContextHolder; JVM -D is fallback.
+            // 优先经 Spring RequestContextHolder 的 per-request posture header；JVM -D 为 fallback。
             String posture = FrameworkBoundaryAdapter.resolvePosture(postureHeaderFromContext());
             if (posture.isBlank() || "UNAUTH".equals(posture)) {
                 posture = FrameworkBoundaryAdapter.configuredPosture();
@@ -596,7 +596,7 @@ public final class AutomaticInstrumentation {
             Map<String, String> extra = new LinkedHashMap<>();
             extra.put("captureMode", "METHOD_SECURITY");
             if (forced) {
-                // Annotation body reached under FORCED — wall was fail-opened upstream or absent.
+                // FORCED 下到达 annotation body — 上游 wall 已 fail-open 或不存在。
                 extra.put("forceMode", "METHOD_SECURITY_ANNOTATION_OBSERVED");
             }
             FrameworkBoundaryAdapter.recordGuardDecision(className, methodName,
@@ -620,7 +620,7 @@ public final class AutomaticInstrumentation {
     }
 
     /**
-     * FORCED fail-open for Spring {@code MethodSecurityInterceptor} /
+     * 说明：Spring {@code MethodSecurityInterceptor} 的 FORCED fail-open：
      * {@code AuthorizationManagerBeforeMethodInterceptor}: skip the authorization check and
      * {@code proceed()} the MethodInvocation. Provenance remains INSTRUMENTATION_REACHABILITY.
      */
@@ -661,7 +661,7 @@ public final class AutomaticInstrumentation {
                 Object invocation = args[0];
                 returned = invocation.getClass().getMethod("proceed").invoke(invocation);
             } catch (Throwable ignored) {
-                // Best-effort proceed; leave returned as-is on failure.
+                // 尽力 proceed；失败时 returned 保持原样。
             }
         }
     }
@@ -675,7 +675,7 @@ public final class AutomaticInstrumentation {
                 arg.getClass().getMethod("getMethod");
                 return arg;
             } catch (Throwable ignored) {
-                // not a request
+                // 非 request
             }
         }
         return null;
@@ -741,7 +741,7 @@ public final class AutomaticInstrumentation {
                         }
                         if (!httpMethod.isBlank() || !route.isBlank()) break;
                     } catch (Throwable ignored) {
-                        // Not a servlet request argument.
+                        // 非 servlet request 参数。
                     }
                 }
             }
@@ -811,16 +811,16 @@ public final class AutomaticInstrumentation {
         }
 
         /**
-         * Top-level eventType must stay inside AgentJsonlTraceConverter whitelist.
-         * Security nuance (SSRF / JNDI / DESERIALIZATION / multi-kind) goes in
-         * pathDebugKind + effectKind / secondaryEffectKinds detail markers.
+         * 顶层 eventType 须留在 AgentJsonlTraceConverter 白名单内。
+         * 安全细节（SSRF / JNDI / DESERIALIZATION / multi-kind）写入
+         * 细节标记：pathDebugKind + effectKind / secondaryEffectKinds。
          */
         private static String eventType(String owner, String methodName) {
             if ("java/net/http/HttpClient".equals(owner)
                     && ("send".equals(methodName) || "sendAsync".equals(methodName))) {
                 return "HTTP_CLIENT";
             }
-            // Remap former NETWORK_* / DNS_* attempt labels onto HTTP_CLIENT + effectKind=SSRF.
+            // 将原 NETWORK_* / DNS_* attempt 标签重映射到 HTTP_CLIENT + effectKind=SSRF。
             if ("java/net/InetAddress".equals(owner)
                     && ("getByName".equals(methodName) || "getAllByName".equals(methodName)
                     || "getCanonicalHostName".equals(methodName))) {
@@ -862,7 +862,7 @@ public final class AutomaticInstrumentation {
                     && "eval".equals(methodName)) {
                 return "PROCESS";
             }
-            // QLExpress (kvf GenServiceImpl CheckCode) — expression injection sink.
+            // QLExpress 表达式注入 sink（kvf GenServiceImpl CheckCode）。
             if ("com/ql/util/express/ExpressRunner".equals(owner)
                     && ("execute".equals(methodName) || "executeExt".equals(methodName))) {
                 return "PROCESS";

@@ -17,8 +17,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * Bounded, metadata-only reader shared by CLI and Control Plane.
- * It never extracts or executes archive entries.
+ * CLI 与 Control Plane 共享的有界、仅 metadata reader。
+ * 永不解压或执行 archive entry。
  */
 public final class ArtifactMetadataReader {
     private static final int MAX_ARCHIVE_ENTRIES = 100_000;

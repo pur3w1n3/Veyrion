@@ -6,7 +6,7 @@ import com.aq.jvmsentinel.worker.HardenedWorkerEnablement;
 import com.aq.jvmsentinel.worker.WorkerCapability;
 
 /**
- * P2 SCAFFOLDING: GVISOR/KATA capability vocabulary + fail-closed enablement without attestation.
+ * 说明：P2 SCAFFOLDING：GVISOR/KATA capability 词汇+无 attestation fail-closed 启用。
  */
 public final class HardenedRuntimeAttestationAcceptanceTest {
     public static void main(String[] args) {

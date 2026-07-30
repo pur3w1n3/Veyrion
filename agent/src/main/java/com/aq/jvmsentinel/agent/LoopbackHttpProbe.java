@@ -23,38 +23,38 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Fixed loopback-only HTTP stimulus used inside the deny-all Docker container.
+ * deny-all Docker 容器内使用的固定仅 loopback HTTP 刺激。
  *
- * <p>Single: {@code method route [port] [query]}.</p>
- * <p>Batch: {@code --batch planFile port}; legacy {@code @planFile port} remains accepted.
- * A fixed {@code @planFile#port} argument keeps the plan and port in one shell token;
- * {@code @planFile} alone falls back to a fixed property or sibling {@code http-port.txt}.
- * Each plan line is
- * {@code METHOD\troute[\tquery[\ttrack[\tauthHeader[\tbladeAuthHeader[\texperimentPlanId[\tcookieHeader]]]]]]}.
- * Authorization, Blade-Auth, and Cookie are independent channels — a non-blank
- * {@code authHeader} does not imply {@code Blade-Auth} or Cookie, and vice versa.</p>
+ * <p>单条：{@code method route [port] [query]}。</p>
+ * <p>批量：{@code --batch planFile port}；仍接受旧式 {@code @planFile port}。
+ * 固定 {@code @planFile#port} 参数将 plan 与 port 保持在一个 shell token；
+ * 单独 {@code @planFile} 回退到固定 property 或同级 {@code http-port.txt}。
+ * 每行 plan 为
+ * {@code METHOD\troute[\tquery[\ttrack[\tauthHeader[\tbladeAuthHeader[\texperimentPlanId[\tcookieHeader]]]]]]}。
+ * 独立通道：Authorization、Blade-Auth 与 Cookie — 非空
+ * {@code authHeader} 不隐含 {@code Blade-Auth} 或 Cookie，反之亦然。</p>
  *
- * <p>Batch uses a dual-phase strategy: a fast parallel pass (800ms connect/read),
- * then a capped slow retry (2000ms) for {@code BUSINESS_TIMEOUT} targets,
- * prioritizing {@code UNAUTH} so AUTH_CHALLENGE / HTTP outcomes are recovered
- * without reverting to full sequential 2s walls.</p>
+ * <p>批量采用双阶段策略：快速并行 pass（800ms connect/read），
+ * 再对 {@code BUSINESS_TIMEOUT} 目标有界慢重试（2000ms），
+ * 优先 {@code UNAUTH}，以便恢复 AUTH_CHALLENGE / HTTP outcome，
+ * 而不回退到完整顺序 2s 墙。</p>
  */
 public final class LoopbackHttpProbe {
     private static final Set<String> METHODS = Set.of("GET", "POST", "PUT", "PATCH", "DELETE");
     private static final int MAX_RESPONSE_BYTES = 64 * 1024;
     private static final int MAX_BATCH_LINES = 512;
     private static final int FAST_CONNECT_TIMEOUT_MS = 800;
-    /** Slightly above 800ms so FORCED past-auth controller work is less often deferred to slow wave. */
+    /** 略高于 800ms，使 FORCED 过 auth 后的 controller 工作较少被 defer 到 slow wave。 */
     private static final int FAST_READ_TIMEOUT_MS = 1500;
     private static final int SLOW_CONNECT_TIMEOUT_MS = 2000;
     private static final int SLOW_READ_TIMEOUT_MS = 2000;
-    /** Wave-2 budget: recover timed-out high-value / UNAUTH observations. */
+    /** Wave-2 预算：恢复超时的高价值 / UNAUTH observation。 */
     private static final int MAX_SLOW_RETRIES = 128;
     private static final int DEFAULT_BATCH_THREADS = 8;
     private static final int MAX_BATCH_THREADS = 16;
     private static final byte[] SYNTHETIC_BODY =
             "{\"marker\":\"synthetic-http-entry-v1\"}".getBytes(StandardCharsets.US_ASCII);
-    /** Local sequences inside probe-events.jsonl; the worker renumbers when merging. */
+    /** probe-events.jsonl 内本地序号；worker 合并时重新编号。 */
     private static final AtomicLong PROBE_SEQUENCE = new AtomicLong();
     private static int writtenEvents;
     private static int writeFailures;
@@ -141,7 +141,7 @@ public final class LoopbackHttpProbe {
     }
 
     /**
-     * Batch probe entry. Returns process-style exit codes: 0 ok, 2 all failed, 3 zero events.
+     * 批量探测入口。返回进程风格退出码：0 成功，2 全部失败，3 零事件。
      */
     static int runBatch(Path planFile, int port) throws Exception {
         if (port < 1 || port > 65535) throw new IllegalArgumentException("port is invalid");
@@ -262,7 +262,7 @@ public final class LoopbackHttpProbe {
     }
 
     /**
-     * Prefer UNAUTH timeouts (auth discrimination), then other tracks; stable by ordinal; hard cap.
+     * 优先 UNAUTH 超时（auth 区分），再其他 track；按序号稳定；硬上限。
      */
     static List<ProbeAttempt> selectSlowRetryTargets(List<ProbeAttempt> timedOut, int maxRetries) {
         if (timedOut == null || timedOut.isEmpty() || maxRetries <= 0) return List.of();
@@ -275,8 +275,8 @@ public final class LoopbackHttpProbe {
     }
 
     /**
-     * FORCED_REACHABILITY is wire-tracked as ADMIN but must retry before ordinary COVERAGE
-     * ADMIN — otherwise Shiro gate-pass PathTraces starve after XSS METHOD_HOP floods.
+     * FORCED_REACHABILITY 在 wire 上记为 ADMIN，但须在普通 COVERAGE
+     * ADMIN 之前重试 — 否则 XSS METHOD_HOP 洪泛后 Shiro gate-pass PathTrace 会饿死。
      */
     static int retryRank(ProbeAttempt attempt) {
         if (attempt == null || attempt.target == null) {
@@ -372,8 +372,8 @@ public final class LoopbackHttpProbe {
     }
 
     /**
-     * Builds the HTTP request head. Authorization and Blade-Auth are independent:
-     * neither channel is copied from the other.
+     * 构建 HTTP 请求头。Authorization 与 Blade-Auth 独立：
+     * 任一通道不会从另一通道复制。
      */
     static String buildRequestHeaders(String method, String requestTarget, int contentLength,
                                       String authHeader, String bladeAuthHeader) {
@@ -451,8 +451,8 @@ public final class LoopbackHttpProbe {
     }
 
     /**
-     * Probe-side entry hit: true when the HTTP response shows the route reached the app or auth
-     * layer; false for missing/unsupported methods; absent ({@code null}) for transport failures.
+     * 探测侧 entry hit：HTTP 响应显示路由到达 app 或 auth 层时为 true
+     * 层；缺失/不支持的方法为 false；传输失败时为 absent（{@code null}）。
      */
     static Boolean classifyEntryHit(int httpStatus) {
         if (httpStatus == 404 || httpStatus == 405) return Boolean.FALSE;
@@ -462,7 +462,7 @@ public final class LoopbackHttpProbe {
     }
 
     /**
-     * Probe alone cannot prove binding success. Only emit false for clear no-route cases.
+     * 仅探测无法证明 binding 成功。仅对明确无路由情形 emit false。
      */
     static Boolean classifyParameterBound(int httpStatus) {
         if (httpStatus == 404 || httpStatus == 405) return Boolean.FALSE;

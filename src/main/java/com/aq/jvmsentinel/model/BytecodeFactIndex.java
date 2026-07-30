@@ -4,8 +4,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Bounded, load-free facts decoded from classfiles. Call edges are symbolic:
- * this index does not resolve class paths or claim runtime dispatch.
+ * 从 classfile 解码的有界、无 load 事实。Call edge 为符号级：
+ * 本 index 不解析 class path，也不声称 runtime dispatch。
  */
 public record BytecodeFactIndex(
         List<ClassFact> classes,
@@ -41,7 +41,7 @@ public record BytecodeFactIndex(
                 List.of(), List.of(), AnalysisCoverage.empty());
     }
 
-    /** Compatibility-friendly names for consumers that treat the index as a graph/flow result. */
+    /** 将 index 视为 graph/flow 结果的消费者的兼容友好名称。 */
     public List<ResolvedCallEdge> callGraph() {
         return artifactCallGraph;
     }
@@ -51,9 +51,9 @@ public record BytecodeFactIndex(
     }
 
     /**
-     * Bounded graph projection over {@link #interproceduralTaintPaths()}.
-     * Implementation lives in {@code com.aq.jvmsentinel.analysis.TaintGraphProjector}
-     * to avoid a model→analysis package cycle; this method is a stable call site.
+     * 对 {@link #interproceduralTaintPaths()} 的有界 graph 投影。
+     * 实现位于 {@code com.aq.jvmsentinel.analysis.TaintGraphProjector}，
+     * 避免 model→analysis package 循环；本方法为稳定 call site。
      */
     public com.aq.jvmsentinel.analysis.TaintGraph taintGraph() {
         return com.aq.jvmsentinel.analysis.TaintGraphProjector.project(taintPaths);
@@ -134,7 +134,7 @@ public record BytecodeFactIndex(
         }
     }
 
-    /** A target resolved against classes and methods present in this artifact only. */
+    /** 仅针对本 artifact 中存在的 class 与 method 解析的 target。 */
     public record ResolvedCallEdge(String callerOwner, String callerName, String callerDescriptor,
                                    String declaredOwner, String targetOwner, String targetName,
                                    String targetDescriptor, EdgeKind kind, String limitation,
@@ -154,7 +154,7 @@ public record BytecodeFactIndex(
         }
     }
 
-    /** Static source-to-sink candidate. It is never runtime or replay verification. */
+    /** 静态 source-to-sink 候选。永非 runtime 或 replay verification。 */
     public record TaintPath(String id, String sourceOwner, String sourceMethod,
                             String sourceDescriptor, int sourceParameter, String sinkOwner,
                             String sinkMethod, String sinkDescriptor, String category,

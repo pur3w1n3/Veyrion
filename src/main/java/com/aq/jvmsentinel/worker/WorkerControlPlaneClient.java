@@ -26,7 +26,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-/** Bounded, same-origin client for the authenticated Worker control-plane contract. */
+/** 已认证 Worker 控制面合同的有界同源客户端。 */
 public final class WorkerControlPlaneClient {
     private static final int CONTRACT_VERSION = 1;
     private static final int DEFAULT_MAX_RESPONSE_BYTES = 1_500_000;
@@ -127,8 +127,8 @@ public final class WorkerControlPlaneClient {
     }
 
     /**
-     * Renews the worker lease and optionally publishes a sanitized step progress line for the GUI.
-     * Each call uses a unique idempotency key so renewals are not replay-suppressed.
+     * 续租 worker 租约，并可选向 GUI 发布经净化的步骤进度行。
+     * 每次调用使用唯一幂等键，以免续租被重放抑制。
      */
     public WorkerLease heartbeat(TaskScope scope, String leaseId, String workerId, Duration extension,
                                  String progressDetail) {
@@ -204,7 +204,7 @@ public final class WorkerControlPlaneClient {
         return parseTask(sendLeaseMutation(scope, "fail", leaseId, workerId, fields));
     }
 
-    /** Marks a still-QUEUED task FAILED without a lease (pre-lease rejection / reclaim abandon). */
+    /** 在无租约时将仍为 QUEUED 的任务标为 FAILED（租约前拒绝 / 回收放弃）。 */
     public TaskDescriptor failQueued(TaskScope scope, StopReason reason, String failureCode,
                                      String failureDiagnostic) {
         Objects.requireNonNull(reason, "reason");
@@ -275,7 +275,7 @@ public final class WorkerControlPlaneClient {
                         detail += ": " + message;
                     }
                 } catch (RuntimeException ignored) {
-                    // Preserve the status-only error if the body is not contract JSON.
+                    // 若 body 非合同 JSON，保留仅含 status 的错误。
                 }
                 throw new WorkerClientException("HTTP_ERROR", response.statusCode(),
                         "Worker control plane returned HTTP " + response.statusCode() + detail, null);

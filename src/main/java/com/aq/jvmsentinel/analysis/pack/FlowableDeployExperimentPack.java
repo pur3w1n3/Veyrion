@@ -9,8 +9,8 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * Flowable / BPMN deploy-upload experiment shapes.
- * Multipart deploy probes stay non-destructive (no process start / no memory shell).
+ * 说明：Flowable/BPMN deploy-upload 实验 shape。
+ * Multipart deploy probe 保持非破坏性（无 process start / 无 memory shell）。
  */
 public final class FlowableDeployExperimentPack implements AnalysisPack {
     @Override

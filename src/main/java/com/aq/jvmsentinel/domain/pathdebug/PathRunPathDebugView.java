@@ -5,8 +5,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Optional PathRun extension fields for path-debug contracts.
- * Missing fields on old PathRuns are marked LEGACY_DYNAMIC_INCOMPLETE — never backfilled.
+ * path-debug contract 的可选 PathRun extension field。
+ * 旧 PathRun 缺失 field 标记 LEGACY_DYNAMIC_INCOMPLETE — 永不 backfill。
  */
 public record PathRunPathDebugView(
         String postureKind,
@@ -72,8 +72,8 @@ public record PathRunPathDebugView(
     }
 
     /**
-     * Compatible read of a PathRun wire map. Missing posture/trace/world fields → legacy incomplete.
-     * Never invents FORCED_REACHABILITY or fake PathTrace events.
+     * PathRun wire map 的兼容读取。缺失 posture/trace/world field → legacy incomplete。
+     * 永不发明 FORCED_REACHABILITY 或 fake PathTrace event。
      */
     @SuppressWarnings("unchecked")
     public static PathRunPathDebugView fromPathRunWire(Map<String, Object> pathRunWire) {
@@ -129,7 +129,7 @@ public record PathRunPathDebugView(
         if (!postureProvenance.isBlank()) {
             map.put("postureProvenance", postureProvenance);
         }
-        // Always emit so GUI wire parsers see a stable array shape.
+        // 始终 emit，使 GUI wire parser 看到稳定 array shape。
         map.put("forcedGuardRefs", forcedGuardRefs);
         if (!tracePlanId.isBlank()) {
             map.put("tracePlanId", tracePlanId);

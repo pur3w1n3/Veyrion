@@ -5,8 +5,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * The complete allowed AI output for harness generation. It contains invocation data only:
- * no source code, classpath, executable, shell command, environment, or filesystem path.
+ * harness 生成允许的完整 AI 输出。仅含 invocation 数据：
+ * 无源码、classpath、executable、shell command、environment 或 filesystem path。
  */
 public record HarnessPlan(int schemaVersion, String planId, TargetMethod target, Invocation invocation) {
     public static final int SCHEMA_VERSION = 1;

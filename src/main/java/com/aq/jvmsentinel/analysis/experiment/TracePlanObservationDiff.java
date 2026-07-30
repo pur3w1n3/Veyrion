@@ -15,8 +15,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Compare a compiled TracePlan (static expectations) against an observed PathTrace.
- * Used for PATH/TRIAGE prompt injection and probe prioritization — never elevates verification.
+ * 比较已编译 TracePlan（静态 expectation）与观测 PathTrace。
+ * 用于 PATH/TRIAGE prompt 注入与 probe 优先级 — 永不提升 verification。
  */
 public final class TracePlanObservationDiff {
     private TracePlanObservationDiff() {
@@ -136,9 +136,9 @@ public final class TracePlanObservationDiff {
     }
 
     /**
-     * Pair each TracePlan with the best PathTrace for its entry (prefer matching
+     * 为每个 TracePlan 配对其 entry 的最佳 PathTrace（优先匹配
      * {@code tracePlanId}, else any trace on same entryRef). Plans without traces still emit
-     * a gap row so PATH/TRIAGE can prioritize unobserved expected effects.
+     * gap 行，以便 PATH/TRIAGE 优先未观测的 expected effect。
      */
     public static List<Diff> diffAll(List<TracePlan> plans, List<PathTrace> traces) {
         if (plans == null || plans.isEmpty()) {
@@ -201,7 +201,7 @@ public final class TracePlanObservationDiff {
             if (emitted >= limit) {
                 continue;
             }
-            // Prefer emitting gap rows first by sorting callers; here emit in order.
+            // 优先按 caller 排序 emit gap 行；此处按序 emit。
             block.append("- entry=").append(diff.entryRef())
                     .append(" plan=").append(diff.tracePlanId())
                     .append(" pathRun=").append(diff.pathRunId().isBlank() ? "(none)" : diff.pathRunId())

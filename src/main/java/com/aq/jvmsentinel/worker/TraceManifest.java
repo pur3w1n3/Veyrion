@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
-/** Immutable snapshot of committed trace chunks; it is evidence inventory, not a VERIFIED result. */
+/** 已提交轨迹块的不可变快照；为证据清单，非 VERIFIED 结果。 */
 public record TraceManifest(int schemaVersion, TaskScope scope, List<ChunkRef> chunks,
                             long totalPayloadBytes, String headDigest, Instant createdAt) {
     private static final int MAX_CHUNKS = 10_000;

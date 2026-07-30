@@ -4,8 +4,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * One ledger row: sink-perspective static projection joined (optionally) to PathRuns.
- * Engine FACT/INFERENCE only — never VERIFIED / bypass-confirmed by itself.
+ * 一条 ledger 行：sink 视角静态投影（可选）关联 PathRun。
+ * 仅 Engine FACT/INFERENCE — 自身永非 VERIFIED / bypass-confirmed。
  */
 public record StaticContrastRow(
         String rowId,

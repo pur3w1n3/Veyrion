@@ -18,10 +18,10 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Local-development launcher for the loopback Control Plane and Vite GUI.
+ * loopback Control Plane 与 Vite GUI 的本地开发 launcher。
  *
- * <p>When explicitly enabled, this launcher also starts the process-local trusted Docker
- * worker. The worker still consumes the authenticated contract and has no host JVM fallback.</p>
+ * <p>显式启用时，本 launcher 还会启动进程内 trusted Docker worker。
+ * worker 仍消费 authenticated contract，无 host JVM fallback。</p>
  */
 public final class DevLauncherMain {
     private DevLauncherMain() { }
@@ -47,7 +47,7 @@ public final class DevLauncherMain {
             if (worker != null) {
                 server.setRetainedSandboxRelease(worker::releaseRetainedForScan);
             }
-            // Do not bootstrap or force-select a default workspace; the GUI workspaces home owns that.
+            // 不 bootstrap 或强制选择默认 workspace；GUI workspaces home 负责该职责。
             syncFrontendEnv(config, server.baseUri(), token);
             Process frontend = startFrontend(config, server.baseUri(), token);
             Runtime.getRuntime().addShutdownHook(new Thread(

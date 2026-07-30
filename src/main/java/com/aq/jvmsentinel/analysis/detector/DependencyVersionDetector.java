@@ -11,7 +11,7 @@ import java.util.Locale;
 import java.util.regex.Pattern;
 
 /**
- * Skeleton: flags well-known risky dependency name/version patterns from ArtifactUniverse.
+ * Skeleton：从 ArtifactUniverse 标记 well-known  risky dependency name/version pattern。
  */
 public final class DependencyVersionDetector implements Detector {
     public static final String VERSION = "0.1.0";

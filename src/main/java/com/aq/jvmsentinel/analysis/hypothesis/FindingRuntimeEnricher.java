@@ -16,7 +16,7 @@ import java.util.Objects;
 import java.util.function.Function;
 
 /**
- * Attach FORCED / COVERAGE PathRun materials to finding wire without elevating
+ * 将 FORCED / COVERAGE PathRun 材料 attach 到 finding wire，不提升
  * {@code VERIFIED} / {@code DYNAMIC_CONFIRMED} (ADR-0004 / PROJECT_MEMORY §2.2).
  */
 public final class FindingRuntimeEnricher {
@@ -86,7 +86,7 @@ public final class FindingRuntimeEnricher {
 
         String status = finding.verificationStatus();
         if (ApiDtos.DYNAMIC_CONFIRMED.equals(status) || "VERIFIED".equals(status)) {
-            // Preserve prior server-gated elevations; enricher never upgrades into them.
+            // 保留先前服务端 gate 提升；enricher 永不升级进入。
             return new Enrichment(
                     finding.title(), status, List.of(), finding.evidenceRefs(), "", "");
         }
@@ -184,7 +184,7 @@ public final class FindingRuntimeEnricher {
         if (planId.contains("coverage_posture") || planId.contains(":coverage")) {
             return RuntimePostureKind.COVERAGE_POSTURE;
         }
-        // ADMIN track alone is ambiguous (COVERAGE and FORCED share it) — require plan/trace.
+        // 仅 ADMIN track 歧义（COVERAGE 与 FORCED 共享）— 要求 plan/trace。
         return RuntimePostureKind.UNAUTH;
     }
 
@@ -201,7 +201,7 @@ public final class FindingRuntimeEnricher {
             label = property.isBlank() ? "" : property;
         }
         if (label.isBlank()) {
-            // Fall back: strip legacy「静态推断的…信号」wrapper when present.
+            // 回退：存在时剥离 legacy「静态推断的…信号」wrapper。
             String prior = finding.title() == null ? "" : finding.title().trim();
             if (prior.startsWith("静态推断的") && prior.endsWith(TITLE_SUFFIX_SIGNAL)) {
                 label = prior.substring("静态推断的".length(), prior.length() - TITLE_SUFFIX_SIGNAL.length());

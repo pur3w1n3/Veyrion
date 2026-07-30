@@ -14,8 +14,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Deterministic sink ranking for PRE_ANALYSIS / dashboard. Scores are bounded heuristics,
- * not exploitability proof and never alone justify VERIFIED.
+ * 确定性 sink 排序（PRE_ANALYSIS / dashboard）。分数为有界启发式，
+ * 非 exploitability 证明，单独永不足以 justify VERIFIED。
  */
 public final class CandidateRanker {
     public static final int MAX_RANKED = 64;

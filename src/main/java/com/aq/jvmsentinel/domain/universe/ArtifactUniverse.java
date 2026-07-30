@@ -14,8 +14,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Bounded Artifact Universe: application / third-party / generated / unknown nodes plus
- * explicit {@link CoverageGap}s (P1-01). Language-neutral; JVM path details live in node ids.
+ * 有界 Artifact Universe：application / third-party / generated / unknown node 加
+ * 显式 {@link CoverageGap}（P1-01）。语言中立；JVM path 细节在 node id。
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record ArtifactUniverse(
@@ -96,8 +96,8 @@ public record ArtifactUniverse(
     }
 
     /**
-     * Apply runtime-loaded class diff and return a universe that includes those gaps.
-     * Empty/null runtime list is a no-op.
+     * 应用 runtime-loaded class diff 并返回包含这些 gap 的 universe。
+     * 空/null runtime 列表为 no-op。
      */
     public ArtifactUniverse withRuntimeDiff(Collection<String> runtimeLoadedClassNames) {
         if (runtimeLoadedClassNames == null || runtimeLoadedClassNames.isEmpty()) {
@@ -107,8 +107,8 @@ public record ArtifactUniverse(
     }
 
     /**
-     * Minimal hook: diff statically known APPLICATION classes against runtime-loaded names.
-     * Returns runtime-only and static-not-loaded gaps (bounded).
+     * 最小 hook：diff 静态已知 APPLICATION class 与 runtime-loaded 名。
+     * 返回 runtime-only 与 static-not-loaded gap（有界）。
      */
     @JsonIgnore
     public List<CoverageGap> diffWithRuntimeLoadedClasses(Collection<String> runtimeLoadedClassNames) {

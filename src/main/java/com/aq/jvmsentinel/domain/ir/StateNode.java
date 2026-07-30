@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Business / security state precondition or transition subject.
+ * 业务/安全 state 前置条件或 transition 主体。
  *
  * <p>Stable id: {@code state:{entryId}:{stateKey}}.
  */

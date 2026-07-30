@@ -8,9 +8,9 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Synthetic multi-fixture static entry recall table for Spring / Blade annotation shapes.
- * This is a development baseline, not a production recall claim. 5/5 fixture scores must
- * never be marketed as real-world recall.
+ * 说明：Spring/Blade annotation shape 合成 multi-fixture static entry recall 表。
+ * 此为 development baseline，非 production recall 声称。5/5 fixture 分数
+ * 永不得 marketed 为 real-world recall。
  */
 public final class StaticEntryRecallBaseline {
     public record FixtureExpectation(String fixtureId, String frameworkNote,

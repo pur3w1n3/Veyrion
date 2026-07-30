@@ -15,7 +15,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
-/** Strictly bounded, append-only dependency substitution evidence. */
+/** 严格有界、仅追加的 dependency substitution 证据。 */
 public final class DependencySubstitutionTranscript implements Serializable {
     @Serial private static final long serialVersionUID = 1L;
     public static final int SCHEMA_VERSION = 1;
@@ -30,8 +30,8 @@ public final class DependencySubstitutionTranscript implements Serializable {
     }
 
     /**
-     * {@code executed} means the local substitute operation ran.  It never means
-     * that an external HTTP service, database, host file, or host process ran.
+     * {@code executed} 表示本地 substitute 操作已运行。绝不表示
+     * 外部 HTTP 服务、database、host file 或 host process 已运行。
      */
     public record Result(
             int schemaVersion,
@@ -133,8 +133,8 @@ public final class DependencySubstitutionTranscript implements Serializable {
                     request, response, provenance, executed, digest,
                     new BudgetSnapshot(sequence + 1, budget.maxOperations(), projectedBytes,
                             budget.maxTranscriptBytes()), stopReason);
-            // Charge a fixed envelope/comma/digit-growth allowance so the complete
-            // serialized transcript remains strictly below the configured budget.
+            // 固定 envelope/comma/digit-growth  allowance，使完整
+            // 序列化 transcript 严格低于配置的 budget。
             long measured = JsonCodec.stringify(provisional.toMap()).getBytes(StandardCharsets.UTF_8).length + 32;
             if (measured == eventBytes) break;
             eventBytes = measured;
@@ -191,7 +191,7 @@ public final class DependencySubstitutionTranscript implements Serializable {
         return json;
     }
 
-    /** Digest of the complete bounded transcript, including its terminal stop reason. */
+    /** 完整有界 transcript 的 digest，含 terminal stop reason。 */
     public synchronized String digest() {
         return sha256(toJson());
     }
@@ -240,7 +240,7 @@ public final class DependencySubstitutionTranscript implements Serializable {
         }
     }
 
-    /** Redacts common secret forms without attempting to retain the sensitive value. */
+    /** 脱敏常见 secret 形式，不尝试保留敏感值。 */
     static final class Redactor {
         private static final Pattern KEY_VALUE = Pattern.compile(
                 "(?i)(authorization|proxy-authorization|cookie|set-cookie|password|passwd|secret|token|api[-_]?key)\\s*[:=]\\s*([^,;\\s]+)");

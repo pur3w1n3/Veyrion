@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Scope-bound context for provider collection. Wrong-scope contributions fail closed.
+ * provider collection 的 scope-bound context。错误 scope contribution fail-closed。
  */
 public record ProviderContext(
         String projectId,

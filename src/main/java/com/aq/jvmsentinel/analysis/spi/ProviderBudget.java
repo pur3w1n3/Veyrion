@@ -1,7 +1,7 @@
 package com.aq.jvmsentinel.analysis.spi;
 
 /**
- * Hard caps applied by {@link ProviderOutputGate} before contributions are accepted.
+ * {@link ProviderOutputGate} 在 accept contribution 前应用 hard cap。
  */
 public record ProviderBudget(
         int maxEntries,

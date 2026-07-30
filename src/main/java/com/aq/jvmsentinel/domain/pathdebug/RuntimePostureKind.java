@@ -4,8 +4,8 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * P0-21 runtime posture kinds. Wire IdentityTrack remains UNAUTH/USER/ADMIN/BYPASS_CANDIDATE;
- * postureKind is the product-purpose dimension.
+ * 说明：P0-21 runtime posture kind；Wire IdentityTrack 仍为 UNAUTH/USER/ADMIN/BYPASS_CANDIDATE；
+ * postureKind 为产品用途维度。
  */
 public enum RuntimePostureKind {
     UNAUTH,

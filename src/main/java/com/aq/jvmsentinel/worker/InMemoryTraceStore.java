@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/** Bounded, append-only trace store for contract tests and local control-plane use. */
+/** 合同测试与本地控制面使用的有界仅追加轨迹存储。 */
 public final class InMemoryTraceStore {
     private static final int MAX_TASKS = 20_000;
     private static final int MAX_CHUNKS_TOTAL = 100_000;
@@ -60,7 +60,7 @@ public final class InMemoryTraceStore {
         if (chunk.sequence() != expectedSequence || !Objects.equals(chunk.previousDigest(), expectedPrevious)) {
             throw new IllegalStateException("trace chain is not contiguous");
         }
-        // Recompute at the trust boundary in case a future deserializer bypasses the canonical constructor.
+        // 在信任边界重算，以防未来反序列化器绕过规范构造器。
         String calculated = TraceChunk.calculateDigest(chunk.schemaVersion(), chunk.scope(), chunk.sequence(),
                 chunk.previousDigest(), chunk.emittedAt(), chunk.payload());
         if (!calculated.equals(chunk.digest())) throw new IllegalStateException("trace content was tampered");
@@ -71,7 +71,7 @@ public final class InMemoryTraceStore {
         return chunk;
     }
 
-    /** Drops in-memory chunks for a task after durable scan history deletion. */
+    /** 持久化 scan 历史删除后丢弃某任务的内存块。 */
     public synchronized void forget(TaskScope scope) {
         Objects.requireNonNull(scope, "scope");
         List<TraceChunk> removed = traces.remove(scope);
@@ -96,8 +96,8 @@ public final class InMemoryTraceStore {
     }
 
     /**
-     * Returns an immutable, payload-copying snapshot for exactly one task scope.
-     * Trusted callers must supply both count and byte bounds; oversized traces fail closed.
+     * 返回恰好一个任务 scope 的不可变、载荷拷贝快照。
+     * 可信调用方须同时提供数量与字节上限；超大轨迹 fail-closed。
      */
     public synchronized List<TraceChunk> readChunks(TaskScope scope, int maxChunks, long maxPayloadBytes) {
         Objects.requireNonNull(scope, "scope");

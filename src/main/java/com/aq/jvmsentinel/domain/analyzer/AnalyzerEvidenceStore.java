@@ -8,8 +8,8 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Port for atomic publish of validated Analyzer evidence.
- * Implementations must not grant Analyzer DB/model/authorization/Worker rights.
+ * 已校验 Analyzer evidence 原子发布的 port。
+ * 实现不得授予 Analyzer DB/model/authorization/Worker 权限。
  */
 public interface AnalyzerEvidenceStore {
     void publishAtomically(PublishedEvidence evidence);

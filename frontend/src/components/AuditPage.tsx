@@ -6,6 +6,21 @@ import { AI_ROLES, dependencyModeLabel, pipelineStatusLabel, roleLabel, stopReas
 import { ArtifactImportPanel } from './ArtifactImportPanel'
 import { errorMessage, Notice, PageHeader, StatusPill } from './Common'
 
+/**
+ * Stage 进度与 as-built AuditPipelineCoordinator.PipelineStage 1:1 映射，外加两行
+ * 流水线前 intake（非 coordinator 游标）：
+ *  1 TARGET_READY          — artifact/workspace 绑定（流水线前）
+ *  2 STATIC_FACTS          — createOrReplayScan / static IR（流水线前）
+ *  3 PRE_ANALYSIS
+ *  4 AUTH_ANALYSIS
+ *  5 DYNAMIC_OBSERVATION   — 沙箱 track 观测（非「联网探测」）
+ *  6 AUTH_BYPASS_CONFIRM   — 无动态 auth 证据时可跳过
+ *  7 DYNAMIC_VERIFICATION
+ *  8 PATH_EXPLORATION
+ *  9 VULNERABILITY_TRIAGE
+ * 10 REPORT_GENERATION
+ * 重启使用 POST …/audit-stage-retries（自 stage N 重新武装；游标推进后后续 stage 重跑）。
+ */
 export function AuditPage({ projectId, snapshot, onRefresh, language }: { projectId: string; snapshot: DashboardSnapshot | null; onRefresh: () => Promise<void>; language: OutputLanguage }) {
   const english = language === 'EN'
   const [artifacts, setArtifacts] = useState<ArtifactDto[]>([])
@@ -74,6 +89,10 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
   const reportJob = roleJob('REPORT_GENERATION')
 
   const missingRoles = AI_ROLES.filter((role) => !assignments.some((item) => item.role === role))
+  const pipelineStatus = scan?.pipelineStatus
+  const pipelinePaused = pipelineStatus === 'PAUSED'
+  const pipelineRunning = pipelineStatus === 'RUNNING' || scan?.pipelineArmed === true
+  const pipelineControllable = Boolean(activeScanId && activeScanId !== 'unscanned' && (pipelineRunning || pipelinePaused))
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -109,8 +128,8 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
         ...current.filter((job) => job.aiJobId !== created.preAnalysisJob.aiJobId)
       ])
       setMessage(english
-        ? 'Audit pipeline started: pre-analysis → auth → track observation → bypass confirm → dynamic verification → path exploration → triage → report.'
-        : '审计流水线已启动：系统将按前置建模、鉴权分析、按轨动态观察、绕过确认、动态验证、路径探索、漏洞研判与报告生成推进。')
+        ? 'Audit pipeline started: pre-analysis → auth → sandbox observation → bypass confirm → dynamic verification → path exploration → triage → report.'
+        : '审计流水线已启动：前置建模 → 鉴权分析 → 沙箱动态观察 → 绕过确认 → 动态验证 → 路径探求 → 漏洞研判 → 报告生成。')
       await onRefresh()
       await refreshNow()
     }).catch((cause) => setError(english
@@ -124,7 +143,11 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
   const dynamicStatus = dynamicTask?.status
   const dynamicState = dynamicStatus === 'COMPLETED' ? 'completed'
     : dynamicStatus === 'FAILED' || dynamicStatus === 'CANCELLED' ? 'unavailable'
-      : dynamicStatus === 'QUEUED' || dynamicStatus === 'RUNNING' || dynamicStatus === 'LEASED' ? 'active' : 'waiting'
+      : dynamicStatus === 'QUEUED' || dynamicStatus === 'RUNNING' || dynamicStatus === 'LEASED' || dynamicStatus === 'PAUSED' ? 'active' : 'waiting'
+  const laterThanBypassStarted = Boolean(dynamicVerifyJob || pathJob || triageJob || reportJob)
+  const authBypassState = authBypassJob
+    ? jobState(authBypassJob)
+    : (dynamicState === 'completed' && laterThanBypassStarted ? 'skipped' : 'waiting')
   const jobDetail = (job: typeof preAnalysisJob, waiting: string) => job
     ? `${job.aiJobId} · ${pipelineStatusLabel(job.status, job.errorCode, english)}${job.errorCode ? ` · ${job.errorCode}` : ''}`
     : waiting
@@ -137,12 +160,34 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
         dynamicTask.failureCode,
         dynamicTask.failureDiagnostic
       ].filter(Boolean).join(' · ')
-    : (english ? 'Queued after pre-analysis' : '前置建模完成后自动排队')
-  const retryStage = (stage: AuditRetryStage) => {
+    : (english ? 'Queued after auth analysis' : '鉴权分析完成后自动排队')
+
+  const stageReached = (state: string) => state === 'completed' || state === 'active' || state === 'unavailable' || state === 'skipped'
+  const canRestart = (stage: AuditRetryStage, state: string) => {
+    if (!activeScanId || activeScanId === 'unscanned') return false
+    if (pipelinePaused) return false
+    if (!stageReached(state) && state !== 'waiting') return false
+    // 前提可满足时允许重启（stage 已到达，或 PRE）。
+    if (stage === 'PRE_ANALYSIS') return Boolean(activeScanId)
+    if (stage === 'AUTH_ANALYSIS') return stageReached(jobState(preAnalysisJob)) || jobState(preAnalysisJob) === 'completed'
+    if (stage === 'DYNAMIC_OBSERVATION') return jobState(authAnalysisJob) === 'completed'
+    if (stage === 'AUTH_BYPASS_CONFIRM') return dynamicState === 'completed'
+    if (stage === 'DYNAMIC_VERIFICATION') return dynamicState === 'completed' && jobState(authAnalysisJob) === 'completed'
+    if (stage === 'PATH_EXPLORATION') return jobState(dynamicVerifyJob) === 'completed'
+    if (stage === 'VULNERABILITY_TRIAGE') return jobState(pathJob) === 'completed'
+    if (stage === 'REPORT_GENERATION') return jobState(triageJob) === 'completed'
+    return false
+  }
+
+  const restartStage = (stage: AuditRetryStage) => {
     if (!projectId || !activeScanId || activeScanId === 'unscanned') {
-      setError(english ? 'No scan available to retry' : '没有可重试的扫描')
+      setError(english ? 'No scan available to restart' : '没有可重新开始的扫描')
       return
     }
+    const confirmText = english
+      ? 'Restart this stage and all stages after it on the same scan? In-flight work for the current pipeline attempt will be cancelled.'
+      : '将重置本阶段及之后阶段（同一扫描增量重跑）。当前流水线进行中的任务会被取消。是否继续？'
+    if (!window.confirm(confirmText)) return
     if (!confirmAiAuthorization()) return
     setBusy(true); setError(undefined); setMessage(undefined)
     void api.retryAuditStage(projectId, {
@@ -157,35 +202,138 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
       }
       if (result.dynamicTask) setDynamicTask(result.dynamicTask)
       const stageLabel = stage === 'DYNAMIC_OBSERVATION'
-        ? (english ? 'Offline container track observation' : '断网容器按轨动态观察')
+        ? (english ? 'Sandbox dynamic observation' : '沙箱动态观察')
         : stage === 'AUTH_BYPASS_CONFIRM'
           ? (english ? 'Auth bypass confirm' : '鉴权绕过确认')
           : roleLabel(stage, english)
       setMessage(english
-        ? `Re-queued: ${stageLabel}. The pipeline will continue from this stage.`
-        : `已重新排队：${stageLabel}。流水线将从该阶段继续自动推进。`)
+        ? `Restarted from ${stageLabel}. The pipeline continues from this stage.`
+        : `已从「${stageLabel}」重新开始；流水线将从该阶段继续自动推进。`)
       await refreshNow()
       await onRefresh()
     }).catch((cause) => setError(english
-      ? `Stage retry failed: ${errorMessage(cause, true)}`
-      : `阶段重试失败：${errorMessage(cause)}`)).finally(() => setBusy(false))
+      ? `Stage restart failed: ${errorMessage(cause, true)}`
+      : `阶段重新开始失败：${errorMessage(cause)}`)).finally(() => setBusy(false))
   }
+
+  const controlPipeline = (action: 'pause' | 'resume' | 'cancel') => {
+    if (!activeScanId || activeScanId === 'unscanned') {
+      setError(english ? 'No active scan to control' : '没有可控制的扫描')
+      return
+    }
+    if (action === 'cancel') {
+      const ok = window.confirm(english
+        ? 'Stop this audit pipeline? In-flight AI jobs and dynamic tasks will be cancelled.'
+        : '停止本次审计流水线？进行中的模型任务与动态任务将被取消。')
+      if (!ok) return
+    }
+    if (action === 'resume' && !confirmAiAuthorization()) return
+    setBusy(true); setError(undefined); setMessage(undefined)
+    void api.updateScan(activeScanId, {
+      action,
+      authorized: true,
+      aiAuthorized: action === 'resume' ? true : undefined,
+      outputLanguage: action === 'resume' ? language : undefined
+    }).then(async (next) => {
+      setScan(next)
+      setMessage(action === 'pause'
+        ? (english ? 'Pipeline paused. Resume to continue from the current stage.' : '流水线已暂停。可点击「继续」从当前阶段恢复。')
+        : action === 'resume'
+          ? (english ? 'Pipeline resumed from the paused stage.' : '流水线已从暂停阶段继续。')
+          : (english ? 'Pipeline stopped.' : '流水线已停止。'))
+      await refreshNow()
+      await onRefresh()
+    }).catch((cause) => setError(english
+      ? `Pipeline control failed: ${errorMessage(cause, true)}`
+      : `流水线控制失败：${errorMessage(cause)}`)).finally(() => setBusy(false))
+  }
+
+  const targetState = snapshot?.artifactDigest || artifacts.length ? 'completed' : 'waiting'
+  const staticState = snapshot?.entries?.length || scan?.entries?.length
+    ? 'completed'
+    : (preAnalysisJob || activeScanId ? 'completed' : 'waiting')
+
   const steps: Array<{
+    id: string
     title: string
     state: string
     detail: string
-    retryStage?: AuditRetryStage
+    restartStage?: AuditRetryStage
   }> = [
-    { title: english ? 'Artifact summary review' : '目标摘要复核', state: snapshot?.artifactDigest ? 'completed' : 'waiting', detail: snapshot?.artifactDigest ?? (english ? 'Waiting for backend summary' : '等待后端摘要') },
-    { title: english ? 'Static facts & entry discovery' : '静态事实与入口发现', state: snapshot?.entries.length ? 'completed' : 'waiting', detail: english ? `${snapshot?.entries.length ?? 0} entries; facts are not model-writable` : `${snapshot?.entries.length ?? 0} 个入口；事实层不由模型改写` },
-    { title: english ? 'Pre-analysis' : '前置建模', state: jobState(preAnalysisJob), detail: jobDetail(preAnalysisJob, english ? 'Created by pipeline' : '流水线自动创建'), retryStage: jobState(preAnalysisJob) === 'unavailable' ? 'PRE_ANALYSIS' : undefined },
-    { title: english ? 'Auth analysis' : '鉴权分析', state: jobState(authAnalysisJob), detail: jobDetail(authAnalysisJob, english ? 'Static auth model, synthetic identity, experiment plans' : '静态鉴权模型、合成身份与实验计划'), retryStage: jobState(authAnalysisJob) === 'unavailable' ? 'AUTH_ANALYSIS' : undefined },
-    { title: english ? 'Offline container track observation' : '断网容器按轨动态观察', state: dynamicState, detail: dynamicDetail, retryStage: dynamicState === 'unavailable' ? 'DYNAMIC_OBSERVATION' : undefined },
-    { title: english ? 'Auth bypass confirm' : '鉴权绕过确认', state: jobState(authBypassJob), detail: jobDetail(authBypassJob, english ? 'Confirm bypass from 401 / pass-gate PathRuns' : '消费 401/过闸 PathRun 后确认绕过'), retryStage: jobState(authBypassJob) === 'unavailable' ? 'AUTH_BYPASS_CONFIRM' : undefined },
-    { title: english ? 'Dynamic verification & local probes' : '动态验证与本地发包', state: jobState(dynamicVerifyJob), detail: jobDetail(dynamicVerifyJob, english ? 'Authorized loopback probes by entry and params' : '沙箱反馈后按入口和参数进行授权 loopback 探索'), retryStage: jobState(dynamicVerifyJob) === 'unavailable' ? 'DYNAMIC_VERIFICATION' : undefined },
-    { title: english ? 'Path exploration' : '路径探索', state: jobState(pathJob), detail: jobDetail(pathJob, english ? 'Path model after PathRuns persist' : 'PathRun 保存后建立路径模型'), retryStage: jobState(pathJob) === 'unavailable' ? 'PATH_EXPLORATION' : undefined },
-    { title: english ? 'Vulnerability triage' : '漏洞研判', state: jobState(triageJob), detail: jobDetail(triageJob, english ? 'After PathRun + dynamic debug close' : 'PathRun 与动态调试闭环后进入'), retryStage: jobState(triageJob) === 'unavailable' ? 'VULNERABILITY_TRIAGE' : undefined },
-    { title: english ? 'Report generation' : '报告生成', state: jobState(reportJob), detail: jobDetail(reportJob, english ? 'Auto-summarize after triage' : '研判完成后自动汇总'), retryStage: jobState(reportJob) === 'unavailable' ? 'REPORT_GENERATION' : undefined }
+    {
+      id: 'TARGET_READY',
+      title: english ? 'Target & artifact ready' : '目标与制品就绪',
+      state: targetState,
+      detail: snapshot?.artifactDigest
+        ? snapshot.artifactDigest
+        : (english ? 'Bind an authorized artifact in the workspace' : '在工作区绑定已授权制品')
+    },
+    {
+      id: 'STATIC_FACTS',
+      title: english ? 'Static facts & entry discovery' : '静态事实与入口发现',
+      state: staticState,
+      detail: english
+        ? `${snapshot?.entries.length ?? scan?.entries?.length ?? 0} entries; facts are not model-writable`
+        : `${snapshot?.entries.length ?? scan?.entries?.length ?? 0} 个入口；事实层不由模型改写`
+    },
+    {
+      id: 'PRE_ANALYSIS',
+      title: english ? 'Pre-analysis (PRE_ANALYSIS)' : '前置建模 PRE_ANALYSIS',
+      state: jobState(preAnalysisJob),
+      detail: jobDetail(preAnalysisJob, english ? 'Created by pipeline' : '流水线自动创建'),
+      restartStage: 'PRE_ANALYSIS'
+    },
+    {
+      id: 'AUTH_ANALYSIS',
+      title: english ? 'Auth analysis (AUTH_ANALYSIS)' : '鉴权分析 AUTH_ANALYSIS',
+      state: jobState(authAnalysisJob),
+      detail: jobDetail(authAnalysisJob, english ? 'Static auth model, synthetic identity, experiment plans' : '静态鉴权模型、合成身份与实验计划'),
+      restartStage: 'AUTH_ANALYSIS'
+    },
+    {
+      id: 'DYNAMIC_OBSERVATION',
+      title: english ? 'Sandbox dynamic observation' : '沙箱动态观察 DYNAMIC_OBSERVATION',
+      state: dynamicState,
+      detail: dynamicDetail,
+      restartStage: 'DYNAMIC_OBSERVATION'
+    },
+    {
+      id: 'AUTH_BYPASS_CONFIRM',
+      title: english ? 'Auth bypass confirm' : '鉴权绕过确认 AUTH_BYPASS_CONFIRM',
+      state: authBypassState,
+      detail: authBypassState === 'skipped'
+        ? (english ? 'Skipped: no dynamic auth evidence' : '已跳过：无动态鉴权证据')
+        : jobDetail(authBypassJob, english ? 'Confirm bypass from AUTH_CHALLENGE / pass-gate PathRuns' : '有 AUTH_CHALLENGE / 过闸 PathRun 时确认绕过'),
+      restartStage: 'AUTH_BYPASS_CONFIRM'
+    },
+    {
+      id: 'DYNAMIC_VERIFICATION',
+      title: english ? 'Dynamic verification' : '动态验证 DYNAMIC_VERIFICATION',
+      state: jobState(dynamicVerifyJob),
+      detail: jobDetail(dynamicVerifyJob, english ? 'Authorized loopback probes by entry and params' : '沙箱反馈后按入口和参数进行授权 loopback 探索'),
+      restartStage: 'DYNAMIC_VERIFICATION'
+    },
+    {
+      id: 'PATH_EXPLORATION',
+      title: english ? 'Path exploration' : '路径探求 PATH_EXPLORATION',
+      state: jobState(pathJob),
+      detail: jobDetail(pathJob, english ? 'Path model after PathRuns; may loop OBS' : 'PathRun 后建立路径模型；可有界回环 OBS'),
+      restartStage: 'PATH_EXPLORATION'
+    },
+    {
+      id: 'VULNERABILITY_TRIAGE',
+      title: english ? 'Vulnerability triage' : '漏洞研判 VULNERABILITY_TRIAGE',
+      state: jobState(triageJob),
+      detail: jobDetail(triageJob, english ? 'After PathRun + dynamic debug close; may loop OBS' : 'PathRun 与动态调试闭环后进入；可有界回环 OBS'),
+      restartStage: 'VULNERABILITY_TRIAGE'
+    },
+    {
+      id: 'REPORT_GENERATION',
+      title: english ? 'Report generation' : '报告生成 REPORT_GENERATION',
+      state: jobState(reportJob),
+      detail: jobDetail(reportJob, english ? 'Bindings / ledger / gates after triage' : '研判完成后汇总 bindings / ledger / 门禁'),
+      restartStage: 'REPORT_GENERATION'
+    }
   ]
 
   return <section>
@@ -212,23 +360,58 @@ export function AuditPage({ projectId, snapshot, onRefresh, language }: { projec
             <label className="field"><span>{english ? 'Timeout (seconds)' : '超时（秒）'}</span><input name="timeout" type="number" min="10" max="3600" defaultValue="300" /></label>
             <label className="field"><span>{english ? 'Memory (MiB)' : '内存（MiB）'}</span><input name="memory" type="number" min="128" max="4096" defaultValue="2048" /></label>
           </div>
-          <div className="selected-ai"><small>{english ? 'Automatic pipeline' : '自动流水线'} · {language === 'ZH_CN' ? (english ? 'Simplified Chinese output' : '简体中文输出') : 'English output'}</small><strong>{english ? `${assignments.length}/6 roles bound` : `${assignments.length}/6 个角色已绑定`}</strong><span>{english ? 'After one authorization, the system advances pre-analysis → auth → track observation → bypass confirm → dynamic verification → path exploration → triage → report. Models cannot change sandbox policy or alone upgrade status.' : '一次授权后，系统按前置建模、鉴权分析、按轨观察、绕过确认、动态验证、路径探索、漏洞研判、报告生成推进；模型不能改沙箱策略或单独升级状态。'}</span></div>
+          <div className="selected-ai"><small>{english ? 'Automatic pipeline' : '自动流水线'} · {language === 'ZH_CN' ? (english ? 'Simplified Chinese output' : '简体中文输出') : 'English output'}</small><strong>{english ? `${assignments.length}/6 roles bound` : `${assignments.length}/6 个角色已绑定`}</strong><span>{english ? 'After one authorization, the system advances pre-analysis → auth → sandbox observation → bypass confirm → dynamic verification → path exploration → triage → report. Models cannot change sandbox policy or alone upgrade status.' : '一次授权后，系统按前置建模、鉴权分析、沙箱动态观察、绕过确认、动态验证、路径探求、漏洞研判、报告生成推进；模型不能改沙箱策略或单独升级状态。'}</span></div>
           <label className="check-field"><input type="checkbox" name="authorized" />{english ? 'I confirm this artifact and scope are authorized, and accept no external network, dry-run dangerous actions, and automatic pipeline advancement.' : '我确认该制品与范围已获授权，并接受无外网、危险动作空跑演练，以及整条审计流水线自动推进。'}</label>
           <button className="primary-button" disabled={!projectId || busy || artifacts.length === 0}>{busy ? (english ? 'Starting…' : '启动中…') : (english ? 'Start audit (automatic pipeline)' : '开始审计（自动流水线）')}</button>
         </form>
       </article>
       <article className="panel audit-timeline-panel">
-        <div className="panel-head"><div><p className="eyebrow">{english ? 'EXECUTION' : '执行过程'}</p><h2>{english ? 'Stage progress' : '阶段进度'}</h2></div>{(scan?.verificationStatus ?? snapshot?.verificationStatus) && <StatusPill status={(scan?.verificationStatus ?? snapshot?.verificationStatus)!} english={english} />}</div>
-        <ol className="workflow-timeline">{steps.map((step, index) => <li className={`timeline-${step.state}`} key={step.title}>
-          <span>{index + 1}</span>
+        <div className="panel-head">
           <div>
-            <strong>{step.title}</strong>
-            <small>{step.detail}</small>
-            {step.retryStage && <button type="button" className="secondary-button timeline-retry" disabled={busy || !activeScanId} onClick={() => retryStage(step.retryStage!)}>{english ? 'Retry stage' : '重试该阶段'}</button>}
+            <p className="eyebrow">{english ? 'EXECUTION' : '执行过程'}</p>
+            <h2>{english ? 'Stage progress' : '阶段进度'}</h2>
           </div>
-          <b>{timelineStateLabel(step.state, english)}</b>
-        </li>)}</ol>
-        <p className="form-help">{english ? 'No step-by-step approval. A failure stops later auto-advancement; retry a failed stage (new authorized job, re-arm pipeline). Model dialogue details are on Audit dialogue.' : '无需逐步点击批准。任一步失败会停止后续自动推进；可对失败阶段单独重试（新建授权任务并重新武装流水线）。模型对话细节请在「审计过程」页查看。'}</p>
+          <div className="timeline-toolbar">
+            {(scan?.verificationStatus ?? snapshot?.verificationStatus) && <StatusPill status={(scan?.verificationStatus ?? snapshot?.verificationStatus)!} english={english} />}
+            {pipelinePaused && <span className="timeline-pipeline-flag">{english ? 'Paused' : '已暂停'}</span>}
+            {pipelineRunning && !pipelinePaused && <span className="timeline-pipeline-flag">{english ? 'Running' : '运行中'}</span>}
+          </div>
+        </div>
+        <div className="button-row timeline-controls">
+          {pipelinePaused
+            ? <button type="button" className="secondary-button" disabled={busy || !pipelineControllable} onClick={() => controlPipeline('resume')}>{english ? 'Resume' : '继续'}</button>
+            : <button type="button" className="secondary-button" disabled={busy || !pipelineRunning} onClick={() => controlPipeline('pause')}>{english ? 'Pause' : '暂停'}</button>}
+          <button type="button" className="danger-button" disabled={busy || !pipelineControllable} onClick={() => controlPipeline('cancel')}>{english ? 'Stop scan' : '停止扫描'}</button>
+        </div>
+        <ol className="workflow-timeline">{steps.map((step, index) => {
+          const restartable = step.restartStage ? canRestart(step.restartStage, step.state) : false
+          return <li className={`timeline-${step.state}`} key={step.id}>
+            <span>{index + 1}</span>
+            <div>
+              <strong>{step.title}</strong>
+              <small>{step.detail}</small>
+            </div>
+            <div className="timeline-row-actions">
+              {step.restartStage && (
+                <button
+                  type="button"
+                  className="secondary-button timeline-restart"
+                  disabled={busy || !restartable}
+                  title={!restartable
+                    ? (pipelinePaused
+                      ? (english ? 'Resume or stop before restarting a stage' : '请先继续或停止流水线，再重新开始阶段')
+                      : (english ? 'Stage not reachable yet (prerequisite missing)' : '阶段尚未可达（前置条件未满足）'))
+                    : undefined}
+                  onClick={() => restartStage(step.restartStage!)}
+                >{english ? 'Restart' : '重新开始'}</button>
+              )}
+              <b>{timelineStateLabel(step.state, english)}</b>
+            </div>
+          </li>
+        })}</ol>
+        <p className="form-help">{english
+          ? 'Pause keeps the cursor for resume; stop cancels in-flight work. Restart from a row re-queues that coordinator stage and continues automatically. Model dialogue details are on Audit dialogue.'
+          : '暂停保留游标以便继续；停止会取消进行中的任务。「重新开始」会从该协调器阶段重新排队并自动向后推进。模型对话细节请在「审计过程」页查看。'}</p>
       </article>
     </div>
   </section>

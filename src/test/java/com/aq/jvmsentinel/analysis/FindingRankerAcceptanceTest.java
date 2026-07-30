@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * P0-20: static-first finding ranking demotes UNREACHED / MOCK dynamic noise.
+ * 说明：P0-20：static-first finding 排序降权 UNREACHED/MOCK dynamic 噪声。
  */
 public final class FindingRankerAcceptanceTest {
     private static final AtomicInteger ASSERTIONS = new AtomicInteger();
