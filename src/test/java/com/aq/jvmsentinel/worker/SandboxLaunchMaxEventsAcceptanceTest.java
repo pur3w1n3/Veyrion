@@ -11,12 +11,13 @@ import java.util.regex.Pattern;
 
 /**
  * 沙箱 javaagent maxEvents 必须落在 agent 合法区间，避免 premain 因越界直接失败；
- * 轨迹字节预算须随探针抬升，避免「事件上限抬了、字节仍卡 16MiB」。
+ * 轨迹字节预算须随探针抬升，避免「事件上限抬了、字节仍卡 16MiB」；
+ * 轨迹 tmpfs 须为 maxTraceBytes + 32MiB headroom，避免写满 ENOSPC。
  */
 public final class SandboxLaunchMaxEventsAcceptanceTest {
     private static final Pattern MAX_EVENTS = Pattern.compile("maxEvents=(\\d+)");
     private static final ResourceBudget BUDGET = new ResourceBudget(
-            180, 60_000, 512L * 1024 * 1024, 64L * 1024 * 1024, 48L * 1024 * 1024);
+            180, 60_000, 512L * 1024 * 1024, 96L * 1024 * 1024, 48L * 1024 * 1024);
 
     private SandboxLaunchMaxEventsAcceptanceTest() { }
 
@@ -68,6 +69,34 @@ public final class SandboxLaunchMaxEventsAcceptanceTest {
                 "full probe plan must clamp trace bytes to MAX_TRACE_BYTES; got " + trace512);
         long traceSmall = SandboxLaunchCommandBuilder.resolveTraceBytesBudget(1, 1_000);
         check(traceSmall >= 512L * 1024, "tiny artifact still keeps 512KiB floor; got " + traceSmall);
+
+        check(ExternalArtifactPaths.TMPFS_TRACE_HEADROOM_BYTES == 32L * 1024 * 1024,
+                "tmpfs headroom must stay 32MiB");
+        check(ExternalArtifactPaths.MAX_TMPFS_BYTES
+                        == ExternalArtifactPaths.MAX_TRACE_BYTES
+                        + ExternalArtifactPaths.TMPFS_TRACE_HEADROOM_BYTES,
+                "MAX_TMPFS must be MAX_TRACE + headroom (96MiB)");
+        long tmpfs48 = SandboxLaunchCommandBuilder.resolveTraceTmpfsBytes(48L * 1024 * 1024);
+        check(tmpfs48 == 48L * 1024 * 1024 + ExternalArtifactPaths.TMPFS_TRACE_HEADROOM_BYTES,
+                "trace tmpfs must be maxTrace + headroom; got " + tmpfs48);
+        long tmpfsMax = SandboxLaunchCommandBuilder.resolveTraceTmpfsBytes(
+                ExternalArtifactPaths.MAX_TRACE_BYTES);
+        check(tmpfsMax == ExternalArtifactPaths.MAX_TMPFS_BYTES,
+                "maxTrace tmpfs must hit MAX_TMPFS; got " + tmpfsMax);
+        long diskForMax = SandboxLaunchCommandBuilder.resolveDiskBytesBudget(
+                ExternalArtifactPaths.MAX_TRACE_BYTES);
+        check(diskForMax == ExternalArtifactPaths.MAX_TMPFS_BYTES,
+                "disk budget must cover maxTrace tmpfs; got " + diskForMax);
+        long tmpTmpfs = SandboxLaunchCommandBuilder.resolveTmpTmpfsBytes(tmpfsMax);
+        check(tmpTmpfs == ExternalArtifactPaths.MIN_TMP_TMPFS_BYTES
+                        && tmpTmpfs >= tmpfsMax,
+                "/tmp tmpfs must be >=128MiB and >= trace tmpfs; got " + tmpTmpfs);
+        SandboxTmpfsAllocation lifted = SandboxTmpfsAllocation.forBudget(new ResourceBudget(
+                180, 60_000, 512L * 1024 * 1024, 64L * 1024 * 1024, 48L * 1024 * 1024));
+        check(lifted.diskLifted()
+                        && lifted.traceTmpfsBytes() == tmpfs48
+                        && lifted.resourceBudget().maxDiskBytes() == tmpfs48,
+                "undersized maxDiskBytes must auto-lift to cover tmpfs headroom");
 
         Path jar = Files.createTempFile("veyrion-maxevents-", ".jar");
         try {

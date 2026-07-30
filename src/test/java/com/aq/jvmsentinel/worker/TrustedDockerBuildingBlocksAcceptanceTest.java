@@ -4,6 +4,7 @@ import com.aq.jvmsentinel.policy.NetworkMode;
 import com.aq.jvmsentinel.sandbox.LocalDockerTrustedSandboxClient;
 import com.aq.jvmsentinel.sandbox.ReadOnlyArtifactMount;
 import com.aq.jvmsentinel.sandbox.SandboxRequest;
+import com.aq.jvmsentinel.worker.docker.SandboxLaunchCommandBuilder;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,19 +41,30 @@ public final class TrustedDockerBuildingBlocksAcceptanceTest {
                     MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(jar)));
             ReadOnlyArtifactMount mount = new ReadOnlyArtifactMount(
                     jar, "/opt/veyrion/artifact/application.jar", digest, Files.size(jar));
+            long traceTmpfs = SandboxLaunchCommandBuilder.resolveTraceTmpfsBytes(
+                    BUDGET.maxTraceBytes());
             SandboxRequest request = new SandboxRequest(
                     IMAGE, List.of("/bin/sleep", "infinity"), 60, BUDGET, false,
-                    WorkerCapability.TRUSTED_DOCKER, List.of(mount), BUDGET.maxDiskBytes());
+                    WorkerCapability.TRUSTED_DOCKER, List.of(mount), traceTmpfs);
             check(request.readOnlyArtifacts().size() == 1, "one read-only mount accepted");
+            check(request.tmpfsBytes() == BUDGET.maxTraceBytes()
+                            + ExternalArtifactPaths.TMPFS_TRACE_HEADROOM_BYTES,
+                    "tmpfs must equal maxTrace + headroom");
             expect(IllegalArgumentException.class, () -> new SandboxRequest(
                     IMAGE, List.of("/bin/sleep", "infinity"), 60, BUDGET, false,
-                    WorkerCapability.TRUSTED_DOCKER, List.of(), BUDGET.maxDiskBytes()));
+                    WorkerCapability.TRUSTED_DOCKER, List.of(), traceTmpfs));
+            expect(IllegalArgumentException.class, () -> new SandboxRequest(
+                    IMAGE, List.of("/bin/sleep", "infinity"), 60, BUDGET, false,
+                    WorkerCapability.TRUSTED_DOCKER, List.of(mount), BUDGET.maxTraceBytes()));
+            check(SandboxLaunchCommandBuilder.resolveTmpTmpfsBytes(traceTmpfs)
+                            >= ExternalArtifactPaths.MIN_TMP_TMPFS_BYTES,
+                    "/tmp tmpfs floor is at least 128MiB");
 
             ReadOnlyArtifactMount wrongDigest = new ReadOnlyArtifactMount(
                     jar, mount.destination(), "f".repeat(64), Files.size(jar));
             SandboxRequest tampered = new SandboxRequest(
                     IMAGE, List.of("/bin/sleep", "infinity"), 60, BUDGET, false,
-                    WorkerCapability.TRUSTED_DOCKER, List.of(wrongDigest), BUDGET.maxDiskBytes());
+                    WorkerCapability.TRUSTED_DOCKER, List.of(wrongDigest), traceTmpfs);
             LocalDockerTrustedSandboxClient client =
                     new LocalDockerTrustedSandboxClient("docker-executable-must-not-run");
             expect(SecurityException.class, () -> client.create(tampered));

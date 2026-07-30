@@ -463,9 +463,11 @@ private final PathFindingsHttpHandlers pathFindings;
         long memoryBytes = size >= 80L * 1024 * 1024
                 ? 3L * 1024 * 1024 * 1024 : ControlPlaneHttpLimits.DEFAULT_MEMORY_BYTES;
         // 按探针事件下限抬升轨迹字节（与 agent maxEvents 抬升对齐），钳在 MAX_TRACE_BYTES。
+        // disk 跟随 maxTrace + tmpfs headroom，避免轨迹 tmpfs 被死卡在 64MiB。
         long traceBytes = SandboxLaunchCommandBuilder.resolveTraceBytesBudget(probes, size);
+        long diskBytes = SandboxLaunchCommandBuilder.resolveDiskBytesBudget(traceBytes);
         return new ResourceBudget(wallSeconds, wallSeconds * 1_000L, memoryBytes,
-                64L * 1024 * 1024, traceBytes);
+                diskBytes, traceBytes);
     }
     public ExternalArtifactTaskExecutor.ArtifactRegistration requireLocalArtifact(TaskScope scope) {
         Objects.requireNonNull(scope, "scope");

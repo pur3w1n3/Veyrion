@@ -138,10 +138,11 @@ public final class ExternalArtifactTaskExecutor {
             pulse(request.scope(), lease, heartbeatExtension, "创建断网沙箱容器");
             ReadOnlyArtifactMount mount = new ReadOnlyArtifactMount(
                     registration.path(), ARTIFACT_PATH, registration.sha256(), registration.sizeBytes());
+            SandboxTmpfsAllocation tmpfs = SandboxTmpfsAllocation.forBudget(budget);
             SandboxHandle handle = sandbox.create(new SandboxRequest(
                     runtimePolicy.imageUri(), List.of("/bin/sleep", "infinity"), timeoutSeconds(budget),
-                    budget, descriptor.requiredCapability(), List.of(mount),
-                    Math.min(ExternalArtifactPaths.MAX_TMPFS_BYTES, budget.maxDiskBytes())));
+                    tmpfs.resourceBudget(), descriptor.requiredCapability(), List.of(mount),
+                    tmpfs.traceTmpfsBytes()));
             sandboxId = handle.id();
 
             pulse(request.scope(), lease, heartbeatExtension, "准备 Agent 轨迹目录");

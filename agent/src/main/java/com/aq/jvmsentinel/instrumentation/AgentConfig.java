@@ -27,8 +27,8 @@ public final class AgentConfig {
      * 必须与此同步；越界时 {@link #parse} fail-closed，premain 不会启动应用。
      *
      * <p>500_000 ≈ 200 探针 × 2500 事件/探针，且约 48MiB JSONL（~96B/事件）仍落在
-     * {@link #MAX_MAX_BYTES}/沙箱 tmpfs 64MiB 内。更大探针计划仍共享进程级池，靠
-     * {@code EventWriter} per-correlation 软分片与耗尽后有界续写兜底。</p>
+     * {@link #MAX_MAX_BYTES} 内；沙箱轨迹 tmpfs 为 maxTrace+32MiB headroom（上限 96MiB）。
+     * 更大探针计划仍共享进程级池，靠 {@code EventWriter} per-correlation 软分片与耗尽后有界续写兜底。</p>
      */
     public static final int MAX_MAX_EVENTS = 500_000;
     /** maxEvents 合法下界（与控制面 {@code SandboxLaunchCommandBuilder.AGENT_MIN_EVENTS} 同步）。 */

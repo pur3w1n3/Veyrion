@@ -137,6 +137,7 @@ public final class SandboxHardeningAcceptanceTest {
             ReadOnlyArtifactMount mount = new ReadOnlyArtifactMount(
                     jar, "/opt/veyrion/artifact/application.jar", digest,
                     java.nio.file.Files.size(jar));
+            // maxTrace(1MiB) + 32MiB headroom；不得再用裸 maxDisk 掩盖过小 tmpfs。
             return new SandboxRequest(
                     "registry.example/veyrion/runtime@sha256:" + IMAGE,
                     List.of("/bin/sleep", "infinity"),
@@ -144,7 +145,7 @@ public final class SandboxHardeningAcceptanceTest {
                     BUDGET,
                     WorkerCapability.HARDENED_GVISOR,
                     List.of(mount),
-                    BUDGET.maxDiskBytes());
+                    BUDGET.maxTraceBytes() + 32L * 1024 * 1024);
         } catch (Exception ex) {
             throw new IllegalStateException(ex);
         }

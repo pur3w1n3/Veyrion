@@ -2,6 +2,7 @@ package com.aq.jvmsentinel.worker;
 import com.aq.jvmsentinel.AcceptanceAssertions;
 
 import com.aq.jvmsentinel.control.JsonCodec;
+import com.aq.jvmsentinel.worker.probe.ProbeWireTarget;
 import com.aq.jvmsentinel.sandbox.CommandRequest;
 import com.aq.jvmsentinel.sandbox.CommandResult;
 import com.aq.jvmsentinel.sandbox.OpenSandboxClient;
@@ -155,6 +156,7 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                                     .replace("/sample/http-entry", "/tmp/veyrion-trace/probe-plan.txt")
                                     .getBytes(StandardCharsets.UTF_8)),
                     "mismatched probe target must fail closed");
+            probeEvidenceCoverageContract(digest, jar);
             chunkedTraceReadContract();
             String prioritized = ExternalArtifactTaskExecutor.diagnostic(
                     "probe-out", "Exception in thread main: probe failed\nstack-frame",
@@ -171,6 +173,121 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
             Files.deleteIfExists(mysqlJar);
             Files.deleteIfExists(directory);
         }
+    }
+
+    /**
+     * 覆盖校验：form/multipart wire requestTarget、集合等大假阴性、agent HTTP 冒充、
+     * 截断尾行、真正缺失时列出 plan item。
+     */
+    private static void probeEvidenceCoverageContract(String digest, Path jar) throws Exception {
+        check(ProbeWireTarget.requestTarget("POST", "/blade-desk/notice/submit", "notice=synthetic")
+                        .equals("/blade-desk/notice/submit"),
+                "form/submit POST wire target omits query (body-bound)");
+        check(ProbeWireTarget.requestTarget("POST", "/blade-flow/manager/check-upload", "file=synthetic")
+                        .equals("/blade-flow/manager/check-upload"),
+                "multipart upload POST wire target omits query");
+        check(ProbeWireTarget.requestTarget("GET", "/blade-desk/process/leave/detail", "businessId=1")
+                        .equals("/blade-desk/process/leave/detail?businessId=1"),
+                "GET keeps query on wire target");
+
+        ExternalArtifactTaskExecutor.ArtifactRegistration formPlan =
+                new ExternalArtifactTaskExecutor.ArtifactRegistration(
+                        "project-1", digest, jar, Files.size(jar), true,
+                        "POST", "/blade-desk/notice/submit", "",
+                        List.of(new ExternalArtifactTaskExecutor.ProbeTarget(
+                                "POST", "/blade-desk/notice/submit", "notice=synthetic", "UNAUTH", "")),
+                        "MOCK_CONTINUE");
+        // 事件 requestTarget=route（与 agent 一致）；旧校验器用 route?query 会在 expected==observed 基数下假阴性。
+        String formEvent = loopbackProbeEvent("POST", "/blade-desk/notice/submit",
+                "/blade-desk/notice/submit", "UNAUTH");
+        ExternalArtifactTaskExecutor.requireHttpProbeEvidence(
+                formPlan, formEvent.getBytes(StandardCharsets.UTF_8));
+
+        ExternalArtifactTaskExecutor.ArtifactRegistration multiTrack =
+                new ExternalArtifactTaskExecutor.ArtifactRegistration(
+                        "project-1", digest, jar, Files.size(jar), true,
+                        "POST", "/blade-desk/notice/submit", "",
+                        List.of(
+                                new ExternalArtifactTaskExecutor.ProbeTarget(
+                                        "POST", "/blade-desk/notice/submit", "notice=synthetic", "UNAUTH", ""),
+                                new ExternalArtifactTaskExecutor.ProbeTarget(
+                                        "POST", "/blade-desk/notice/submit", "notice=synthetic", "ADMIN",
+                                        "Bearer x")),
+                        "MOCK_CONTINUE");
+        String bothTracks = formEvent + loopbackProbeEvent("POST", "/blade-desk/notice/submit",
+                "/blade-desk/notice/submit", "ADMIN");
+        ExternalArtifactTaskExecutor.requireHttpProbeEvidence(
+                multiTrack, bothTracks.getBytes(StandardCharsets.UTF_8));
+
+        // 重复 plan identity：一条 loopback 事件即可覆盖（Set 语义，非计数）
+        ExternalArtifactTaskExecutor.ArtifactRegistration duplicatePlan =
+                new ExternalArtifactTaskExecutor.ArtifactRegistration(
+                        "project-1", digest, jar, Files.size(jar), true,
+                        "POST", "/blade-desk/notice/submit", "",
+                        List.of(
+                                new ExternalArtifactTaskExecutor.ProbeTarget(
+                                        "POST", "/blade-desk/notice/submit", "notice=synthetic", "UNAUTH", ""),
+                                new ExternalArtifactTaskExecutor.ProbeTarget(
+                                        "POST", "/blade-desk/notice/submit", "notice=synthetic", "UNAUTH", "")),
+                        "MOCK_CONTINUE");
+        ExternalArtifactTaskExecutor.requireHttpProbeEvidence(
+                duplicatePlan, formEvent.getBytes(StandardCharsets.UTF_8));
+
+        // Agent HTTP 不得冒充 loopback 覆盖
+        String agentHttp = "{\"schemaVersion\":1,\"sequence\":0,\"eventType\":\"HTTP\","
+                + "\"provenanceKind\":\"RUNTIME_OBSERVED\",\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                + "\"class\":\"org.springframework.web.servlet.DispatcherServlet\","
+                + "\"method\":\"doDispatch\",\"timestamp\":\"2026-07-24T00:00:00Z\","
+                + "\"thread\":\"http-1\",\"detail\":{\"httpMethod\":\"POST\","
+                + "\"route\":\"/blade-desk/notice/submit\",\"requestTarget\":\"/blade-desk/notice/submit\","
+                + "\"track\":\"UNAUTH\"}}\n";
+        var agentOnly = expect(ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.class,
+                () -> ExternalArtifactTaskExecutor.requireHttpProbeEvidence(
+                        formPlan, agentHttp.getBytes(StandardCharsets.UTF_8)),
+                "agent HTTP must not satisfy probe coverage");
+        check("EMPTY_PROBE_EVENTS".equals(agentOnly.code()),
+                "zero loopback probe events is EMPTY_PROBE_EVENTS even when httpEvents>0");
+
+        // 真正缺失：给出 missing plan item，且分类码明确
+        var missing = expect(ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.class,
+                () -> ExternalArtifactTaskExecutor.requireHttpProbeEvidence(
+                        multiTrack, formEvent.getBytes(StandardCharsets.UTF_8)),
+                "partial track coverage fails closed");
+        check("PROBE_EVENT_COVERAGE_INCOMPLETE".equals(missing.code())
+                        && missing.getMessage().contains("missing=")
+                        && missing.getMessage().contains("track=ADMIN"),
+                "incomplete coverage names missing plan identities");
+        String classified = com.aq.jvmsentinel.worker.docker.ExternalArtifactDiagnostics
+                .failureDiagnostic(missing);
+        check(classified.contains("[PROBE_EVENT_COVERAGE_INCOMPLETE]")
+                        && !classified.contains("[UNKNOWN_STARTUP_FAILURE]"),
+                "coverage failure must not classify as UNKNOWN_STARTUP_FAILURE");
+
+        // 截断尾行：已有完整事件时不因半行 JSON 整文件判死
+        String truncated = formEvent + "{\"schemaVersion\":1,\"eventType\":\"HTTP\",\"class\":";
+        ExternalArtifactTaskExecutor.requireHttpProbeEvidence(
+                formPlan, truncated.getBytes(StandardCharsets.UTF_8));
+
+        // 仅截断半行、无任何事件 → MALFORMED
+        var malformed = expect(ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.class,
+                () -> ExternalArtifactTaskExecutor.requireHttpProbeEvidence(
+                        formPlan, "{\"eventType\":\"HTTP\"".getBytes(StandardCharsets.UTF_8)),
+                "sole truncated line is malformed");
+        check("MALFORMED_PROBE_EVENTS".equals(malformed.code()),
+                "truncated-only stream is MALFORMED_PROBE_EVENTS");
+    }
+
+    private static String loopbackProbeEvent(String method, String route, String requestTarget, String track) {
+        return "{\"schemaVersion\":1,\"sequence\":0,\"eventType\":\"HTTP\","
+                + "\"provenanceKind\":\"APPLICATION_REPORTED\","
+                + "\"verificationStatus\":\"DYNAMIC_SUSPECTED\","
+                + "\"class\":\"com.aq.jvmsentinel.agent.LoopbackHttpProbe\","
+                + "\"method\":\"main\",\"timestamp\":\"2026-07-24T00:00:00Z\","
+                + "\"thread\":\"main\",\"detail\":{\"captureMode\":\"LOOPBACK_HTTP_PROBE\","
+                + "\"httpMethod\":\"" + method + "\",\"route\":\"" + route + "\","
+                + "\"requestTarget\":\"" + requestTarget + "\",\"status\":\"200\","
+                + "\"port\":\"8080\",\"error\":\"\",\"outcomeClass\":\"HTTP_OBSERVED\","
+                + "\"track\":\"" + track + "\"}}\n";
     }
 
     private static void chunkedTraceReadContract() throws Exception {
@@ -224,6 +341,37 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                 missing, "sandbox-1", ExternalArtifactTaskExecutor.PROBE_TRACE_FILE,
                 1024, false);
         check(optional.length == 0, "missing optional probe trace is empty");
+
+        String previousBackoff = System.getProperty("veyrion.traceRead.missingBackoffMillis");
+        System.setProperty("veyrion.traceRead.missingBackoffMillis", "0");
+        try {
+            TraceFileRuntimeClient requiredMissing = new TraceFileRuntimeClient(null);
+            var missingFailure = expect(ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.class,
+                    () -> ExternalArtifactTaskExecutor.readTraceFile(
+                            requiredMissing, "sandbox-1", ExternalArtifactTaskExecutor.TRACE_FILE,
+                            1024, true),
+                    "required agent trace missing");
+            check("TRACE_READ_FAILED".equals(missingFailure.code())
+                            && missingFailure.getMessage().contains("missing"),
+                    "required missing agent trace is TRACE_READ_FAILED with missing diagnostic");
+            check(requiredMissing.sizeReads >= 2,
+                    "missing required trace retries size probes before failing");
+        } finally {
+            if (previousBackoff == null) {
+                System.clearProperty("veyrion.traceRead.missingBackoffMillis");
+            } else {
+                System.setProperty("veyrion.traceRead.missingBackoffMillis", previousBackoff);
+            }
+        }
+
+        TraceFileRuntimeClient growing = new TraceFileRuntimeClient(large);
+        growing.growTailBy = 64;
+        byte[] frozen = ExternalArtifactTaskExecutor.readTraceFile(
+                growing, "sandbox-1", ExternalArtifactTaskExecutor.TRACE_FILE,
+                large.length, true);
+        check(Arrays.equals(large, frozen) && growing.lastCommandContainsHeadC,
+                "live append growth is truncated by head -c to the frozen size");
+
         expect(SecurityException.class,
                 () -> ExternalArtifactTaskExecutor.readTraceFile(
                         runtime, "sandbox-1", "/tmp/not-allowlisted", large.length, true),
@@ -315,31 +463,23 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
     private static String traceReadOutput(String command) {
         byte[] source;
         String path;
-        if (command.startsWith("rm -f ") && command.contains(".snapshot")) {
-            return "";
-        }
-        if (command.contains("cp -f " + ExternalArtifactTaskExecutor.TRACE_FILE)
-                && command.contains("wc -c < ")) {
+        if (command.contains("wc -c < " + ExternalArtifactTaskExecutor.TRACE_FILE)
+                || command.contains("[ ! -f " + ExternalArtifactTaskExecutor.TRACE_FILE)) {
             return Integer.toString(MockServices.agentJsonl().getBytes(StandardCharsets.UTF_8).length);
         }
-        if (command.contains("cp -f " + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)
-                && command.contains("wc -c < ")) {
-            return Integer.toString(MockServices.probeJsonl().getBytes(StandardCharsets.UTF_8).length);
-        }
-        if (command.startsWith("if [ -f " + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)) {
+        if (command.contains("wc -c < " + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)
+                || command.startsWith("if [ -f " + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)) {
             return Integer.toString(MockServices.probeJsonl().getBytes(StandardCharsets.UTF_8).length);
         }
         if (command.startsWith("cat " + ExternalArtifactTaskExecutor.TRACE_DIRECTORY + "/http-port.txt")) {
             return "8080\n";
         }
-        String agentSnap = ExternalArtifactTaskExecutor.TRACE_FILE + ".snapshot";
-        String probeSnap = ExternalArtifactTaskExecutor.PROBE_TRACE_FILE + ".snapshot";
-        if (command.startsWith("dd if=" + agentSnap)) {
+        if (command.startsWith("dd if=" + ExternalArtifactTaskExecutor.TRACE_FILE)) {
             source = MockServices.agentJsonl().getBytes(StandardCharsets.UTF_8);
-            path = agentSnap;
-        } else if (command.startsWith("dd if=" + probeSnap)) {
+            path = ExternalArtifactTaskExecutor.TRACE_FILE;
+        } else if (command.startsWith("dd if=" + ExternalArtifactTaskExecutor.PROBE_TRACE_FILE)) {
             source = MockServices.probeJsonl().getBytes(StandardCharsets.UTF_8);
-            path = probeSnap;
+            path = ExternalArtifactTaskExecutor.PROBE_TRACE_FILE;
         } else {
             return null;
         }
@@ -348,8 +488,20 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                 block * ExternalArtifactTaskExecutor.TRACE_READ_BLOCK_BYTES);
         int to = Math.min(source.length,
                 from + ExternalArtifactTaskExecutor.TRACE_READ_BLOCK_BYTES);
-        check(command.startsWith("dd if=" + path), "fixed trace snapshot path command");
-        return Base64.getEncoder().encodeToString(Arrays.copyOfRange(source, from, to));
+        int expected = headCLimit(command, to - from);
+        check(command.startsWith("dd if=" + path), "fixed live trace path command");
+        check(command.contains("| head -c "), "trace blocks are prefix-frozen with head -c");
+        return Base64.getEncoder().encodeToString(Arrays.copyOfRange(source, from, from + expected));
+    }
+
+    private static int headCLimit(String command, int fallback) {
+        int marker = command.indexOf("| head -c ");
+        if (marker < 0) return fallback;
+        int start = marker + "| head -c ".length();
+        int end = start;
+        while (end < command.length() && Character.isDigit(command.charAt(end))) end++;
+        if (end == start) return fallback;
+        return Math.min(fallback, Integer.parseInt(command.substring(start, end)));
     }
 
     private static int blockIndex(String command) {
@@ -364,8 +516,11 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
     private static final class TraceFileRuntimeClient implements SandboxRuntimeClient {
         private final byte[] data;
         private int blockReads;
+        private int sizeReads;
         private int malformedBlock = -1;
         private int shortBlock = -1;
+        private int growTailBy;
+        private boolean lastCommandContainsHeadC;
 
         private TraceFileRuntimeClient(byte[] data) {
             this.data = data == null ? null : data.clone();
@@ -379,24 +534,31 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
         @Override
         public CommandResult command(String sandboxId, CommandRequest request) {
             String command = request.command();
-            if (command.startsWith("rm -f ") && command.contains(".snapshot")) {
-                return new CommandResult(null, "", "", 0);
-            }
-            // 可选探针：if [ -f path ]; then cp ...; else 0
-            if (command.startsWith("if [ -f ")) {
+            lastCommandContainsHeadC = command.contains("| head -c ");
+            // 可选探针：缺失 → 0；存在 → wc -c
+            if (command.startsWith("if [ -f ") && !command.contains("[ ! -f ")) {
+                sizeReads++;
                 return new CommandResult(null, data == null ? "0\n" : data.length + "\n", "", 0);
             }
-            // 必需：cp -f <path> <path>.snapshot && wc -c < <path>.snapshot
-            if (command.startsWith("cp -f ") && command.contains(".snapshot")
-                    && command.contains("wc -c < ")) {
+            // 必需：缺失哨兵 MISSING / exit 3
+            if (command.contains("[ ! -f ") && command.contains("printf 'MISSING")) {
+                sizeReads++;
+                if (data == null) {
+                    return new CommandResult(null, "MISSING\n", "missing", 3);
+                }
+                return new CommandResult(null, data.length + "\n", "", 0);
+            }
+            if (command.contains("wc -c < ") && !command.contains("dd if=")) {
+                sizeReads++;
                 return data == null
-                        ? new CommandResult(null, "", "missing", 1)
+                        ? new CommandResult(null, "MISSING\n", "missing", 3)
                         : new CommandResult(null, data.length + "\n", "", 0);
             }
             if (!command.startsWith("dd if=") || data == null) {
                 return new CommandResult(null, "", "unsupported", 1);
             }
-            check(command.contains(".snapshot"), "trace blocks are read from frozen snapshot");
+            check(!command.contains(".snapshot"), "trace read must not full-copy to snapshot");
+            check(command.contains("| head -c "), "trace blocks are prefix-frozen with head -c");
             int block = blockIndex(command);
             blockReads++;
             if (block == malformedBlock) return new CommandResult(null, "%%%", "", 0);
@@ -404,9 +566,20 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     block * ExternalArtifactTaskExecutor.TRACE_READ_BLOCK_BYTES);
             int to = Math.min(data.length,
                     from + ExternalArtifactTaskExecutor.TRACE_READ_BLOCK_BYTES);
-            if (block == shortBlock && to > from) to--;
-            return new CommandResult(null,
-                    Base64.getEncoder().encodeToString(Arrays.copyOfRange(data, from, to)), "", 0);
+            if (block == shortBlock && to > from) {
+                to--;
+            }
+            int expected = headCLimit(command, Math.max(0, to - from));
+            // growTailBy：模拟 dd 可读到追加字节；head -c 仍截回冻结 expected（仅 data 前缀）。
+            if (growTailBy > 0) {
+                check(expected <= data.length - from || from >= data.length,
+                        "frozen head -c must not request past measured size");
+            }
+            byte[] slice = Arrays.copyOfRange(data, from, Math.min(data.length, from + expected));
+            if (slice.length != expected && block != shortBlock) {
+                return new CommandResult(null, "", "short-read", 1);
+            }
+            return new CommandResult(null, Base64.getEncoder().encodeToString(slice), "", 0);
         }
 
         @Override
@@ -588,7 +761,8 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     "maxWallClockSeconds", 120,
                     "maxCpuMillis", 60_000,
                     "maxMemoryBytes", 256 * 1024 * 1024L,
-                    "maxDiskBytes", 64 * 1024 * 1024L,
+                    // disk 须覆盖 maxTrace+32MiB headroom，并允许 OpenSandbox /tmp ≥128MiB。
+                    "maxDiskBytes", 128 * 1024 * 1024L,
                     "maxTraceBytes", 1024 * 1024L));
             result.put("networkPolicy", Map.of("mode", "DENY", "allowlist", List.of()));
             boolean active = Set.of(TaskLifecycle.LEASED, TaskLifecycle.RUNNING, TaskLifecycle.PAUSED)
@@ -639,6 +813,13 @@ public final class ExternalArtifactTaskExecutorAcceptanceTest {
                     "digest-pinned read-only artifact mount");
             check(lastCreate.containsKey("tmpfs") && !lastCreate.containsKey("volumes")
                     && !lastCreate.containsKey("env"), "controlled writable surface");
+            List<Map<String, Object>> tmpfsMounts =
+                    (List<Map<String, Object>>) lastCreate.get("tmpfs");
+            long tmpfsSize = ((Number) tmpfsMounts.get(0).get("sizeBytes")).longValue();
+            long minTraceTmpfs = 1024L * 1024 + ExternalArtifactPaths.TMPFS_TRACE_HEADROOM_BYTES;
+            check(tmpfsSize >= minTraceTmpfs
+                            && tmpfsSize >= ExternalArtifactPaths.MIN_TMP_TMPFS_BYTES,
+                    "sandbox tmpfs must cover maxTrace+headroom and /tmp floor; got " + tmpfsSize);
             String command = (String) lastCommand.get("command");
             check(command.contains("java -Dveyrion.sandbox.traceDir=/tmp/veyrion-trace")
                     && command.contains("-Dveyrion.sandbox.traceDir.authorized=true")

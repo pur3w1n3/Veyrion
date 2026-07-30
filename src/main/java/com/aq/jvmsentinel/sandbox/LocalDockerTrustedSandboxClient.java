@@ -2,6 +2,7 @@ package com.aq.jvmsentinel.sandbox;
 
 import com.aq.jvmsentinel.worker.ExternalArtifactTaskExecutor;
 import com.aq.jvmsentinel.worker.WorkerCapability;
+import com.aq.jvmsentinel.worker.docker.SandboxLaunchCommandBuilder;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -102,7 +103,10 @@ public final class LocalDockerTrustedSandboxClient implements SandboxRuntimeClie
                 "--user", SANDBOX_UID + ":" + SANDBOX_GID,
                 "--tmpfs", "/tmp/veyrion-trace:rw,nosuid,nodev,size=" + request.tmpfsBytes()
                         + ",mode=1777,uid=" + SANDBOX_UID + ",gid=" + SANDBOX_GID,
-                "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+                // /tmp（java.io.tmpdir）不得比轨迹侧更小；下限 128MiB，并跟随 trace tmpfs。
+                "--tmpfs", "/tmp:rw,nosuid,nodev,size="
+                        + SandboxLaunchCommandBuilder.resolveTmpTmpfsBytes(request.tmpfsBytes())
+                        + ",mode=1777",
                 "--mount", "type=bind,source=" + mount.source()
                         + ",target=" + mount.destination() + ",readonly",
                 "--pids-limit", Integer.toString(MAX_PIDS),

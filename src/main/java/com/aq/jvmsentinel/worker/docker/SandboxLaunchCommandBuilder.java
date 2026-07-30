@@ -51,6 +51,35 @@ public final class SandboxLaunchCommandBuilder {
                 Math.max(sizeFloor, Math.max(probeFloor, eventsFloor)));
     }
 
+    /**
+     * 轨迹目录 tmpfs：{@code maxTraceBytes + TMPFS_TRACE_HEADROOM_BYTES}，钳在
+     * {@link ExternalArtifactPaths#MAX_TMPFS_BYTES}。
+     */
+    public static long resolveTraceTmpfsBytes(long maxTraceBytes) {
+        long trace = Math.min(ExternalArtifactPaths.MAX_TRACE_BYTES, Math.max(0L, maxTraceBytes));
+        long needed = trace + ExternalArtifactPaths.TMPFS_TRACE_HEADROOM_BYTES;
+        return Math.min(ExternalArtifactPaths.MAX_TMPFS_BYTES,
+                Math.max(ExternalArtifactPaths.TMPFS_TRACE_HEADROOM_BYTES, needed));
+    }
+
+    /**
+     * {@code /tmp} tmpfs：不低于 {@link ExternalArtifactPaths#MIN_TMP_TMPFS_BYTES}，
+     * 且不低于轨迹侧 tmpfs，避免应用临时目录比轨迹挂载更早 ENOSPC。
+     */
+    public static long resolveTmpTmpfsBytes(long traceTmpfsBytes) {
+        long traceSide = Math.max(0L, traceTmpfsBytes);
+        return Math.max(ExternalArtifactPaths.MIN_TMP_TMPFS_BYTES, traceSide);
+    }
+
+    /**
+     * 动态任务 disk 预算下限：至少覆盖轨迹 tmpfs（含 headroom），并保留历史 64MiB 地板。
+     */
+    public static long resolveDiskBytesBudget(long maxTraceBytes) {
+        long floor = 64L * 1024 * 1024;
+        return Math.min(ExternalArtifactPaths.MAX_DISK_BYTES,
+                Math.max(floor, resolveTraceTmpfsBytes(maxTraceBytes)));
+    }
+
     public static String fixedCommand(ResourceBudget budget,
                                       ExternalArtifactTaskExecutor.ArtifactRegistration registration) {
         int probeCount = Math.max(1, registration.probePlan().size());

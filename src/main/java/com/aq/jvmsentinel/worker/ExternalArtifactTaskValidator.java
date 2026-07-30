@@ -1,6 +1,7 @@
 package com.aq.jvmsentinel.worker;
 
 import com.aq.jvmsentinel.policy.NetworkMode;
+import com.aq.jvmsentinel.worker.docker.SandboxLaunchCommandBuilder;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -98,7 +99,9 @@ final class ExternalArtifactTaskValidator {
                 || budget.maxDiskBytes() < 1024L * 1024
                 || budget.maxDiskBytes() > ExternalArtifactPaths.MAX_DISK_BYTES
                 || budget.maxTraceBytes() < 256
-                || budget.maxTraceBytes() > ExternalArtifactPaths.MAX_TRACE_BYTES) {
+                || budget.maxTraceBytes() > ExternalArtifactPaths.MAX_TRACE_BYTES
+                || budget.maxDiskBytes() < SandboxLaunchCommandBuilder
+                        .resolveTraceTmpfsBytes(budget.maxTraceBytes())) {
             throw new SecurityException("external artifact resource budget is outside hardened limits");
         }
     }

@@ -16,6 +16,10 @@ import java.util.Objects;
  * 通过有界 Base64 块从沙箱读取 agent / 探针 JSONL 轨迹。
  */
 public final class AgentTraceReader {
+    /** 必需轨迹尚未落盘时的有界等待（保留沙箱下 Agent 仍可能刚打开文件）。 */
+    private static final int MISSING_TRACE_ATTEMPTS = 8;
+    private static final long MISSING_TRACE_BACKOFF_MILLIS = 250L;
+
     private AgentTraceReader() { }
 
     public static long agentTraceBudget(ResourceBudget budget, int probeCount) {
@@ -29,8 +33,12 @@ public final class AgentTraceReader {
     }
 
     /**
-     * 仅通过固定轨迹路径的有界 Base64 块读取。保留沙箱时 live Agent 仍可能追加，
-     * 故先复制到稳定的 {@code *.snapshot}，再按冻结大小校验每个块。
+     * 仅通过固定轨迹路径的有界 Base64 块读取。
+     *
+     * <p>保留沙箱时 live Agent 仍可能追加写入。不得整文件 {@code cp} 到 snapshot：
+     * 轨迹预算可接近 tmpfs 上限（maxTrace+headroom），再复制一份会 ENOSPC，被误报为
+     * {@code trace size could not be read}。改为冻结字节长度后按前缀分块读取，
+     * 每块经 {@code head -c} 截断，避免追加导致块长度漂移。</p>
      */
     public static byte[] readTraceFile(SandboxRuntimeClient sandbox, String sandboxId, String path,
                                        long maxBytes, boolean required) {
@@ -42,22 +50,8 @@ public final class AgentTraceReader {
         if (maxBytes < 0 || maxBytes > ExternalArtifactPaths.MAX_TRACE_BYTES) {
             throw new SecurityException("trace read budget is outside limits");
         }
-        String snapshot = path + ".snapshot";
         try {
-            // 先冻结 JSONL 再 sizing/读取：保留应用经 FileChannel 持续写入。
-            String sizeCommand = required
-                    ? "cp -f " + path + " " + snapshot + " && wc -c < " + snapshot
-                    : "if [ -f " + path + " ]; then cp -f " + path + " " + snapshot
-                            + " && wc -c < " + snapshot + "; else printf '0\\n'; fi";
-            CommandResult sizeResult = sandbox.command(sandboxId, new CommandRequest(
-                    sizeCommand, ExternalArtifactPaths.WORKING_DIRECTORY, Duration.ofSeconds(20),
-                    ExternalArtifactPaths.SANDBOX_UID, ExternalArtifactPaths.SANDBOX_GID));
-            String sizeText = sizeResult.stdout().strip();
-            if (sizeResult.exitCode() != 0 || !sizeText.matches("[0-9]{1,10}")) {
-                throw ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.of(
-                        "TRACE_READ_FAILED", "trace size could not be read", null);
-            }
-            long size = Long.parseLong(sizeText);
+            long size = measureFrozenSize(sandbox, sandboxId, path, required);
             if (size == 0) {
                 if (required) {
                     throw ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.of(
@@ -74,15 +68,22 @@ public final class AgentTraceReader {
             int blocks = Math.toIntExact((size + ExternalArtifactPaths.TRACE_READ_BLOCK_BYTES - 1)
                     / ExternalArtifactPaths.TRACE_READ_BLOCK_BYTES);
             for (int block = 0; block < blocks; block++) {
-                String command = "dd if=" + snapshot + " bs=" + ExternalArtifactPaths.TRACE_READ_BLOCK_BYTES
+                int expected = (int) Math.min(ExternalArtifactPaths.TRACE_READ_BLOCK_BYTES,
+                        size - (long) block * ExternalArtifactPaths.TRACE_READ_BLOCK_BYTES);
+                // head -c 冻结前缀：文件在读取期间变长时仍只取本块预期字节。
+                String command = "dd if=" + path + " bs=" + ExternalArtifactPaths.TRACE_READ_BLOCK_BYTES
                         + " skip=" + block + " count=1 2>/dev/null"
+                        + " | head -c " + expected
                         + " | base64 | tr -d '\\r\\n'";
                 CommandResult chunk = sandbox.command(sandboxId, new CommandRequest(
                         command, ExternalArtifactPaths.WORKING_DIRECTORY, Duration.ofSeconds(15),
                         ExternalArtifactPaths.SANDBOX_UID, ExternalArtifactPaths.SANDBOX_GID));
                 if (chunk.exitCode() != 0) {
                     throw ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.of(
-                            "TRACE_READ_FAILED", "trace block command failed", null);
+                            "TRACE_READ_FAILED",
+                            "trace block command failed"
+                                    + detailSuffix(chunk.exitCode(), chunk.stderr()),
+                            null);
                 }
                 String encoded = chunk.stdout() == null ? "" : chunk.stdout().replaceAll("\\s+", "");
                 byte[] decoded;
@@ -92,14 +93,13 @@ public final class AgentTraceReader {
                     throw ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.of(
                             "TRACE_READ_FAILED", "trace block is not valid Base64", malformed);
                 }
-                int expected = (int) Math.min(ExternalArtifactPaths.TRACE_READ_BLOCK_BYTES,
-                        size - (long) block * ExternalArtifactPaths.TRACE_READ_BLOCK_BYTES);
                 if (decoded.length != expected) {
                     throw ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.of(
                             "TRACE_READ_FAILED",
                             "trace block length mismatch (block=" + block
                                     + " expected=" + expected
-                                    + " actual=" + decoded.length + ")",
+                                    + " actual=" + decoded.length
+                                    + "; file may have shrunk or been truncated during read)",
                             null);
                 }
                 output.write(decoded, 0, decoded.length);
@@ -115,15 +115,101 @@ public final class AgentTraceReader {
         } catch (RuntimeException failure) {
             throw ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.of(
                     "TRACE_READ_FAILED", "trace could not be read safely", failure);
-        } finally {
-            try {
-                sandbox.command(sandboxId, new CommandRequest(
-                        "rm -f " + snapshot,
-                        ExternalArtifactPaths.WORKING_DIRECTORY, Duration.ofSeconds(5),
-                        ExternalArtifactPaths.SANDBOX_UID, ExternalArtifactPaths.SANDBOX_GID));
-            } catch (RuntimeException ignored) {
-                // 尽力清理 trace tmpfs 上的 snapshot。
+        }
+    }
+
+    private static long measureFrozenSize(SandboxRuntimeClient sandbox, String sandboxId,
+                                          String path, boolean required) {
+        int attempts = required ? MISSING_TRACE_ATTEMPTS : 1;
+        CommandResult last = null;
+        for (int attempt = 0; attempt < attempts; attempt++) {
+            // 不 cp 整文件：避免轨迹接近 tmpfs 上限时 ENOSPC。
+            // 必需文件缺失用独立哨兵，便于与「尺寸命令失败」区分。
+            String sizeCommand = required
+                    ? "if [ ! -f " + path + " ]; then printf 'MISSING\\n'; exit 3; fi; "
+                    + "wc -c < " + path
+                    : "if [ -f " + path + " ]; then wc -c < " + path
+                    + "; else printf '0\\n'; fi";
+            CommandResult sizeResult = sandbox.command(sandboxId, new CommandRequest(
+                    sizeCommand, ExternalArtifactPaths.WORKING_DIRECTORY, Duration.ofSeconds(20),
+                    ExternalArtifactPaths.SANDBOX_UID, ExternalArtifactPaths.SANDBOX_GID));
+            last = sizeResult;
+            String sizeText = sizeResult.stdout() == null ? "" : sizeResult.stdout().strip();
+            if (sizeResult.exitCode() == 3 || "MISSING".equals(sizeText)) {
+                if (attempt + 1 < attempts) {
+                    sleepBackoff();
+                    continue;
+                }
+                throw ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.of(
+                        "TRACE_READ_FAILED",
+                        "required Agent trace file is missing at " + path,
+                        null);
+            }
+            if (sizeResult.exitCode() != 0 || !sizeText.matches("[0-9]{1,10}")) {
+                throw ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.of(
+                        "TRACE_READ_FAILED",
+                        "trace size could not be read"
+                                + detailSuffix(sizeResult.exitCode(), sizeResult.stderr())
+                                + (sizeText.isBlank() ? "" : "; stdout=" + truncate(sizeText, 80)),
+                        null);
+            }
+            return Long.parseLong(sizeText);
+        }
+        throw ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.of(
+                "TRACE_READ_FAILED",
+                "trace size could not be read"
+                        + (last == null ? "" : detailSuffix(last.exitCode(), last.stderr())),
+                null);
+    }
+
+    private static void sleepBackoff() {
+        long waitMillis = missingBackoffMillis();
+        if (waitMillis <= 0L) {
+            return;
+        }
+        try {
+            Thread.sleep(waitMillis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw ExternalArtifactTaskExecutor.ExternalArtifactExecutionException.of(
+                    "TRACE_READ_FAILED", "trace read interrupted while waiting for file", interrupted);
+        }
+    }
+
+    /** 测试可设 {@code veyrion.traceRead.missingBackoffMillis=0} 跳过等待。 */
+    private static long missingBackoffMillis() {
+        String override = System.getProperty("veyrion.traceRead.missingBackoffMillis");
+        if (override == null || override.isBlank()) {
+            return MISSING_TRACE_BACKOFF_MILLIS;
+        }
+        try {
+            return Math.max(0L, Long.parseLong(override.strip()));
+        } catch (NumberFormatException ignored) {
+            return MISSING_TRACE_BACKOFF_MILLIS;
+        }
+    }
+
+    private static String detailSuffix(int exitCode, String stderr) {
+        String err = stderr == null ? "" : stderr.replaceAll("\\s+", " ").strip();
+        if (err.length() > 160) {
+            err = err.substring(0, 160);
+        }
+        StringBuilder detail = new StringBuilder(" (exit=").append(exitCode);
+        if (!err.isBlank()) {
+            detail.append("; stderr=").append(err);
+            String lower = err.toLowerCase();
+            if (lower.contains("no space left") || lower.contains("enospc")) {
+                detail.append("; likely tmpfs exhausted — avoid full-file snapshot copies");
             }
         }
+        detail.append(')');
+        return detail.toString();
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null || value.length() <= max) {
+            return value == null ? "" : value;
+        }
+        return value.substring(0, max);
     }
 }

@@ -68,8 +68,14 @@ public final class ExternalArtifactDiagnostics {
                 .replaceAll("(?i)bearer\\s+[A-Za-z0-9._~+/-]{4,}", "Bearer [REDACTED]")
                 .replaceAll("\\bsk-[A-Za-z0-9_-]{4,}\\b", "[REDACTED]")
                 .replaceAll("[\\p{Cntrl}&&[^\\n\\t]]", " ").strip();
+        // 将显式执行码并入分类种子，避免 PROBE_EVENT_* 被误标为 UNKNOWN_STARTUP_FAILURE。
+        String classifySeed = value;
+        if (failure instanceof ExternalArtifactTaskExecutor.ExternalArtifactExecutionException external
+                && external.code() != null && !external.code().isBlank()) {
+            classifySeed = external.code() + " " + value;
+        }
         SandboxStartupDiagnostics.Diagnosis diagnosis =
-                SandboxStartupDiagnostics.classify(extractExitCode(value), value);
+                SandboxStartupDiagnostics.classify(extractExitCode(value), classifySeed);
         String classified = "[" + diagnosis.failureClass().name() + "] " + diagnosis.summary()
                 + " | " + value;
         return classified.length() <= 2048 ? classified : classified.substring(0, 2048);

@@ -2,6 +2,7 @@ package com.aq.jvmsentinel.sandbox;
 
 import com.aq.jvmsentinel.control.JsonCodec;
 import com.aq.jvmsentinel.worker.ResourceBudget;
+import com.aq.jvmsentinel.worker.docker.SandboxLaunchCommandBuilder;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -163,9 +164,14 @@ public final class OpenSandboxClient implements SandboxRuntimeClient {
                 "ephemeral-storage", budget.maxDiskBytes() + "B"));
         body.put("entrypoint", request.entrypoint());
         body.put("networkPolicy", Map.of("defaultAction", "deny", "egress", List.of()));
+        // 单挂载 /tmp 同时承载轨迹与 java.io.tmpdir：至少为 request.tmpfs（已含
+        // maxTrace+headroom）；若 disk 允许则抬到 /tmp 下限（128MiB）或与轨迹侧对齐。
+        long preferredTmp = SandboxLaunchCommandBuilder.resolveTmpTmpfsBytes(request.tmpfsBytes());
+        long tmpfsSize = Math.min(request.resourceBudget().maxDiskBytes(),
+                Math.max(request.tmpfsBytes(), preferredTmp));
         body.put("tmpfs", List.of(Map.of(
                 "destination", "/tmp",
-                "sizeBytes", request.tmpfsBytes(),
+                "sizeBytes", tmpfsSize,
                 "mode", "0700",
                 "uid", 10000,
                 "gid", 10000)));

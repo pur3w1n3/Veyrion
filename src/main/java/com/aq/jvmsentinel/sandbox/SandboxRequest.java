@@ -1,7 +1,9 @@
 package com.aq.jvmsentinel.sandbox;
 
+import com.aq.jvmsentinel.worker.ExternalArtifactPaths;
 import com.aq.jvmsentinel.worker.ResourceBudget;
 import com.aq.jvmsentinel.worker.WorkerCapability;
+import com.aq.jvmsentinel.worker.docker.SandboxLaunchCommandBuilder;
 
 import java.util.List;
 import java.util.Objects;
@@ -32,8 +34,16 @@ public record SandboxRequest(String image, List<String> entrypoint, int timeoutS
             throw new IllegalArgumentException("at most one read-only artifact is supported");
         }
         readOnlyArtifacts = List.copyOf(readOnlyArtifacts);
-        if (tmpfsBytes <= 0 || tmpfsBytes > resourceBudget.maxDiskBytes()) {
+        if (tmpfsBytes <= 0
+                || tmpfsBytes > resourceBudget.maxDiskBytes()
+                || tmpfsBytes > ExternalArtifactPaths.MAX_TMPFS_BYTES) {
             throw new IllegalArgumentException("tmpfsBytes is outside the disk budget");
+        }
+        long minTraceTmpfs = SandboxLaunchCommandBuilder.resolveTraceTmpfsBytes(
+                resourceBudget.maxTraceBytes());
+        if (tmpfsBytes < minTraceTmpfs) {
+            throw new IllegalArgumentException(
+                    "tmpfsBytes must be at least maxTraceBytes + tmpfs headroom");
         }
         if (timeoutSeconds < 60 || timeoutSeconds > 86_400
                 || timeoutSeconds > resourceBudget.maxWallClockSeconds()) {

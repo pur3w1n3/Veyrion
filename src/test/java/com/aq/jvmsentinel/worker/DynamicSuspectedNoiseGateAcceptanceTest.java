@@ -106,6 +106,33 @@ public final class DynamicSuspectedNoiseGateAcceptanceTest {
                 SandboxStartupDiagnostics.classify(71, "probe_jvm_status=3");
         check(probe.failureClass() == SandboxStartupDiagnostics.FailureClass.PROBE_JVM_FAILED,
                 "exit 71 is PROBE_JVM_FAILED");
+        SandboxStartupDiagnostics.Diagnosis traceRead =
+                SandboxStartupDiagnostics.classify(-1, "trace size could not be read (exit=1; stderr=No space left on device)");
+        check(traceRead.failureClass() == SandboxStartupDiagnostics.FailureClass.TRACE_READ_FAILED
+                        && "TRACE_READ_FAILED".equals(traceRead.code())
+                        && traceRead.summary().toLowerCase().contains("tmpfs"),
+                "trace size/ENOSPC is TRACE_READ_FAILED, not UNKNOWN_STARTUP_FAILURE");
+        SandboxStartupDiagnostics.Diagnosis traceMissing =
+                SandboxStartupDiagnostics.classify(-1, "required Agent trace file is missing at /tmp/veyrion-trace/agent-events.jsonl");
+        check(traceMissing.failureClass() == SandboxStartupDiagnostics.FailureClass.TRACE_READ_FAILED
+                        && traceMissing.summary().toLowerCase().contains("missing"),
+                "missing agent trace is TRACE_READ_FAILED with missing summary");
+        SandboxStartupDiagnostics.Diagnosis coverage =
+                SandboxStartupDiagnostics.classify(-1,
+                        "PROBE_EVENT_COVERAGE_INCOMPLETE loopback HTTP probe evidence does not cover "
+                                + "the submitted plan (expected=171, observed=171, loopbackProbeEvents=256, "
+                                + "httpEvents=57866, missing=32: POST /x track=UNAUTH)");
+        check(coverage.failureClass()
+                        == SandboxStartupDiagnostics.FailureClass.PROBE_EVENT_COVERAGE_INCOMPLETE
+                        && "PROBE_EVENT_COVERAGE_INCOMPLETE".equals(coverage.code()),
+                "probe coverage incomplete must not fall through to UNKNOWN_STARTUP_FAILURE");
+        SandboxStartupDiagnostics.Diagnosis emptyProbes =
+                SandboxStartupDiagnostics.classify(-1,
+                        "EMPTY_PROBE_EVENTS loopback HTTP probe evidence does not cover the submitted plan "
+                                + "(expected=1, observed=0, loopbackProbeEvents=0, httpEvents=12, missing=1: GET /)");
+        check(emptyProbes.failureClass() == SandboxStartupDiagnostics.FailureClass.EMPTY_PROBE_EVENTS
+                        && "EMPTY_PROBE_EVENTS".equals(emptyProbes.code()),
+                "zero loopback probe events classify as EMPTY_PROBE_EVENTS");
         check(SandboxStartupDiagnostics.isDependencyPort(3306), "3306 is dependency port");
         check(SandboxStartupDiagnostics.isDependencyPort(6379), "6379 is dependency port");
         check(SandboxStartupDiagnostics.isDependencyPort(5432), "5432 is dependency port");

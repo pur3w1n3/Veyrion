@@ -23,6 +23,12 @@ public final class SandboxStartupDiagnostics {
         BUDGET_EXCEEDED,
         PROBE_JVM_FAILED,
         RETAINED_SANDBOX_FAILED,
+        /** 探针/启动已完成但轨迹读取失败 — 不是应用未启动。 */
+        TRACE_READ_FAILED,
+        /** 探针计划证据缺失或未覆盖 — 不是沙箱启动失败。 */
+        EMPTY_PROBE_EVENTS,
+        PROBE_EVENT_COVERAGE_INCOMPLETE,
+        MALFORMED_PROBE_EVENTS,
         UNKNOWN_STARTUP_FAILURE
     }
 
@@ -60,12 +66,44 @@ public final class SandboxStartupDiagnostics {
         details.put("diagnosticLength", text.length());
 
         String lower = text.toLowerCase(Locale.ROOT);
-        if (lower.contains("trace_read_failed") || lower.contains("trace block length mismatch")
+        if (lower.contains("malformed_probe_events")
+                || lower.contains("probe events are not valid jsonl")) {
+            return new Diagnosis(FailureClass.MALFORMED_PROBE_EVENTS, "MALFORMED_PROBE_EVENTS",
+                    "Loopback HTTP probe event stream is malformed or truncated", details);
+        }
+        if (lower.contains("empty_probe_events")
+                || (lower.contains("does not cover the submitted plan")
+                && lower.contains("loopbackprobeevents=0"))) {
+            return new Diagnosis(FailureClass.EMPTY_PROBE_EVENTS, "EMPTY_PROBE_EVENTS",
+                    "Non-empty probe plan produced zero LoopbackHttpProbe events", details);
+        }
+        if (lower.contains("probe_event_coverage_incomplete")
+                || lower.contains("does not cover the submitted plan")) {
+            return new Diagnosis(FailureClass.PROBE_EVENT_COVERAGE_INCOMPLETE,
+                    "PROBE_EVENT_COVERAGE_INCOMPLETE",
+                    "Loopback HTTP probe evidence does not cover the submitted plan", details);
+        }
+        if (lower.contains("trace_read_failed")
+                || lower.contains("trace block length mismatch")
                 || lower.contains("trace size could not be read")
-                || lower.contains("trace block is not valid base64")) {
-            return new Diagnosis(FailureClass.UNKNOWN_STARTUP_FAILURE, "TRACE_READ_FAILED",
-                    "Agent/probe trace could not be read from the sandbox (often a live append race)",
-                    details);
+                || lower.contains("trace block is not valid base64")
+                || lower.contains("required agent trace")
+                || lower.contains("trace block command failed")
+                || lower.contains("trace length changed during read")
+                || lower.contains("trace could not be read safely")
+                || lower.contains("trace file is missing")) {
+            String summary;
+            if (lower.contains("no space left") || lower.contains("enospc")
+                    || lower.contains("tmpfs exhausted")) {
+                summary = "Agent/probe trace read failed because the sandbox trace tmpfs is exhausted";
+            } else if (lower.contains("file is missing") || lower.contains("trace is empty")) {
+                summary = "Agent/probe trace file was missing or empty after probes completed";
+            } else if (lower.contains("length mismatch") || lower.contains("length changed")) {
+                summary = "Agent/probe trace changed while being read (live append or truncate)";
+            } else {
+                summary = "Agent/probe trace could not be read from the sandbox after probes completed";
+            }
+            return new Diagnosis(FailureClass.TRACE_READ_FAILED, "TRACE_READ_FAILED", summary, details);
         }
         if (exitCode == 70 || lower.contains("wait-http-ready")) {
             if (mentionsDependencyPort(text)) {

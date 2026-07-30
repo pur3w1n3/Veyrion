@@ -36,7 +36,24 @@ public final class ExternalArtifactPaths {
     public static final long MAX_DISK_BYTES = 1024L * 1024 * 1024;
     public static final long MAX_TRACE_BYTES = 64L * 1024 * 1024;
     public static final long MAX_ARTIFACT_BYTES = 2L * 1024 * 1024 * 1024;
-    public static final long MAX_TMPFS_BYTES = 64L * 1024 * 1024;
+    /**
+     * 轨迹 tmpfs 相对 {@link #MAX_TRACE_BYTES}/{@code maxTraceBytes} 的固定余量。
+     * 覆盖同挂载上的 application.log、progress、probe-plan（≤3MiB）、WaitHttpReady
+     * stderr 与并发刷盘；避免轨迹写满后再写日志即 ENOSPC。取 32MiB（非百分比）：
+     * 小预算时也有绝对地板，大探针满额时余量仍可预期。
+     */
+    public static final long TMPFS_TRACE_HEADROOM_BYTES = 32L * 1024 * 1024;
+    /**
+     * 轨迹侧 tmpfs 上限：跟随 maxTrace 动态计算后的天花板（不再死卡 64MiB）。
+     * {@code MAX_TRACE_BYTES + TMPFS_TRACE_HEADROOM_BYTES} = 96MiB。
+     */
+    public static final long MAX_TMPFS_BYTES =
+            MAX_TRACE_BYTES + TMPFS_TRACE_HEADROOM_BYTES;
+    /**
+     * {@code /tmp}（{@code java.io.tmpdir}）独立下限。与轨迹挂载分离时，不得比轨迹侧
+     * 更小到立刻顶满；至少 128MiB，并与轨迹 tmpfs 取较大值。
+     */
+    public static final long MIN_TMP_TMPFS_BYTES = 128L * 1024 * 1024;
 
     private ExternalArtifactPaths() { }
 }
