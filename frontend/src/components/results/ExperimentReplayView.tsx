@@ -51,7 +51,7 @@ export function ExperimentReplayView({
               <small>{card.dependencyMode} · {card.verificationStatus}</small>
             </div>
             <div className="button-row">
-              <StatusPill status={card.verificationStatus} />
+              <StatusPill status={card.verificationStatus} english={english} />
               <button
                 type="button"
                 className="secondary-button"

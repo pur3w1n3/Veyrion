@@ -28,7 +28,7 @@ public final class AgentJsonlTraceConverter {
             "class", "method", "timestamp", "thread", "detail");
     private static final Set<String> EVENT_TYPES = Set.of(
             "AGENT_STARTED", "INSTRUMENTATION_CAPABILITY", "INSTRUMENTATION_ERROR",
-            "CLASS_LOAD", "HTTP", "HTTP_CLIENT", "FILE", "JDBC", "PROCESS", "BRANCH_COVERAGE");
+            "CLASS_LOAD", "HTTP", "HTTP_CLIENT", "FILE", "JDBC", "JNDI", "PROCESS", "BRANCH_COVERAGE");
     private static final Set<String> PROVENANCE_KINDS =
             Set.of("RUNTIME_OBSERVED", "AGENT_INSTRUMENTED", "APPLICATION_REPORTED");
 

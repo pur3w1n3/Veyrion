@@ -220,6 +220,21 @@ public final class InMemoryTaskCoordinator {
         return List.copyOf(tasks.values());
     }
 
+    /**
+     * Drops a terminal task from the in-memory coordinator after durable history deletion.
+     * Active leases must be cancelled first (fail-closed).
+     */
+    public synchronized void forget(TaskScope scope) {
+        Objects.requireNonNull(scope, "scope");
+        TaskSnapshot current = tasks.get(scope);
+        if (current == null) return;
+        if (Set.of(TaskLifecycle.QUEUED, TaskLifecycle.LEASED, TaskLifecycle.RUNNING, TaskLifecycle.PAUSED)
+                .contains(current.lifecycle())) {
+            throw new IllegalStateException("active worker task must be cancelled before deletion");
+        }
+        tasks.remove(scope);
+    }
+
     private TaskSnapshot transitionWithLease(String operation, TaskScope scope, String leaseId, String workerId,
                                              TaskCheckpoint checkpoint, Object detail, String idempotencyKey,
                                              Set<TaskLifecycle> allowed, TaskLifecycle target) {

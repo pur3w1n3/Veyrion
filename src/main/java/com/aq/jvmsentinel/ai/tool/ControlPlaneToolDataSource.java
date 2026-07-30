@@ -9,6 +9,9 @@ import com.aq.jvmsentinel.analysis.kernel.CfgGraph;
 import com.aq.jvmsentinel.analysis.experiment.PathDebugWireHelper;
 import com.aq.jvmsentinel.analysis.experiment.PathTraceGapAdvisor;
 import com.aq.jvmsentinel.analysis.experiment.RuntimePostureOrchestrator;
+import com.aq.jvmsentinel.analysis.experiment.TracePlanCompiler;
+import com.aq.jvmsentinel.analysis.experiment.TracePlanObservationDiff;
+import com.aq.jvmsentinel.domain.pathdebug.TracePlan;
 import com.aq.jvmsentinel.control.JsonCodec;
 import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
 import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
@@ -99,6 +102,50 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         this.dynamicProbeExecutor = Objects.requireNonNull(dynamicProbeExecutor, "dynamicProbeExecutor");
         this.pathRunSource = Objects.requireNonNull(pathRunSource, "pathRunSource");
         this.experimentPlanAcceptor = Objects.requireNonNull(experimentPlanAcceptor, "experimentPlanAcceptor");
+    }
+
+    @Override
+    public Optional<FactRecord> getScanMemory(ToolExecutionContext.Scope scope, String section, String role) {
+        ControlPlaneStore.ScanRecord scan = scopedScan(scope);
+        List<ApiDtos.PathRunDto> runs = List.of();
+        try {
+            runs = List.copyOf(pathRunSource.pathRunsForScan(
+                    scan.dto().projectId(), scan.dto().artifactDigest(), scan.dto().scanId()));
+        } catch (RuntimeException ignored) {
+            runs = List.of();
+        }
+        Map<String, String> priors = new LinkedHashMap<>();
+        for (var job : store.aiJobs(scan.dto().projectId())) {
+            if (job == null || !scan.dto().scanId().equals(job.scanId())
+                    || !"COMPLETED".equals(job.status()) || job.conclusionJson() == null) {
+                continue;
+            }
+            try {
+                String summary = JSON.readTree(job.conclusionJson()).path("summary").asText("");
+                if (!summary.isBlank()) {
+                    priors.putIfAbsent(job.role().name(), summary.length() > 800
+                            ? summary.substring(0, 800) : summary);
+                }
+            } catch (Exception ignored) {
+                // skip malformed conclusion
+            }
+        }
+        Map<String, Object> full = com.aq.jvmsentinel.ai.memory.ScanMemoryBuilder.build(
+                store, scan.dto().scanId(), runs, priors);
+        String sec = section == null ? "INDEX" : section.trim();
+        Map<String, Object> body;
+        if ("ROLE_SLICE".equalsIgnoreCase(sec) && role != null && !role.isBlank()) {
+            try {
+                body = com.aq.jvmsentinel.ai.memory.ScanMemoryBuilder.roleSlice(
+                        full, com.aq.jvmsentinel.provider.AgentRole.valueOf(role.trim().toUpperCase()));
+            } catch (IllegalArgumentException badRole) {
+                body = com.aq.jvmsentinel.ai.memory.ScanMemoryBuilder.section(full, "INDEX");
+            }
+        } else {
+            body = com.aq.jvmsentinel.ai.memory.ScanMemoryBuilder.section(full, sec);
+        }
+        return Optional.of(new FactRecord(scope, "scan-memory:" + scan.dto().scanId() + ":" + sec.toUpperCase(),
+                JSON.valueToTree(body)));
     }
 
     @Override
@@ -1036,23 +1083,100 @@ public final class ControlPlaneToolDataSource implements ToolDataSource {
         } catch (RuntimeException ignored) {
             pathRuns = List.of();
         }
+        List<BytecodeFactIndex.TaintPath> taintPaths = StaticFactSnapshot.resolveTaintPaths(
+                store.staticFacts(scanId), scan.dto().sinks());
         ContrastLedger.Ledger ledger = ContrastLedger.build(
                 scan.dto().entries(),
                 scan.dto().sinks(),
                 scan.evidence(),
                 pathRuns,
-                StaticFactSnapshot.resolveTaintPaths(store.staticFacts(scanId), scan.dto().sinks()));
+                taintPaths);
         List<com.aq.jvmsentinel.analysis.CoverageGapProjector.CoverageGap> gaps =
                 com.aq.jvmsentinel.analysis.CoverageGapProjector.project(
-                        StaticFactSnapshot.resolveTaintPaths(store.staticFacts(scanId), scan.dto().sinks()),
-                        ledger.rows(), scan.dto().entries());
-        List<String> ids = new ArrayList<>();
-        for (var gap : gaps) {
-            if (gap.taintPathId() != null && !gap.taintPathId().isBlank()) {
-                ids.add(gap.taintPathId());
+                        taintPaths, ledger.rows(), scan.dto().entries());
+        Set<String> preferredEntries = new LinkedHashSet<>(tracePlanMissingEffectEntries(scan, taintPaths));
+        Set<String> preferredTaintIds = new LinkedHashSet<>();
+        for (BytecodeFactIndex.TaintPath path : taintPaths) {
+            if (path == null) {
+                continue;
+            }
+            ApiDtos.EntryDto bound = StaticFactSnapshot.findEntryForTaintSource(
+                    scan.dto().entries(), scan.evidence(), path);
+            if (bound != null && preferredEntries.contains(bound.id())) {
+                preferredTaintIds.add(path.id());
             }
         }
-        return List.copyOf(ids);
+        LinkedHashSet<String> ordered = new LinkedHashSet<>();
+        // TracePlan gap entry refs first so sandbox_probe coverageGapRef can target them.
+        for (String entryId : preferredEntries) {
+            ordered.add("traceplan-gap:" + entryId);
+        }
+        for (String taintId : preferredTaintIds) {
+            ordered.add(taintId);
+        }
+        for (var gap : gaps) {
+            if (gap.taintPathId() != null && !gap.taintPathId().isBlank()) {
+                ordered.add(gap.taintPathId());
+            }
+        }
+        return List.copyOf(ordered);
+    }
+
+    private List<String> tracePlanMissingEffectEntries(
+            ControlPlaneStore.ScanRecord scan,
+            List<BytecodeFactIndex.TaintPath> taintPaths) {
+        try {
+            List<TracePlan> plans = new ArrayList<>();
+            for (SQLiteControlPlanePersistence.TracePlanData row : store.loadTracePlansForScan(
+                    scan.dto().scanId())) {
+                if (row == null || row.payloadJson() == null || row.payloadJson().isBlank()) {
+                    continue;
+                }
+                try {
+                    plans.add(TracePlan.fromMap(JsonCodec.parseObject(row.payloadJson())));
+                } catch (RuntimeException ignored) {
+                    // skip
+                }
+            }
+            if (plans.isEmpty()) {
+                for (ApiDtos.EntryDto entry : scan.dto().entries()) {
+                    if (entry == null || entry.route() == null || entry.route().isBlank()) {
+                        continue;
+                    }
+                    if (!"HTTP".equalsIgnoreCase(entry.protocol())) {
+                        continue;
+                    }
+                    plans.add(TracePlanCompiler.compileFromStaticIr(
+                            entry, scan.dto().sinks(), scan.evidence(), taintPaths, List.of()));
+                    if (plans.size() >= 48) {
+                        break;
+                    }
+                }
+            }
+            List<PathTrace> traces = new ArrayList<>();
+            for (SQLiteControlPlanePersistence.PathTraceData row : store.loadPathTracesForScan(
+                    scan.dto().projectId(), scan.dto().artifactDigest(), scan.dto().scanId())) {
+                if (row == null) {
+                    continue;
+                }
+                PathTrace cached = store.pathTraceForPathRun(row.pathRunId());
+                if (cached != null) {
+                    traces.add(cached);
+                    continue;
+                }
+                if (row.payloadJson() != null && !row.payloadJson().isBlank()) {
+                    try {
+                        traces.add(PathTrace.fromMap(JsonCodec.parseObject(row.payloadJson())));
+                    } catch (RuntimeException ignored) {
+                        // skip
+                    }
+                }
+            }
+            return TracePlanObservationDiff.entriesWithMissingEffects(
+                    TracePlanObservationDiff.diffAll(plans, traces));
+        } catch (RuntimeException ignored) {
+            return List.of();
+        }
     }
 
     @Override

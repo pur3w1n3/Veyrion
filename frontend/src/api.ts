@@ -167,6 +167,11 @@ export type Finding = {
   /** Optional P0-12 SecurityHypothesis binding; absent on legacy findings. */
   hypothesisId?: string
   securityProperty?: string
+  /** FORCED/COVERAGE PathRun refs attached at serve time; never elevates VERIFIED. */
+  pathRunRefs?: string[]
+  /** INSTRUMENTATION_REACHABILITY or SCAN_AUTH_POSTURE when PathRun materials attach. */
+  postureProvenance?: string
+  postureKind?: string
 }
 
 /** CandidateRanker row from dashboard.rankedSinks (MVP-1). */
@@ -958,7 +963,7 @@ export interface SentinelApi {
   focusEntryProbe(scanId: string, entryId: string, body?: FocusEntryProbeRequest): Promise<FocusEntryProbeDto>
   replaySqlExperimentCard(scanId: string, cardId: string): Promise<FocusEntryProbeDto>
   updateScan(scanId: string, request: UpdateScanRequest): Promise<ScanDto>
-  deleteScan(scanId: string): Promise<void>
+  deleteScan(projectId: string, scanId: string): Promise<void>
   listProviders(): Promise<ProviderDto[]>
   createProvider(request: SaveProviderRequest): Promise<ProviderDto>
   updateProvider(providerId: string, request: Partial<SaveProviderRequest>): Promise<ProviderDto>
@@ -978,6 +983,7 @@ export interface SentinelApi {
   getScanCoverage(scanId: string): Promise<CoverageMatrixDto>
   getEvidenceGraph(scanId: string): Promise<EvidenceGraphDto>
   getScanHypotheses(scanId: string): Promise<ScanHypothesesDto>
+  getScanAiMemory(scanId: string, section?: string): Promise<Record<string, unknown>>
   getEvidence(evidenceId: string): Promise<EvidenceDto>
   subscribe(scanId: string, onEvent: (event: ScanEvent) => void, options?: SubscribeOptions): () => void
 }
@@ -1499,7 +1505,12 @@ export const parseFinding = (item: unknown, context?: { schemaVersion?: number; 
     confidence: item.confidence === undefined ? undefined : asFiniteNumber(item.confidence, 'finding.confidence', 0, 1),
     rootCause,
     hypothesisId: optionalText(item.hypothesisId),
-    securityProperty: optionalText(item.securityProperty)
+    securityProperty: optionalText(item.securityProperty),
+    pathRunRefs: item.pathRunRefs === undefined
+      ? undefined
+      : listOfText(item.pathRunRefs, 'finding.pathRunRefs', true),
+    postureProvenance: optionalText(item.postureProvenance),
+    postureKind: optionalText(item.postureKind)
   }
 }
 
@@ -2499,6 +2510,14 @@ export class HttpSentinelApi implements SentinelApi {
           detail.requestId
         )
       }
+      if (detail.code === 'SCAN_ACTIVE') {
+        throw new ApiRequestError(
+          `无法删除：该扫描仍有进行中的任务或模型作业未能取消${codeSuffix}${requestSuffix}。请稍后重试，或到「审计执行」取消后再删。`,
+          response.status,
+          detail.code,
+          detail.requestId
+        )
+      }
       throw new ApiRequestError(detail.message ? `${detail.message}${codeSuffix}${requestSuffix}` : `${operation} failed: ${response.status}`, response.status, detail.code, detail.requestId)
     }
     if (response.status === 204) return {}
@@ -2790,10 +2809,15 @@ export class HttpSentinelApi implements SentinelApi {
     return parseScan(response)
   }
 
-  async deleteScan(scanId: string): Promise<void> {
-    await this.request(`scans/${encodeURIComponent(asText(scanId, 'scanId'))}`, {
-      method: 'DELETE', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey())
-    }, 'delete scan')
+  async deleteScan(projectId: string, scanId: string): Promise<void> {
+    // 204 No Content = success; 409 SCAN_ACTIVE and other errors throw (never silent success).
+    await this.request(
+      `projects/${encodeURIComponent(asText(projectId, 'projectId'))}/scans/${encodeURIComponent(asText(scanId, 'scanId'))}`,
+      {
+        method: 'DELETE', credentials: 'include', headers: mutationHeaders(this.token, generatedIdempotencyKey())
+      },
+      'delete scan'
+    )
   }
 
   async listProviders(): Promise<ProviderDto[]> {
@@ -2930,6 +2954,16 @@ export class HttpSentinelApi implements SentinelApi {
       credentials: 'include', headers: jsonHeaders(this.token)
     }, 'scan hypotheses request')
     return parseScanHypotheses(response)
+  }
+
+  async getScanAiMemory(scanId: string, section = 'FULL'): Promise<Record<string, unknown>> {
+    const id = asText(scanId, 'scanId')
+    const sec = encodeURIComponent(section || 'FULL')
+    const response = await this.request(`scans/${encodeURIComponent(id)}/ai-memory?section=${sec}`, {
+      credentials: 'include', headers: jsonHeaders(this.token)
+    }, 'scan ai-memory request')
+    if (!isRecord(response)) throw new Error('invalid ai-memory response')
+    return response
   }
 
   async getEvidence(evidenceId: string): Promise<EvidenceDto> {
@@ -3125,7 +3159,7 @@ export class MockSentinelApi implements SentinelApi {
   async createDynamicTask(): Promise<DynamicTaskDto> { return this.unavailable('create dynamic artifact task') }
   async listDynamicTasks(): Promise<DynamicTaskDto[]> { return [] }
   async updateScan(): Promise<ScanDto> { return this.unavailable('update scan') }
-  async deleteScan(): Promise<void> { return this.unavailable('delete scan') }
+  async deleteScan(_projectId?: string, _scanId?: string): Promise<void> { return this.unavailable('delete scan') }
   async listProviders(): Promise<ProviderDto[]> { return [] }
   async createProvider(): Promise<ProviderDto> { return this.unavailable('create provider') }
   async updateProvider(): Promise<ProviderDto> { return this.unavailable('update provider') }
@@ -3264,6 +3298,19 @@ export class MockSentinelApi implements SentinelApi {
     const dashboard = await this.loadDashboard()
     const hypotheses = dashboard.hypotheses ?? []
     return { schemaVersion: 1, scanId, hypotheses, count: hypotheses.length }
+  }
+
+  async getScanAiMemory(scanId: string, section = 'FULL'): Promise<Record<string, unknown>> {
+    return {
+      schemaVersion: 1,
+      section,
+      memory: {
+        scanId,
+        counts: { entries: 0, sinks: 0, pathRuns: 0 },
+        toolsCatalog: [],
+        note: 'DEMO_ONLY'
+      }
+    }
   }
 
   async getEvidence(evidenceId: string): Promise<EvidenceDto> {

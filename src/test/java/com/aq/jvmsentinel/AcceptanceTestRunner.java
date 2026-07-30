@@ -61,6 +61,7 @@ public final class AcceptanceTestRunner {
             "com.aq.jvmsentinel.analysis.experiment.EntryParameterExperimentCompilerAcceptanceTest",
             "com.aq.jvmsentinel.domain.pathdebug.PathDebugContractAcceptanceTest",
             "com.aq.jvmsentinel.analysis.experiment.TracePlanCompilerAcceptanceTest",
+            "com.aq.jvmsentinel.analysis.experiment.TracePlanObservationDiffAcceptanceTest",
             "com.aq.jvmsentinel.analysis.experiment.PostureExperimentCompilerAcceptanceTest",
             "com.aq.jvmsentinel.analysis.experiment.WorldPackPlannerAcceptanceTest",
             "com.aq.jvmsentinel.analysis.experiment.RuntimePostureOrchestratorAcceptanceTest",

@@ -19,6 +19,8 @@ import com.aq.jvmsentinel.domain.ir.EvidenceGraphMerge;
 import com.aq.jvmsentinel.domain.ir.IrNode;
 import com.aq.jvmsentinel.domain.ir.ProgramNode;
 import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
+import com.aq.jvmsentinel.domain.universe.ArtifactUniverse;
+import com.aq.jvmsentinel.model.ContrastStatus;
 import com.aq.jvmsentinel.event.VersionedEvent;
 import com.aq.jvmsentinel.control.persistence.SQLiteControlPlanePersistence;
 import com.aq.jvmsentinel.model.ArtifactDescriptor;
@@ -320,6 +322,72 @@ public class ControlPlaneStore {
                                                 String createdAt) {
         replacePathTracesForTask(projectId, artifactDigest, scanId, taskId, traces, createdAt);
         replacePathRunsForTask(projectId, artifactDigest, scanId, taskId, pathRuns, createdAt);
+    }
+
+    /**
+     * AUDIT_FLOW IR2: full detector suite recompute after dynamic observation / OBS feedback.
+     * Merges hypotheses; never elevates finding verification. Returns merged hypothesis count.
+     */
+    public synchronized int recomputeDetectorsAfterObservation(String scanId) {
+        if (scanId == null || scanId.isBlank()) {
+            return 0;
+        }
+        ScanRecord scan;
+        try {
+            scan = requireScan(scanId);
+        } catch (RuntimeException missing) {
+            return 0;
+        }
+        Optional<StaticFactSnapshot> facts = staticFacts(scanId);
+        StaticFactSnapshot snapshot = facts.orElse(
+                new StaticFactSnapshot(StaticFactSnapshot.LEGACY_INCOMPLETE, List.of(), null));
+        ArtifactUniverse universe = snapshot.effectiveArtifactUniverse();
+        var result = com.aq.jvmsentinel.analysis.detector.AffectedDetectorRecompute.recompute(
+                scanId,
+                universe,
+                snapshot,
+                scan.dto().entries(),
+                scan.dto().sinks(),
+                scan.dto().dependencies(),
+                scan.evidence(),
+                List.of(),
+                null,
+                hypotheses(scanId),
+                com.aq.jvmsentinel.analysis.detector.DetectorRegistry.defaults());
+        if (result.ran() && !result.mergedHypotheses().isEmpty()) {
+            saveHypotheses(scanId, result.mergedHypotheses(), "ir2-detector-recompute");
+        }
+        return result.mergedTotal();
+    }
+
+    /**
+     * PATH/TRIAGE ↔ OBS loop predicate: STATIC_ONLY contrast rows remain (static hit, no pass-gate
+     * PathRun). Does <em>not</em> loop solely because CANDIDATE hypotheses exist — that would
+     * force full dynamic floods every audit.
+     */
+    public synchronized boolean hasPendingObservationLoopWork(String scanId) {
+        if (scanId == null || scanId.isBlank()) {
+            return false;
+        }
+        try {
+            ScanRecord scan = requireScan(scanId);
+            List<ApiDtos.PathRunDto> runs = loadPathRunsForScan(
+                    scan.dto().projectId(), scan.dto().artifactDigest(), scanId);
+            var ledger = com.aq.jvmsentinel.analysis.contrast.ContrastLedger.build(
+                    scan.dto().entries(),
+                    scan.dto().sinks(),
+                    scan.evidence(),
+                    runs,
+                    StaticFactSnapshot.resolveTaintPaths(staticFacts(scanId), scan.dto().sinks()));
+            for (var row : ledger.rows()) {
+                if (row != null && row.contrastStatus() == ContrastStatus.STATIC_ONLY) {
+                    return true;
+                }
+            }
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+        return false;
     }
 
     /**
@@ -1258,6 +1326,90 @@ public class ControlPlaneStore {
     }
 
     /**
+     * Permanently deletes one scan history item and its scan-scoped dependents.
+     * Callers must cancel active AI jobs / worker leases first (audit-history UX:
+     * cancel-then-delete); this method still fails closed if any remain active.
+     */
+    public synchronized void deleteScan(String scanId, String expectedProjectId, String actorId, String now) {
+        Objects.requireNonNull(scanId, "scanId");
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(now, "now");
+        ScanRecord existing = requireScan(scanId);
+        String projectId = existing.dto().projectId();
+        if (expectedProjectId != null && !expectedProjectId.equals(projectId)) {
+            throw new MissingRecordException("scan not found");
+        }
+        ProjectRecord project = requireProject(projectId);
+        if (persistence != null) {
+            for (SQLiteControlPlanePersistence.AiJobData job : persistence.listAiJobs(projectId)) {
+                if (scanId.equals(job.scanId())
+                        && ("QUEUED".equals(job.status()) || "RUNNING".equals(job.status()))) {
+                    throw new IllegalStateException("active AI job must be cancelled before scan deletion");
+                }
+            }
+            persistence.deleteScan(existing, actorId, now);
+        }
+        scans.remove(scanId, existing);
+        for (ApiDtos.EvidenceDto item : existing.evidence().values()) {
+            evidence.remove(item.evidenceId(), item);
+        }
+        for (ApiDtos.FindingDto item : existing.findings()) {
+            findings.remove(item.findingId(), item);
+        }
+        for (ApiDtos.AttackChainDto item : existing.chains()) {
+            chains.remove(item.chainId(), item);
+        }
+        staticFacts.remove(scanId);
+        List<SecurityHypothesis> priorHypotheses = hypothesesByScan.remove(scanId);
+        if (priorHypotheses != null) {
+            for (SecurityHypothesis item : priorHypotheses) {
+                hypothesesByScopedId.remove(scopedHypothesisKey(scanId, item.hypothesisId()), item);
+            }
+        }
+        rebuildGlobalHypothesisIndex();
+        analyzerProgramNodesByScan.remove(scanId);
+        List<HypothesisExperimentPlan> priorPlans = hypothesisPlansByScan.remove(scanId);
+        if (priorPlans != null) {
+            for (HypothesisExperimentPlan plan : priorPlans) {
+                hypothesisPlansById.remove(plan.experimentPlanId(), plan);
+                probeHypothesisBindings.remove(plan.experimentPlanId());
+            }
+        }
+        for (String experimentPlanId : postureExperimentsForScan(scanId).keySet()) {
+            postureExperimentsById.remove(experimentPlanId);
+        }
+        pathTracesByPathRunId.entrySet().removeIf(entry -> {
+            PathTrace trace = entry.getValue();
+            if (trace == null) return true;
+            return containsScanToken(trace.pathTraceId(), scanId)
+                    || containsScanToken(trace.pathRunId(), scanId)
+                    || containsScanToken(trace.experimentPlanId(), scanId)
+                    || containsScanToken(trace.tracePlanId(), scanId);
+        });
+        pathTraceEvidenceDeltas.entrySet().removeIf(entry -> containsScanToken(entry.getKey(), scanId));
+        Set<String> removedHypothesisIds = new java.util.HashSet<>();
+        if (priorHypotheses != null) {
+            for (SecurityHypothesis item : priorHypotheses) {
+                removedHypothesisIds.add(item.hypothesisId());
+            }
+        }
+        if (!removedHypothesisIds.isEmpty()) {
+            pendingIncrementalSubjects.removeIf(ref -> ref != null
+                    && removedHypothesisIds.contains(ref.hypothesisId()));
+        }
+        synchronized (project) {
+            if (scanId.equals(project.latestScanId)) {
+                project.latestScanId = scans.values().stream()
+                        .filter(record -> projectId.equals(record.dto().projectId()))
+                        .max(Comparator.comparing((ScanRecord record) -> record.dto().createdAt())
+                                .thenComparing(record -> record.dto().scanId()))
+                        .map(record -> record.dto().scanId())
+                        .orElse(null);
+            }
+        }
+    }
+
+    /**
      * Appends evidence onto an existing in-memory scan snapshot (e.g. DYNAMIC_TAINT_UPDATE).
      * Does not rewrite the durable scan payload; callers may persist separately later.
      */
@@ -1419,6 +1571,10 @@ public class ControlPlaneStore {
 
     private static String scopedHypothesisKey(String scanId, String hypothesisId) {
         return scanId + "\u0000" + hypothesisId;
+    }
+
+    private static boolean containsScanToken(String value, String scanId) {
+        return value != null && !value.isBlank() && scanId != null && value.contains(scanId);
     }
 
     private void rebuildGlobalHypothesisIndex() {

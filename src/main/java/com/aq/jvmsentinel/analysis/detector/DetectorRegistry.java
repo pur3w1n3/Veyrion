@@ -21,6 +21,7 @@ public final class DetectorRegistry {
                 new DangerousConfigDetector(),
                 new DeserializationConfigDetector(),
                 new HardcodedRememberMeCipherDetector(),
+                new HardcodedJwtSignKeyDetector(),
                 new DependencyVersionDetector(),
                 new ResourceLifecycleDetector(),
                 new StateSequenceDetector(),

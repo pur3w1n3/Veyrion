@@ -68,6 +68,7 @@ import com.aq.jvmsentinel.worker.ProbeBudgetExplainer;
 import com.aq.jvmsentinel.worker.SqlExperimentCardBuilder;
 import com.aq.jvmsentinel.ai.AiJobOrchestrator;
 import com.aq.jvmsentinel.ai.AuditPipelineCoordinator;
+import com.aq.jvmsentinel.ai.AuthBypassFeasibility;
 import com.aq.jvmsentinel.ai.tool.ControlPlaneToolDataSource;
 import com.aq.jvmsentinel.ai.tool.EntryRefResolver;
 import com.aq.jvmsentinel.ai.tool.ToolDataSource;
@@ -456,6 +457,33 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
             @Override
             public void releaseRetainedSandbox(AuditPipelineCoordinator.Arm arm) {
                 releaseRetainedSandboxForScan(arm.scanId());
+            }
+
+            @Override
+            public boolean hasDynamicAuthEvidence(String scanId) {
+                try {
+                    ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
+                    List<ApiDtos.PathRunDto> runs = mergedPathRunsForScan(
+                            scan.dto().projectId(), scan.dto().artifactDigest(), scanId);
+                    return AuthBypassFeasibility.hasConfirmableDynamicAuthEvidence(runs);
+                } catch (RuntimeException missing) {
+                    return false;
+                }
+            }
+
+            @Override
+            public void recomputeDetectorsAfterObservation(String scanId) {
+                store.recomputeDetectorsAfterObservation(scanId);
+            }
+
+            @Override
+            public boolean hasPendingObservationLoopWork(String scanId) {
+                return store.hasPendingObservationLoopWork(scanId);
+            }
+
+            @Override
+            public int observationLoopMax() {
+                return AuditPipelineCoordinator.resolveObservationLoopMax();
             }
         });
         this.aiJobOrchestrator.setTerminalListener(auditPipeline::onAiJobFinished);
@@ -1640,6 +1668,40 @@ public final class ControlPlaneServer implements AutoCloseable, ControlPlaneRout
         }
         Map<String, Object> body = scanQueryHttp.hypothesesBody(scanId)
                 .orElseThrow(() -> new ApiException(404, "SCAN_NOT_FOUND", "scan not found"));
+        sendJson(exchange, 200, body);
+    }
+
+    @Override public void sendScanAiMemory(HttpExchange exchange, String scanId) throws IOException {
+        ControlPlaneStore.ScanRecord scan = store.requireScan(scanId);
+        String section = query(exchange.getRequestURI(), "section");
+        if (section == null || section.isBlank()) {
+            section = "FULL";
+        }
+        List<ApiDtos.PathRunDto> runs = mergedPathRunsForScan(
+                scan.dto().projectId(), scan.dto().artifactDigest(), scanId);
+        Map<String, String> priors = new LinkedHashMap<>();
+        for (var job : store.aiJobs(scan.dto().projectId())) {
+            if (job == null || !scanId.equals(job.scanId()) || !"COMPLETED".equals(job.status())
+                    || job.conclusionJson() == null) {
+                continue;
+            }
+            try {
+                Object summaryObj = JsonCodec.parseObject(job.conclusionJson()).get("summary");
+                String summary = summaryObj == null ? "" : String.valueOf(summaryObj).trim();
+                if (!summary.isBlank()) {
+                    priors.putIfAbsent(job.role().name(),
+                            summary.length() > 800 ? summary.substring(0, 800) : summary);
+                }
+            } catch (RuntimeException ignored) {
+                // skip
+            }
+        }
+        Map<String, Object> full = com.aq.jvmsentinel.ai.memory.ScanMemoryBuilder.build(
+                store, scanId, runs, priors);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("schemaVersion", ApiDtos.SCHEMA_VERSION);
+        body.put("section", section.trim().toUpperCase(Locale.ROOT));
+        body.put("memory", com.aq.jvmsentinel.ai.memory.ScanMemoryBuilder.section(full, section));
         sendJson(exchange, 200, body);
     }
 

@@ -23,9 +23,10 @@ public final class FlowableDeployExperimentPack implements AnalysisPack {
         if (entryRoutes == null) return false;
         for (String route : entryRoutes) {
             String value = route == null ? "" : route.toLowerCase(Locale.ROOT);
-            if (value.contains("flowable") || value.contains("deploy")
-                    || value.contains("bpmn") || value.contains("process-definition")
-                    || value.contains("repository")) {
+            if (value.contains("flowable") || value.contains("activiti")
+                    || value.contains("camunda") || value.contains("blade-flow")
+                    || value.contains("deploy") || value.contains("bpmn")
+                    || value.contains("process-definition") || value.contains("repository")) {
                 return true;
             }
         }

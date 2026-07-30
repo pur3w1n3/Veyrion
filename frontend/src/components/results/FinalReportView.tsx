@@ -1,10 +1,11 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AiJobDto } from '../../api'
-import { DOWNLOAD_ARTIFACTS } from '../../guiSemantics'
+import { DOWNLOAD_ARTIFACTS, RESULTS_VIEW_META, type ResultsViewId } from '../../guiSemantics'
 import { jobStatusLabel } from '../../labels'
 import { Notice } from '../Common'
-import type { ResultsViewId } from '../../guiSemantics'
+
+const EMPTY_NAV_VIEWS = ['findings', 'pathRuns', 'diagnostics', 'downloads'] as const
 
 export function FinalReportView({
   english,
@@ -34,7 +35,7 @@ export function FinalReportView({
       <div className="results-view__head">
         <div>
           <p className="eyebrow">{english ? 'FINAL REPORT' : '最终报告'}</p>
-          <h2>{english ? 'Audit conclusion index' : '审计结论索引'}</h2>
+          <h2>{english ? 'Audit conclusion' : '审计结论'}</h2>
         </div>
         <div className="button-row">
           <span className="inference-badge">{english ? 'MODEL INFERENCE' : '模型推断'}</span>
@@ -50,16 +51,27 @@ export function FinalReportView({
       </div>
 
       {reportError && <Notice kind="error">{reportError}</Notice>}
-      {reportLoading && <p className="empty-state">{english ? 'Loading report events for this scan…' : '正在加载当前扫描的报告事件…'}</p>}
-
-      {!reportLoading && reportSummary && <>
-        <div className="ai-report veyrion-long-text"><ReactMarkdown skipHtml remarkPlugins={[remarkGfm]}>{reportSummary}</ReactMarkdown></div>
-        <p className="form-help">
-          {reportJob?.aiJobId} · {reportJob?.providerId} · {reportJob?.model} ·{' '}
-          {reportJob?.outputLanguage === 'ZH_CN' ? '简体中文' : (reportJob?.outputLanguage ?? (english ? 'UNKNOWN' : '未知'))}。
-          {english ? 'Evidence-grounded model inference, not VERIFIED.' : '受证据约束的模型推断，不等于已验证。'}
+      {reportLoading && (
+        <p className="empty-state">
+          {english ? 'Loading report events for this scan…' : '正在加载当前扫描的报告事件…'}
         </p>
-      </>}
+      )}
+
+      {!reportLoading && reportSummary && (
+        <>
+          <div className="ai-report veyrion-long-text">
+            <ReactMarkdown skipHtml remarkPlugins={[remarkGfm]}>{reportSummary}</ReactMarkdown>
+          </div>
+          <p className="form-help">
+            {reportJob?.aiJobId} · {reportJob?.providerId} · {reportJob?.model} ·{' '}
+            {reportJob?.outputLanguage === 'ZH_CN'
+              ? (english ? 'Simplified Chinese' : '简体中文')
+              : (reportJob?.outputLanguage ?? (english ? 'UNKNOWN' : '未知'))}
+            。
+            {english ? 'Evidence-grounded model inference, not VERIFIED.' : '受证据约束的模型推断，不等于已验证。'}
+          </p>
+        </>
+      )}
 
       {reportEmpty && (
         <div className="results-empty-report">
@@ -67,7 +79,7 @@ export function FinalReportView({
             <p className="empty-state">
               {english
                 ? `Report job ${reportJob.aiJobId} is ${reportJob.status}${reportJob.errorCode ? ` · ${reportJob.errorCode}` : ''}; no final inference summary.`
-                : `报告任务 ${reportJob.aiJobId} 当前为 ${jobStatusLabel(reportJob.status)}${reportJob.errorCode ? ` · ${reportJob.errorCode}` : ''}，尚无最终推断摘要。`}
+                : `报告任务 ${reportJob.aiJobId} 当前为 ${jobStatusLabel(reportJob.status, false)}${reportJob.errorCode ? ` · ${reportJob.errorCode}` : ''}，尚无最终推断摘要。`}
             </p>
           ) : !reportError ? (
             <p className="empty-state">
@@ -82,13 +94,13 @@ export function FinalReportView({
           ) : null}
           <p className="form-help">
             {english
-              ? 'Structured findings, PathRuns and coverage remain available in other sub-views.'
-              : '结构化发现、PathRun 与覆盖仍可在其他子页审阅。'}
+              ? 'Structured findings and PathRuns remain available in other sub-views.'
+              : '结构化发现与 PathRun 仍可在其他子页审阅。'}
           </p>
           <div className="results-view-links">
-            {(['findings', 'pathRuns', 'coverage', 'diagnostics'] as const).map((view) => (
+            {EMPTY_NAV_VIEWS.map((view) => (
               <button key={view} type="button" className="secondary-button" onClick={() => onNavigate(view)}>
-                {view}
+                {english ? RESULTS_VIEW_META[view].en : RESULTS_VIEW_META[view].zh}
               </button>
             ))}
           </div>

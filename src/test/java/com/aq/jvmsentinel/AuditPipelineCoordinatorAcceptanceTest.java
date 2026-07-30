@@ -35,6 +35,10 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
         staleAttemptAndRetryInvalidateOldCallbacks();
         failedExpectedJobDisarmsWithoutEnqueue();
         triageCompletionReleasesRetainedSandbox();
+        skipsAuthBypassConfirmWithoutEvidence();
+        staticContinuesWhenDynamicWorkerUnavailable();
+        pathLoopsToObservationThenTriage();
+        check(AuditPipelineCoordinator.resolveObservationLoopMax() >= 0, "obs loop max resolves");
         System.out.println("AuditPipelineCoordinatorAcceptanceTest passed ("
                 + ASSERTIONS.get() + " assertions)");
     }
@@ -138,6 +142,65 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
                 "TRIAGE completion enqueues REPORT_GENERATION");
     }
 
+    private static void skipsAuthBypassConfirmWithoutEvidence() throws Exception {
+        Fixture fixture = new Fixture();
+        fixture.hasAuthEvidence = false;
+        AuditPipelineCoordinator coordinator = fixture.coordinator;
+        coordinator.armForJob("scan-skip-auth", "project-a", "operator-a", AiOutputLanguage.ZH_CN,
+                PipelineStage.AUTH_ANALYSIS, "job-auth-skip");
+        coordinator.onAiJobFinished(job("job-auth-skip", "scan-skip-auth", AgentRole.AUTH_ANALYSIS, "COMPLETED"));
+        check(fixture.dynamicCreated.await(3, TimeUnit.SECONDS), "AUTH enqueues dynamic");
+        String taskId = fixture.lastTaskId;
+        dynamicFinished(coordinator, "scan-skip-auth", taskId);
+        check(fixture.verifyCreated.await(3, TimeUnit.SECONDS),
+                "no auth evidence skips AUTH_BYPASS_CONFIRM and goes to DYNAMIC_VERIFICATION");
+        check(fixture.authBypassCreated.getCount() == 1,
+                "AUTH_BYPASS_CONFIRM latch remains unreleased when skipped");
+    }
+
+    private static void staticContinuesWhenDynamicWorkerUnavailable() throws Exception {
+        Fixture fixture = new Fixture();
+        fixture.hasAuthEvidence = false;
+        AuditPipelineCoordinator coordinator = fixture.coordinator;
+        coordinator.armForJob("scan-static-cont", "project-a", "operator-a", AiOutputLanguage.ZH_CN,
+                PipelineStage.AUTH_ANALYSIS, "job-auth-static");
+        coordinator.onAiJobFinished(job("job-auth-static", "scan-static-cont", AgentRole.AUTH_ANALYSIS, "COMPLETED"));
+        check(fixture.dynamicCreated.await(3, TimeUnit.SECONDS), "AUTH enqueues dynamic");
+        String taskId = fixture.lastTaskId;
+        WorkerTaskSpec spec = new WorkerTaskSpec(
+                1, "project-a", "a".repeat(64), "scan-static-cont", taskId, "entry-a", true,
+                new ResourceBudget(60, 30_000, 1024L * 1024 * 1024, 64L * 1024 * 1024, 512L * 1024),
+                NetworkPolicy.denyAll(), WorkerCapability.TRUSTED_DOCKER);
+        coordinator.onDynamicTaskFinished(new TaskSnapshot(
+                1, spec, TaskLifecycle.FAILED, null, null, StopReason.WALL_CLOCK_TIMEOUT,
+                "WORKER_UNAVAILABLE", Instant.now()));
+        check(fixture.verifyCreated.await(3, TimeUnit.SECONDS),
+                "WORKER_UNAVAILABLE continues to DYNAMIC_VERIFICATION instead of disarm");
+        check(coordinator.isArmed("scan-static-cont"), "pipeline stays armed after static continue");
+    }
+
+    private static void pathLoopsToObservationThenTriage() throws Exception {
+        Fixture fixture = new Fixture();
+        fixture.pendingObsWork = true;
+        fixture.obsLoopMax = 1;
+        AuditPipelineCoordinator coordinator = fixture.coordinator;
+        coordinator.armForJob("scan-loop", "project-a", "operator-a", AiOutputLanguage.ZH_CN,
+                PipelineStage.PATH_EXPLORATION, "job-path-loop");
+        coordinator.onAiJobFinished(job("job-path-loop", "scan-loop", AgentRole.PATH_EXPLORATION, "COMPLETED"));
+        check(fixture.dynamicCreated.await(3, TimeUnit.SECONDS),
+                "PATH with pending OBS work re-enters DYNAMIC_OBSERVATION");
+        check(fixture.recomputeCalls.get() >= 1, "IR2 recompute runs before OBS loop");
+        String taskId = fixture.lastTaskId;
+        dynamicFinished(coordinator, "scan-loop", taskId);
+        check(fixture.pathCreated.await(3, TimeUnit.SECONDS),
+                "OBS loop resumes PATH_EXPLORATION");
+        String pathJob2 = fixture.lastJobId(AgentRole.PATH_EXPLORATION);
+        fixture.pendingObsWork = false;
+        coordinator.onAiJobFinished(job(pathJob2, "scan-loop", AgentRole.PATH_EXPLORATION, "COMPLETED"));
+        check(fixture.triageCreated.await(3, TimeUnit.SECONDS),
+                "PATH without pending work advances to TRIAGE");
+    }
+
     private static void failedExpectedJobDisarmsWithoutEnqueue() throws Exception {
         Fixture fixture = new Fixture();
         AuditPipelineCoordinator coordinator = fixture.coordinator;
@@ -188,11 +251,16 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
         private final CountDownLatch pathCreated = new CountDownLatch(1);
         private final CountDownLatch dynamicCreated = new CountDownLatch(1);
         private final CountDownLatch verifyCreated = new CountDownLatch(1);
+        private final CountDownLatch triageCreated = new CountDownLatch(1);
         private final CountDownLatch triageReleased = new CountDownLatch(1);
         private final CountDownLatch reportCreated = new CountDownLatch(1);
         private final AtomicInteger sandboxReleases = new AtomicInteger();
         private final AtomicInteger roleEnqueues = new AtomicInteger();
         private final AtomicInteger authJobs = new AtomicInteger();
+        private final AtomicInteger recomputeCalls = new AtomicInteger();
+        private volatile boolean hasAuthEvidence = true;
+        private volatile boolean pendingObsWork = false;
+        private volatile int obsLoopMax = 3;
         private final Map<String, Cursor> persisted = new ConcurrentHashMap<>();
         private volatile String lastTaskId;
         private final ActionsApi actionsApi = new ActionsApi();
@@ -227,6 +295,9 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
                 }
                 if (role == AgentRole.DYNAMIC_VERIFICATION) {
                     verifyCreated.countDown();
+                }
+                if (role == AgentRole.VULNERABILITY_TRIAGE) {
+                    triageCreated.countDown();
                 }
                 if (role == AgentRole.REPORT_GENERATION) {
                     reportCreated.countDown();
@@ -301,6 +372,27 @@ public final class AuditPipelineCoordinatorAcceptanceTest {
                 actions.add("release-sandbox:" + arm.scanId());
                 sandboxReleases.incrementAndGet();
                 triageReleased.countDown();
+            }
+
+            @Override
+            public boolean hasDynamicAuthEvidence(String scanId) {
+                return hasAuthEvidence;
+            }
+
+            @Override
+            public void recomputeDetectorsAfterObservation(String scanId) {
+                recomputeCalls.incrementAndGet();
+                actions.add("ir2:" + scanId);
+            }
+
+            @Override
+            public boolean hasPendingObservationLoopWork(String scanId) {
+                return pendingObsWork;
+            }
+
+            @Override
+            public int observationLoopMax() {
+                return obsLoopMax;
             }
         }
     }

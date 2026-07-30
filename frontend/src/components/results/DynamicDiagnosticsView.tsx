@@ -44,12 +44,12 @@ export function DynamicDiagnosticsView({
             <div className="results-row__body">
               <strong className="veyrion-long-text">{run.method} {run.entrypointRef}</strong>
               <small>
-                {run.track} · HTTP {run.httpStatus < 0 ? '-1' : run.httpStatus} · {outcomeClassLabel(run.outcomeClass)}
+                {run.track} · HTTP {run.httpStatus < 0 ? '-1' : run.httpStatus} · {outcomeClassLabel(run.outcomeClass, english)}
               </small>
               <small className="veyrion-long-text">{run.stopReason || (english ? 'No stop reason' : '无停止原因')}</small>
               <small>{run.identityProvenance ?? 'MOCK'}</small>
             </div>
-            <StatusPill status={run.verificationStatus} />
+            <StatusPill status={run.verificationStatus} english={english} />
           </div>
         ))}
         {diagnosticRuns.length === 0 && (

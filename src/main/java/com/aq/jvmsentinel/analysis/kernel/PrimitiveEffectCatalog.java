@@ -20,6 +20,13 @@ public final class PrimitiveEffectCatalog {
         if (o.equals("java.lang.ProcessBuilder") && (n.equals("start") || n.equals("command"))) {
             return Optional.of("EFFECT:COMMAND");
         }
+        // Controllable JDBC URL is SSRF/RCE/classload — not SQL injection.
+        if (o.equals("java.sql.DriverManager") && n.equals("getConnection")) {
+            return Optional.of("EFFECT:SSRF");
+        }
+        if (o.equals("java.sql.Driver") && n.equals("connect")) {
+            return Optional.of("EFFECT:SSRF");
+        }
         if ((o.equals("java.sql.Statement") || o.equals("java.sql.PreparedStatement")
                 || o.equals("java.sql.Connection") || lowerOwner.contains("jdbc")
                 || lowerOwner.endsWith(".statement"))
@@ -42,9 +49,14 @@ public final class PrimitiveEffectCatalog {
                 && (n.equals("readObject") || n.equals("readUnshared"))) {
             return Optional.of("EFFECT:DESERIALIZATION");
         }
-        if ((o.equals("javax.script.ScriptEngine") || lowerOwner.contains("scriptengine"))
+        if ((o.equals("javax.script.ScriptEngine") || o.equals("jakarta.script.ScriptEngine")
+                || lowerOwner.contains("scriptengine"))
                 && (n.equals("eval") || n.equals("compile"))) {
-            return Optional.of("EFFECT:SCRIPT");
+            return Optional.of("EFFECT:EXPRESSION");
+        }
+        if ((o.equals("java.net.URL") && (n.equals("openConnection") || n.equals("openStream")))
+                || (o.equals("java.net.http.HttpClient") && (n.equals("send") || n.equals("sendAsync")))) {
+            return Optional.of("EFFECT:SSRF");
         }
         if (lowerName.equals("exec") && lowerOwner.contains("runtime")) {
             return Optional.of("EFFECT:COMMAND");

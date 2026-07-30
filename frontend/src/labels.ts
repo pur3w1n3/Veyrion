@@ -1,30 +1,136 @@
-import type { AiRole, DependencyMode } from './api'
+import type { AiRole, DependencyMode, HypothesisFamily } from './api'
 
-/** Human-readable Chinese labels for fixed model roles. Technical codes stay for API only. */
-export const AI_ROLE_META: Record<AiRole, { name: string; description: string }> = {
+/** Locale-aware hypothesis family labels (ZH primary in Chinese UI; EN code as secondary term). */
+export const HYPOTHESIS_FAMILY_META: Record<HypothesisFamily, {
+  zh: string
+  en: string
+  blurbZh: string
+  blurbEn: string
+}> = {
+  DATAFLOW: {
+    zh: '数据流',
+    en: 'Dataflow',
+    blurbZh: '污点/入口到 sink 的数据流假设',
+    blurbEn: 'Taint / entry-to-sink dataflow hypotheses'
+  },
+  GUARD_COVERAGE: {
+    zh: '鉴权覆盖',
+    en: 'Guard coverage',
+    blurbZh: '鉴权、角色与守卫覆盖缺口',
+    blurbEn: 'Auth, role, and guard-coverage gaps'
+  },
+  STATE: {
+    zh: '状态',
+    en: 'State',
+    blurbZh: '业务状态与前置条件假设',
+    blurbEn: 'Business-state and precondition hypotheses'
+  },
+  TYPESTATE: {
+    zh: '类型状态',
+    en: 'Typestate',
+    blurbZh: 'API misuse / typestate 假设',
+    blurbEn: 'API misuse / typestate hypotheses'
+  },
+  CONFIG: {
+    zh: '配置',
+    en: 'Config',
+    blurbZh: '硬编码密钥与危险配置',
+    blurbEn: 'Hardcoded secrets and risky configuration'
+  },
+  DEPENDENCY: {
+    zh: '依赖',
+    en: 'Dependency',
+    blurbZh: '依赖副作用与供应链面',
+    blurbEn: 'Dependency side-effects and supply surface'
+  },
+  CONCURRENCY: {
+    zh: '并发',
+    en: 'Concurrency',
+    blurbZh: '竞态 / TOCTOU 类假设',
+    blurbEn: 'Race / TOCTOU-class hypotheses'
+  },
+  COMPOSITION: {
+    zh: '组合',
+    en: 'Composition',
+    blurbZh: '跨组件组合攻击面',
+    blurbEn: 'Cross-component composition surface'
+  },
+  UNKNOWN: {
+    zh: '未知',
+    en: 'Unknown',
+    blurbZh: '未归类或降级族',
+    blurbEn: 'Unclassified or degraded family'
+  }
+}
+
+export const hypothesisFamilyLabel = (family: string | undefined, english = false) => {
+  const key = (family ?? 'UNKNOWN').toUpperCase() as HypothesisFamily
+  const meta = HYPOTHESIS_FAMILY_META[key] ?? HYPOTHESIS_FAMILY_META.UNKNOWN
+  return english ? meta.en : meta.zh
+}
+
+export const hypothesisFamilyBlurb = (family: string | undefined, english = false) => {
+  const key = (family ?? 'UNKNOWN').toUpperCase() as HypothesisFamily
+  const meta = HYPOTHESIS_FAMILY_META[key] ?? HYPOTHESIS_FAMILY_META.UNKNOWN
+  return english ? meta.blurbEn : meta.blurbZh
+}
+
+/** Human-readable labels for fixed model roles. Technical codes stay for API only. */
+export const AI_ROLE_META: Record<AiRole, {
+  name: string
+  nameEn: string
+  chip: string
+  chipEn: string
+  description: string
+  descriptionEn: string
+}> = {
   PRE_ANALYSIS: {
     name: '前置建模',
-    description: '补充入口、业务对象与前置条件；补充项只能作为模型假设，不能改写静态事实'
+    nameEn: 'Pre-analysis',
+    chip: '建模',
+    chipEn: 'Pre',
+    description: '补充入口、业务对象与前置条件；补充项只能作为模型假设，不能改写静态事实',
+    descriptionEn: 'Supplement entries, business objects, and preconditions; supplements are model hypotheses only and must not rewrite static facts'
   },
   AUTH_ANALYSIS: {
     name: '鉴权分析',
-    description: '建立鉴权模型、合成身份策略、身份轨与实验计划草稿；洪水后仅确认绕过，不得改沙箱策略'
+    nameEn: 'Auth analysis',
+    chip: '鉴权',
+    chipEn: 'Auth',
+    description: '建立鉴权模型、合成身份策略、身份轨与实验计划草稿；洪水后仅确认绕过，不得改沙箱策略',
+    descriptionEn: 'Build auth model, synthetic identity policy, tracks, and experiment drafts; after flood only confirm bypass — never change sandbox policy'
   },
   DYNAMIC_VERIFICATION: {
     name: '动态验证',
-    description: '依据入口和沙箱参数在本地授权沙箱发包，保存请求/响应与触发点结果；不改变沙箱策略'
+    nameEn: 'Dynamic verification',
+    chip: '动态',
+    chipEn: 'Dynamic',
+    description: '依据入口和沙箱参数在本地授权沙箱发包，保存请求/响应与触发点结果；不改变沙箱策略',
+    descriptionEn: 'Probe inside the authorized local sandbox from entry/sandbox params; persist request/response and trigger results without changing sandbox policy'
   },
   PATH_EXPLORATION: {
     name: '路径探索',
-    description: '消费 PathRun、请求和响应结果，建立数据/状态转换路径；不把未执行候选写成事实'
+    nameEn: 'Path exploration',
+    chip: '路径',
+    chipEn: 'Path',
+    description: '消费 PathRun、请求和响应结果，建立数据/状态转换路径；不把未执行候选写成事实',
+    descriptionEn: 'Consume PathRuns and request/response results to model data/state paths; never treat unexecuted candidates as facts'
   },
   VULNERABILITY_TRIAGE: {
     name: '漏洞研判',
-    description: '基于鉴权分析、动态验证和路径结果研判；动态调试未闭环时不得标记漏洞存在'
+    nameEn: 'Vulnerability triage',
+    chip: '研判',
+    chipEn: 'Triage',
+    description: '基于鉴权分析、动态验证和路径结果研判；动态调试未闭环时不得标记漏洞存在',
+    descriptionEn: 'Triage from auth, dynamic verification, and path results; do not mark a vulnerability present until dynamic debugging closes'
   },
   REPORT_GENERATION: {
     name: '报告生成',
-    description: '汇总证据等级、限制与未覆盖区域，输出可读审计报告'
+    nameEn: 'Report generation',
+    chip: '报告',
+    chipEn: 'Report',
+    description: '汇总证据等级、限制与未覆盖区域，输出可读审计报告',
+    descriptionEn: 'Summarize evidence tiers, limits, and gaps into a readable audit report'
   }
 }
 
@@ -64,116 +170,119 @@ export const DEFAULT_ROLE_PROMPTS: Record<AiRole, { zh: string; en: string }> = 
   }
 }
 
-export const roleLabel = (role: string) =>
-  AI_ROLE_META[role as AiRole]?.name ?? role
+export const roleLabel = (role: string, english = false) => {
+  const meta = AI_ROLE_META[role as AiRole]
+  if (!meta) return role
+  return english ? meta.nameEn : meta.name
+}
 
-export const outcomeClassLabel = (code: string | undefined) => {
+export const outcomeClassLabel = (code: string | undefined, english = false) => {
   switch (code) {
     case 'COLD_START':
-      return '冷启动'
+      return english ? 'Cold start' : '冷启动'
     case 'AUTH_CHALLENGE':
-      return '鉴权挑战'
+      return english ? 'Auth challenge' : '鉴权挑战'
     case 'REACHED_NO_BIND':
-      return '到达未绑定'
+      return english ? 'Reached, unbound' : '到达未绑定'
     case 'BUSINESS_TIMEOUT':
-      return '业务超时'
+      return english ? 'Business timeout' : '业务超时'
     case 'ENGINE_BUSY':
-      return '引擎繁忙'
+      return english ? 'Engine busy' : '引擎繁忙'
     case 'DEPENDENCY_MOCK_GAP':
-      return '依赖替身缺口'
+      return english ? 'Dependency mock gap' : '依赖替身缺口'
     case 'TRANSPORT_ERROR':
-      return '传输错误'
+      return english ? 'Transport error' : '传输错误'
     case 'PROBE_BUDGET':
-      return '探针预算用尽'
+      return english ? 'Probe budget exhausted' : '探针预算用尽'
     case 'IDENTITY_UNAVAILABLE':
-      return '身份不可用'
+      return english ? 'Identity unavailable' : '身份不可用'
     case 'HTTP_OBSERVED':
-      return 'HTTP 已观测'
+      return english ? 'HTTP observed' : 'HTTP 已观测'
     case 'UNKNOWN':
-      return '未知'
+      return english ? 'Unknown' : '未知'
     default:
-      return code ?? '未知'
+      return code ?? (english ? 'Unknown' : '未知')
   }
 }
 
-export const dependencyModeLabel = (mode: DependencyMode | string | undefined) => {
+export const dependencyModeLabel = (mode: DependencyMode | string | undefined, english = false) => {
   switch (mode) {
     case 'MOCK':
-      return '替身执行'
+      return english ? 'Mock execution' : '替身执行'
     case 'REPLAY':
-      return '录制回放'
+      return english ? 'Recorded replay' : '录制回放'
     case 'LIVE_DISABLED':
-      return '真实依赖已禁用'
+      return english ? 'Live dependencies disabled' : '真实依赖已禁用'
     case 'LIVE':
-      return '真实依赖'
+      return english ? 'Live dependencies' : '真实依赖'
     default:
-      return mode && mode !== 'unknown' ? String(mode) : '未知'
+      return mode && mode !== 'unknown' ? String(mode) : (english ? 'Unknown' : '未知')
   }
 }
 
-export const jobStatusLabel = (status: string | undefined) => {
+export const jobStatusLabel = (status: string | undefined, english = false) => {
   switch (status) {
     case 'QUEUED':
-      return '排队中'
+      return english ? 'Queued' : '排队中'
     case 'LEASED':
-      return '已领取'
+      return english ? 'Leased' : '已领取'
     case 'RUNNING':
-      return '执行中'
+      return english ? 'Running' : '执行中'
     case 'COMPLETED':
-      return '已完成'
+      return english ? 'Completed' : '已完成'
     case 'FAILED':
-      return '失败'
+      return english ? 'Failed' : '失败'
     case 'CANCELLED':
-      return '已取消'
+      return english ? 'Cancelled' : '已取消'
     case 'BLOCKED':
-      return '已阻断'
+      return english ? 'Blocked' : '已阻断'
     default:
-      return status ?? '未知'
+      return status ?? (english ? 'Unknown' : '未知')
   }
 }
 
 /** Prefer errorCode-aware labels for BLOCKED / no-Worker / projection failures (P1-23). */
-export const pipelineStatusLabel = (status: string | undefined, errorCode?: string | undefined) => {
+export const pipelineStatusLabel = (status: string | undefined, errorCode?: string | undefined, english = false) => {
   const code = (errorCode ?? '').toUpperCase()
   if (code === 'WORKER_UNAVAILABLE' || code === 'NO_WORKER') {
-    return '无 Worker / Worker 不可用'
+    return english ? 'No Worker / Worker unavailable' : '无 Worker / Worker 不可用'
   }
   if (code === 'PROJECTION_FAILED' || code === 'TRACE_PROJECTION_FAILED') {
-    return '证据投影失败'
+    return english ? 'Evidence projection failed' : '证据投影失败'
   }
-  if (status === 'BLOCKED') return '已阻断'
-  return jobStatusLabel(status)
+  if (status === 'BLOCKED') return english ? 'Blocked' : '已阻断'
+  return jobStatusLabel(status, english)
 }
 
-export const stopReasonLabel = (reason: string | undefined) => {
+export const stopReasonLabel = (reason: string | undefined, english = false) => {
   switch (reason) {
     case 'LEASE_EXPIRED':
-      return '租约过期已回收'
+      return english ? 'Lease expired / reclaimed' : '租约过期已回收'
     case 'WORKER_FAILURE':
-      return 'Worker 失败'
+      return english ? 'Worker failure' : 'Worker 失败'
     case 'WORKER_UNAVAILABLE':
-      return '无 Worker / Worker 不可用'
+      return english ? 'No Worker / Worker unavailable' : '无 Worker / Worker 不可用'
     case 'PROJECTION_FAILED':
-      return '证据投影失败'
+      return english ? 'Evidence projection failed' : '证据投影失败'
     case 'USER_CANCELLED':
-      return '已取消'
+      return english ? 'Cancelled' : '已取消'
     case 'COMPLETED':
-      return '已完成'
+      return english ? 'Completed' : '已完成'
     default:
-      return reason
+      return reason ?? ''
   }
 }
 
-export const timelineStateLabel = (state: string) => {
+export const timelineStateLabel = (state: string, english = false) => {
   switch (state) {
     case 'completed':
-      return '已完成'
+      return english ? 'Completed' : '已完成'
     case 'active':
-      return '进行中'
+      return english ? 'In progress' : '进行中'
     case 'waiting':
-      return '等待中'
+      return english ? 'Waiting' : '等待中'
     case 'unavailable':
-      return '不可用'
+      return english ? 'Unavailable' : '不可用'
     default:
       return state
   }

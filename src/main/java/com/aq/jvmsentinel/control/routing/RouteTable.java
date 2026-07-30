@@ -98,8 +98,19 @@ public final class RouteTable {
             actions.listEvidence(exchange, path.get(1));
             return;
         }
+        if (path.size() == 4 && "projects".equals(path.get(0)) && "scans".equals(path.get(2))
+                && "DELETE".equals(method)) {
+            actions.requirePermission(exchange, Permission.RUN_SCANS);
+            actions.deleteScan(exchange, path.get(1), path.get(3));
+            return;
+        }
         if (path.size() == 2 && "scans".equals(path.get(0))) {
             if ("GET".equals(method)) { actions.sendScan(exchange, path.get(1)); return; }
+            if ("DELETE".equals(method)) {
+                actions.requirePermission(exchange, Permission.RUN_SCANS);
+                actions.deleteScan(exchange, null, path.get(1));
+                return;
+            }
         }
         if (path.size() == 3 && "scans".equals(path.get(0)) && "coverage".equals(path.get(2))
                 && "GET".equals(method)) {
@@ -114,6 +125,11 @@ public final class RouteTable {
         if (path.size() == 3 && "scans".equals(path.get(0)) && "hypotheses".equals(path.get(2))
                 && "GET".equals(method)) {
             actions.sendScanHypotheses(exchange, path.get(1));
+            return;
+        }
+        if (path.size() == 3 && "scans".equals(path.get(0)) && "ai-memory".equals(path.get(2))
+                && "GET".equals(method)) {
+            actions.sendScanAiMemory(exchange, path.get(1));
             return;
         }
         if (path.size() == 3 && "scans".equals(path.get(0)) && "events".equals(path.get(2))

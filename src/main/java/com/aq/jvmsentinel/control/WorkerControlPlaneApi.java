@@ -232,6 +232,27 @@ final class WorkerControlPlaneApi implements HttpHandler {
     }
 
     /**
+     * Removes terminal worker/task history for a scan after durable delete.
+     * Active leases must already be absent (fail-closed).
+     */
+    synchronized void forgetScanHistory(String projectId, String scanId) {
+        Objects.requireNonNull(projectId, "projectId");
+        Objects.requireNonNull(scanId, "scanId");
+        if (hasActiveDynamicTask(projectId, scanId)) {
+            throw new IllegalStateException("active worker task must be cancelled before deletion");
+        }
+        for (TaskSnapshot snapshot : snapshots(projectId, scanId)) {
+            TaskScope scope = snapshot.scope();
+            coordinator.forget(scope);
+            traceStore.forget(scope);
+            projectionService.forget(scope);
+            scopes.remove(scope);
+            failureDiagnostics.remove(scope);
+            progressDetails.remove(scope);
+        }
+    }
+
+    /**
      * Fail-closed reclaim for dynamic tasks that remain {@code QUEUED} without a Worker.
      * Emits terminal callbacks so the audit pipeline can disarm instead of waiting forever.
      */

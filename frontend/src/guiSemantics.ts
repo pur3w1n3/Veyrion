@@ -47,13 +47,20 @@ export const RESULTS_VIEW_IDS = [
   'coverage',
   'diagnostics',
   'experiments',
-  'downloads',
   'hypotheses',
   'contrast',
-  'verified'
+  'verified',
+  'aiMemory',
+  'downloads'
 ] as const
 
 export type ResultsViewId = (typeof RESULTS_VIEW_IDS)[number]
+
+/**
+ * Hidden from ResultsSubnav chrome (P1-25 report UX).
+ * IDs remain in RESULTS_VIEW_IDS for P1-23 contract + API prefetch; panels are not shown.
+ */
+export const RESULTS_VIEWS_HIDDEN_FROM_NAV = ['evidenceGraph', 'coverage'] as const
 
 export const RESULTS_VIEW_META: Record<ResultsViewId, { zh: string; en: string; blurbZh: string; blurbEn: string }> = {
   report: {
@@ -127,6 +134,12 @@ export const RESULTS_VIEW_META: Record<ResultsViewId, { zh: string; en: string; 
     en: 'Verified',
     blurbZh: 'VerifiedStatusGate 门禁结果（当前应为空）',
     blurbEn: 'VerifiedStatusGate rows (currently empty)'
+  },
+  aiMemory: {
+    zh: 'AI 记忆',
+    en: 'AI memory',
+    blurbZh: '同扫描共享记忆索引与工具说明（只读调试）',
+    blurbEn: 'Same-scan shared memory index and tool catalog (read-only)'
   }
 }
 

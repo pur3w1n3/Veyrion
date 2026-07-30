@@ -13,6 +13,7 @@ import {
   type HypothesisFamily,
   type OutputLanguage,
   type PathRunDto,
+  type RankedSinkDto,
   type SecurityHypothesisDto
 } from '../api'
 import {
@@ -23,7 +24,6 @@ import {
   type ResultsViewId
 } from '../guiSemantics'
 import { errorMessage, PageHeader } from './Common'
-import { CoverageGapsView, EvidenceGraphView } from './results/EvidenceGraphView'
 import { DynamicDiagnosticsView } from './results/DynamicDiagnosticsView'
 import { DownloadsView } from './results/DownloadsView'
 import { EntryParameterExplorerView } from './results/EntryParameterExplorerView'
@@ -33,6 +33,7 @@ import { FindingsView } from './results/FindingsView'
 import { HypothesesView } from './results/HypothesesView'
 import { PathRunsView } from './results/PathRunsView'
 import { ResultsShell } from './results/ResultsShell'
+import { ScanMemoryView } from './results/ScanMemoryView'
 import { ContrastView, VerifiedView } from './results/VerifiedView'
 import {
   deriveSummaryCounts,
@@ -71,6 +72,9 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
   const [showAuthGap, setShowAuthGap] = useState(false)
   const [selectedFindingId, setSelectedFindingId] = useState<string>()
   const [selectedEntryId, setSelectedEntryId] = useState<string>()
+  const [selectedSinkId, setSelectedSinkId] = useState<string>()
+  const [selectedHypothesisId, setSelectedHypothesisId] = useState<string>()
+  const [selectedHypothesisFamily, setSelectedHypothesisFamily] = useState<HypothesisFamily>()
   const [selectedStepIndex, setSelectedStepIndex] = useState(0)
   const [replayLoading, setReplayLoading] = useState(false)
   const [replayError, setReplayError] = useState<string>()
@@ -92,6 +96,9 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
     setSelection(null)
     setSelectedFindingId(undefined)
     setSelectedEntryId(undefined)
+    setSelectedSinkId(undefined)
+    setSelectedHypothesisId(undefined)
+    setSelectedHypothesisFamily(undefined)
     setSelectedStepIndex(0)
     setFindingQuery('')
     setFindingStatus('ALL')
@@ -286,6 +293,8 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
         return { label, count: rankedSinks.length, blurb }
       case 'verified':
         return { label, count: verifiedFindings.length, blurb }
+      case 'aiMemory':
+        return { label, count: snapshot?.scanId ? 1 : 0, blurb }
     }
   }
 
@@ -294,6 +303,8 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
 
   const handleSelectFinding = (finding: Finding) => {
     setSelectedFindingId(finding.id)
+    setSelectedHypothesisFamily(undefined)
+    setSelectedHypothesisId(undefined)
     setSelection({ kind: 'finding', finding })
   }
 
@@ -307,18 +318,34 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
   }
 
   const handleSelectHypothesis = (hypothesis: SecurityHypothesisDto) => {
+    setSelectedHypothesisId(hypothesis.hypothesisId)
+    setSelectedHypothesisFamily(undefined)
     setSelection({ kind: 'hypothesis', hypothesis })
   }
 
-  const handleSelectGraphNode = (node: import('../api').EvidenceGraphNodeDto) => {
-    setSelection({ kind: 'graphNode', node })
+  const handleSelectHypothesisFamily = (family: HypothesisFamily, items: SecurityHypothesisDto[]) => {
+    setSelectedHypothesisFamily(family)
+    setSelectedHypothesisId(undefined)
+    setSelection({ kind: 'hypothesisFamily', family, items })
   }
+
+  const handleSelectSink = (sink: RankedSinkDto) => {
+    setSelectedSinkId(sink.sinkId)
+    setSelection({ kind: 'rankedSink', sink })
+  }
+
+  useEffect(() => {
+    // Evidence graph / coverage matrix removed from workbench chrome; bounce stale deep-links.
+    if (activeView === 'evidenceGraph' || activeView === 'coverage') {
+      setActiveView('findings')
+    }
+  }, [activeView])
 
   return <>
     <PageHeader eyebrow={snapshot?.scanId ?? (english ? 'NO SCAN' : '尚无扫描')} title={english ? 'Audit results' : '审计结果'}>
       {english
-        ? 'Evidence workbench — report, findings, PathRuns, coverage and diagnostics share one scan scope.'
-        : '证据工作台 — 报告、发现、PathRun、覆盖与诊断共享同一扫描作用域。'}
+        ? 'Evidence workbench — final report leads with findings (API + PoC); PathRuns and diagnostics share one scan scope.'
+        : '证据工作台 — 终态报告优先展示漏洞（接口 + PoC）；PathRun 与诊断共享同一扫描作用域。'}
       {(authGapFindingCount > 0 || authGapSinkCount != null) && (
         <small>{english ? `AUTH_GAP rows ${authGapFindingCount}${authGapSinkCount != null ? ` / sinks ${authGapSinkCount}` : ''}` : `AUTH_GAP 行 ${authGapFindingCount}${authGapSinkCount != null ? ` / sink ${authGapSinkCount}` : ''}`}</small>
       )}
@@ -333,7 +360,21 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       activeView={activeView}
       onViewChange={(view) => {
         setActiveView(view)
-        if (view === 'report') setSelection(null)
+        if (view === 'report' || view === 'downloads' || view === 'verified') {
+          setSelection(null)
+          setSelectedSinkId(undefined)
+          setSelectedHypothesisId(undefined)
+          setSelectedHypothesisFamily(undefined)
+        } else if (view === 'pathRuns') {
+          setSelection((prev) => (prev?.kind === 'pathRun' ? prev : null))
+          setSelectedSinkId(undefined)
+        } else if (view === 'contrast') {
+          setSelection((prev) => (prev?.kind === 'rankedSink' ? prev : null))
+        } else if (view === 'hypotheses') {
+          setSelection((prev) => (
+            prev?.kind === 'hypothesis' || prev?.kind === 'hypothesisFamily' ? prev : null
+          ))
+        }
       }}
       viewMeta={viewMeta}
       selection={selection}
@@ -360,6 +401,10 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
           findings={findings}
           hypotheses={hypotheses}
           hypothesisById={hypothesisById}
+          entries={entries}
+          experimentPlans={experimentPlans}
+          sqlCards={sqlCards}
+          pathRuns={pathRuns}
           selectedFindingId={selectedFindingId}
           onSelectFinding={handleSelectFinding}
           findingQuery={findingQuery}
@@ -378,6 +423,8 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
           replayResult={replayResult}
           onReplayFinding={() => void replaySelectedFinding()}
           evidencePath={snapshot?.path ?? []}
+          selectedHypothesisFamily={selectedHypothesisFamily}
+          onSelectHypothesisFamily={handleSelectHypothesisFamily}
         />
       )}
 
@@ -402,25 +449,10 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
         />
       )}
 
-      {activeView === 'evidenceGraph' && (
-        <EvidenceGraphView
-          graph={evidenceGraph}
-          loading={evidenceGraphLoading}
-          error={evidenceGraphError}
-          english={english}
-          language={language}
-          onSelectNode={handleSelectGraphNode}
-        />
-      )}
-
-      {activeView === 'coverage' && (
-        <CoverageGapsView
-          coverage={coverage}
-          loading={coverageLoading}
-          error={coverageError}
-          english={english}
-        />
-      )}
+      {/* P1-23 contract anchors retained; P1-25 hides these from ResultsSubnav (no empty shells).
+          activeView === 'evidenceGraph' / activeView === 'coverage' are not rendered in the workbench chrome. */}
+      {activeView === 'evidenceGraph' && null}
+      {activeView === 'coverage' && null}
 
       {activeView === 'diagnostics' && (
         <DynamicDiagnosticsView english={english} pathRuns={pathRuns} probeBudget={probeBudget} />
@@ -452,13 +484,32 @@ export function ResultsPage({ projectId, snapshot, language }: { projectId: stri
       )}
 
       {activeView === 'hypotheses' && (
-        <HypothesesView hypotheses={hypotheses} english={english} onSelectHypothesis={handleSelectHypothesis} />
+        <HypothesesView
+          hypotheses={hypotheses}
+          english={english}
+          selectedHypothesisId={selectedHypothesisId}
+          selectedFamily={selectedHypothesisFamily}
+          onSelectHypothesis={handleSelectHypothesis}
+          onSelectFamily={handleSelectHypothesisFamily}
+        />
       )}
 
       {activeView === 'contrast' && (
-        <ContrastView english={english} snapshot={snapshot} />
+        <ContrastView
+          english={english}
+          snapshot={snapshot}
+          selectedSinkId={selectedSinkId}
+          onSelectSink={handleSelectSink}
+        />
       )}
 
+      {activeView === 'aiMemory' && (
+        <ScanMemoryView
+          api={api}
+          scanId={snapshot?.scanId}
+          english={english}
+        />
+      )}
       {activeView === 'verified' && (
         <VerifiedView english={english} verifiedFindings={verifiedFindings} />
       )}

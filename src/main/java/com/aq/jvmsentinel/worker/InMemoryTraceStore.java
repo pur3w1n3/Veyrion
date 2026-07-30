@@ -71,6 +71,16 @@ public final class InMemoryTraceStore {
         return chunk;
     }
 
+    /** Drops in-memory chunks for a task after durable scan history deletion. */
+    public synchronized void forget(TaskScope scope) {
+        Objects.requireNonNull(scope, "scope");
+        List<TraceChunk> removed = traces.remove(scope);
+        if (removed != null) {
+            chunkCount = Math.max(0, chunkCount - removed.size());
+        }
+        replays.entrySet().removeIf(entry -> scope.equals(entry.getKey().scope()));
+    }
+
     public synchronized TraceManifest manifest(TaskScope scope) {
         Objects.requireNonNull(scope, "scope");
         List<TraceChunk> chunks = traces.getOrDefault(scope, List.of());

@@ -1,0 +1,60 @@
+# Veyrion local Compose stack: Control Plane + React GUI.
+#
+# Relationship to sandbox-pack:
+#   - sandbox-pack/compose.dev.yml starts the local digest registry used by
+#     TRUSTED_DOCKER artifact-runtime images (Start-SandboxPack / -WithDockerRuntime).
+#   - This file does NOT start a Docker-in-Docker worker. Dynamic probes that need
+#     TRUSTED_DOCKER should run on the Docker host via Start-Veyrion.ps1 -WithDockerRuntime
+#     (Windows) or deploy/start-local.sh --with-docker-runtime (Linux), not inside these
+#     app containers.
+#   - Optional profile `sandbox-registry` mirrors the sandbox-pack registry service only.
+#
+# Honesty: network-none TRUSTED_DOCKER is ordinary runc, not gVisor/Kata; VERIFIED stays
+# fail-closed. Sandbox failure must not fall back to host execution.
+
+name: veyrion
+
+services:
+  control-plane:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: control-plane
+    restart: unless-stopped
+    environment:
+      VEYRION_TOKEN: ${VEYRION_TOKEN:-local-demo}
+      VEYRION_ARTIFACT_ROOT: /data/artifacts
+      VEYRION_BIND: 0.0.0.0
+      VEYRION_PORT: "18080"
+    volumes:
+      - veyrion-artifacts:/data/artifacts
+    ports:
+      - "127.0.0.1:18080:18080"
+
+  gui:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: gui
+      args:
+        VITE_API_TOKEN: ${VEYRION_TOKEN:-local-demo}
+    restart: unless-stopped
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5173:80"
+
+  # Same image/digest as sandbox-pack/compose.dev.yml (registry only).
+  registry:
+    profiles: ["sandbox-registry"]
+    image: registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - sandbox_registry_data:/var/lib/registry
+
+volumes:
+  veyrion-artifacts:
+  sandbox_registry_data:

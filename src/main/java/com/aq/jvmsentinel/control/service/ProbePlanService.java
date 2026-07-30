@@ -7,7 +7,11 @@ import com.aq.jvmsentinel.analysis.experiment.PostureExperimentCompiler;
 import com.aq.jvmsentinel.analysis.experiment.ProbeParameterHeuristics;
 import com.aq.jvmsentinel.analysis.experiment.RuntimePostureOrchestrator;
 import com.aq.jvmsentinel.analysis.experiment.TracePlanCompiler;
+import com.aq.jvmsentinel.analysis.experiment.TracePlanObservationDiff;
 import com.aq.jvmsentinel.analysis.experiment.WorldPackPlanner;
+import com.aq.jvmsentinel.control.StaticFactSnapshot;
+import com.aq.jvmsentinel.domain.pathdebug.PathTrace;
+import com.aq.jvmsentinel.model.BytecodeFactIndex;
 import com.aq.jvmsentinel.domain.pathdebug.GuardSurface;
 import com.aq.jvmsentinel.analysis.framework.FrameworkAdapterRegistry;
 import com.aq.jvmsentinel.control.JsonCodec;
@@ -148,6 +152,18 @@ public final class ProbePlanService {
                         if (selectedIds.add(entry.id())) probes.add(probeTargetFor(entry));
                     });
         }
+        // Prefer TracePlan gaps (missing expected effects) before generic high-value routes.
+        for (String entryId : tracePlanGapEntryIds(scan)) {
+            if (probes.size() >= maxBaseProbes) break;
+            httpEntries.stream()
+                    .filter(entry -> entry.id().equals(entryId))
+                    .findFirst()
+                    .ifPresent(entry -> {
+                        if (selectedIds.add(entry.id())) {
+                            probes.add(probeTargetFor(entry));
+                        }
+                    });
+        }
         // Prefer entries named by PATH_EXPLORATION / plan_propose inferences (untrusted hints only).
         String explorationHint = pathExplorationHintText(scan);
         if (!explorationHint.isBlank()) {
@@ -159,6 +175,18 @@ public final class ProbePlanService {
                 if (!selectedIds.add(entry.id())) continue;
                 probes.add(probeTargetFor(entry));
             }
+        }
+        // Prefer entries that static IR already binds to expected effects (sink/taint).
+        for (String entryId : staticEffectEntryIds(scan, httpEntries)) {
+            if (probes.size() >= maxBaseProbes) break;
+            httpEntries.stream()
+                    .filter(entry -> entry.id().equals(entryId))
+                    .findFirst()
+                    .ifPresent(entry -> {
+                        if (selectedIds.add(entry.id())) {
+                            probes.add(probeTargetFor(entry));
+                        }
+                    });
         }
         for (ApiDtos.EntryDto entry : httpEntries) {
             if (probes.size() >= maxBaseProbes) break;
@@ -390,7 +418,12 @@ public final class ProbePlanService {
                         .findFirst()
                         .orElse(null);
                 if (entry != null) {
-                    TracePlan tracePlan = TracePlanCompiler.compile(entry, List.of(), List.of(), List.of(), List.of());
+                    List<BytecodeFactIndex.TaintPath> taintPaths = StaticFactSnapshot.resolveTaintPaths(
+                            store.staticFacts(scan.dto().scanId()), scan.dto().sinks());
+                    List<String> guardHints = harvest == null
+                            ? List.of() : GuardSurfaceCatalog.guardRefs(harvest.surfaces());
+                    TracePlan tracePlan = TracePlanCompiler.compileFromStaticIr(
+                            entry, scan.dto().sinks(), scan.evidence(), taintPaths, guardHints);
                     Map<String, Object> payload = new LinkedHashMap<>(tracePlan.toMap());
                     payload.put("schemaVersion", TracePlan.SCHEMA_VERSION);
                     store.persistTracePlan(new SQLiteControlPlanePersistence.TracePlanData(
@@ -1054,6 +1087,86 @@ public final class ProbePlanService {
         } catch (RuntimeException ignored) {
             return "";
         }
+    }
+
+    /** Entries whose persisted/compiled TracePlan still misses expected effects vs PathTrace. */
+    private List<String> tracePlanGapEntryIds(ControlPlaneStore.ScanRecord scan) {
+        try {
+            List<TracePlan> plans = loadOrCompileTracePlans(scan);
+            if (plans.isEmpty()) {
+                return List.of();
+            }
+            List<PathTrace> traces = new ArrayList<>();
+            for (SQLiteControlPlanePersistence.PathTraceData row : store.loadPathTracesForScan(
+                    scan.dto().projectId(), scan.dto().artifactDigest(), scan.dto().scanId())) {
+                if (row == null) {
+                    continue;
+                }
+                PathTrace cached = store.pathTraceForPathRun(row.pathRunId());
+                if (cached != null) {
+                    traces.add(cached);
+                    continue;
+                }
+                if (row.payloadJson() != null && !row.payloadJson().isBlank()) {
+                    try {
+                        traces.add(PathTrace.fromMap(JsonCodec.parseObject(row.payloadJson())));
+                    } catch (Exception ignored) {
+                        // keep flood selection resilient
+                    }
+                }
+            }
+            return TracePlanObservationDiff.entriesWithMissingEffects(
+                    TracePlanObservationDiff.prioritizeGaps(
+                            TracePlanObservationDiff.diffAll(plans, traces)));
+        } catch (RuntimeException ignored) {
+            return List.of();
+        }
+    }
+
+    private List<String> staticEffectEntryIds(
+            ControlPlaneStore.ScanRecord scan, List<ApiDtos.EntryDto> httpEntries) {
+        try {
+            List<BytecodeFactIndex.TaintPath> taintPaths = StaticFactSnapshot.resolveTaintPaths(
+                    store.staticFacts(scan.dto().scanId()), scan.dto().sinks());
+            return TracePlanCompiler.entryIdsWithExpectedEffects(
+                    httpEntries, scan.dto().sinks(), scan.evidence(), taintPaths);
+        } catch (RuntimeException ignored) {
+            return List.of();
+        }
+    }
+
+    private List<TracePlan> loadOrCompileTracePlans(ControlPlaneStore.ScanRecord scan) {
+        List<TracePlan> plans = new ArrayList<>();
+        for (SQLiteControlPlanePersistence.TracePlanData row : store.loadTracePlansForScan(
+                scan.dto().scanId())) {
+            if (row == null || row.payloadJson() == null || row.payloadJson().isBlank()) {
+                continue;
+            }
+            try {
+                plans.add(TracePlan.fromMap(JsonCodec.parseObject(row.payloadJson())));
+            } catch (Exception ignored) {
+                // fall through to compile-from-IR below
+            }
+        }
+        if (!plans.isEmpty()) {
+            return List.copyOf(plans);
+        }
+        List<BytecodeFactIndex.TaintPath> taintPaths = StaticFactSnapshot.resolveTaintPaths(
+                store.staticFacts(scan.dto().scanId()), scan.dto().sinks());
+        for (ApiDtos.EntryDto entry : scan.dto().entries()) {
+            if (entry == null || entry.route() == null || entry.route().isBlank()) {
+                continue;
+            }
+            if (!"HTTP".equalsIgnoreCase(entry.protocol())) {
+                continue;
+            }
+            plans.add(TracePlanCompiler.compileFromStaticIr(
+                    entry, scan.dto().sinks(), scan.evidence(), taintPaths, List.of()));
+            if (plans.size() >= 64) {
+                break;
+            }
+        }
+        return List.copyOf(plans);
     }
 
 }

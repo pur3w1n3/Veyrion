@@ -33,13 +33,13 @@ export function ScanContextBand({
         </>}
       </div>
       <div className="scan-context-band__status">
-        {verificationStatus && <StatusPill status={verificationStatus} />}
+        {verificationStatus && <StatusPill status={verificationStatus} english={english} />}
         {snapshot?.dependencyMode && (
-          <span className="scan-context-band__meta">{dependencyModeLabel(snapshot.dependencyMode)}</span>
+          <span className="scan-context-band__meta">{dependencyModeLabel(snapshot.dependencyMode, english)}</span>
         )}
         {reportJobStatus && (
           <span className="scan-context-band__meta">
-            {english ? 'Report' : '报告'} · {jobStatusLabel(reportJobStatus)}
+            {english ? 'Report' : '报告'} · {jobStatusLabel(reportJobStatus, english)}
             {reportErrorCode ? ` · ${reportErrorCode}` : ''}
           </span>
         )}

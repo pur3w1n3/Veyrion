@@ -12,6 +12,10 @@ import java.util.Set;
  * not establish attacker control, runtime reachability, unsafe configuration, or
  * exploitability. Broad keywords such as {@code parse}, {@code read}, and
  * {@code execute} are deliberately never matched without an owner constraint.
+ *
+ * <p>Kinds are ordered primary-first. One call site may carry multiple security
+ * effects (for example JDBC URL → SSRF + COMMAND + CLASS_LOADING). Consumers that
+ * need a single label use {@link Match#category()}; full sets use {@link Match#kinds()}.
  */
 final class JvmSinkSignatures {
     private static final List<Rule> RULES = List.of(
@@ -27,13 +31,14 @@ final class JvmSinkSignatures {
             exact("sealed-object", "DESERIALIZATION", "javax.crypto.SealedObject", 0.90, "getObject"),
             exact("jms-object-message", "DESERIALIZATION", "javax.jms.ObjectMessage", 0.90, "getObject"),
             exact("jakarta-jms-object-message", "DESERIALIZATION", "jakarta.jms.ObjectMessage", 0.90, "getObject"),
-            exact("xstream-from-xml", "DESERIALIZATION", "com.thoughtworks.xstream.XStream", 0.90, "fromXML"),
-            exact("snakeyaml-load", "DESERIALIZATION", "org.yaml.snakeyaml.Yaml", 0.82,
-                    "load", "loadAll", "loadAs"),
-            exact("hessian-read-object", "DESERIALIZATION", "com.caucho.hessian.io.HessianInput", 0.92,
-                    "readObject"),
-            exact("hessian2-read-object", "DESERIALIZATION", "com.caucho.hessian.io.Hessian2Input", 0.92,
-                    "readObject"),
+            exactKinds("xstream-from-xml", List.of("DESERIALIZATION", "CLASS_LOADING"),
+                    "com.thoughtworks.xstream.XStream", 0.90, "fromXML"),
+            exactKinds("snakeyaml-load", List.of("DESERIALIZATION", "CLASS_LOADING"),
+                    "org.yaml.snakeyaml.Yaml", 0.82, "load", "loadAll", "loadAs"),
+            exactKinds("hessian-read-object", List.of("DESERIALIZATION", "CLASS_LOADING"),
+                    "com.caucho.hessian.io.HessianInput", 0.92, "readObject"),
+            exactKinds("hessian2-read-object", List.of("DESERIALIZATION", "CLASS_LOADING"),
+                    "com.caucho.hessian.io.Hessian2Input", 0.92, "readObject"),
             exact("burlap-read-object", "DESERIALIZATION", "com.caucho.burlap.io.BurlapInput", 0.92,
                     "readObject"),
             exact("kryo-read-object", "DESERIALIZATION", "com.esotericsoftware.kryo.Kryo", 0.86,
@@ -48,9 +53,11 @@ final class JvmSinkSignatures {
                     "org.apache.commons.lang.SerializationUtils", 0.94, "deserialize"),
             exact("commons-lang3-serialization-utils", "DESERIALIZATION",
                     "org.apache.commons.lang3.SerializationUtils", 0.94, "deserialize"),
-            exact("fastjson-parse", "DESERIALIZATION", "com.alibaba.fastjson.JSON", 0.74,
+            exactKinds("fastjson-parse", List.of("DESERIALIZATION", "CLASS_LOADING"),
+                    "com.alibaba.fastjson.JSON", 0.74,
                     "parse", "parseObject", "parseArray", "toJavaObject"),
-            exact("fastjson2-parse", "DESERIALIZATION", "com.alibaba.fastjson2.JSON", 0.72,
+            exactKinds("fastjson2-parse", List.of("DESERIALIZATION", "CLASS_LOADING"),
+                    "com.alibaba.fastjson2.JSON", 0.72,
                     "parse", "parseObject", "parseArray"),
             exact("jackson-read-value", "DESERIALIZATION", "com.fasterxml.jackson.databind.ObjectMapper", 0.70,
                     "readValue", "treeToValue", "convertValue"),
@@ -64,11 +71,14 @@ final class JvmSinkSignatures {
             exact("flexjson-deserialize", "DESERIALIZATION", "flexjson.JSONDeserializer", 0.80,
                     "deserialize"),
             exact("jodd-json-parse", "DESERIALIZATION", "jodd.json.JsonParser", 0.80, "parse"),
-            exact("templates-impl-trigger", "DESERIALIZATION",
+            exactKinds("templates-impl-trigger", List.of("DESERIALIZATION", "CLASS_LOADING"),
                     "com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl", 0.94,
                     "newTransformer", "getOutputProperties"),
 
-            exact("jdk-script-eval", "EXPRESSION", "javax.script.ScriptEngine", 0.96, "eval"),
+            exactKinds("jdk-script-eval", List.of("EXPRESSION", "COMMAND"),
+                    "javax.script.ScriptEngine", 0.96, "eval"),
+            exactKinds("jakarta-script-eval", List.of("EXPRESSION", "COMMAND"),
+                    "jakarta.script.ScriptEngine", 0.96, "eval"),
             exact("java-beans-expression", "EXPRESSION", "java.beans.Expression", 0.90, "getValue"),
             exact("javax-el-factory", "EXPRESSION", "javax.el.ExpressionFactory", 0.88,
                     "createValueExpression", "createMethodExpression"),
@@ -81,20 +91,27 @@ final class JvmSinkSignatures {
                     "parseExpression"),
             exact("spring-expression-evaluate", "EXPRESSION",
                     "org.springframework.expression.Expression", 0.78, "getValue", "getValueType"),
-            exact("hutool-script-eval", "EXPRESSION", "cn.hutool.script.ScriptUtil", 0.96, "eval"),
+            exactKinds("hutool-script-eval", List.of("EXPRESSION", "COMMAND"),
+                    "cn.hutool.script.ScriptUtil", 0.96, "eval"),
             exact("aviator-execute", "EXPRESSION", "com.googlecode.aviator.AviatorEvaluator", 0.92,
                     "execute", "exec"),
             exact("ql-express", "EXPRESSION", "com.ql.util.express.ExpressRunner", 0.92, "execute"),
             exact("ognl-evaluate", "EXPRESSION", "ognl.Ognl", 0.94, "getValue", "setValue"),
             exact("mvel-evaluate", "EXPRESSION", "org.mvel2.MVEL", 0.94,
                     "eval", "evalToString", "executeExpression"),
-            exact("groovy-evaluate", "EXPRESSION", "groovy.lang.GroovyShell", 0.94, "evaluate", "parse"),
-            exact("groovy-class-loader", "CLASS_LOADING", "groovy.lang.GroovyClassLoader", 0.94, "parseClass"),
-            exact("jython-exec", "EXPRESSION", "org.python.util.PythonInterpreter", 0.96, "exec", "eval"),
-            exact("jruby-scriptlet", "EXPRESSION", "org.jruby.embed.ScriptingContainer", 0.96, "runScriptlet"),
-            exact("beanshell-eval", "EXPRESSION", "bsh.Interpreter", 0.96, "eval", "source"),
+            exactKinds("groovy-evaluate", List.of("EXPRESSION", "COMMAND"),
+                    "groovy.lang.GroovyShell", 0.94, "evaluate", "parse"),
+            exactKinds("groovy-class-loader", List.of("CLASS_LOADING", "EXPRESSION", "COMMAND"),
+                    "groovy.lang.GroovyClassLoader", 0.94, "parseClass"),
+            exactKinds("jython-exec", List.of("EXPRESSION", "COMMAND"),
+                    "org.python.util.PythonInterpreter", 0.96, "exec", "eval"),
+            exactKinds("jruby-scriptlet", List.of("EXPRESSION", "COMMAND"),
+                    "org.jruby.embed.ScriptingContainer", 0.96, "runScriptlet"),
+            exactKinds("beanshell-eval", List.of("EXPRESSION", "COMMAND"),
+                    "bsh.Interpreter", 0.96, "eval", "source"),
             prefix("jexl-evaluate", "EXPRESSION", "org.apache.commons.jexl", 0.88, "evaluate"),
-            prefix("janino-cook", "EXPRESSION", "org.codehaus.janino.", 0.94, "cook", "evaluate"),
+            prefixKinds("janino-cook", List.of("EXPRESSION", "COMMAND", "CLASS_LOADING"),
+                    "org.codehaus.janino.", 0.94, "cook", "evaluate"),
 
             exact("velocity-evaluate", "TEMPLATE", "org.apache.velocity.app.VelocityEngine", 0.90, "evaluate"),
             exact("velocity-static-evaluate", "TEMPLATE", "org.apache.velocity.app.Velocity", 0.90, "evaluate"),
@@ -107,16 +124,26 @@ final class JvmSinkSignatures {
             exact("handlebars-inline", "TEMPLATE", "com.github.jknack.handlebars.Handlebars", 0.74,
                     "compileInline"),
 
-            exact("jndi-initial-context", "JNDI", "javax.naming.InitialContext", 0.94, "lookup", "doLookup"),
-            exact("jndi-context", "JNDI", "javax.naming.Context", 0.90, "lookup", "bind", "rebind"),
-            prefix("ldap-context-lookup", "JNDI", "javax.naming.ldap.", 0.92, "lookup"),
-            exact("rmi-registry-lookup", "JNDI", "java.rmi.registry.Registry", 0.90, "lookup"),
+            // JNDI lookup often implies remote class loading / deserialization side-effects.
+            exactKinds("jndi-initial-context", List.of("JNDI", "CLASS_LOADING", "DESERIALIZATION"),
+                    "javax.naming.InitialContext", 0.94, "lookup", "doLookup"),
+            exactKinds("jndi-context", List.of("JNDI", "CLASS_LOADING", "DESERIALIZATION"),
+                    "javax.naming.Context", 0.90, "lookup", "bind", "rebind"),
+            prefixKinds("ldap-context-lookup", List.of("JNDI", "CLASS_LOADING"),
+                    "javax.naming.ldap.", 0.92, "lookup"),
+            exactKinds("rmi-registry-lookup", List.of("JNDI", "CLASS_LOADING", "DESERIALIZATION"),
+                    "java.rmi.registry.Registry", 0.90, "lookup"),
+            exactKinds("jdbc-rowset-datasource", List.of("JNDI", "CLASS_LOADING", "DESERIALIZATION"),
+                    "javax.sql.rowset.BaseRowSet", 0.90, "setDataSourceName"),
+            exactKinds("sun-jdbc-rowset-datasource", List.of("JNDI", "CLASS_LOADING", "DESERIALIZATION"),
+                    "com.sun.rowset.JdbcRowSetImpl", 0.94, "setDataSourceName", "setAutoCommit"),
 
             exact("class-for-name", "CLASS_LOADING", "java.lang.Class", 0.86, "forName", "newInstance"),
             exact("class-loader", "CLASS_LOADING", "java.lang.ClassLoader", 0.92,
                     "loadClass", "defineClass", "findClass"),
-            exact("url-class-loader", "CLASS_LOADING", "java.net.URLClassLoader", 0.92,
-                    "loadClass", "findClass"),
+            // URLClassLoader loads bytecode from a URL → CLASS_LOADING primary, SSRF secondary.
+            exactKinds("url-class-loader", List.of("CLASS_LOADING", "SSRF"),
+                    "java.net.URLClassLoader", 0.92, "loadClass", "findClass", "<init>"),
             exact("unsafe-define-class", "CLASS_LOADING", "sun.misc.Unsafe", 0.96,
                     "defineClass", "defineAnonymousClass"),
             exact("method-invoke", "REFLECTION", "java.lang.reflect.Method", 0.80, "invoke"),
@@ -124,7 +151,23 @@ final class JvmSinkSignatures {
 
             exact("jdbc-statement", "SQL", "java.sql.Statement", 0.88,
                     "execute", "executeQuery", "executeUpdate", "executeLargeUpdate", "addBatch"),
-            exact("jdbc-connection-url", "SQL", "java.sql.DriverManager", 0.86, "getConnection"),
+            // Controllable JDBC URL: network fetch (SSRF), driver feature RCE (COMMAND), driver/class load.
+            exactKinds("jdbc-connection-url", List.of("SSRF", "COMMAND", "CLASS_LOADING"),
+                    "java.sql.DriverManager", 0.90, "getConnection"),
+            exactKinds("jdbc-driver-connect", List.of("SSRF", "COMMAND", "CLASS_LOADING"),
+                    "java.sql.Driver", 0.88, "connect"),
+            exactKinds("spring-driver-manager-set-url", List.of("SSRF", "COMMAND", "CLASS_LOADING"),
+                    "org.springframework.jdbc.datasource.DriverManagerDataSource", 0.88, "setUrl"),
+            exactKinds("hikari-set-jdbc-url", List.of("SSRF", "COMMAND", "CLASS_LOADING"),
+                    "com.zaxxer.hikari.HikariConfig", 0.88, "setJdbcUrl"),
+            exactKinds("hikari-ds-set-jdbc-url", List.of("SSRF", "COMMAND", "CLASS_LOADING"),
+                    "com.zaxxer.hikari.HikariDataSource", 0.88, "setJdbcUrl"),
+            exactKinds("druid-set-url", List.of("SSRF", "COMMAND", "CLASS_LOADING"),
+                    "com.alibaba.druid.pool.DruidDataSource", 0.88, "setUrl"),
+            exactKinds("dbcp2-set-url", List.of("SSRF", "COMMAND", "CLASS_LOADING"),
+                    "org.apache.commons.dbcp2.BasicDataSource", 0.88, "setUrl"),
+            exactKinds("tomcat-dbcp-set-url", List.of("SSRF", "COMMAND", "CLASS_LOADING"),
+                    "org.apache.tomcat.dbcp.dbcp2.BasicDataSource", 0.88, "setUrl"),
             exact("jpa-query", "SQL", "javax.persistence.EntityManager", 0.78,
                     "createQuery", "createNativeQuery"),
             exact("jakarta-jpa-query", "SQL", "jakarta.persistence.EntityManager", 0.78,
@@ -183,6 +226,8 @@ final class JvmSinkSignatures {
             exact("okhttp-call", "SSRF", "okhttp3.Call", 0.88, "execute", "enqueue"),
             exact("spring-rest-template", "SSRF", "org.springframework.web.client.RestTemplate", 0.86,
                     "getForObject", "getForEntity", "postForObject", "postForEntity", "exchange", "execute"),
+            exact("spring-webclient", "SSRF", "org.springframework.web.reactive.function.client.WebClient", 0.86,
+                    "create", "mutate"),
             descriptor("imageio-url", "SSRF", "javax.imageio.ImageIO", 0.86, "(Ljava/net/URL;",
                     Set.of("read")),
             exact("servlet-redirect", "REDIRECT", "javax.servlet.http.HttpServletResponse", 0.84,
@@ -201,9 +246,42 @@ final class JvmSinkSignatures {
             exact("auth0-jwt-decode", "JWT", "com.auth0.jwt.JWT", 0.84, "decode", "require"),
             exact("auth0-jwt-verifier", "JWT", "com.auth0.jwt.interfaces.JWTVerifier", 0.86, "verify"),
             prefix("blade-jwt", "JWT", "org.springblade.core.jwt.", 0.84,
-                    "parse", "parseToken", "getToken", "createToken", "createAuthInfo"),
+                    "parse", "parseToken", "getToken", "createToken", "createAuthInfo", "parseJWT"),
             prefix("blade-secure-token", "AUTH", "org.springblade.core.secure.", 0.78,
-                    "getUser", "getUserId", "getClientId", "parseToken")
+                    "getUser", "getUserId", "getClientId", "parseToken"),
+
+            // Flowable / Activiti / Camunda BPMN deploy + expression surfaces (presence only).
+            exact("flowable-create-deployment", "BPMN_DEPLOY",
+                    "org.flowable.engine.RepositoryService", 0.90, "createDeployment"),
+            exact("flowable-deployment-deploy", "BPMN_DEPLOY",
+                    "org.flowable.engine.repository.DeploymentBuilder", 0.92,
+                    "deploy", "addBytes", "addInputStream", "addClasspathResource", "addString"),
+            exact("flowable-delete-deployment", "BPMN_DEPLOY",
+                    "org.flowable.engine.RepositoryService", 0.86, "deleteDeployment"),
+            exact("flowable-start-process", "BPMN_EXEC",
+                    "org.flowable.engine.RuntimeService", 0.88,
+                    "startProcessInstanceByKey", "startProcessInstanceById",
+                    "startProcessInstanceByMessage"),
+            exact("flowable-expression-get-value", "EXPRESSION",
+                    "org.flowable.common.engine.api.delegate.Expression", 0.86, "getValue"),
+            exact("flowable-scripting-evaluate", "EXPRESSION",
+                    "org.flowable.common.engine.impl.scripting.ScriptingEngines", 0.90, "evaluate"),
+            exact("activiti-create-deployment", "BPMN_DEPLOY",
+                    "org.activiti.engine.RepositoryService", 0.90, "createDeployment"),
+            exact("activiti-deployment-deploy", "BPMN_DEPLOY",
+                    "org.activiti.engine.repository.DeploymentBuilder", 0.92,
+                    "deploy", "addBytes", "addInputStream", "addClasspathResource", "addString"),
+            exact("activiti-start-process", "BPMN_EXEC",
+                    "org.activiti.engine.RuntimeService", 0.88,
+                    "startProcessInstanceByKey", "startProcessInstanceById"),
+            exact("camunda-create-deployment", "BPMN_DEPLOY",
+                    "org.camunda.bpm.engine.RepositoryService", 0.90, "createDeployment"),
+            exact("camunda-deployment-deploy", "BPMN_DEPLOY",
+                    "org.camunda.bpm.engine.repository.DeploymentBuilder", 0.92,
+                    "deploy", "addBytes", "addInputStream", "addClasspathResource", "addString"),
+            exact("camunda-start-process", "BPMN_EXEC",
+                    "org.camunda.bpm.engine.RuntimeService", 0.88,
+                    "startProcessInstanceByKey", "startProcessInstanceById")
     );
 
     private JvmSinkSignatures() {
@@ -217,15 +295,29 @@ final class JvmSinkSignatures {
         // dominated results for every Boot artifact.
         if (edge.callerOwner().startsWith("org.springframework.boot.loader.")) return null;
         for (Rule rule : RULES) {
-            if (rule.matches(edge)) return new Match(rule.id, rule.category, rule.confidence);
+            if (rule.matches(edge)) return new Match(rule.id, rule.kinds, rule.confidence);
         }
         return null;
     }
 
-    record Match(String ruleId, String category, double confidence) {
+    /**
+     * @param kinds ordered primary-first security effect labels for this call site
+     */
+    record Match(String ruleId, List<String> kinds, double confidence) {
+        Match {
+            kinds = List.copyOf(kinds);
+            if (kinds.isEmpty()) {
+                throw new IllegalArgumentException("kinds must not be empty");
+            }
+        }
+
+        /** Primary kind for single-label consumers. */
+        String category() {
+            return kinds.get(0);
+        }
     }
 
-    private record Rule(String id, String category, String owner, boolean ownerPrefix,
+    private record Rule(String id, List<String> kinds, String owner, boolean ownerPrefix,
                         Set<String> methods, String descriptorPrefix, double confidence) {
         private boolean matches(BytecodeFactIndex.CallEdge edge) {
             boolean ownerMatches = ownerPrefix
@@ -237,16 +329,31 @@ final class JvmSinkSignatures {
 
     private static Rule exact(String id, String category, String owner, double confidence,
                               String... methods) {
-        return descriptor(id, category, owner, confidence, null, Set.of(methods));
+        return exactKinds(id, List.of(category), owner, confidence, methods);
+    }
+
+    private static Rule exactKinds(String id, List<String> kinds, String owner, double confidence,
+                                   String... methods) {
+        return descriptorKinds(id, kinds, owner, confidence, null, Set.of(methods));
     }
 
     private static Rule prefix(String id, String category, String ownerPrefix, double confidence,
                                String... methods) {
-        return new Rule(id, category, ownerPrefix, true, Set.of(methods), null, confidence);
+        return prefixKinds(id, List.of(category), ownerPrefix, confidence, methods);
+    }
+
+    private static Rule prefixKinds(String id, List<String> kinds, String ownerPrefix, double confidence,
+                                    String... methods) {
+        return new Rule(id, List.copyOf(kinds), ownerPrefix, true, Set.of(methods), null, confidence);
     }
 
     private static Rule descriptor(String id, String category, String owner, double confidence,
                                    String descriptorPrefix, Set<String> methods) {
-        return new Rule(id, category, owner, false, methods, descriptorPrefix, confidence);
+        return descriptorKinds(id, List.of(category), owner, confidence, descriptorPrefix, methods);
+    }
+
+    private static Rule descriptorKinds(String id, List<String> kinds, String owner, double confidence,
+                                        String descriptorPrefix, Set<String> methods) {
+        return new Rule(id, List.copyOf(kinds), owner, false, methods, descriptorPrefix, confidence);
     }
 }

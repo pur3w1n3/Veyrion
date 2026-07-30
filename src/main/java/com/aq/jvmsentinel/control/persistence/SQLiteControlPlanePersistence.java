@@ -1082,6 +1082,79 @@ public final class SQLiteControlPlanePersistence {
         }
     }
 
+    /**
+     * Hard-deletes one scan and scan-scoped dependents. Child rows without ON DELETE CASCADE
+     * are removed explicitly first so FK checks stay fail-closed and no worker leases remain.
+     */
+    public void deleteScan(ControlPlaneStore.ScanRecord record, String actorId, String now) {
+        Objects.requireNonNull(record, "record");
+        ApiDtos.ScanDto dto = record.dto();
+        String scanId = dto.scanId();
+        String projectId = dto.projectId();
+        transaction("could not delete scan", connection -> {
+            try (PreparedStatement active = connection.prepareStatement(
+                    "SELECT COUNT(*) FROM worker_tasks WHERE scan_id=? AND project_id=? "
+                            + "AND lifecycle IN ('QUEUED','LEASED','RUNNING','PAUSED')")) {
+                active.setString(1, scanId);
+                active.setString(2, projectId);
+                try (ResultSet rows = active.executeQuery()) {
+                    if (rows.next() && rows.getInt(1) > 0) {
+                        throw new PersistenceException(
+                                "active worker task must be cancelled before scan deletion");
+                    }
+                }
+            }
+            try (PreparedStatement activeJobs = connection.prepareStatement(
+                    "SELECT COUNT(*) FROM ai_jobs WHERE scan_id=? AND project_id=? "
+                            + "AND status IN ('QUEUED','RUNNING')")) {
+                activeJobs.setString(1, scanId);
+                activeJobs.setString(2, projectId);
+                try (ResultSet rows = activeJobs.executeQuery()) {
+                    if (rows.next() && rows.getInt(1) > 0) {
+                        throw new PersistenceException(
+                                "active AI job must be cancelled before scan deletion");
+                    }
+                }
+            }
+            // Child tables are often empty for a given scan. update() requires exactly one
+            // row; use deleteMatching so 0-row child DELETEs do not abort the transaction.
+            deleteMatching(connection, "DELETE FROM worker_trace_chunks WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            deleteMatching(connection, "DELETE FROM worker_tasks WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            deleteMatching(connection, "DELETE FROM dynamic_probe_plans WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            deleteMatching(connection, "DELETE FROM path_runs WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            deleteMatching(connection, "DELETE FROM path_traces WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            deleteMatching(connection, "DELETE FROM experiment_plans WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            deleteMatching(connection, "DELETE FROM trace_plans WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            deleteMatching(connection, "DELETE FROM world_packs WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            deleteMatching(connection, "DELETE FROM contrast_ledger_snapshots WHERE scan_id=?", scanId);
+            deleteMatching(connection, "DELETE FROM taint_graphs WHERE scan_id=?", scanId);
+            deleteMatching(connection, "DELETE FROM security_hypotheses WHERE scan_id=?", scanId);
+            deleteMatching(connection, "DELETE FROM verified_findings WHERE scan_id=?", scanId);
+            deleteMatching(connection, "DELETE FROM audit_pipeline_runs WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            deleteMatching(connection, "DELETE FROM sse_events WHERE scan_id=?", scanId);
+            deleteMatching(connection, "DELETE FROM evidence WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            deleteMatching(connection, "DELETE FROM findings WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            deleteMatching(connection, "DELETE FROM attack_chains WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            deleteMatching(connection, "DELETE FROM ai_jobs WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            update(connection, "DELETE FROM scans WHERE scan_id=? AND project_id=?",
+                    scanId, projectId);
+            audit(connection, projectId, actorId, "scan.delete", "scan", scanId, "{}", now);
+        });
+    }
+
     public void bootstrapOperator(String token, String now) {
         Objects.requireNonNull(token, "token");
         try (Connection connection = open()) {
@@ -1695,6 +1768,14 @@ public final class SQLiteControlPlanePersistence {
             for (int i = 0; i < values.length; i++) statement.setObject(i + 1, values[i]);
             int changed = statement.executeUpdate();
             if (changed != 1) throw new SQLException("persistence update affected " + changed + " rows");
+        }
+    }
+
+    /** DELETE/UPDATE that may match zero or many rows (cascading scan cleanup). */
+    private static void deleteMatching(Connection connection, String sql, Object... values) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            for (int i = 0; i < values.length; i++) statement.setObject(i + 1, values[i]);
+            statement.executeUpdate();
         }
     }
 

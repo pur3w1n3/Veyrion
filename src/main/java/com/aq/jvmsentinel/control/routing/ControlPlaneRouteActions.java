@@ -41,12 +41,14 @@ public interface ControlPlaneRouteActions {
     void retryAuditStage(HttpExchange exchange, String projectId) throws IOException;
     void createScan(HttpExchange exchange, String projectId) throws IOException;
     void listScans(HttpExchange exchange, String projectId) throws IOException;
+    void deleteScan(HttpExchange exchange, String projectId, String scanId) throws IOException;
     void dashboard(HttpExchange exchange, String projectId) throws IOException;
     void listEvidence(HttpExchange exchange, String projectId) throws IOException;
     void sendScan(HttpExchange exchange, String scanId) throws IOException;
     void sendScanCoverage(HttpExchange exchange, String scanId) throws IOException;
     void sendScanEvidenceGraph(HttpExchange exchange, String scanId) throws IOException;
     void sendScanHypotheses(HttpExchange exchange, String scanId) throws IOException;
+    void sendScanAiMemory(HttpExchange exchange, String scanId) throws IOException;
     void streamEvents(HttpExchange exchange, String scanId) throws IOException;
     void listDynamicTasks(HttpExchange exchange, String scanId) throws IOException;
     void createDynamicTask(HttpExchange exchange, String scanId) throws IOException;

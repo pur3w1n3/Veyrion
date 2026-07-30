@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-ADR 记录影响多个模块、公共合同或长期迁移方向的架构决定。实现状态不写入 ADR，仍以 [MVP Backlog](../MVP_BACKLOG.md) 为准。
+ADR 记录影响多个模块、公共合同或长期迁移方向的架构决定。实现状态不写入 ADR，仍以 [MVP Backlog](../MVP_BACKLOG.md) / [OPEN_GAPS](../OPEN_GAPS.md) 为准。日常执行流程见 [CURRENT_SYSTEM](../CURRENT_SYSTEM.md)。
 
 ## 状态
 
@@ -46,4 +46,4 @@ ADR 只决定方向，不以接口名、空实现或文档存在冒充交付完�
 | [0001](0001-polyglot-control-plane-and-workers.md) | `ACCEPTED` | 保留 Java/React 控制面，以语言无关合同连接进程外 Analyzer 和 Runtime Adapter |
 | [0002](0002-jvm-static-analysis-kernel.md) | `ACCEPTED` | JVM CFG/MethodSummary 轻量内核 + 自研加深；暂缓 Soot/WALA；完整引擎须进程外独立 ADR |
 | [0003](0003-production-session-deferred.md) | `PROPOSED` | 生产 session/CSRF/SSO/多租户/数据保留暂缓；`ProductionFeatures` 恒 fail-closed |
-| [0004](0004-sandbox-posture-vs-agent-bypass.md) | `ACCEPTED` | 动态路径调试器：TracePlan + 三轨 Posture + World Pack + Sensor Agent；强达默认 Docker-only，禁止以逐点 fail-open 当主路线。简报：[DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](../DYNAMIC_SANDBOX_POSTURE_REDESIGN.md) |
+| [0004](0004-sandbox-posture-vs-agent-bypass.md) | `ACCEPTED` | 动态路径调试器：TracePlan + 三轨 Posture + World Pack + Sensor Agent；强达默认 Docker-only，禁止以逐点 fail-open 当主路线。流程：[AGENT_SENSOR_FLOW.md](../AGENT_SENSOR_FLOW.md)；历史简报：[archive/DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](../archive/DYNAMIC_SANDBOX_POSTURE_REDESIGN.md) |

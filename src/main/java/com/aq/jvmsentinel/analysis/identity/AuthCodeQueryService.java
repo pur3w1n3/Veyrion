@@ -4,6 +4,7 @@ import com.aq.jvmsentinel.analysis.framework.FrameworkAdapter;
 import com.aq.jvmsentinel.analysis.framework.FrameworkAdapterRegistry;
 import com.aq.jvmsentinel.analysis.framework.SpringBladeAdapter;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -421,6 +422,11 @@ public final class AuthCodeQueryService {
         }
 
         List<String> techniques = new ArrayList<>();
+        if (cipherMaterial) {
+            // Cookie-channel rememberMe cipher material — not JWT; AI may use CUSTOM_POC/Cookie.
+            techniques.add("REMEMBER_ME_COOKIE");
+            techniques.add("CUSTOM_POC");
+        }
         if (secretFound) {
             techniques.add("DEFAULT_SECRET_HS256");
             techniques.add("MISSING_AUTH");
@@ -429,10 +435,12 @@ public final class AuthCodeQueryService {
             techniques.add("MISSING_AUTH");
             techniques.add("EMPTY_BEARER");
             techniques.add("ALG_NONE");
-        } else {
+        } else if (!cipherMaterial) {
             techniques.add("MISSING_AUTH");
             techniques.add("ALG_NONE");
             techniques.add("EMPTY_BEARER");
+        } else {
+            techniques.add("MISSING_AUTH");
         }
         String preferredChannel = !secondaryHeader.isBlank() && multiHeaderSurface
                 ? secondaryHeader : "Authorization";
@@ -479,6 +487,9 @@ public final class AuthCodeQueryService {
         final List<IdentityMaterial> identityMaterials = new ArrayList<>();
     }
 
+    private static final int MAX_NESTED_JWT_LIBS = 24;
+    private static final int MAX_NESTED_JWT_LIB_BYTES = 6 * 1024 * 1024;
+
     private static ScanAccumulator scanArtifact(Path jar) throws IOException {
         ScanAccumulator acc = new ScanAccumulator();
         List<WellKnownKey> jwtDictionary = FrameworkAdapterRegistry.wellKnownJwtSigningDictionaries();
@@ -487,10 +498,21 @@ public final class AuthCodeQueryService {
         try (ZipInputStream zip = new ZipInputStream(Files.newInputStream(jar))) {
             ZipEntry entry;
             int scanned = 0;
-            while ((entry = zip.getNextEntry()) != null && scanned < 800) {
+            int nestedLibs = 0;
+            while ((entry = zip.getNextEntry()) != null && scanned < 2_400) {
                 if (entry.isDirectory()) continue;
                 String name = entry.getName();
                 String lower = name.toLowerCase(Locale.ROOT);
+                if (isNestedJar(lower)) {
+                    if (nestedLibs < MAX_NESTED_JWT_LIBS && isJwtAuthNestedJar(lower)
+                            && acc.mintSecret.isEmpty()) {
+                        nestedLibs++;
+                        byte[] nested = readLimited(zip, MAX_NESTED_JWT_LIB_BYTES);
+                        scanNestedJarForJwt(nested, name, acc, jwtDictionary, adapterAuthPaths,
+                                secondaryHint);
+                    }
+                    continue;
+                }
                 if (looksAuthClass(lower, adapterAuthPaths)) {
                     if (matchesAdapterAuthPath(lower, adapterAuthPaths) || looksMultiHeaderHint(lower)) {
                         acc.multiHeaderAuthSurface = true;
@@ -508,91 +530,156 @@ public final class AuthCodeQueryService {
                 if (entry.getSize() > 256 * 1024) continue;
                 scanned++;
                 byte[] bytes = readLimited(zip, 64 * 1024);
-                if (lower.endsWith(".class") || lower.endsWith(".java")) {
-                    String latin = new String(bytes, StandardCharsets.ISO_8859_1);
-                    if (PRE_AUTH.matcher(latin).find()) {
-                        acc.preAuthSeen = true;
-                    }
-                    if (TOKEN_FILTER.matcher(latin).find()) {
-                        acc.tokenFilterSeen = true;
-                    }
-                    if (acc.mintSecret.isEmpty()) {
-                        for (WellKnownKey known : jwtDictionary) {
-                            if (latin.contains(known.value())) {
-                                acc.mintSecret = Optional.of(known.value());
-                                acc.keyAlias = known.alias();
-                                acc.keyProvenance = "CLASS_CONSTANT:" + truncate(name, 160);
-                                // Dictionary hit alone is not multi-header surface; adapters decide.
-                                if (matchesAdapterAuthPath(lower, adapterAuthPaths)
-                                        || looksMultiHeaderHint(lower)
-                                        || looksMultiHeaderHint(latin.toLowerCase(Locale.ROOT))) {
-                                    acc.multiHeaderAuthSurface = true;
-                                    markSecondaryHeader(acc, lower, secondaryHint);
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    continue;
-                }
-                String text = new String(bytes, StandardCharsets.UTF_8);
-                String textLower = text.toLowerCase(Locale.ROOT);
-                if (looksMultiHeaderHint(textLower) || matchesAdapterAuthPath(textLower, adapterAuthPaths)) {
-                    acc.multiHeaderAuthSurface = true;
-                    markSecondaryHeader(acc, textLower, secondaryHint);
-                }
-                if (PRE_AUTH.matcher(text).find()) {
-                    acc.preAuthSeen = true;
-                }
-                if (TOKEN_FILTER.matcher(text).find()) {
-                    acc.tokenFilterSeen = true;
-                }
-                if (acc.mintSecret.isEmpty()) {
-                    for (WellKnownKey known : jwtDictionary) {
-                        if (text.contains(known.value())) {
-                            acc.mintSecret = Optional.of(known.value());
-                            acc.keyAlias = known.alias();
-                            acc.keyProvenance = "CONFIG_OR_RESOURCE:" + truncate(name, 160);
-                            if (looksMultiHeaderHint(textLower)) {
-                                acc.multiHeaderAuthSurface = true;
-                                markSecondaryHeader(acc, textLower, secondaryHint);
-                            }
-                            break;
-                        }
-                    }
-                }
-                Matcher skip = SKIP_URL.matcher(text);
-                while (skip.find() && acc.skipUrls.size() < 24) {
-                    acc.skipUrls.add(skip.group(1).trim());
-                }
-                Matcher keyLine = JWT_KEY_LINE.matcher(text);
-                if (keyLine.find() && acc.mintSecret.isEmpty()) {
-                    String value = keyLine.group(1).trim();
-                    Optional<WellKnownKey> known = matchWellKnown(value, jwtDictionary);
-                    if (known.isPresent()) {
-                        acc.mintSecret = Optional.of(known.get().value());
-                        acc.keyAlias = known.get().alias();
-                        acc.keyProvenance = "CONFIG_KEY:" + truncate(name, 160);
-                        if (looksMultiHeaderHint(textLower)) {
-                            acc.multiHeaderAuthSurface = true;
-                            markSecondaryHeader(acc, textLower, secondaryHint);
-                        }
-                    } else if (value.length() >= 8 && value.length() <= 256
-                            && looksPlausibleSecret(value)
-                            && !isKnownRememberMeCipher(value)) {
-                        acc.mintSecret = Optional.of(value);
-                        acc.keyAlias = "CUSTOM_CONFIG";
-                        acc.keyProvenance = "CONFIG_KEY:" + truncate(name, 160);
-                    } else if (value.length() >= 8) {
-                        acc.configKeyPresentRedacted = true;
-                        acc.keyProvenance = "CONFIG_KEY_PRESENT_REDACTED:" + truncate(name, 160);
-                    }
-                }
+                ingestAuthBytes(name, lower, bytes, acc, jwtDictionary, adapterAuthPaths, secondaryHint);
             }
         }
         List<RememberMeCipherHarvester.Hit> cipherHits = RememberMeCipherHarvester.scan(jar);
         acc.identityMaterials.addAll(RememberMeCipherHarvester.toMaterials(cipherHits));
         return acc;
+    }
+
+    private static void scanNestedJarForJwt(
+            byte[] nestedJar,
+            String nestName,
+            ScanAccumulator acc,
+            List<WellKnownKey> jwtDictionary,
+            Set<String> adapterAuthPaths,
+            String secondaryHint) {
+        if (nestedJar == null || nestedJar.length == 0 || !acc.mintSecret.isEmpty()) {
+            return;
+        }
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(nestedJar))) {
+            ZipEntry entry;
+            int counted = 0;
+            while ((entry = zip.getNextEntry()) != null && counted < 500) {
+                if (entry.isDirectory()) continue;
+                String name = nestName + "!" + entry.getName();
+                String lower = name.toLowerCase(Locale.ROOT);
+                if (!(lower.endsWith(".class") || lower.endsWith(".yml") || lower.endsWith(".yaml")
+                        || lower.endsWith(".properties"))) {
+                    continue;
+                }
+                counted++;
+                byte[] bytes = readLimited(zip, 64 * 1024);
+                ingestAuthBytes(name, lower, bytes, acc, jwtDictionary, adapterAuthPaths, secondaryHint);
+                if (acc.mintSecret.isPresent()) {
+                    return;
+                }
+            }
+        } catch (IOException ignored) {
+            // Nested optional.
+        }
+    }
+
+    private static void ingestAuthBytes(
+            String name,
+            String lower,
+            byte[] bytes,
+            ScanAccumulator acc,
+            List<WellKnownKey> jwtDictionary,
+            Set<String> adapterAuthPaths,
+            String secondaryHint) {
+        if (bytes == null || bytes.length == 0) return;
+        if (lower.endsWith(".class") || lower.endsWith(".java")) {
+            String latin = new String(bytes, StandardCharsets.ISO_8859_1);
+            if (PRE_AUTH.matcher(latin).find()) {
+                acc.preAuthSeen = true;
+            }
+            if (TOKEN_FILTER.matcher(latin).find()
+                    || lower.contains("tokeninterceptor")
+                    || lower.contains("authinterceptor")) {
+                acc.tokenFilterSeen = true;
+            }
+            if (acc.mintSecret.isEmpty()) {
+                for (WellKnownKey known : jwtDictionary) {
+                    if (latin.contains(known.value())) {
+                        acc.mintSecret = Optional.of(known.value());
+                        acc.keyAlias = known.alias();
+                        acc.keyProvenance = "CLASS_CONSTANT:" + truncate(name, 160);
+                        if (matchesAdapterAuthPath(lower, adapterAuthPaths)
+                                || looksMultiHeaderHint(lower)
+                                || looksMultiHeaderHint(latin.toLowerCase(Locale.ROOT))) {
+                            acc.multiHeaderAuthSurface = true;
+                            markSecondaryHeader(acc, lower, secondaryHint);
+                        }
+                        break;
+                    }
+                }
+            }
+            return;
+        }
+        String text = new String(bytes, StandardCharsets.UTF_8);
+        String textLower = text.toLowerCase(Locale.ROOT);
+        if (looksMultiHeaderHint(textLower) || matchesAdapterAuthPath(textLower, adapterAuthPaths)) {
+            acc.multiHeaderAuthSurface = true;
+            markSecondaryHeader(acc, textLower, secondaryHint);
+        }
+        if (PRE_AUTH.matcher(text).find()) {
+            acc.preAuthSeen = true;
+        }
+        if (TOKEN_FILTER.matcher(text).find()) {
+            acc.tokenFilterSeen = true;
+        }
+        if (acc.mintSecret.isEmpty()) {
+            for (WellKnownKey known : jwtDictionary) {
+                if (text.contains(known.value())) {
+                    acc.mintSecret = Optional.of(known.value());
+                    acc.keyAlias = known.alias();
+                    acc.keyProvenance = "CONFIG_OR_RESOURCE:" + truncate(name, 160);
+                    if (looksMultiHeaderHint(textLower)) {
+                        acc.multiHeaderAuthSurface = true;
+                        markSecondaryHeader(acc, textLower, secondaryHint);
+                    }
+                    break;
+                }
+            }
+        }
+        Matcher skip = SKIP_URL.matcher(text);
+        while (skip.find() && acc.skipUrls.size() < 24) {
+            acc.skipUrls.add(skip.group(1).trim());
+        }
+        Matcher keyLine = JWT_KEY_LINE.matcher(text);
+        if (keyLine.find() && acc.mintSecret.isEmpty()) {
+            String value = keyLine.group(1).trim();
+            Optional<WellKnownKey> known = matchWellKnown(value, jwtDictionary);
+            if (known.isPresent()) {
+                acc.mintSecret = Optional.of(known.get().value());
+                acc.keyAlias = known.get().alias();
+                acc.keyProvenance = "CONFIG_KEY:" + truncate(name, 160);
+                if (looksMultiHeaderHint(textLower)) {
+                    acc.multiHeaderAuthSurface = true;
+                    markSecondaryHeader(acc, textLower, secondaryHint);
+                }
+            } else if (value.length() >= 8 && value.length() <= 256
+                    && looksPlausibleSecret(value)
+                    && !isKnownRememberMeCipher(value)) {
+                acc.mintSecret = Optional.of(value);
+                acc.keyAlias = "CUSTOM_CONFIG";
+                acc.keyProvenance = "CONFIG_KEY:" + truncate(name, 160);
+            } else if (value.length() >= 8) {
+                acc.configKeyPresentRedacted = true;
+                acc.keyProvenance = "CONFIG_KEY_PRESENT_REDACTED:" + truncate(name, 160);
+            }
+        }
+    }
+
+    private static boolean isNestedJar(String lowerPath) {
+        return (lowerPath.startsWith("boot-inf/lib/") || lowerPath.startsWith("web-inf/lib/"))
+                && lowerPath.endsWith(".jar");
+    }
+
+    private static boolean isJwtAuthNestedJar(String lowerPath) {
+        String file = lowerPath;
+        int slash = lowerPath.lastIndexOf('/');
+        if (slash >= 0) {
+            file = lowerPath.substring(slash + 1);
+        }
+        return file.contains("blade-starter-jwt")
+                || file.contains("blade-core-secure")
+                || file.contains("blade-core-tool")
+                || file.contains("jjwt")
+                || file.contains("nimbus-jose")
+                || file.contains("java-jwt");
     }
 
     private static boolean isKnownRememberMeCipher(String value) {
@@ -688,10 +775,16 @@ public final class AuthCodeQueryService {
     /** Convenience map for tool JSON (no raw secrets). */
     public static Map<String, Object> toToolMap(AuthCodeQueryResult result) {
         Map<String, Object> root = new LinkedHashMap<>();
+        boolean cookieMaterial = result.facts().stream()
+                .anyMatch(f -> "COOKIE_MATERIAL".equals(f.category()));
+        boolean cipherKeyMaterial = result.identityMaterials().stream()
+                .anyMatch(m -> m.kind() == IdentityMaterialKind.CIPHER_KEY);
         root.put("multiHeaderAuthSurface", result.multiHeaderAuthSurface());
         root.put("bladeSurface", result.multiHeaderAuthSurface()); // deprecated wire alias
         root.put("jwtSecretMaterialFound", result.jwtSecretMaterialFound());
         root.put("jwtDefaultKeyMatched", result.jwtSecretMaterialFound()); // compat alias
+        root.put("rememberMeCipherMaterialFound", cipherKeyMaterial || cookieMaterial);
+        root.put("cookieMaterialFound", cookieMaterial);
         root.put("preferredSignKeyProvenance", result.preferredSignKeyProvenance());
         root.put("preferredHeaderChannel", result.preferredHeaderChannel());
         root.put("secondaryAuthHeaderName", result.secondaryAuthHeaderName());
@@ -700,7 +793,10 @@ public final class AuthCodeQueryService {
         root.put("verificationStatus", "STATIC_INFERRED");
         root.put("note", "Adapter well-known keys are HINT/detection only; mint only when "
                 + "jwtSecretMaterialFound=true with evidenceRefs from this query. "
-                + "bladeSurface is a deprecated alias of multiHeaderAuthSurface.");
+                + "When rememberMeCipherMaterialFound/COOKIE_MATERIAL is present, cite that FACT "
+                + "(and scan HARDCODED_REMEMBER_ME_CIPHER_KEY hypotheses) instead of guessing "
+                + "kPH+/dictionary cipher keys; METHOD_VIEW SLICE_EMPTY does not mean cipher-key "
+                + "was missed. bladeSurface is a deprecated alias of multiHeaderAuthSurface.");
         List<Map<String, Object>> candidateMaps = new ArrayList<>();
         for (SecretCandidateHint candidate : result.secretCandidates()) {
             Map<String, Object> item = new LinkedHashMap<>();
@@ -724,6 +820,24 @@ public final class AuthCodeQueryService {
             facts.add(item);
         }
         root.put("facts", facts);
+        List<Map<String, Object>> materialMaps = new ArrayList<>();
+        for (IdentityMaterial material : result.identityMaterials()) {
+            if (material.kind() != IdentityMaterialKind.CIPHER_KEY
+                    && material.kind() != IdentityMaterialKind.SESSION_COOKIE) {
+                continue;
+            }
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("kind", material.kind().name());
+            item.put("channel", material.channel().name());
+            item.put("name", material.name());
+            item.put("alias", material.alias());
+            item.put("classification", material.valueProvenance());
+            item.put("hasValue", material.hasValue());
+            item.put("secretRedacted", true);
+            item.put("sourcePath", material.sourcePath());
+            materialMaps.add(item);
+        }
+        root.put("identityMaterials", materialMaps);
         return root;
     }
 }

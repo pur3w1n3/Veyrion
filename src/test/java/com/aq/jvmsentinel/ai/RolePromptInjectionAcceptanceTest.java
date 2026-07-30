@@ -117,13 +117,16 @@ public final class RolePromptInjectionAcceptanceTest {
                 List.of("FUZZ_STRATEGY_CONTEXT", "BRANCH_CONSTRAINT_FACTS", "fuzz_strategy_get",
                         "selectedProbes"));
         assertPrompt(store, AgentRole.PATH_EXPLORATION, AiOutputLanguage.ZH_CN,
-                List.of("COVERAGE_GAP_FACTS", "code_query kind=TAINT_GRAPH"));
+                List.of("COVERAGE_GAP_FACTS", "code_query kind=TAINT_GRAPH", "findingBindings",
+                        "api:{method,route,entryRef}"));
         assertPrompt(store, AgentRole.VULNERABILITY_TRIAGE, AiOutputLanguage.ZH_CN,
                 List.of("ROOT_CAUSE_TEMPLATE", "CWE_MAPPING_HINTS", "rootCause"));
         assertPrompt(store, AgentRole.REPORT_GENERATION, AiOutputLanguage.ZH_CN,
-                List.of("## 修复建议", "FIX_SUGGESTION_CONTEXT", "use PreparedStatement"));
+                List.of("## 漏洞相关", "findingBindings", "## 修复建议", "FIX_SUGGESTION_CONTEXT",
+                        "use PreparedStatement"));
         assertPrompt(store, AgentRole.REPORT_GENERATION, AiOutputLanguage.EN,
-                List.of("Remediation / Fix Suggestions", "FIX_SUGGESTION_CONTEXT"));
+                List.of("## Vulnerabilities", "findingBindings",
+                        "Remediation / Fix Suggestions", "FIX_SUGGESTION_CONTEXT"));
         assertPrompt(store, AgentRole.PRE_ANALYSIS, AiOutputLanguage.EN,
                 List.of("RANKED_SINK_CATALOG", "TAINT_GRAPH_SUMMARY", "BRANCH_CONSTRAINT_FACTS",
                         "code_query kind=TAINT_GRAPH"));

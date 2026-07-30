@@ -1,4 +1,4 @@
-import { outcomeClassLabel } from '../../labels'
+import { hypothesisFamilyBlurb, hypothesisFamilyLabel, outcomeClassLabel } from '../../labels'
 import { StatusPill } from '../Common'
 import { familyOfFinding, type EvidenceSelection } from './resultsUtils'
 
@@ -11,15 +11,7 @@ export function EvidenceInspector({
   english: boolean
   hypothesisById: Map<string, import('../../api').SecurityHypothesisDto>
 }) {
-  if (!selection) {
-    return (
-      <aside className="evidence-inspector evidence-inspector--empty" aria-label={english ? 'Evidence inspector' : '证据检查器'}>
-        <p className="evidence-inspector__empty">
-          {english ? 'Select an item to inspect evidence boundaries.' : '选择一项查看证据边界'}
-        </p>
-      </aside>
-    )
-  }
+  if (!selection) return null
 
   return (
     <aside className="evidence-inspector" aria-label={english ? 'Evidence inspector' : '证据检查器'}>
@@ -27,9 +19,9 @@ export function EvidenceInspector({
         <>
           <p className="eyebrow">{english ? 'FINDING' : '发现'}</p>
           <h3 className="evidence-inspector__title veyrion-long-text">{selection.finding.title}</h3>
-          <StatusPill status={selection.finding.status} />
+          <StatusPill status={selection.finding.status} english={english} />
           <dl className="evidence-inspector__dl">
-            <div><dt>{english ? 'Family' : '假设族'}</dt><dd>{familyOfFinding(selection.finding, hypothesisById)}</dd></div>
+            <div><dt>{english ? 'Family' : '假设族'}</dt><dd>{hypothesisFamilyLabel(familyOfFinding(selection.finding, hypothesisById), english)} <span className="term-chip">{familyOfFinding(selection.finding, hypothesisById)}</span></dd></div>
             <div><dt>{english ? 'Entry' : '入口'}</dt><dd className="veyrion-long-text">{selection.finding.entry}</dd></div>
             <div><dt>{english ? 'Sink' : 'Sink'}</dt><dd className="veyrion-long-text">{selection.finding.sink}</dd></div>
             <div><dt>{english ? 'Evidence refs' : '证据引用'}</dt><dd>{selection.finding.evidenceRefs?.length ?? selection.finding.evidence}</dd></div>
@@ -43,10 +35,10 @@ export function EvidenceInspector({
         <>
           <p className="eyebrow">{english ? 'PATH RUN' : 'PathRun'}</p>
           <h3 className="evidence-inspector__title veyrion-long-text">{selection.pathRun.requestSummary || selection.pathRun.entrypointRef}</h3>
-          <StatusPill status={selection.pathRun.verificationStatus} />
+          <StatusPill status={selection.pathRun.verificationStatus} english={english} />
           <dl className="evidence-inspector__dl">
             <div><dt>{english ? 'Track' : '身份轨'}</dt><dd>{selection.pathRun.track}</dd></div>
-            <div><dt>{english ? 'Outcome' : '结果'}</dt><dd>{selection.pathRun.outcomeClass} · {outcomeClassLabel(selection.pathRun.outcomeClass)}</dd></div>
+            <div><dt>{english ? 'Outcome' : '结果'}</dt><dd>{selection.pathRun.outcomeClass} · {outcomeClassLabel(selection.pathRun.outcomeClass, english)}</dd></div>
             <div><dt>HTTP</dt><dd>{selection.pathRun.httpStatus < 0 ? '—' : selection.pathRun.httpStatus}</dd></div>
             <div><dt>{english ? 'Stop reason' : '停止原因'}</dt><dd className="veyrion-long-text">{selection.pathRun.stopReason || '—'}</dd></div>
           </dl>
@@ -55,12 +47,77 @@ export function EvidenceInspector({
       {selection.kind === 'hypothesis' && (
         <>
           <p className="eyebrow">{english ? 'HYPOTHESIS' : '假设'}</p>
-          <h3 className="evidence-inspector__title">{selection.hypothesis.hypothesisId}</h3>
+          <h3 className="evidence-inspector__title veyrion-long-text">{selection.hypothesis.securityProperty}</h3>
           <dl className="evidence-inspector__dl">
-            <div><dt>{english ? 'Family' : '族'}</dt><dd>{selection.hypothesis.family}</dd></div>
-            <div><dt>{english ? 'Property' : '属性'}</dt><dd>{selection.hypothesis.securityProperty}</dd></div>
+            <div><dt>{english ? 'Id' : '编号'}</dt><dd className="veyrion-long-text">{selection.hypothesis.hypothesisId}</dd></div>
+            <div>
+              <dt>{english ? 'Family' : '族'}</dt>
+              <dd>
+                {hypothesisFamilyLabel(selection.hypothesis.family, english)}{' '}
+                <span className="term-chip">{selection.hypothesis.family}</span>
+              </dd>
+            </div>
+            <div><dt>{english ? 'Property' : '属性'}</dt><dd className="veyrion-long-text">{selection.hypothesis.securityProperty}</dd></div>
             <div><dt>{english ? 'Lifecycle' : '生命周期'}</dt><dd>{selection.hypothesis.lifecycle}</dd></div>
-            <div><dt>{english ? 'Supporting refs' : '支持引用'}</dt><dd>{selection.hypothesis.supportingEvidenceRefs.length}</dd></div>
+            <div><dt>{english ? 'Evidence count' : '证据数量'}</dt><dd>{selection.hypothesis.supportingEvidenceRefs.length}</dd></div>
+            {selection.hypothesis.source && (
+              <div><dt>{english ? 'Source' : '源'}</dt><dd className="veyrion-long-text">{selection.hypothesis.source}</dd></div>
+            )}
+            {selection.hypothesis.effect && (
+              <div><dt>{english ? 'Effect' : '效应'}</dt><dd className="veyrion-long-text">{selection.hypothesis.effect}</dd></div>
+            )}
+          </dl>
+        </>
+      )}
+      {selection.kind === 'hypothesisFamily' && (
+        <>
+          <p className="eyebrow">{english ? 'FAMILY' : '假设族'}</p>
+          <h3 className="evidence-inspector__title">
+            {hypothesisFamilyLabel(selection.family, english)}{' '}
+            <span className="term-chip">{selection.family}</span>
+          </h3>
+          <dl className="evidence-inspector__dl">
+            <div><dt>{english ? 'Count' : '数量'}</dt><dd>{selection.items.length}</dd></div>
+            <div><dt>{english ? 'Summary' : '说明'}</dt><dd>{hypothesisFamilyBlurb(selection.family, english)}</dd></div>
+            <div>
+              <dt>{english ? 'Hypothesis ids' : '假设编号'}</dt>
+              <dd className="veyrion-long-text">
+                {selection.items.length === 0
+                  ? (english ? 'Empty (not a safety claim).' : '空（不等于安全）。')
+                  : selection.items.map((item) => item.hypothesisId).join(', ')}
+              </dd>
+            </div>
+          </dl>
+        </>
+      )}
+      {selection.kind === 'rankedSink' && (
+        <>
+          <p className="eyebrow">{english ? 'DATAFLOW' : '代码流向'}</p>
+          <h3 className="evidence-inspector__title veyrion-long-text">
+            {selection.sink.symbol || selection.sink.sinkId}
+          </h3>
+          <dl className="evidence-inspector__dl">
+            <div><dt>{english ? 'Rank' : '编号'}</dt><dd>#{selection.sink.rank}</dd></div>
+            <div><dt>{english ? 'Type' : '类型'}</dt><dd><span className="term-chip">{selection.sink.category || '—'}</span></dd></div>
+            <div><dt>{english ? 'Score' : '评分'}</dt><dd>{selection.sink.score.toFixed(2)}</dd></div>
+            <div><dt>{english ? 'Sink symbol' : 'Sink 符号'}</dt><dd className="veyrion-long-text">{selection.sink.symbol || '—'}</dd></div>
+            <div><dt>Sink ID</dt><dd className="veyrion-long-text">{selection.sink.sinkId}</dd></div>
+            <div>
+              <dt>{english ? 'Path / call chain' : '路径 / 调用链'}</dt>
+              <dd className="veyrion-long-text">{selection.sink.symbol || selection.sink.sinkId}</dd>
+            </div>
+            <div>
+              <dt>{english ? 'Rank reasons' : '排序原因'}</dt>
+              <dd className="veyrion-long-text">
+                {selection.sink.rankReasons.length > 0
+                  ? selection.sink.rankReasons.join(' · ')
+                  : '—'}
+              </dd>
+            </div>
+            <div>
+              <dt>{english ? 'Evidence refs' : '证据引用'}</dt>
+              <dd>{selection.sink.rankReasons.length > 0 ? selection.sink.rankReasons.length : 0}</dd>
+            </div>
           </dl>
         </>
       )}
@@ -68,7 +125,7 @@ export function EvidenceInspector({
         <>
           <p className="eyebrow">{english ? 'ENTRY' : '入口'}</p>
           <h3 className="evidence-inspector__title veyrion-long-text">{selection.entry.method} {selection.entry.route}</h3>
-          <StatusPill status={selection.entry.status} />
+          <StatusPill status={selection.entry.status} english={english} />
           <dl className="evidence-inspector__dl">
             <div><dt>{english ? 'Module' : '模块'}</dt><dd className="veyrion-long-text">{selection.entry.module}</dd></div>
             <div><dt>{english ? 'Precondition' : '前置'}</dt><dd className="veyrion-long-text">{selection.entry.precondition}</dd></div>

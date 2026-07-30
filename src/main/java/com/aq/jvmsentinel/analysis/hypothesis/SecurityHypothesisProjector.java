@@ -1,5 +1,8 @@
 package com.aq.jvmsentinel.analysis.hypothesis;
 
+import com.aq.jvmsentinel.analysis.detector.DetectorIds;
+import com.aq.jvmsentinel.analysis.detector.HardcodedJwtSignKeyDetector;
+import com.aq.jvmsentinel.analysis.detector.HardcodedRememberMeCipherDetector;
 import com.aq.jvmsentinel.analysis.detector.HypothesisMerge;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.StaticFactSnapshot;
@@ -10,20 +13,24 @@ import com.aq.jvmsentinel.model.BytecodeFactIndex;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
 /**
  * Compatible projection of legacy sink findings into SecurityHypothesis (P0-12).
  * Non-AUTH_GAP sinks → DATAFLOW; AUTH_GAP → GUARD_COVERAGE (no fake sink-none).
+ * High-signal non-taint detector hypotheses may also project to findings (STATIC_INFERRED only).
  */
 public final class SecurityHypothesisProjector {
     public static final String DETECTOR_VERSION = "static-sink-compat/0.1";
     public static final String GUARD_COVERAGE_SINK_LABEL = "guard-coverage";
+    public static final String DETECTOR_CONFIG_SINK_LABEL = "detector-config";
 
     private SecurityHypothesisProjector() {
     }
@@ -172,6 +179,130 @@ public final class SecurityHypothesisProjector {
             List<SecurityHypothesis> projected,
             List<SecurityHypothesis> detected) {
         return HypothesisMerge.merge(projected, detected);
+    }
+
+    /**
+     * Project selected high-signal non-taint detector hypotheses into findings so UI/report
+     * are not sink-only. Always {@link ApiDtos#STATIC_INFERRED}; never DYNAMIC_CONFIRMED/VERIFIED.
+     *
+     * <p>Currently: {@code HARDCODED_REMEMBER_ME_CIPHER_KEY}, companion
+     * {@code UNSAFE_DESERIALIZATION_SURFACE} from the rememberMe cipher detector, and
+     * {@code HARDCODED_JWT_SIGN_KEY}.
+     */
+    public static List<ApiDtos.FindingDto> projectSelectedDetectorHypotheses(
+            String projectId,
+            String artifactDigest,
+            String scanId,
+            List<SecurityHypothesis> hypotheses,
+            List<ApiDtos.FindingDto> existingFindings,
+            List<ApiDtos.DependencyDto> dependencies) {
+        Objects.requireNonNull(projectId, "projectId");
+        Objects.requireNonNull(artifactDigest, "artifactDigest");
+        Objects.requireNonNull(scanId, "scanId");
+        Set<String> alreadyBound = new LinkedHashSet<>();
+        int findingIndex = 0;
+        for (ApiDtos.FindingDto existing : existingFindings == null ? List.<ApiDtos.FindingDto>of() : existingFindings) {
+            if (existing == null) continue;
+            findingIndex++;
+            if (existing.hypothesisId() != null && !existing.hypothesisId().isBlank()) {
+                alreadyBound.add(existing.hypothesisId());
+            }
+        }
+        String dependencyId = dependencies == null || dependencies.isEmpty() ? "none" : dependencies.get(0).id();
+        String dependency = dependencies == null || dependencies.isEmpty() ? "none" : dependencies.get(0).target();
+        List<ApiDtos.FindingDto> out = new ArrayList<>();
+        for (SecurityHypothesis hyp : hypotheses == null ? List.<SecurityHypothesis>of() : hypotheses) {
+            if (hyp == null || !isHighSignalDetectorHypothesis(hyp)) continue;
+            if (alreadyBound.contains(hyp.hypothesisId())) continue;
+            alreadyBound.add(hyp.hypothesisId());
+            out.add(toDetectorFinding(
+                    projectId, artifactDigest, scanId, hyp, ++findingIndex, dependency, dependencyId));
+        }
+        return List.copyOf(out);
+    }
+
+    /**
+     * Merge sink-projected findings with selected detector-hypothesis findings (append-only).
+     */
+    public static List<ApiDtos.FindingDto> mergeFindingsWithDetectorHypotheses(
+            String projectId,
+            String artifactDigest,
+            String scanId,
+            List<ApiDtos.FindingDto> projectedFindings,
+            List<SecurityHypothesis> mergedHypotheses,
+            List<ApiDtos.DependencyDto> dependencies) {
+        List<ApiDtos.FindingDto> merged = new ArrayList<>(
+                projectedFindings == null ? List.of() : projectedFindings);
+        merged.addAll(projectSelectedDetectorHypotheses(
+                projectId, artifactDigest, scanId, mergedHypotheses, merged, dependencies));
+        return List.copyOf(merged);
+    }
+
+    public static boolean isHighSignalDetectorHypothesis(SecurityHypothesis hyp) {
+        if (hyp == null) return false;
+        String property = hyp.securityProperty() == null ? "" : hyp.securityProperty();
+        if (HardcodedRememberMeCipherDetector.PROP_HARDCODED_CIPHER.equals(property)) {
+            return true;
+        }
+        if (HardcodedJwtSignKeyDetector.PROP_HARDCODED_JWT_SIGN_KEY.equals(property)) {
+            return true;
+        }
+        if (HardcodedRememberMeCipherDetector.PROP_UNSAFE_DESER_SURFACE.equals(property)) {
+            String version = hyp.detectorVersion() == null ? "" : hyp.detectorVersion();
+            return version.startsWith(DetectorIds.REMEMBER_ME_CIPHER + "/");
+        }
+        return false;
+    }
+
+    private static ApiDtos.FindingDto toDetectorFinding(
+            String projectId,
+            String artifactDigest,
+            String scanId,
+            SecurityHypothesis hyp,
+            int findingIndex,
+            String dependency,
+            String dependencyId) {
+        String property = hyp.securityProperty();
+        boolean cipherKey = HardcodedRememberMeCipherDetector.PROP_HARDCODED_CIPHER.equals(property);
+        boolean jwtKey = HardcodedJwtSignKeyDetector.PROP_HARDCODED_JWT_SIGN_KEY.equals(property);
+        String title = cipherKey
+                ? "静态推断的硬编码 RememberMe 密钥信号"
+                : jwtKey
+                ? "静态推断的硬编码/默认 JWT 签名密钥信号"
+                : "静态推断的 RememberMe 反序列化面信号";
+        String severity = cipherKey || jwtKey ? "high" : "medium";
+        double confidence = cipherKey || jwtKey ? 0.85d : 0.75d;
+        List<String> refs = hyp.supportingEvidenceRefs();
+        String source = hyp.source() == null || hyp.source().isBlank() ? "CONFIG" : hyp.source();
+        String effect = hyp.effect() == null || hyp.effect().isBlank()
+                ? DETECTOR_CONFIG_SINK_LABEL : hyp.effect();
+        String sinkId = "hypothesis:" + hyp.hypothesisId();
+        return new ApiDtos.FindingDto(
+                ApiDtos.SCHEMA_VERSION, projectId, artifactDigest, scanId,
+                "finding-" + scanId + "-" + findingIndex,
+                title,
+                severity,
+                ApiDtos.STATIC_INFERRED,
+                "entry-unbound",
+                truncateLabel(source, 160),
+                sinkId,
+                effect,
+                dependency,
+                List.of(dependencyId),
+                refs,
+                refs.size(),
+                confidence,
+                ApiDtos.MOCK,
+                null,
+                hyp.hypothesisId(),
+                property
+        );
+    }
+
+    private static String truncateLabel(String value, int max) {
+        if (value == null) return "";
+        String trimmed = value.trim();
+        return trimmed.length() <= max ? trimmed : trimmed.substring(0, max);
     }
 
     private static BoundEntry resolveEntry(ApiDtos.SinkDto sink,

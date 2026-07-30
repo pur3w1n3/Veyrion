@@ -34,4 +34,4 @@ VITE_API_TOKEN=local-demo
 - 未知语言节点、入口协议和 namespaced extension 必须降级为通用 evidence/coverage 视图，不能让整个扫描不可读。
 - API 类型、runtime parser 和 Demo fixture 应由同一 schema 生成或受 consumer contract 约束，避免三份手写 DTO 漂移。
 
-页面、交互和安全验收见 [GUI 设计规范](../docs/GUI_DESIGN.md)；工程边界见 [开发手册](../docs/DEVELOPMENT_PLAYBOOK.md)；产品状态以 [MVP Backlog](../docs/MVP_BACKLOG.md) 为准。
+页面、交互和安全验收见 [GUI 设计规范](../docs/GUI_DESIGN.md)；工程边界见 [开发手册](../docs/DEVELOPMENT_PLAYBOOK.md)；系统逻辑见 [CURRENT_SYSTEM](../docs/CURRENT_SYSTEM.md)；开放状态以 [MVP Backlog](../docs/MVP_BACKLOG.md) / [OPEN_GAPS](../docs/OPEN_GAPS.md) 为准。

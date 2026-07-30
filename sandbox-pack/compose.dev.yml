@@ -1,3 +1,7 @@
+# Local digest registry for TRUSTED_DOCKER artifact-runtime images.
+# Started by Start-SandboxPack(.ps1|.sh) or root `docker compose --profile sandbox-registry up`.
+# This is NOT the app/UI stack — see root docker-compose.yml / deploy/Dockerfile for Control Plane + GUI.
+# TRUSTED_DOCKER remains ordinary runc with --network none; not gVisor/Kata; not VERIFIED.
 name: veyrion-sandbox-dev
 
 services:

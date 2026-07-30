@@ -1,6 +1,6 @@
 # 溯脉 · Veyrion 产品需求文档
 
-> 本文定义产品为何存在、服务谁、必须提供什么能力以及如何验收。执行顺序以 [AUDIT_FLOW](AUDIT_FLOW.md) 为准，PathRun 与状态门禁以 [PATH_EXPERIMENT_MODEL](PATH_EXPERIMENT_MODEL.md) 为准，当前完成度以 [MVP Backlog](MVP_BACKLOG.md) 为准。
+> 本文定义产品为何存在、服务谁、必须提供什么能力以及如何验收。**代码执行顺序**以 [AUDIT_PIPELINE_ASBUILT](AUDIT_PIPELINE_ASBUILT.md) 为准；产品意图见 [AUDIT_FLOW](AUDIT_FLOW.md)。PathRun 与状态门禁以 [PATH_EXPERIMENT_MODEL](PATH_EXPERIMENT_MODEL.md) 为准，当前完成度以 [MVP Backlog](MVP_BACKLOG.md) / [OPEN_GAPS](OPEN_GAPS.md) 为准。
 
 ## 1. 产品定位
 
@@ -137,7 +137,7 @@ Security IR / Evidence Graph 至少包含：
 
 ### 5.3 AI 角色合同
 
-六个角色的权威顺序、工具和输出门禁见 [AUDIT_FLOW](AUDIT_FLOW.md)。产品层必须保证：
+六个角色的 as-built 工具与门禁见 [AI_ROLES](AI_ROLES.md)；产品意图顺序见 [AUDIT_FLOW](AUDIT_FLOW.md)。产品层必须保证：
 
 - `PRE_ANALYSIS` 只补充业务解释和计划；模型字段标 `MODEL_SUPPLEMENT` 或 `INFERENCE`。
 - `AUTH_ANALYSIS` 必须用真实代码查询查看 Filter、Interceptor、安全注解、JWT/session/API key、skip URL、租户和角色分支。工具至少支持方法切片、caller/callee、CFG、guard 与 dataflow slice；鉴权面存在时应生成至少 3 个结构不同的 PoC，不足时逐条给出代码证据，并在“查代码、草拟、补证、修订”中有界迭代。

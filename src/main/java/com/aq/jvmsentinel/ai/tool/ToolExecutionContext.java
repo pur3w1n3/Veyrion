@@ -16,14 +16,17 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class ToolExecutionContext {
     private static final Map<AgentRole, Set<String>> ROLE_TOOLS = Map.of(
-            AgentRole.PRE_ANALYSIS, Set.of("facts_search", "evidence_get", "code_query"),
-            AgentRole.AUTH_ANALYSIS, Set.of("facts_search", "evidence_get", "plan_propose", "code_query"),
+            AgentRole.PRE_ANALYSIS, Set.of("facts_search", "evidence_get", "code_query", "scan_memory_get"),
+            AgentRole.AUTH_ANALYSIS, Set.of("facts_search", "evidence_get", "plan_propose", "code_query",
+                    "scan_memory_get"),
             AgentRole.DYNAMIC_VERIFICATION, Set.of("facts_search", "evidence_get", "plan_propose",
-                    "sandbox_probe", "fuzz_strategy_get"),
+                    "sandbox_probe", "fuzz_strategy_get", "scan_memory_get"),
             AgentRole.PATH_EXPLORATION, Set.of("facts_search", "evidence_get", "plan_propose",
-                    "code_query", "sandbox_probe"),
-            AgentRole.VULNERABILITY_TRIAGE, Set.of("facts_search", "evidence_get", "plan_propose", "sandbox_probe", "code_query"),
-            AgentRole.REPORT_GENERATION, Set.of("facts_search", "evidence_get", "plan_propose"));
+                    "code_query", "sandbox_probe", "scan_memory_get"),
+            AgentRole.VULNERABILITY_TRIAGE, Set.of("facts_search", "evidence_get", "plan_propose",
+                    "sandbox_probe", "code_query", "scan_memory_get"),
+            AgentRole.REPORT_GENERATION, Set.of("facts_search", "evidence_get", "plan_propose",
+                    "scan_memory_get"));
 
     private final Scope scope;
     private final String principalId;

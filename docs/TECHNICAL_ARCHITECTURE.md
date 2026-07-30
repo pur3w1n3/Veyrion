@@ -1,6 +1,6 @@
 # 溯脉 · Veyrion 技术架构
 
-> 本文定义系统组件、数据、安全、持久化和执行边界，并明确区分当前实现与目标合同。产品需求见 [PRD](PRD.md)，阶段状态机见 [AUDIT_FLOW](AUDIT_FLOW.md)，当前缺口见 [MVP Backlog](MVP_BACKLOG.md)。
+> 本文定义系统组件、数据、安全、持久化和执行边界，并明确区分当前实现与目标合同。产品需求见 [PRD](PRD.md)，当前系统逻辑见 [CURRENT_SYSTEM](CURRENT_SYSTEM.md)，阶段状态机 as-built 见 [AUDIT_PIPELINE_ASBUILT](AUDIT_PIPELINE_ASBUILT.md)，当前缺口见 [OPEN_GAPS](OPEN_GAPS.md) / [MVP Backlog](MVP_BACKLOG.md)。
 
 ## 1. 架构原则
 

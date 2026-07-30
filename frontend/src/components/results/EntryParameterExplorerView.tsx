@@ -65,7 +65,7 @@ export function EntryParameterExplorerView({
                 <td className="veyrion-long-text">{entry.declaringClass ?? entry.module}</td>
                 <td className="veyrion-long-text">{paramSummary}</td>
                 <td>{readinessLabel(entry)}</td>
-                <td><StatusPill status={entry.status} /> {entry.coverage}%</td>
+                <td><StatusPill status={entry.status} english={english} /> {entry.coverage}%</td>
               </tr>
             )
           })}

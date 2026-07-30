@@ -8,6 +8,8 @@ public final class DetectorIds {
     public static final String DESERIALIZATION_CONFIG = "deserialization-config";
     /** CONFIG/TYPESTATE: hardcoded rememberMe / cookie cipher keys. */
     public static final String REMEMBER_ME_CIPHER = "remember-me-cipher";
+    /** CONFIG: well-known / hardcoded JWT signing keys (incl. Blade default in nested libs). */
+    public static final String HARDCODED_JWT_SIGN_KEY = "hardcoded-jwt-sign-key";
     public static final String DEPENDENCY_VERSION = "dependency-version";
     public static final String RESOURCE_LIFECYCLE = "resource-lifecycle";
     /** P2 scaffolding — cross-request state / repeat-submit / quota. */

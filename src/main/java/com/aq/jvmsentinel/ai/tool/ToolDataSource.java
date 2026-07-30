@@ -41,6 +41,14 @@ public interface ToolDataSource {
             throws Exception;
 
     /**
+     * Same-scan shared memory slice for AI roles. Default empty; Control Plane returns INDEX/FACTS/WORK/…
+     */
+    default Optional<FactRecord> getScanMemory(ToolExecutionContext.Scope scope, String section, String role)
+            throws Exception {
+        return Optional.empty();
+    }
+
+    /**
      * Resolves an AI/PathRun entry alias onto a canonical {@code entry:&lt;scanEntryId&gt;} fact.
      * Default implementation only accepts an exact evidence ref; control-plane sources may
      * accept bare scan ids and unambiguous {@code entry:METHOD:route} aliases.

@@ -195,7 +195,7 @@ public final class ContrastLedger {
         List<TaintPathCoverageJoiner.StatusUpgrade> upgrades =
                 new TaintPathCoverageJoiner().join(taintPaths, pathRuns);
         StaticDynamicContraster.Result joined = new StaticDynamicContraster()
-                .join(projection.rows(), pathRuns, upgrades, snapshotId, roundIndex);
+                .join(projection.rows(), pathRuns, upgrades, snapshotId, roundIndex, entries);
         String stop = projection.stopReason();
         if (joined.truncated() && (stop == null || stop.isBlank())) {
             stop = StaticContrastProjector.STOP_BUDGET;
@@ -210,11 +210,15 @@ public final class ContrastLedger {
             block.append("CONTRAST_LEDGER (server FACT/INFERENCE; not VERIFIED):\n")
                     .append("- STATIC_ONLY means static candidate with no pass-gate PathRun ")
                     .append("(e.g. all 401). Never narrate as bypassed/confirmed.\n")
-                    .append("- MATCHED/PARTIAL still max DYNAMIC_SUSPECTED.\n");
+                    .append("- MATCHED/PARTIAL still max DYNAMIC_SUSPECTED.\n")
+                    .append("- FORCED_REACHABILITY 2xx+ENTRY_HIT is runtime path material ")
+                    .append("(INSTRUMENTATION_REACHABILITY); never write \"no runtime confirmation\".\n");
         } else {
             block.append("CONTRAST_LEDGER（服务端 FACT/INFERENCE，非 VERIFIED）：\n")
                     .append("- STATIC_ONLY：有静态候选但无过闸 PathRun（如全 401），不得写成已绕过/已确认。\n")
-                    .append("- MATCHED/PARTIAL 仍最高 DYNAMIC_SUSPECTED。\n");
+                    .append("- MATCHED/PARTIAL 仍最高 DYNAMIC_SUSPECTED。\n")
+                    .append("- FORCED_REACHABILITY 2xx+ENTRY_HIT 是运行时路径材料")
+                    .append("（INSTRUMENTATION_REACHABILITY），禁止写「无运行时确认」。\n");
         }
         if (ledger == null || ledger.rows().isEmpty()) {
             block.append(english ? "- (empty)\n" : "- （空）\n");

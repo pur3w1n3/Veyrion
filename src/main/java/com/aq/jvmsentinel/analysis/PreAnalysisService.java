@@ -42,7 +42,7 @@ public final class PreAnalysisService {
         List<BytecodeFactIndex.MemberAccessFact> memberAccessFacts = new ArrayList<>();
         List<BytecodeFactIndex.CallEdge> callEdges = new ArrayList<>();
         List<BytecodeFactIndex.UnresolvedDynamicFact> unresolvedDynamics = new ArrayList<>();
-        Map<String, Integer> sinkByCallEvidence = new LinkedHashMap<>();
+        Map<String, List<Integer>> sinkByCallEvidence = new LinkedHashMap<>();
         int index = 0;
         Set<String> classesWithValidAnnotationMetadata = new LinkedHashSet<>();
         for (ClassMetadata metadata : input.classMetadata()) {
@@ -55,9 +55,6 @@ public final class PreAnalysisService {
             for (BytecodeFactIndex.CallEdge edge : metadata.callEdges()) {
                 JvmSinkSignatures.Match match = JvmSinkSignatures.match(edge);
                 if (match == null) continue;
-                if (sinks.size() >= MAX_DISCOVERED_SINKS) {
-                    throw new IllegalArgumentException("classfile metadata produced too many sink candidates");
-                }
                 String evidenceId = "call-" + (++index);
                 String target = edge.targetOwner() + "#" + edge.targetName() + edge.targetDescriptor();
                 String caller = edge.callerOwner() + "#" + edge.callerName() + edge.callerDescriptor();
@@ -65,12 +62,24 @@ public final class PreAnalysisService {
                         "classfile-call:" + limit(edge.evidence().stableKey()), 1.0,
                         "sensitive API invocation present: " + limit(target)
                                 + "; symbolic edge only; runtime reachability and input control not established"));
-                sinks.add(new Sink("sink-call-" + index, match.category(),
-                        limit(caller + " -> " + target),
-                        "bytecode-invoke:" + match.ruleId() + "; edge=" + edge.kind().name()
-                                + "; no taint or runtime proof",
-                        match.confidence(), List.of(evidenceId), VerificationStatus.STATIC_INFERRED));
-                sinkByCallEvidence.put(edge.evidence().stableKey(), sinks.size() - 1);
+                String kindsJoined = String.join(",", match.kinds());
+                List<Integer> positions = new ArrayList<>();
+                for (String kind : match.kinds()) {
+                    if (sinks.size() >= MAX_DISCOVERED_SINKS) {
+                        throw new IllegalArgumentException("classfile metadata produced too many sink candidates");
+                    }
+                    String sinkId = match.kinds().size() == 1
+                            ? "sink-call-" + index
+                            : "sink-call-" + index + "-" + kind;
+                    sinks.add(new Sink(sinkId, kind,
+                            limit(caller + " -> " + target),
+                            "bytecode-invoke:" + match.ruleId() + "; kinds=" + kindsJoined
+                                    + "; edge=" + edge.kind().name()
+                                    + "; no taint or runtime proof",
+                            match.confidence(), List.of(evidenceId), VerificationStatus.STATIC_INFERRED));
+                    positions.add(sinks.size() - 1);
+                }
+                sinkByCallEvidence.put(edge.evidence().stableKey(), List.copyOf(positions));
             }
             if (!metadata.annotationMetadataValid()) continue;
             classesWithValidAnnotationMetadata.add(metadata.className());
@@ -170,20 +179,22 @@ public final class PreAnalysisService {
         for (BytecodeFactIndex.TaintPath path : interprocedural.paths()) {
             if (path.steps().isEmpty()) continue;
             String callEvidence = path.steps().get(path.steps().size() - 1).evidence();
-            Integer sinkPosition = sinkByCallEvidence.get(callEvidence);
-            if (sinkPosition == null) continue;
+            List<Integer> sinkPositions = sinkByCallEvidence.get(callEvidence);
+            if (sinkPositions == null || sinkPositions.isEmpty()) continue;
             String pathEvidenceId = "flow-" + path.id();
             evidence.add(new Evidence(pathEvidenceId, ProvenanceKind.INFERENCE,
                     "classfile-taint:" + path.id(), 0.78,
                     "bounded interprocedural parameter-origin path to " + path.sinkOwner() + "#"
                             + path.sinkMethod() + path.sinkDescriptor()
                             + "; static input control only; runtime reachability and exploitability not established"));
-            Sink candidate = sinks.get(sinkPosition);
-            List<String> refs = new ArrayList<>(candidate.evidenceRefs());
-            refs.add(pathEvidenceId);
-            sinks.set(sinkPosition, new Sink(candidate.id(), candidate.category(), candidate.symbol(),
-                    candidate.source() + "; taint-path=" + path.id() + "; bounded static inference",
-                    Math.max(candidate.confidence(), 0.78), refs, VerificationStatus.STATIC_INFERRED));
+            for (Integer sinkPosition : sinkPositions) {
+                Sink candidate = sinks.get(sinkPosition);
+                List<String> refs = new ArrayList<>(candidate.evidenceRefs());
+                refs.add(pathEvidenceId);
+                sinks.set(sinkPosition, new Sink(candidate.id(), candidate.category(), candidate.symbol(),
+                        candidate.source() + "; taint-path=" + path.id() + "; bounded static inference",
+                        Math.max(candidate.confidence(), 0.78), refs, VerificationStatus.STATIC_INFERRED));
+            }
         }
         BytecodeFactIndex factIndex = new BytecodeFactIndex(classFacts, fieldFacts, methodFacts,
                 memberAccessFacts, callEdges, unresolvedDynamics, interprocedural.graph(),

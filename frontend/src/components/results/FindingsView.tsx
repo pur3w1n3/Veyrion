@@ -2,20 +2,35 @@ import { useMemo } from 'react'
 import {
   HYPOTHESIS_FAMILIES,
   normalizeHypothesisFamily,
+  type Entry,
+  type ExperimentPlanDto,
   type Finding,
   type FindingReplayDto,
   type HypothesisFamily,
+  type PathRunDto,
   type PathTrace,
-  type SecurityHypothesisDto
+  type SecurityHypothesisDto,
+  type SqlExperimentCardDto
 } from '../../api'
+import { hypothesisFamilyBlurb, hypothesisFamilyLabel } from '../../labels'
 import { Notice, StatusPill } from '../Common'
-import { familyOfFinding, isAuthGapFinding, sortFindings } from './resultsUtils'
+import {
+  familyOfFinding,
+  isAuthGapFinding,
+  resolveFindingApi,
+  resolveFindingPoc,
+  sortFindings
+} from './resultsUtils'
 
 export function FindingsView({
   english,
   findings,
   hypotheses,
   hypothesisById,
+  entries,
+  experimentPlans,
+  sqlCards,
+  pathRuns,
   selectedFindingId,
   onSelectFinding,
   findingQuery,
@@ -33,12 +48,18 @@ export function FindingsView({
   replayError,
   replayResult,
   onReplayFinding,
-  evidencePath
+  evidencePath,
+  selectedHypothesisFamily,
+  onSelectHypothesisFamily
 }: {
   english: boolean
   findings: Finding[]
   hypotheses: SecurityHypothesisDto[]
   hypothesisById: Map<string, SecurityHypothesisDto>
+  entries: Entry[]
+  experimentPlans: ExperimentPlanDto[]
+  sqlCards: SqlExperimentCardDto[]
+  pathRuns: PathRunDto[]
   selectedFindingId?: string
   onSelectFinding: (finding: Finding) => void
   findingQuery: string
@@ -57,6 +78,8 @@ export function FindingsView({
   replayResult?: FindingReplayDto
   onReplayFinding: () => void
   evidencePath: PathTrace['steps']
+  selectedHypothesisFamily?: HypothesisFamily
+  onSelectHypothesisFamily?: (family: HypothesisFamily, items: SecurityHypothesisDto[]) => void
 }) {
   const filteredFindings = useMemo(() => {
     const query = findingQuery.trim().toLocaleLowerCase()
@@ -121,7 +144,11 @@ export function FindingsView({
           <span>{english ? 'Family' : '族'}</span>
           <select value={findingFamily} onChange={(event) => onFindingFamilyChange(event.target.value as typeof findingFamily)}>
             <option value="ALL">{english ? 'All' : '全部'}</option>
-            {HYPOTHESIS_FAMILIES.map((family) => <option key={family} value={family}>{family}</option>)}
+            {HYPOTHESIS_FAMILIES.map((family) => (
+              <option key={family} value={family}>
+                {hypothesisFamilyLabel(family, english)} ({family})
+              </option>
+            ))}
           </select>
         </label>
         <label className="field checkbox-field">
@@ -143,7 +170,7 @@ export function FindingsView({
               <strong className="veyrion-long-text">{finding.title}</strong>
               <small className="veyrion-long-text">{familyOfFinding(finding, hypothesisById)} · {finding.entry} → {finding.sink}</small>
             </div>
-            <StatusPill status={finding.status} />
+            <StatusPill status={finding.status} english={english} />
           </button>
         ))}
         {filteredFindings.length === 0 && (
@@ -151,11 +178,21 @@ export function FindingsView({
         )}
       </div>
 
-      {selectedFinding && (
+      {selectedFinding && (() => {
+        const apiInfo = resolveFindingApi(selectedFinding, entries)
+        const poc = resolveFindingPoc(
+          selectedFinding,
+          apiInfo.api,
+          apiInfo.entryRef,
+          experimentPlans,
+          sqlCards,
+          pathRuns
+        )
+        return (
         <div className="results-detail-block section-gap">
           <div className="results-view__head">
             <h3 className="veyrion-long-text">{selectedFinding.title}</h3>
-            <StatusPill status={selectedFinding.status} />
+            <StatusPill status={selectedFinding.status} english={english} />
           </div>
           <div className="button-row">
             <button type="button" className="secondary-button" onClick={onReplayFinding} disabled={replayLoading || selectedFinding.status === 'VERIFIED'}>
@@ -166,8 +203,13 @@ export function FindingsView({
           {replayResult && <Notice kind="info">{english ? `Replay task ${replayResult.taskId} is ${replayResult.lifecycle}.` : `重放任务 ${replayResult.taskId} 当前为 ${replayResult.lifecycle}。`}</Notice>}
           <dl className="evidence-inspector__dl">
             <div><dt>{english ? 'Family' : '族'}</dt><dd>{selectedFindingFamily}{selectedFinding.hypothesisId ? ` · ${selectedFinding.hypothesisId}` : ''}</dd></div>
-            <div><dt>{english ? 'Entry' : '入口'}</dt><dd className="veyrion-long-text">{selectedFinding.entry}</dd></div>
+            <div><dt>{english ? 'API / entry' : '接口 / 入口'}</dt><dd className="veyrion-long-text">{apiInfo.api}</dd></div>
             <div><dt>{english ? 'Sink' : 'Sink'}</dt><dd className="veyrion-long-text">{selectedFinding.sink}</dd></div>
+            <div><dt>PoC</dt><dd className="veyrion-long-text">
+              {poc.kind === 'none'
+                ? (english ? 'No PoC yet' : '暂无 PoC')
+                : <>{poc.summary}<small> · {poc.provenance}</small></>}
+            </dd></div>
           </dl>
           {selectedPath && (
             <div className="chain-board section-gap" role="list">
@@ -185,22 +227,47 @@ export function FindingsView({
           )}
           {selectedStep && <p className="form-help veyrion-long-text">{selectedStep.detail}</p>}
         </div>
-      )}
+        )
+      })()}
 
       <div className="section-gap">
         <p className="eyebrow">{english ? 'HYPOTHESES BY FAMILY' : '按族假设'}</p>
-        <div className="results-table-list">
-          {HYPOTHESIS_FAMILIES.filter((family) => findingFamily === 'ALL' || findingFamily === family).map((family) => {
-            const items = hypothesesByFamily.get(family) ?? []
-            return (
-              <div className="results-row" key={family}>
-                <strong>{family}</strong>
-                <small>{items.length === 0 ? (english ? 'Empty (not safe)' : '空（不等于安全）') : items.map((item) => item.hypothesisId).join(', ')}</small>
-                <span>{items.length}</span>
-              </div>
-            )
-          })}
-        </div>
+        <table className="results-data-table hyp-family-table">
+          <thead>
+            <tr>
+              <th>{english ? 'No.' : '编号'}</th>
+              <th>{english ? 'Family' : '类型（族）'}</th>
+              <th>{english ? 'Count' : '数量'}</th>
+              <th>{english ? 'Summary' : '说明'}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {HYPOTHESIS_FAMILIES
+              .filter((family) => findingFamily === 'ALL' || findingFamily === family)
+              .map((family, index) => {
+                const items = hypothesesByFamily.get(family) ?? []
+                return (
+                  <tr
+                    key={family}
+                    className={selectedHypothesisFamily === family ? 'selected' : undefined}
+                    onClick={() => onSelectHypothesisFamily?.(family, items)}
+                  >
+                    <td className="hyp-family-table__num">{index + 1}</td>
+                    <td>
+                      <strong>{hypothesisFamilyLabel(family, english)}</strong>
+                      <span className="term-chip">{family}</span>
+                    </td>
+                    <td className="hyp-family-table__count">{items.length}</td>
+                    <td className="veyrion-long-text">
+                      {items.length === 0
+                        ? (english ? 'Empty' : '空')
+                        : hypothesisFamilyBlurb(family, english)}
+                    </td>
+                  </tr>
+                )
+              })}
+          </tbody>
+        </table>
       </div>
 
       {evidencePath.length > 0 && (
@@ -209,7 +276,7 @@ export function FindingsView({
             <li key={`${step.label}-${index}`}>
               <span>{index + 1}</span>
               <div><strong>{step.label}</strong><small className="veyrion-long-text">{step.detail}</small></div>
-              {step.verificationStatus && <StatusPill status={step.verificationStatus} />}
+              {step.verificationStatus && <StatusPill status={step.verificationStatus} english={english} />}
             </li>
           ))}
         </ol>

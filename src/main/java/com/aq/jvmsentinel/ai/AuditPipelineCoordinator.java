@@ -19,13 +19,20 @@ import java.util.function.Predicate;
  * Advancement requires an armed pipeline from an authorized audit-run and a CAS match on
  * {@code pipelineRunId}, {@code stageAttemptId}, and the expected job/task identity.
  *
- * <p>Path-debug order: PRE → AUTH → DYNAMIC_OBSERVATION → AUTH bypass confirm →
- * DYNAMIC_VERIFICATION → PATH → TRIAGE → REPORT.</p>
+ * <p>Path-debug order: PRE → AUTH → DYNAMIC_OBSERVATION → AUTH bypass confirm (evidence only) →
+ * DYNAMIC_VERIFICATION → PATH ↔ OBS loops → TRIAGE ↔ OBS loops → REPORT.
+ * OBS feedback loops are capped ({@code VEYRION_AUDIT_OBS_LOOP_MAX} / {@code veyrion.audit.obsLoopMax},
+ * default 3).</p>
  */
 public final class AuditPipelineCoordinator {
     private static final Set<String> BUSY = Set.of("QUEUED", "RUNNING", "COMPLETED");
     private static final Set<String> JOB_SUCCESS = Set.of("COMPLETED");
     private static final Set<String> JOB_FAILURE = Set.of("FAILED", "CANCELLED", "BLOCKED");
+    /** Env / system property for PATH/TRIAGE → OBS feedback loop cap (AUDIT_FLOW mermaid). */
+    public static final String OBS_LOOP_MAX_ENV = "VEYRION_AUDIT_OBS_LOOP_MAX";
+    public static final String OBS_LOOP_MAX_PROP = "veyrion.audit.obsLoopMax";
+    private static final int OBS_LOOP_MAX_DEFAULT = 3;
+    private static final int OBS_LOOP_MAX_HARD_CAP = 10;
 
     public record Arm(
             String scanId,
@@ -110,6 +117,50 @@ public final class AuditPipelineCoordinator {
          * dynamic validation completes or the pipeline abandons a stage that may have held one.
          */
         default void releaseRetainedSandbox(Arm arm) { }
+
+        /**
+         * AUTH_BYPASS_CONFIRM only when PathRuns show AUTH_CHALLENGE or pass-gate (AUDIT_FLOW §4).
+         * Default true preserves unit-test fixtures that do not wire PathRuns.
+         */
+        default boolean hasDynamicAuthEvidence(String scanId) {
+            return true;
+        }
+
+        /** IR2: full detector recompute after PathTrace/PathRun observation (AUDIT_FLOW mermaid). */
+        default void recomputeDetectorsAfterObservation(String scanId) { }
+
+        /**
+         * Whether PATH/TRIAGE should re-enter DYNAMIC_OBSERVATION (coverage gap / STATIC_ONLY /
+         * unverified hypothesis work remaining).
+         */
+        default boolean hasPendingObservationLoopWork(String scanId) {
+            return false;
+        }
+
+        /** Max PATH/TRIAGE ↔ OBS feedback loops; default from env/prop or 3. */
+        default int observationLoopMax() {
+            return resolveObservationLoopMax();
+        }
+    }
+
+    /** Visible for tests: parse loop cap from env then system property. */
+    public static int resolveObservationLoopMax() {
+        String raw = System.getenv(OBS_LOOP_MAX_ENV);
+        if (raw == null || raw.isBlank()) {
+            raw = System.getenv("VEYRIION_AUDIT_OBS_LOOP_MAX"); // common typo alias
+        }
+        if (raw == null || raw.isBlank()) {
+            raw = System.getProperty(OBS_LOOP_MAX_PROP, String.valueOf(OBS_LOOP_MAX_DEFAULT));
+        }
+        try {
+            int value = Integer.parseInt(raw.trim());
+            if (value < 0) {
+                return 0;
+            }
+            return Math.min(value, OBS_LOOP_MAX_HARD_CAP);
+        } catch (NumberFormatException ignored) {
+            return OBS_LOOP_MAX_DEFAULT;
+        }
     }
 
     public enum PipelineStage {
@@ -125,6 +176,10 @@ public final class AuditPipelineCoordinator {
     }
 
     private final ConcurrentHashMap<String, Cursor> cursors = new ConcurrentHashMap<>();
+    /** After a PATH/TRIAGE-driven OBS loop, resume this AI stage (not AUTH_BYPASS_CONFIRM). */
+    private final ConcurrentHashMap<String, PipelineStage> afterDynamicResume = new ConcurrentHashMap<>();
+    /** Per-scan count of PATH/TRIAGE → OBS feedback loops consumed. */
+    private final ConcurrentHashMap<String, Integer> observationLoopCounts = new ConcurrentHashMap<>();
     private final Actions actions;
     private final Executor async = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "audit-pipeline");
@@ -160,6 +215,7 @@ public final class AuditPipelineCoordinator {
         }
         Arm arm = new Arm(scanId, projectId, actorId, language, newPipelineRunId());
         Cursor cursor = new Cursor(arm, stage, newStageAttemptId(), jobId, null);
+        resetLoopState(scanId);
         cursors.put(scanId, cursor);
         actions.replaceCursor(cursor, true, null);
         return arm;
@@ -181,9 +237,15 @@ public final class AuditPipelineCoordinator {
         }
         Arm arm = new Arm(scanId, projectId, actorId, language, newPipelineRunId());
         Cursor cursor = new Cursor(arm, stage, newStageAttemptId(), null, taskId);
+        resetLoopState(scanId);
         cursors.put(scanId, cursor);
         actions.replaceCursor(cursor, true, null);
         return arm;
+    }
+
+    private void resetLoopState(String scanId) {
+        afterDynamicResume.remove(scanId);
+        observationLoopCounts.remove(scanId);
     }
 
     /**
@@ -258,10 +320,33 @@ public final class AuditPipelineCoordinator {
             return;
         }
         if (snapshot.lifecycle() != TaskLifecycle.COMPLETED) {
+            if (isStaticContinueDynamicTerminal(snapshot)) {
+                // AUDIT_FLOW: DYNAMIC_DISABLED keeps static narrative — do not abort the pipeline.
+                async.execute(() -> advanceStaticOnlyAfterDynamic(cursor));
+                return;
+            }
+            afterDynamicResume.remove(scanId);
             disarm(cursor, PipelineStage.DYNAMIC_OBSERVATION.name() + "_" + snapshot.lifecycle().name());
             return;
         }
         async.execute(() -> advanceAfterDynamic(cursor));
+    }
+
+    /** Worker missing / dynamic disabled: continue AI stages on static facts only. */
+    static boolean isStaticContinueDynamicTerminal(TaskSnapshot snapshot) {
+        if (snapshot == null) {
+            return false;
+        }
+        if (snapshot.lifecycle() != TaskLifecycle.FAILED
+                && snapshot.lifecycle() != TaskLifecycle.CANCELLED) {
+            return false;
+        }
+        String code = snapshot.failureCode() == null ? "" : snapshot.failureCode().trim().toUpperCase();
+        String stop = snapshot.stopReason() == null ? "" : snapshot.stopReason().name();
+        return code.contains("WORKER_UNAVAILABLE")
+                || code.contains("DYNAMIC_DISABLED")
+                || "WORKER_UNAVAILABLE".equals(code)
+                || stop.contains("WALL_CLOCK");
     }
 
     private void reconcileResumed(Cursor cursor) {
@@ -301,7 +386,11 @@ public final class AuditPipelineCoordinator {
                 return;
             }
             if (isTerminalTaskLifecycle(lifecycle) && !TaskLifecycle.COMPLETED.name().equals(lifecycle)) {
-                disarm(cursor, cursor.stage().name() + "_" + lifecycle);
+                if ("FAILED".equals(lifecycle) || "CANCELLED".equals(lifecycle)) {
+                    advanceStaticOnlyAfterDynamic(cursor);
+                } else {
+                    disarm(cursor, cursor.stage().name() + "_" + lifecycle);
+                }
                 return;
             }
             return;
@@ -324,15 +413,38 @@ public final class AuditPipelineCoordinator {
             case AUTH_BYPASS_CONFIRM -> beginRoleStage(live,
                     PipelineStage.DYNAMIC_VERIFICATION, AgentRole.DYNAMIC_VERIFICATION);
             case DYNAMIC_VERIFICATION -> waitForDynamicIdleThenPath(live);
-            case PATH_EXPLORATION -> beginRoleStage(live,
-                    PipelineStage.VULNERABILITY_TRIAGE, AgentRole.VULNERABILITY_TRIAGE);
-            case VULNERABILITY_TRIAGE -> {
-                actions.releaseRetainedSandbox(live.arm());
-                beginRoleStage(live, PipelineStage.REPORT_GENERATION, AgentRole.REPORT_GENERATION);
-            }
+            case PATH_EXPLORATION -> afterPathOrTriageMaybeLoop(live, PipelineStage.PATH_EXPLORATION);
+            case VULNERABILITY_TRIAGE -> afterPathOrTriageMaybeLoop(live, PipelineStage.VULNERABILITY_TRIAGE);
             case REPORT_GENERATION -> disarm(live, PipelineStage.COMPLETE.name());
             default -> { }
         }
+    }
+
+    /**
+     * AUDIT_FLOW mermaid: PATH/TRIAGE may return to OBS (sandbox_probe / new PathRun) up to
+     * {@link Actions#observationLoopMax()} times, then IR2 recompute, then next stage.
+     */
+    private void afterPathOrTriageMaybeLoop(Cursor live, PipelineStage completedStage) {
+        String scanId = live.arm().scanId();
+        try {
+            actions.recomputeDetectorsAfterObservation(scanId);
+        } catch (RuntimeException ignored) {
+            // IR2 is best-effort; stage advancement must not stall.
+        }
+        int max = Math.max(0, actions.observationLoopMax());
+        int used = observationLoopCounts.getOrDefault(scanId, 0);
+        if (used < max && actions.hasPendingObservationLoopWork(scanId)) {
+            observationLoopCounts.put(scanId, used + 1);
+            afterDynamicResume.put(scanId, completedStage);
+            beginDynamicStage(live);
+            return;
+        }
+        if (completedStage == PipelineStage.PATH_EXPLORATION) {
+            beginRoleStage(live, PipelineStage.VULNERABILITY_TRIAGE, AgentRole.VULNERABILITY_TRIAGE);
+            return;
+        }
+        actions.releaseRetainedSandbox(live.arm());
+        beginRoleStage(live, PipelineStage.REPORT_GENERATION, AgentRole.REPORT_GENERATION);
     }
 
     private void advanceAfterDynamic(Cursor cursor) {
@@ -343,7 +455,49 @@ public final class AuditPipelineCoordinator {
         if (live.stage() != PipelineStage.DYNAMIC_OBSERVATION) {
             return;
         }
-        beginRoleStage(live, PipelineStage.AUTH_BYPASS_CONFIRM, AgentRole.AUTH_ANALYSIS);
+        String scanId = live.arm().scanId();
+        try {
+            actions.recomputeDetectorsAfterObservation(scanId);
+        } catch (RuntimeException ignored) {
+            // IR2 best-effort.
+        }
+        PipelineStage resume = afterDynamicResume.remove(scanId);
+        if (resume == PipelineStage.PATH_EXPLORATION) {
+            beginRoleStage(live, PipelineStage.PATH_EXPLORATION, AgentRole.PATH_EXPLORATION);
+            return;
+        }
+        if (resume == PipelineStage.VULNERABILITY_TRIAGE) {
+            beginRoleStage(live, PipelineStage.VULNERABILITY_TRIAGE, AgentRole.VULNERABILITY_TRIAGE);
+            return;
+        }
+        // First observation after AUTH: confirm only when dynamic auth evidence exists.
+        if (actions.hasDynamicAuthEvidence(scanId)) {
+            beginRoleStage(live, PipelineStage.AUTH_BYPASS_CONFIRM, AgentRole.AUTH_ANALYSIS);
+            return;
+        }
+        beginRoleStage(live, PipelineStage.DYNAMIC_VERIFICATION, AgentRole.DYNAMIC_VERIFICATION);
+    }
+
+    /** Dynamic unavailable: skip AUTH confirm (no evidence) and continue static-capable AI stages. */
+    private void advanceStaticOnlyAfterDynamic(Cursor cursor) {
+        Cursor live = cursors.get(cursor.arm().scanId());
+        if (live == null || !sameAttempt(live, cursor)) {
+            return;
+        }
+        if (live.stage() != PipelineStage.DYNAMIC_OBSERVATION) {
+            return;
+        }
+        String scanId = live.arm().scanId();
+        PipelineStage resume = afterDynamicResume.remove(scanId);
+        if (resume == PipelineStage.PATH_EXPLORATION) {
+            beginRoleStage(live, PipelineStage.PATH_EXPLORATION, AgentRole.PATH_EXPLORATION);
+            return;
+        }
+        if (resume == PipelineStage.VULNERABILITY_TRIAGE) {
+            beginRoleStage(live, PipelineStage.VULNERABILITY_TRIAGE, AgentRole.VULNERABILITY_TRIAGE);
+            return;
+        }
+        beginRoleStage(live, PipelineStage.DYNAMIC_VERIFICATION, AgentRole.DYNAMIC_VERIFICATION);
     }
 
     private synchronized void beginRoleStage(Cursor from, PipelineStage stage, AgentRole role) {
@@ -410,12 +564,16 @@ public final class AuditPipelineCoordinator {
             if (lifecycle != null && isTerminalTaskLifecycle(lifecycle)) {
                 if (TaskLifecycle.COMPLETED.name().equals(lifecycle)) {
                     advanceAfterDynamic(waiting);
+                } else if ("FAILED".equals(lifecycle) || "CANCELLED".equals(lifecycle)) {
+                    // Enqueued task already terminal without COMPLETED — static continue when possible.
+                    advanceStaticOnlyAfterDynamic(waiting);
                 } else {
                     disarm(waiting, PipelineStage.DYNAMIC_OBSERVATION.name() + "_" + lifecycle);
                 }
             }
         } catch (RuntimeException failure) {
-            disarm(binding, PipelineStage.DYNAMIC_OBSERVATION.name() + "_ENQUEUE_FAILED");
+            // Sandbox/worker unavailable at enqueue: keep static AI narrative (AUDIT_FLOW).
+            advanceStaticOnlyAfterDynamic(binding);
         }
     }
 
@@ -442,12 +600,14 @@ public final class AuditPipelineCoordinator {
                     if (lifecycle != null && isTerminalTaskLifecycle(lifecycle)) {
                         if (TaskLifecycle.COMPLETED.name().equals(lifecycle)) {
                             advanceAfterDynamic(waiting);
+                        } else if ("FAILED".equals(lifecycle) || "CANCELLED".equals(lifecycle)) {
+                            advanceStaticOnlyAfterDynamic(waiting);
                         } else {
                             disarm(waiting, PipelineStage.DYNAMIC_OBSERVATION.name() + "_" + lifecycle);
                         }
                     }
                 } catch (RuntimeException failure) {
-                    disarm(binding, PipelineStage.DYNAMIC_OBSERVATION.name() + "_ENQUEUE_FAILED");
+                    advanceStaticOnlyAfterDynamic(binding);
                 }
                 return;
             }
@@ -523,6 +683,7 @@ public final class AuditPipelineCoordinator {
         if (!actions.compareAndAdvance(live, terminal, false, stopReason)) {
             return;
         }
+        resetLoopState(cursor.arm().scanId());
         cursors.remove(cursor.arm().scanId(), live);
     }
 

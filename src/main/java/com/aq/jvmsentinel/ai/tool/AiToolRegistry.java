@@ -53,6 +53,7 @@ public final class AiToolRegistry {
         add(fixed, planPropose());
         add(fixed, sandboxProbe());
         add(fixed, fuzzStrategyGet());
+        add(fixed, scanMemoryGet());
         this.tools = Map.copyOf(fixed);
     }
 
@@ -160,13 +161,38 @@ public final class AiToolRegistry {
         return JSON.writeValueAsBytes(result).length;
     }
 
+    private RegisteredTool scanMemoryGet() {
+        Map<String, Field> fields = new LinkedHashMap<>();
+        fields.put("section", Field.string(32));
+        fields.put("role", Field.string(64));
+        ToolSchema schema = new ToolSchema(Map.copyOf(fields), Set.of());
+        ToolDefinition definition = new ToolDefinition("scan_memory_get",
+                "Read the same-scan shared memory snapshot (server-authored). "
+                        + "section=INDEX (default compact counts+gaps+effects) | FACTS | WORK | INFERENCE | "
+                        + "TOOLS_CATALOG (tool purpose/args/returns) | ROLE_SLICE (pass role=PRE_ANALYSIS|…) | FULL. "
+                        + "Use this before flooding facts_search. FACTS/WORK are citable; INFERENCE must not upgrade "
+                        + "VERIFIED. Does not change sandbox policy.",
+                schema.jsonSchema(), OverflowPolicy.TRUNCATE);
+        return new RegisteredTool(definition, schema, (call, context) -> {
+            String section = call.arguments().has("section")
+                    ? call.arguments().get("section").asText("INDEX") : "INDEX";
+            String role = call.arguments().has("role")
+                    ? call.arguments().get("role").asText("") : context.role().name();
+            ToolDataSource.FactRecord record = source.getScanMemory(context.scope(), section, role)
+                    .orElseThrow(() -> new MissingException("SCAN_MEMORY_UNAVAILABLE"));
+            requireScope(context, record);
+            return List.of(new ToolOutput(OutputKind.FACT, record.reference(), record.value()));
+        });
+    }
+
     private RegisteredTool factsSearch() {
         ToolSchema schema = new ToolSchema(
                 Map.of("kind", Field.string(64), "query", Field.string(1024), "limit", Field.integer(1, 100)),
                 Set.of("kind"));
         ToolDefinition definition = new ToolDefinition("facts_search",
                 "Search already-indexed, read-only facts in the server-bound project. "
-                        +                 "Kinds: SCAN, ENTRY, DEPENDENCY, SINK, EVIDENCE, DYNAMIC_EVIDENCE, PATH_RUN, PATH_TRACE, "
+                        + "Prefer scan_memory_get section=INDEX first for orientation. "
+                        + "Kinds: SCAN, ENTRY, DEPENDENCY, SINK, EVIDENCE, DYNAMIC_EVIDENCE, PATH_RUN, PATH_TRACE, "
                         + "STATIC_CONTRAST, ANY. "
                         + "For PRE_ANALYSIS, query ENTRY with entry ids, routes, controller/class names, HTTP methods, "
                         + "or English enum keywords; do not rely only on translated prose. "

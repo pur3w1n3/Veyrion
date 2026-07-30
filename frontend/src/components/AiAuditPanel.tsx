@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, type AiJobDto, type AiJobEventDto, type OutputLanguage } from '../api'
+import { formatDisplayDateTime } from '../datetime'
 import { jobStatusLabel, roleLabel } from '../labels'
 import { errorMessage, Notice } from './Common'
 
@@ -167,7 +168,7 @@ export function AiAuditPanel({ projectId, scanId, language }: { projectId: strin
       : '列表中的 HTTP_400 是修复前已终止的历史任务，状态不会被后台改写或自动重试；请清理失败记录后，从审计流程重新创建已授权任务。'}</Notice>}
     <div className="card-list">
       {jobs.map((job) => <div className="list-card" key={job.aiJobId}>
-        <div><strong>{english ? job.role : roleLabel(job.role)}</strong><small>{job.aiJobId} · {job.createdAt}{job.outputLanguage ? ` · ${job.outputLanguage === 'ZH_CN' ? '简体中文' : job.outputLanguage}` : ''}{job.errorCode ? ` · ${job.errorCode}` : ''}</small></div>
+        <div><strong>{english ? job.role : roleLabel(job.role)}</strong><small>{job.aiJobId} · {formatDisplayDateTime(job.createdAt, { english })}{job.outputLanguage ? ` · ${job.outputLanguage === 'ZH_CN' ? '简体中文' : job.outputLanguage}` : ''}{job.errorCode ? ` · ${job.errorCode}` : ''}</small></div>
         <div className="button-row"><span className="locked-tag">{english ? job.status : jobStatusLabel(job.status)}</span><button className="text-button" type="button" onClick={() => inspect(job.aiJobId)}>{english ? 'Inspect audit flow' : '查看审计过程'}</button></div>
       </div>)}
       {!loading && jobs.length === 0 && <p className="empty-state">{english ? 'No model jobs. Configure roles, then start an audit.' : '暂无模型任务；请先配置角色，然后在“审计执行”开始审计。'}</p>}
@@ -178,7 +179,7 @@ export function AiAuditPanel({ projectId, scanId, language }: { projectId: strin
         ? <p className="empty-state">{english ? 'Loading audit events…' : '加载审计事件…'}</p>
         : <div className="audit-flow-list">{events.map((event) =>
           <details className={`audit-flow-event ${event.status === 'FAILED' ? 'flow-failed' : ''}`} key={event.sequence}>
-            <summary><span>{event.sequence}</span><strong>{event.stage}</strong><small>{event.createdAt}</small><b>{event.status}</b></summary>
+            <summary><span>{event.sequence}</span><strong>{event.stage}</strong><small>{formatDisplayDateTime(event.createdAt, { english })}</small><b>{event.status}</b></summary>
             <div className="audit-flow-body">
               <section><h3>{english ? 'Data source / flow' : '数据来源 / 流向'}</h3><p>{flowForStage(event.stage, english)}</p></section>
               <section><h3>{english ? 'Auditable decision summary (not hidden chain-of-thought)' : '可审计决策摘要（明确不是隐藏思维链）'}</h3><p>{decisionSummary(event, english)}</p></section>

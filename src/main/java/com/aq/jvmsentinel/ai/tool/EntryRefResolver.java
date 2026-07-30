@@ -3,6 +3,7 @@ package com.aq.jvmsentinel.ai.tool;
 import com.aq.jvmsentinel.control.ApiDtos;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -58,6 +59,64 @@ public final class EntryRefResolver {
     public static String canonicalRef(ApiDtos.EntryDto entry) {
         Objects.requireNonNull(entry, "entry");
         return "entry:" + entry.id();
+    }
+
+    /**
+     * HTTP PathRun wire form used by TraceProjectionService:
+     * {@code entry:METHOD:/route}.
+     */
+    public static String methodRouteRef(ApiDtos.EntryDto entry) {
+        Objects.requireNonNull(entry, "entry");
+        String method = entry.method() == null || entry.method().isBlank()
+                ? "GET" : entry.method().trim().toUpperCase(Locale.ROOT);
+        return "entry:" + method + ":" + normalizeRoute(entry.route());
+    }
+
+    /**
+     * All equivalent join keys for a raw entry ref (canonical id, METHOD:route, bare id).
+     * Used by StaticDynamicContraster so {@code entry:entry-ann-*} joins PathRuns keyed as
+     * {@code entry:POST:/foo}.
+     */
+    public static List<String> joinKeys(List<ApiDtos.EntryDto> entries, String rawRef) {
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
+        String normalized = normalizeJoinRef(rawRef);
+        if (!normalized.isBlank()) {
+            keys.add(normalized);
+        }
+        Resolution resolution = resolve(entries, rawRef);
+        if (resolution.resolved()) {
+            keys.add(resolution.canonicalRef());
+            keys.add(normalizeJoinRef(resolution.entry().id()));
+            if ("HTTP".equalsIgnoreCase(resolution.entry().protocol())) {
+                keys.add(methodRouteRef(resolution.entry()));
+            }
+        }
+        // Also accept METHOD:route even when catalog resolve fails (orphan PathRun).
+        String methodRoute = extractMethodRouteKey(rawRef);
+        if (!methodRoute.isBlank()) {
+            keys.add(methodRoute);
+        }
+        return List.copyOf(keys);
+    }
+
+    /** Prefix-normalize without catalog resolve ({@code entry-ann-1} → {@code entry:entry-ann-1}). */
+    public static String normalizeJoinRef(String ref) {
+        if (ref == null || ref.isBlank()) return "";
+        String trimmed = ref.trim();
+        if (trimmed.startsWith("entry:")) return trimmed;
+        if (trimmed.startsWith("entry-")) return "entry:" + trimmed;
+        return "entry:" + trimmed;
+    }
+
+    public static boolean refsEquivalent(List<ApiDtos.EntryDto> entries, String left, String right) {
+        if (left == null || right == null) return false;
+        if (normalizeJoinRef(left).equals(normalizeJoinRef(right))) return true;
+        List<String> leftKeys = joinKeys(entries, left);
+        List<String> rightKeys = joinKeys(entries, right);
+        for (String key : leftKeys) {
+            if (rightKeys.contains(key)) return true;
+        }
+        return false;
     }
 
     public static Resolution resolve(List<ApiDtos.EntryDto> entries, String rawRef) {
@@ -154,6 +213,18 @@ public final class EntryRefResolver {
 
     private static boolean isHttpMethod(String value) {
         return value != null && HTTP_METHODS.contains(value.toUpperCase(Locale.ROOT));
+    }
+
+    private static String extractMethodRouteKey(String rawRef) {
+        if (rawRef == null || rawRef.isBlank()) return "";
+        String trimmed = rawRef.trim();
+        String rest = trimmed.startsWith("entry:") ? trimmed.substring("entry:".length()) : trimmed;
+        int colon = rest.indexOf(':');
+        if (colon <= 0) return "";
+        String method = rest.substring(0, colon).trim();
+        String route = rest.substring(colon + 1).trim();
+        if (!isHttpMethod(method) || route.isBlank()) return "";
+        return "entry:" + method.toUpperCase(Locale.ROOT) + ":" + normalizeRoute(route);
     }
 
     private static String normalizeRoute(String route) {

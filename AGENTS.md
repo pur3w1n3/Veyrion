@@ -2,10 +2,14 @@
 
 开始任何实现、审计或文档变更前，按顺序阅读：
 
-1. [PROJECT_MEMORY.md](PROJECT_MEMORY.md)：稳定产品决策、当前基线和不可破坏边界；
-2. [开发与 AI 实施手册](docs/DEVELOPMENT_PLAYBOOK.md)：技术路线、模块边界、门禁和 Definition of Done；
-3. 目标路径上的作用域 `AGENTS.md`；
-4. 任务引用的领域文档、Backlog 条目和 ADR。
+1. [PROJECT_MEMORY.md](PROJECT_MEMORY.md)：稳定产品决策与不可破坏边界；
+2. [docs/CURRENT_SYSTEM.md](docs/CURRENT_SYSTEM.md)：当前系统逻辑主入口（as-built）；
+3. [开发与 AI 实施手册](docs/DEVELOPMENT_PLAYBOOK.md)：技术路线、模块边界、门禁和 Definition of Done；
+4. 按任务需要：[AUDIT_PIPELINE_ASBUILT](docs/AUDIT_PIPELINE_ASBUILT.md) · [AI_ROLES](docs/AI_ROLES.md) · [AGENT_SENSOR_FLOW](docs/AGENT_SENSOR_FLOW.md) · [OPEN_GAPS](docs/OPEN_GAPS.md)；
+5. 目标路径上的作用域 `AGENTS.md`；
+6. 任务引用的领域文档、[MVP Backlog](docs/MVP_BACKLOG.md) 和 ADR。
+
+文档索引：[docs/README.md](docs/README.md)。产品意图模型（非 as-built）：[docs/AUDIT_FLOW.md](docs/AUDIT_FLOW.md)。
 
 实现任务应使用 [AI 任务包模板](docs/AI_TASK_TEMPLATE.md) 明确 Task ID、当前行为、目标行为、允许路径、禁止项、验收和测试。用户未提供完整任务包时，Agent 必须在动手前自行整理等价任务合同。
 
@@ -18,4 +22,4 @@
 - 公共合同必须版本化并保留 scope、provenance、coverage、stop reason 和 evidence refs；AI、前端与插件不能补写 FACT 或提升验证状态。
 - 已应用迁移不得修改；沙箱失败不得回退宿主执行；模型不能提供命令、镜像、挂载、网络、UID 或预算。
 - 新增/替换框架、数据库、队列、RPC、分析引擎、语言运行时、公共协议兼容策略或安全门禁前，必须引用 [已接受 ADR](docs/adr/README.md)。
-- 完成前审计实际 diff、兼容/迁移、权限拒绝路径和真实非零测试；实现状态只按证据更新 [MVP Backlog](docs/MVP_BACKLOG.md)。
+- 完成前审计实际 diff、兼容/迁移、权限拒绝路径和真实非零测试；实现状态只按证据更新 [MVP Backlog](docs/MVP_BACKLOG.md) / [OPEN_GAPS](docs/OPEN_GAPS.md)。

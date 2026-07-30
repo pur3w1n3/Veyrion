@@ -2,7 +2,11 @@ package com.aq.jvmsentinel.analysis.identity;
 
 import com.aq.jvmsentinel.AcceptanceAssertions;
 import com.aq.jvmsentinel.analysis.detector.DetectorContext;
+import com.aq.jvmsentinel.analysis.detector.HardcodedJwtSignKeyDetector;
 import com.aq.jvmsentinel.analysis.detector.HardcodedRememberMeCipherDetector;
+import com.aq.jvmsentinel.analysis.framework.SpringBladeAdapter;
+import com.aq.jvmsentinel.analysis.hypothesis.SecurityHypothesisProjector;
+import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.control.StaticFactSnapshot;
 import com.aq.jvmsentinel.domain.hypothesis.SecurityHypothesis;
 import com.aq.jvmsentinel.domain.universe.ArtifactUniverse;
@@ -25,17 +29,22 @@ public final class IdentityMaterialAcceptanceTest {
     public static void main(String[] args) throws Exception {
         Path jar = fixtureShiroConfigJar();
         Path customJar = fixtureCustomCipherKeyJar();
+        Path bladeJwtJar = fixtureBladeJwtNestedJar();
         try {
             cipherKeyDetectorSurfacesNonFastjsonHypothesis(jar);
             harvestCookieMaterials(jar);
             synthesizeCookieChannelWithoutJwt(jar);
             probePlanEncodesCookieHeader(jar);
             cipherKeyIsNotJwtMintSecret(jar);
+            rememberMeTechniqueHintWhenCipherHarvested(jar);
+            cipherHypProjectsToStaticInferredFinding(jar);
             customKeyDetectedViaSetCipherKeyNotDictionary(customJar);
             dictionaryAloneWithoutSetCipherKeyIsIgnored(customJar);
+            nestedBladeJwtDefaultKeyHarvestedAndProjected(bladeJwtJar);
         } finally {
             Files.deleteIfExists(jar);
             Files.deleteIfExists(customJar);
+            Files.deleteIfExists(bladeJwtJar);
         }
         System.out.println("IdentityMaterialAcceptanceTest: PASS");
     }
@@ -180,6 +189,138 @@ public final class IdentityMaterialAcceptanceTest {
                                 && f.attributes().getOrDefault("matched", "")
                                 .contains("REMEMBER_ME")),
                 "cipher alias not classified as mintable JWT");
+        Map<String, Object> toolMap = AuthCodeQueryService.toToolMap(result);
+        check(Boolean.TRUE.equals(toolMap.get("rememberMeCipherMaterialFound")),
+                "tool summary exposes rememberMeCipherMaterialFound");
+        check(Boolean.TRUE.equals(toolMap.get("cookieMaterialFound")),
+                "tool summary exposes cookieMaterialFound");
+    }
+
+    private static void rememberMeTechniqueHintWhenCipherHarvested(Path jar) {
+        AuthCodeQueryService.AuthCodeQueryResult result =
+                new AuthCodeQueryService().query(jar, "", 20);
+        check(result.recommendedTechniques().contains("REMEMBER_ME_COOKIE"),
+                "cipher material adds REMEMBER_ME_COOKIE technique hint");
+        check(result.recommendedTechniques().contains("CUSTOM_POC"),
+                "cipher material keeps CUSTOM_POC for Cookie-channel PoC");
+    }
+
+    /**
+     * Acceptance: rememberMe cipher hyp becomes a finding with STATIC_INFERRED + hypothesisId
+     * (UI/report must not look sink-only when hyp-rmc exists).
+     */
+    private static void cipherHypProjectsToStaticInferredFinding(Path jar) {
+        HardcodedRememberMeCipherDetector detector = new HardcodedRememberMeCipherDetector();
+        List<SecurityHypothesis> hyps = detector.analyze(new DetectorContext(
+                "scan-ee80407e1f95449d",
+                ArtifactUniverse.empty(),
+                new StaticFactSnapshot(StaticFactSnapshot.LEGACY_INCOMPLETE, List.of(), null),
+                List.of(), List.of(), List.of(), Map.of(), List.of(), jar));
+        check(hyps.stream().anyMatch(h ->
+                        HardcodedRememberMeCipherDetector.PROP_HARDCODED_CIPHER.equals(h.securityProperty())),
+                "detector hyp present before finding projection");
+        List<ApiDtos.FindingDto> findings = SecurityHypothesisProjector.mergeFindingsWithDetectorHypotheses(
+                "project-rmc", "digest-rmc", "scan-ee80407e1f95449d",
+                List.of(), hyps, List.of());
+        ApiDtos.FindingDto cipherFinding = findings.stream()
+                .filter(f -> HardcodedRememberMeCipherDetector.PROP_HARDCODED_CIPHER
+                        .equals(f.securityProperty()))
+                .findFirst()
+                .orElse(null);
+        check(cipherFinding != null, "HARDCODED_REMEMBER_ME_CIPHER_KEY projects to finding");
+        check(ApiDtos.STATIC_INFERRED.equals(cipherFinding.verificationStatus()),
+                "finding verificationStatus is STATIC_INFERRED");
+        check(cipherFinding.hypothesisId() != null && !cipherFinding.hypothesisId().isBlank(),
+                "finding binds hypothesisId");
+        check(cipherFinding.hypothesisId().startsWith("hyp-rmc-"),
+                "finding hypothesisId links hyp-rmc");
+        check(!"DYNAMIC_CONFIRMED".equals(cipherFinding.verificationStatus())
+                        && !"VERIFIED".equals(cipherFinding.verificationStatus()),
+                "projection must not elevate DYNAMIC_CONFIRMED/VERIFIED");
+        check(findings.stream().anyMatch(f ->
+                        HardcodedRememberMeCipherDetector.PROP_UNSAFE_DESER_SURFACE
+                                .equals(f.securityProperty())
+                                && f.hypothesisId() != null
+                                && f.hypothesisId().startsWith("hyp-rmc-")
+                                && ApiDtos.STATIC_INFERRED.equals(f.verificationStatus())),
+                "companion UNSAFE_DESERIALIZATION_SURFACE from rememberMe also projects STATIC_INFERRED");
+        // Generic deser-config hyp (not rememberMe detector) must not project via this path.
+        SecurityHypothesis genericDeser = new SecurityHypothesis(
+                SecurityHypothesis.SCHEMA_VERSION,
+                "hyp-deser-scan-x-1",
+                "scan-ee80407e1f95449d",
+                HardcodedRememberMeCipherDetector.PROP_UNSAFE_DESER_SURFACE,
+                com.aq.jvmsentinel.domain.hypothesis.HypothesisFamily.TYPESTATE,
+                com.aq.jvmsentinel.domain.hypothesis.HypothesisLifecycle.CANDIDATE,
+                "deserialization-config/0.1.0",
+                List.of(), List.of(), List.of(),
+                "com.example.Load#readObject",
+                "deserialize-api");
+        check(!SecurityHypothesisProjector.isHighSignalDetectorHypothesis(genericDeser),
+                "generic UNSAFE_DESERIALIZATION_SURFACE is not high-signal for this projector");
+    }
+
+    /**
+     * Blade JwtProperties default sign-key lives in nested blade-starter-jwt; outer-only scans missed it
+     * (scan-c6b91763704c4aed: empty bladeAuthHeader / AUTH_CHALLENGE on FORCED).
+     */
+    private static Path fixtureBladeJwtNestedJar() throws Exception {
+        Path jar = Files.createTempFile("veyrion-blade-jwt-", ".jar");
+        Path nested = Files.createTempFile("blade-starter-jwt-", ".jar");
+        String latin = "Lorg/springblade/core/jwt/props/JwtProperties;\0"
+                + SpringBladeAdapter.WELL_KNOWN_COMMERCIAL_SIGN_KEY + "\0"
+                + "blade.token";
+        try (JarOutputStream nestedJos = new JarOutputStream(Files.newOutputStream(nested))) {
+            nestedJos.putNextEntry(new JarEntry(
+                    "org/springblade/core/jwt/props/JwtProperties.class"));
+            nestedJos.write(latin.getBytes(StandardCharsets.ISO_8859_1));
+            nestedJos.closeEntry();
+        }
+        try (JarOutputStream jos = new JarOutputStream(Files.newOutputStream(jar))) {
+            jos.putNextEntry(new JarEntry("BOOT-INF/classes/application.yml"));
+            jos.write("blade:\n  token:\n    state: false\n".getBytes(StandardCharsets.UTF_8));
+            jos.closeEntry();
+            jos.putNextEntry(new JarEntry("BOOT-INF/lib/blade-starter-jwt-3.0.0.RELEASE.jar"));
+            jos.write(Files.readAllBytes(nested));
+            jos.closeEntry();
+        } finally {
+            Files.deleteIfExists(nested);
+        }
+        return jar;
+    }
+
+    private static void nestedBladeJwtDefaultKeyHarvestedAndProjected(Path jar) {
+        AuthCodeQueryService.AuthCodeQueryResult result =
+                new AuthCodeQueryService().query(jar, "", 20);
+        check(result.mintSecret().isPresent(), "nested blade-starter-jwt default key is mintable");
+        check(result.jwtSecretMaterialFound(), "jwtSecretMaterialFound after nested harvest");
+        check(result.preferredSignKeyProvenance().contains("CLASS_CONSTANT"),
+                "provenance cites nested class constant");
+
+        HardcodedJwtSignKeyDetector detector = new HardcodedJwtSignKeyDetector();
+        List<SecurityHypothesis> hyps = detector.analyze(new DetectorContext(
+                "scan-blade-jwt",
+                ArtifactUniverse.empty(),
+                new StaticFactSnapshot(StaticFactSnapshot.LEGACY_INCOMPLETE, List.of(), null),
+                List.of(), List.of(), List.of(), Map.of(), List.of(), jar));
+        check(hyps.stream().anyMatch(h ->
+                        HardcodedJwtSignKeyDetector.PROP_HARDCODED_JWT_SIGN_KEY
+                                .equals(h.securityProperty())),
+                "HARDCODED_JWT_SIGN_KEY hyp from nested JwtProperties");
+        List<ApiDtos.FindingDto> findings = SecurityHypothesisProjector.mergeFindingsWithDetectorHypotheses(
+                "project-jwt", "digest-jwt", "scan-blade-jwt", List.of(), hyps, List.of());
+        ApiDtos.FindingDto jwtFinding = findings.stream()
+                .filter(f -> HardcodedJwtSignKeyDetector.PROP_HARDCODED_JWT_SIGN_KEY
+                        .equals(f.securityProperty()))
+                .findFirst()
+                .orElse(null);
+        check(jwtFinding != null, "JWT default key projects to finding");
+        check(ApiDtos.STATIC_INFERRED.equals(jwtFinding.verificationStatus()),
+                "JWT finding remains STATIC_INFERRED");
+        check(jwtFinding.title().contains("JWT"), "JWT finding title mentions JWT");
+        check(!"VERIFIED".equals(jwtFinding.verificationStatus())
+                        && !"DYNAMIC_CONFIRMED".equals(jwtFinding.verificationStatus()),
+                "JWT projection must not elevate VERIFIED/DYNAMIC_CONFIRMED");
     }
 
     private static void check(boolean condition, String message) {

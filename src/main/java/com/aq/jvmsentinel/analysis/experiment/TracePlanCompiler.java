@@ -1,12 +1,16 @@
 package com.aq.jvmsentinel.analysis.experiment;
 
 import com.aq.jvmsentinel.control.ApiDtos;
+import com.aq.jvmsentinel.control.StaticFactSnapshot;
 import com.aq.jvmsentinel.domain.pathdebug.TracePlan;
+import com.aq.jvmsentinel.model.BytecodeFactIndex;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -15,6 +19,9 @@ import java.util.Set;
  */
 public final class TracePlanCompiler {
     public static final String PRODUCER = TracePlan.PRODUCER;
+    private static final int MAX_HOPS_PER_ENTRY = 24;
+    private static final int MAX_EFFECTS_PER_ENTRY = 16;
+    private static final int MAX_GUARDS_PER_ENTRY = 24;
 
     private TracePlanCompiler() {
     }
@@ -58,6 +65,214 @@ public final class TracePlanCompiler {
                 64,
                 256,
                 15_000);
+    }
+
+    /**
+     * Fill expectedGuards / effects / hops / parameter specs from static IR bindings.
+     * Never invents runtime FACT — provenance remains RULE_GENERATED / STATIC_SIGNATURE.
+     */
+    public static TracePlan compileFromStaticIr(
+            ApiDtos.EntryDto entry,
+            List<ApiDtos.SinkDto> sinks,
+            Map<String, ApiDtos.EvidenceDto> evidence,
+            List<BytecodeFactIndex.TaintPath> taintPaths,
+            List<String> guardHints) {
+        Objects.requireNonNull(entry, "entry");
+        Map<String, ApiDtos.EvidenceDto> evid = evidence == null ? Map.of() : evidence;
+        List<BytecodeFactIndex.TaintPath> paths = taintPaths == null ? List.of() : taintPaths;
+        List<ApiDtos.SinkDto> sinkList = sinks == null ? List.of() : sinks;
+
+        List<String> hops = new ArrayList<>();
+        List<String> effects = new ArrayList<>();
+        List<String> unresolved = new ArrayList<>();
+        Set<String> seenHop = new LinkedHashSet<>();
+        Set<String> seenEffect = new LinkedHashSet<>();
+
+        for (BytecodeFactIndex.TaintPath path : paths) {
+            if (path == null) {
+                continue;
+            }
+            ApiDtos.EntryDto bound = StaticFactSnapshot.findEntryForTaintSource(
+                    List.of(entry), evid, path);
+            if (bound == null || !entry.id().equals(bound.id())) {
+                // Also accept owner-class match when annotation binding is incomplete.
+                if (!ownerMatchesEntry(entry, path.sourceOwner())) {
+                    continue;
+                }
+            }
+            String effect = "effect:" + (path.category() == null || path.category().isBlank()
+                    ? "TAINT" : path.category())
+                    + ":" + StaticFactSnapshot.normalizeClassRef(path.sinkOwner())
+                    + "#" + path.sinkMethod();
+            if (seenEffect.add(effect) && effects.size() < MAX_EFFECTS_PER_ENTRY) {
+                effects.add(effect);
+            }
+            String taintRef = "TAINT:" + path.id();
+            if (seenEffect.add(taintRef) && effects.size() < MAX_EFFECTS_PER_ENTRY) {
+                effects.add(taintRef);
+            }
+            if (path.steps() != null) {
+                for (BytecodeFactIndex.TaintStep step : path.steps()) {
+                    if (step == null || step.symbol() == null || step.symbol().isBlank()) {
+                        continue;
+                    }
+                    String hop = step.symbol().trim();
+                    if (seenHop.add(hop) && hops.size() < MAX_HOPS_PER_ENTRY) {
+                        hops.add(hop);
+                    }
+                    String kind = step.kind() == null ? "" : step.kind().toUpperCase(Locale.ROOT);
+                    if (kind.contains("UNRESOLVED") || kind.contains("REFLECTION")
+                            || kind.contains("DYNAMIC")) {
+                        unresolved.add(hop);
+                    }
+                }
+            }
+            String sinkHop = StaticFactSnapshot.normalizeClassRef(path.sinkOwner())
+                    + "#" + path.sinkMethod();
+            if (seenHop.add(sinkHop) && hops.size() < MAX_HOPS_PER_ENTRY) {
+                hops.add(sinkHop);
+            }
+        }
+
+        Map<String, BytecodeFactIndex.TaintPath> pathsById = indexPaths(paths);
+        for (ApiDtos.SinkDto sink : sinkList) {
+            if (sink == null || !sinkLinkedToEntry(sink, entry, evid, pathsById)) {
+                continue;
+            }
+            String sinkEffect = "SINK:" + sink.category() + ":" + sink.id();
+            if (seenEffect.add(sinkEffect) && effects.size() < MAX_EFFECTS_PER_ENTRY) {
+                effects.add(sinkEffect);
+            }
+            if (sink.symbol() != null && !sink.symbol().isBlank()
+                    && seenHop.add(sink.symbol()) && hops.size() < MAX_HOPS_PER_ENTRY) {
+                hops.add(sink.symbol().trim());
+            }
+        }
+
+        List<String> guards = new ArrayList<>(capHints(guardHints, MAX_GUARDS_PER_ENTRY));
+        // Entry-local preconditions (ROLE=…) are static guard expectations.
+        if (entry.preconditions() != null) {
+            for (String pre : entry.preconditions()) {
+                if (pre == null || pre.isBlank() || guards.size() >= MAX_GUARDS_PER_ENTRY) {
+                    continue;
+                }
+                String upper = pre.toUpperCase(Locale.ROOT);
+                if (upper.contains("ROLE") || upper.contains("AUTH") || upper.contains("PERMISSION")
+                        || upper.contains("LOGIN") || upper.contains("JWT")) {
+                    String guard = pre.startsWith("GUARD:") ? pre.trim() : "GUARD:" + pre.trim();
+                    if (!guards.contains(guard)) {
+                        guards.add(guard);
+                    }
+                }
+            }
+        }
+
+        return compile(entry, hops, effects, guards, unresolved);
+    }
+
+    /** Entry ids that have at least one expected effect after static IR compile. */
+    public static List<String> entryIdsWithExpectedEffects(
+            List<ApiDtos.EntryDto> entries,
+            List<ApiDtos.SinkDto> sinks,
+            Map<String, ApiDtos.EvidenceDto> evidence,
+            List<BytecodeFactIndex.TaintPath> taintPaths) {
+        if (entries == null || entries.isEmpty()) {
+            return List.of();
+        }
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        for (ApiDtos.EntryDto entry : entries) {
+            if (entry == null) {
+                continue;
+            }
+            TracePlan plan = compileFromStaticIr(entry, sinks, evidence, taintPaths, List.of());
+            if (!plan.expectedEffectRefs().isEmpty()) {
+                ids.add(entry.id());
+            }
+        }
+        return List.copyOf(ids);
+    }
+
+    private static boolean ownerMatchesEntry(ApiDtos.EntryDto entry, String owner) {
+        if (entry == null || entry.declaringClass() == null || owner == null) {
+            return false;
+        }
+        String left = StaticFactSnapshot.normalizeClassRef(entry.declaringClass()).toLowerCase(Locale.ROOT);
+        String right = StaticFactSnapshot.normalizeClassRef(owner).toLowerCase(Locale.ROOT);
+        return !left.isBlank() && left.equals(right);
+    }
+
+    private static Map<String, BytecodeFactIndex.TaintPath> indexPaths(
+            List<BytecodeFactIndex.TaintPath> paths) {
+        Map<String, BytecodeFactIndex.TaintPath> byId = new LinkedHashMap<>();
+        if (paths == null) {
+            return byId;
+        }
+        for (BytecodeFactIndex.TaintPath path : paths) {
+            if (path != null && path.id() != null && !path.id().isBlank()) {
+                byId.putIfAbsent(path.id(), path);
+            }
+        }
+        return byId;
+    }
+
+    private static boolean sinkLinkedToEntry(
+            ApiDtos.SinkDto sink,
+            ApiDtos.EntryDto entry,
+            Map<String, ApiDtos.EvidenceDto> evidence,
+            Map<String, BytecodeFactIndex.TaintPath> pathsById) {
+        if (sink == null || entry == null) {
+            return false;
+        }
+        if (sink.evidenceRefs() != null) {
+            for (String ref : sink.evidenceRefs()) {
+                if (ref != null && (ref.contains(entry.id()) || ref.equals(entry.id()))) {
+                    return true;
+                }
+            }
+        }
+        String taintPathId = StaticFactSnapshot.taintPathIdFromSink(sink, evidence);
+        if (!taintPathId.isBlank()) {
+            BytecodeFactIndex.TaintPath path = pathsById.get(taintPathId);
+            if (path != null) {
+                ApiDtos.EntryDto bound = StaticFactSnapshot.findEntryForTaintSource(
+                        List.of(entry), evidence, path);
+                if (bound != null && entry.id().equals(bound.id())) {
+                    return true;
+                }
+                if (ownerMatchesEntry(entry, path.sourceOwner())) {
+                    return true;
+                }
+            }
+        }
+        String symbol = sink.symbol() == null ? "" : sink.symbol();
+        String clazz = entry.declaringClass() == null ? "" : entry.declaringClass();
+        if (!clazz.isBlank() && symbol.contains(clazz)) {
+            String route = entry.route() == null ? "" : entry.route();
+            if (route.isBlank() || symbol.contains(route)
+                    || (entry.method() != null && !entry.method().isBlank()
+                    && symbol.toUpperCase(Locale.ROOT).contains(
+                    " " + entry.method().toUpperCase(Locale.ROOT) + " "))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<String> capHints(List<String> hints, int max) {
+        if (hints == null || hints.isEmpty()) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        for (String hint : hints) {
+            if (hint == null || hint.isBlank()) {
+                continue;
+            }
+            out.add(hint.trim());
+            if (out.size() >= max) {
+                break;
+            }
+        }
+        return List.copyOf(out);
     }
 
     public static List<TracePlan> compileAll(
@@ -157,29 +372,72 @@ public final class TracePlanCompiler {
                     "Empty query is legal for " + method + " " + entry.route()
                             + "; record empty-input rationale and observe downstream effects."));
         } else {
+            Set<String> seenNames = new LinkedHashSet<>();
             for (String raw : declared) {
                 if (raw == null || raw.isBlank()) {
                     continue;
                 }
-                String name = raw.contains("=") ? raw.substring(0, raw.indexOf('=')).trim() : raw.trim();
+                String name = ProbeParameterHeuristics.resolveName(raw);
+                if (name.isBlank()) {
+                    name = raw.contains("=") ? raw.substring(0, raw.indexOf('=')).trim() : raw.trim();
+                }
+                if (name.isBlank() || !seenNames.add(name)) {
+                    continue;
+                }
+                String source = inferParamSource(raw, method);
                 parameters.add(new TracePlan.ParameterSpec(
                         name,
-                        "QUERY",
+                        source,
                         "ENTRY_SIGNATURE",
                         true,
-                        "Empty value for parameter '" + name + "' remains a legal exploration input."));
+                        "Empty value for parameter '" + name + "' remains a legal exploration input; "
+                                + "prefer honest sample via ProbeParameterHeuristics when probing."));
+            }
+            if (parameters.isEmpty()) {
+                parameters.add(new TracePlan.ParameterSpec(
+                        "",
+                        "QUERY",
+                        "EMPTY_INPUT",
+                        true,
+                        "Declared parameters could not be parsed; empty query remains legal."));
             }
         }
         if ("POST".equals(method) || "PUT".equals(method) || "PATCH".equals(method)) {
-            parameters.add(new TracePlan.ParameterSpec(
-                    "body",
-                    "BODY",
-                    "EMPTY_INPUT",
-                    true,
-                    "Empty body is a legal input shape for " + method
-                            + "; do not treat missing body as probe failure by itself."));
+            boolean hasBody = parameters.stream().anyMatch(p -> "BODY".equals(p.source()));
+            if (!hasBody) {
+                parameters.add(new TracePlan.ParameterSpec(
+                        "body",
+                        "BODY",
+                        "EMPTY_INPUT",
+                        true,
+                        "Empty body is a legal input shape for " + method
+                                + "; do not treat missing body as probe failure by itself."));
+            }
         }
         return parameters;
+    }
+
+    private static String inferParamSource(String raw, String method) {
+        if (raw == null) {
+            return "QUERY";
+        }
+        String lower = raw.toLowerCase(Locale.ROOT);
+        if (lower.contains("source=body") || lower.contains("in=body")
+                || lower.contains("@requestbody") || lower.contains("type=body")) {
+            return "BODY";
+        }
+        if (lower.contains("source=header") || lower.contains("in=header")) {
+            return "HEADER";
+        }
+        if (lower.contains("source=path") || lower.contains("in=path")
+                || lower.contains("pathvariable")) {
+            return "PATH";
+        }
+        if (("POST".equals(method) || "PUT".equals(method) || "PATCH".equals(method))
+                && (lower.contains("json") || lower.contains("body"))) {
+            return "BODY";
+        }
+        return "QUERY";
     }
 
     private static List<String> normalizeHints(List<String> hints) {

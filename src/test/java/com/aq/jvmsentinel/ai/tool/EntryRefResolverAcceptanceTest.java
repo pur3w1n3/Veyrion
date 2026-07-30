@@ -20,6 +20,14 @@ public final class EntryRefResolverAcceptanceTest {
         expectResolved(entries, "entry:POST:/blade/a", "entry-ann-2");
         expectResolved(entries, "entry:get:/blade/b/", "entry-ann-3");
 
+        check(EntryRefResolver.joinKeys(entries, "entry:entry-ann-1")
+                        .contains("entry:GET:/blade/a"),
+                "joinKeys adds METHOD:route alias for ann id");
+        check(EntryRefResolver.refsEquivalent(entries, "entry:entry-ann-2", "entry:POST:/blade/a"),
+                "refsEquivalent ann ↔ METHOD:route");
+        check("entry:GET:/blade/b".equals(EntryRefResolver.methodRouteRef(entries.get(2))),
+                "methodRouteRef normalizes trailing slash");
+
         expectCode(entries, "/invented/path", EntryRefResolver.CODE_MUST_BE_ENTRY);
         expectCode(entries, "evidence:entry-ann-1", EntryRefResolver.CODE_MUST_BE_ENTRY);
         expectCode(entries, "entry:", EntryRefResolver.CODE_MUST_BE_ENTRY);

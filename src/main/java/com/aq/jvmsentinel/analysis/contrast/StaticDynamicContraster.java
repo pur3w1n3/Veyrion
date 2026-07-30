@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.analysis.contrast;
 
+import com.aq.jvmsentinel.ai.tool.EntryRefResolver;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.model.ContrastStatus;
 import com.aq.jvmsentinel.model.StaticContrastRow;
@@ -14,6 +15,9 @@ import java.util.Set;
 
 /**
  * Joins static contrast rows to PathRuns by {@code entryRef × track}.
+ *
+ * <p>Entry refs are joined through {@link EntryRefResolver} aliases so
+ * {@code entry:entry-ann-*} rows match PathRuns keyed as {@code entry:METHOD:/route}.
  *
  * <p>All-401 / AUTH_CHALLENGE PathRuns yield {@link ContrastStatus#STATIC_ONLY} —
  * never MATCHED and never a bypass-confirmed claim.
@@ -34,7 +38,7 @@ public final class StaticDynamicContraster {
     }
 
     public Result join(List<StaticContrastRow> staticRows, List<ApiDtos.PathRunDto> pathRuns) {
-        return join(staticRows, pathRuns, List.of(), "", 0);
+        return join(staticRows, pathRuns, List.of(), "", 0, List.of());
     }
 
     public Result join(
@@ -43,8 +47,19 @@ public final class StaticDynamicContraster {
             List<TaintPathCoverageJoiner.StatusUpgrade> coverageUpgrades,
             String snapshotId,
             int roundIndex) {
+        return join(staticRows, pathRuns, coverageUpgrades, snapshotId, roundIndex, List.of());
+    }
+
+    public Result join(
+            List<StaticContrastRow> staticRows,
+            List<ApiDtos.PathRunDto> pathRuns,
+            List<TaintPathCoverageJoiner.StatusUpgrade> coverageUpgrades,
+            String snapshotId,
+            int roundIndex,
+            List<ApiDtos.EntryDto> entries) {
         List<StaticContrastRow> projected = staticRows == null ? List.of() : staticRows;
         List<ApiDtos.PathRunDto> runs = pathRuns == null ? List.of() : pathRuns;
+        List<ApiDtos.EntryDto> catalog = entries == null ? List.of() : entries;
         Map<String, TaintPathCoverageJoiner.StatusUpgrade> upgrades = new LinkedHashMap<>();
         if (coverageUpgrades != null) {
             for (TaintPathCoverageJoiner.StatusUpgrade upgrade : coverageUpgrades) {
@@ -54,8 +69,9 @@ public final class StaticDynamicContraster {
 
         Map<String, List<ApiDtos.PathRunDto>> byEntry = new LinkedHashMap<>();
         for (ApiDtos.PathRunDto run : runs) {
-            String entryRef = normalizeEntryRef(run.entrypointRef());
-            byEntry.computeIfAbsent(entryRef, ignored -> new ArrayList<>()).add(run);
+            for (String key : EntryRefResolver.joinKeys(catalog, run.entrypointRef())) {
+                byEntry.computeIfAbsent(key, ignored -> new ArrayList<>()).add(run);
+            }
         }
 
         List<StaticContrastRow> out = new ArrayList<>();
@@ -68,11 +84,15 @@ public final class StaticDynamicContraster {
 
         for (StaticContrastRow row : projected) {
             if (row.truncated()) truncated = true;
-            List<ApiDtos.PathRunDto> related = new ArrayList<>();
+            LinkedHashMap<String, ApiDtos.PathRunDto> relatedById = new LinkedHashMap<>();
             for (String entryRef : row.entryRefs()) {
-                List<ApiDtos.PathRunDto> forEntry = byEntry.getOrDefault(normalizeEntryRef(entryRef), List.of());
-                related.addAll(forEntry);
+                for (String key : EntryRefResolver.joinKeys(catalog, entryRef)) {
+                    for (ApiDtos.PathRunDto run : byEntry.getOrDefault(key, List.of())) {
+                        relatedById.putIfAbsent(run.pathRunId(), run);
+                    }
+                }
             }
+            List<ApiDtos.PathRunDto> related = List.copyOf(relatedById.values());
             ContrastDecision decision = classify(related);
             for (ApiDtos.PathRunDto run : related) {
                 consumedPathRuns.add(run.pathRunId());
@@ -216,11 +236,7 @@ public final class StaticDynamicContraster {
     }
 
     static String normalizeEntryRef(String ref) {
-        if (ref == null || ref.isBlank()) return "";
-        String trimmed = ref.trim();
-        if (trimmed.startsWith("entry:")) return trimmed;
-        if (trimmed.startsWith("entry-")) return "entry:" + trimmed;
-        return "entry:" + trimmed;
+        return EntryRefResolver.normalizeJoinRef(ref);
     }
 
     private record ContrastDecision(ContrastStatus status, List<String> pathRunRefs,

@@ -101,6 +101,11 @@ public final class AgentJsonlTraceConverterAcceptanceTest {
                 "2026-07-24T00:00:01Z"), "later sequence jump");
         rejectJson(valid.replace("DYNAMIC_SUSPECTED", "VERIFIED"), "VERIFIED status");
         rejectJson(valid.replace("APPLICATION_REPORTED", "STATIC_INFERRED"), "unknown provenance");
+        String jndi = event(0, "JNDI", "AGENT_INSTRUMENTED", "2026-07-24T00:00:00Z");
+        byte[] jndiBytes = bytes(jndi);
+        check(!converter(jndiBytes.length, jndiBytes.length, 4, jndiBytes.length + 1)
+                        .convert(jndiBytes, SCOPE, budget(jndiBytes.length + 8L)).isEmpty(),
+                "JNDI is a whitelisted top-level event type");
         rejectJson(valid.replace("\"eventType\":\"JDBC\"", "\"eventType\":\"SOCKET\""),
                 "unknown event type");
         rejectJson(valid.replace("\"eventType\":\"JDBC\"", "\"eventType\":1"),

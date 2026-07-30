@@ -49,8 +49,12 @@ public final class PathDebugSensorAcceptanceTest {
         String all = String.join("\n", lines);
         check(all.contains("\"pathDebugKind\":\"METHOD_HOP\""), "METHOD_HOP marker present");
         check(all.contains("\"pathDebugKind\":\"EFFECT_TRIGGERED\""), "EFFECT_TRIGGERED marker present");
-        check(all.contains("\"effectKind\":\"PROCESS\"") || all.contains("\"effectKind\":\"FILE\""),
+        check(all.contains("\"effectKind\":\"PROCESS\"")
+                        || all.contains("\"effectKind\":\"FILE\"")
+                        || all.contains("\"effectKind\":\"SSRF\""),
                 "effectKind detail present");
+        check(all.contains("\"effectKind\":\"SSRF\"") || all.contains("\"eventType\":\"HTTP_CLIENT\""),
+                "HTTP client / SSRF observation retained under whitelist eventTypes");
     }
 
     private static void verifyObserveFailMode(Path agentJar, Path traceDirectory) throws Exception {

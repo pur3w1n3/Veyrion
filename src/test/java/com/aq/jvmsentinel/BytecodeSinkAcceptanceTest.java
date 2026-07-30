@@ -48,6 +48,14 @@ public final class BytecodeSinkAcceptanceTest {
                     "JNDI", "CLASS_LOADING", "SQL", "XPATH", "XML", "FILE_READ", "FILE_WRITE", "SSRF");
             check(categories.containsAll(expected),
                     "owner-qualified checklist coverage missing " + difference(expected, categories));
+            Set<String> jdbcUrlKinds = result.sinkCatalog().sinks().stream()
+                    .filter(sink -> sink.symbol().contains("java.sql.DriverManager#getConnection"))
+                    .map(sink -> sink.category())
+                    .collect(java.util.stream.Collectors.toSet());
+            check(jdbcUrlKinds.containsAll(Set.of("SSRF", "COMMAND", "CLASS_LOADING")),
+                    "DriverManager.getConnection must emit SSRF+COMMAND+CLASS_LOADING, got " + jdbcUrlKinds);
+            check(!jdbcUrlKinds.contains("SQL"),
+                    "DriverManager.getConnection must not collapse to SQL-only labeling");
             check(result.sinkCatalog().sinks().stream()
                             .filter(sink -> sink.source().startsWith("bytecode-invoke:"))
                             .allMatch(sink ->
@@ -144,7 +152,9 @@ public final class BytecodeSinkAcceptanceTest {
                 import java.io.*;
                 import java.net.*;
                 import java.nio.file.*;
+                import java.sql.Connection;
                 import java.sql.DriverManager;
+                import java.sql.Statement;
                 import javax.naming.InitialContext;
                 import javax.script.ScriptEngine;
                 import javax.script.ScriptEngineManager;
@@ -164,6 +174,10 @@ public final class BytecodeSinkAcceptanceTest {
                         new InitialContext().lookup(url);
                         Class.forName(command);
                         DriverManager.getConnection(url);
+                        Connection connection = DriverManager.getConnection("jdbc:h2:mem:fixture");
+                        try (Statement statement = connection.createStatement()) {
+                            statement.executeQuery(expression);
+                        }
                         XPathFactory.newInstance().newXPath().evaluate(expression, new InputSource(new StringReader("")));
                         DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(InputStream.nullInputStream());
                         Files.readString(Path.of(path));

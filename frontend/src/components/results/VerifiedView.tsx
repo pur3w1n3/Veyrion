@@ -1,4 +1,4 @@
-import type { DashboardSnapshot, VerifiedFindingDto } from '../../api'
+import type { DashboardSnapshot, RankedSinkDto, VerifiedFindingDto } from '../../api'
 import { StatusPill } from '../Common'
 import { formatCoverageDelta } from './resultsUtils'
 
@@ -31,7 +31,7 @@ export function VerifiedView({
               <strong>{item.title || item.findingId}</strong>
               <small>{[item.entry, item.sink].filter(Boolean).join(' → ') || item.findingId}</small>
             </div>
-            <StatusPill status={item.verificationStatus} />
+            <StatusPill status={item.verificationStatus} english={english} />
           </div>
         ))}
         {verifiedFindings.length === 0 && (
@@ -44,10 +44,14 @@ export function VerifiedView({
 
 export function ContrastView({
   english,
-  snapshot
+  snapshot,
+  selectedSinkId,
+  onSelectSink
 }: {
   english: boolean
   snapshot: DashboardSnapshot | null
+  selectedSinkId?: string
+  onSelectSink: (sink: RankedSinkDto) => void
 }) {
   const rankedSinks = snapshot?.rankedSinks ?? []
   const ledgerDiff = snapshot?.ledgerDiff
@@ -62,15 +66,28 @@ export function ContrastView({
         </div>
         <span>{rankedSinks.length}</span>
       </div>
+      <p className="form-help">
+        {english
+          ? 'Compact list: rank, type, score. Select a row for dataflow detail on the right.'
+          : '左侧仅显示编号、类型、评分；点击行在右侧查看代码流向。'}
+      </p>
       <div className="results-table-list">
+        <div className="results-compact-head" aria-hidden="true">
+          <span>{english ? 'No.' : '编号'}</span>
+          <span>{english ? 'Type' : '类型'}</span>
+          <span>{english ? 'Score' : '评分'}</span>
+        </div>
         {topRankedSinks.map((sink) => (
-          <div className="results-row" key={sink.sinkId}>
-            <span className="severity severity-medium">#{sink.rank}</span>
-            <div className="results-row__body">
-              <strong>{sink.symbol || sink.sinkId}</strong>
-              <small>{sink.category || '—'} · {sink.score.toFixed(2)}</small>
-            </div>
-          </div>
+          <button
+            type="button"
+            className={`results-row results-row--compact ${sink.sinkId === selectedSinkId ? 'selected' : ''}`}
+            key={sink.sinkId}
+            onClick={() => onSelectSink(sink)}
+          >
+            <span className="results-row__num">#{sink.rank}</span>
+            <span className="results-row__kind term-chip">{sink.category || '—'}</span>
+            <span className="results-row__score">{sink.score.toFixed(2)}</span>
+          </button>
         ))}
         {rankedSinks.length === 0 && (
           <p className="empty-state">{english ? 'No ranked sinks.' : '尚无 Sink 排序。'}</p>

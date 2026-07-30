@@ -46,7 +46,7 @@
 
 ## 3. 审计执行
 
-阶段顺序必须与 [AUDIT_FLOW](AUDIT_FLOW.md) 一致：
+阶段顺序必须与流水线 as-built（[AUDIT_PIPELINE_ASBUILT](AUDIT_PIPELINE_ASBUILT.md)）一致；产品意图对照 [AUDIT_FLOW](AUDIT_FLOW.md)：
 
 ```text
 前置建模 -> 鉴权分析 -> 按轨动态观察 -> 鉴权绕过确认

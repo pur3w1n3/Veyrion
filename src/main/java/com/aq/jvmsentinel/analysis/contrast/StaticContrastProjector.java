@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.analysis.contrast;
 
+import com.aq.jvmsentinel.ai.tool.EntryRefResolver;
 import com.aq.jvmsentinel.control.ApiDtos;
 import com.aq.jvmsentinel.model.BytecodeFactIndex;
 import com.aq.jvmsentinel.model.ContrastStatus;
@@ -254,7 +255,7 @@ public final class StaticContrastProjector {
         LinkedHashSet<String> refs = new LinkedHashSet<>();
         for (ApiDtos.EntryDto entry : entries) {
             if (entryBindingKey(entry, evidence).equals(sinkKey)) {
-                refs.add("entry:" + entry.id());
+                addEntryAliases(refs, entry);
             }
         }
         // AUTH_GAP sinks encode "Class#method METHOD /route" in symbol — match declaring class#method.
@@ -269,7 +270,7 @@ public final class StaticContrastProjector {
                 if (entryBindingKey(entry, evidence).equals(handler)
                         || (entry.declaringClass() != null
                         && entry.declaringClass().equals(owner))) {
-                    refs.add("entry:" + entry.id());
+                    addEntryAliases(refs, entry);
                 }
             }
         }
@@ -282,9 +283,20 @@ public final class StaticContrastProjector {
         if (entries == null) return index;
         for (ApiDtos.EntryDto entry : entries) {
             String key = entryBindingKey(entry, evidence);
-            index.computeIfAbsent(key, ignored -> new ArrayList<>()).add("entry:" + entry.id());
+            LinkedHashSet<String> aliases = new LinkedHashSet<>();
+            addEntryAliases(aliases, entry);
+            index.computeIfAbsent(key, ignored -> new ArrayList<>()).addAll(aliases);
         }
         return index;
+    }
+
+    /** Canonical id plus METHOD:route alias so PathRun wire joins without catalog. */
+    private static void addEntryAliases(Set<String> refs, ApiDtos.EntryDto entry) {
+        if (entry == null || entry.id() == null || entry.id().isBlank()) return;
+        refs.add(EntryRefResolver.canonicalRef(entry));
+        if ("HTTP".equalsIgnoreCase(entry.protocol())) {
+            refs.add(EntryRefResolver.methodRouteRef(entry));
+        }
     }
 
     static String entryBindingKey(ApiDtos.EntryDto entry, Map<String, ApiDtos.EvidenceDto> evidence) {

@@ -177,10 +177,10 @@ export function PathRunPanel({
             <div className="severity severity-medium">{run.track}</div>
             <div>
               <strong>{run.method} {run.entrypointRef}</strong>
-              <small>{outcomeClassLabel(run.outcomeClass)} · HTTP {run.httpStatus < 0 ? '—' : run.httpStatus}</small>
+              <small>{outcomeClassLabel(run.outcomeClass, english)} · HTTP {run.httpStatus < 0 ? '—' : run.httpStatus}</small>
               <small>{run.sqlEvents.length} SQL · {run.identityProvenance ?? 'MOCK'}</small>
             </div>
-            <StatusPill status={run.verificationStatus} />
+            <StatusPill status={run.verificationStatus} english={english} />
           </button>)}
         </div>)}
         {filtered.length === 0 && <p className="empty-state">
@@ -195,7 +195,7 @@ export function PathRunPanel({
             <div><dt>{english ? 'HTTP line' : 'HTTP 线'}</dt><dd>{selected.requestSummary || `${selected.method} ${selected.entrypointRef}`}</dd></div>
             <div><dt>{english ? 'Entry' : '入口'}</dt><dd>{entryLabel(selected, entries)}</dd></div>
             <div><dt>{english ? 'Track' : '身份轨'}</dt><dd>{selected.track}</dd></div>
-            <div><dt>{english ? 'Outcome' : '结果码'}</dt><dd>{selected.outcomeClass} · {outcomeClassLabel(selected.outcomeClass)} · HTTP {selected.httpStatus < 0 ? '—' : selected.httpStatus}</dd></div>
+            <div><dt>{english ? 'Outcome' : '结果码'}</dt><dd>{selected.outcomeClass} · {outcomeClassLabel(selected.outcomeClass, english)} · HTTP {selected.httpStatus < 0 ? '—' : selected.httpStatus}</dd></div>
             <div><dt>entryHit</dt><dd>{triState(selected.entryHit, english)}</dd></div>
             <div><dt>parameterBound</dt><dd>{triState(selected.parameterBound, english)}</dd></div>
             <div><dt>{english ? 'Identity' : '身份前置'}</dt><dd>{selected.identityPrecondition || selected.identityProvenance || 'MOCK'}</dd></div>
@@ -231,7 +231,7 @@ export function PathRunPanel({
               </dd>
             </div>
           </dl>
-          <StatusPill status={selected.verificationStatus} />
+          <StatusPill status={selected.verificationStatus} english={english} />
           <div className="button-row section-gap">
             <button
               type="button"

@@ -1,6 +1,6 @@
 # Veyrion 开发与 AI 实施手册
 
-> 本文是工程实施的统一手册，回答技术选型、模块边界、跨语言扩展、任务执行、测试和审计问题。稳定产品决策见 [PROJECT_MEMORY](../PROJECT_MEMORY.md)，产品验收见 [PRD](PRD.md)，实现状态见 [MVP Backlog](MVP_BACKLOG.md)。本手册不能扩大工具、沙箱或授权范围。
+> 本文是工程实施的统一手册，回答技术选型、模块边界、跨语言扩展、任务执行、测试和审计问题。稳定产品决策见 [PROJECT_MEMORY](../PROJECT_MEMORY.md)，当前系统逻辑见 [CURRENT_SYSTEM](CURRENT_SYSTEM.md)，产品验收见 [PRD](PRD.md)，实现状态见 [MVP Backlog](MVP_BACKLOG.md) / [OPEN_GAPS](OPEN_GAPS.md)。本手册不能扩大工具、沙箱或授权范围。
 
 ## 1. 为什么不是只靠提示词
 
@@ -220,7 +220,7 @@ Control Plane 可以调用 Analyzer/Runtime port，但 domain 不得反向依赖
 
 ### 4.4 动态路径调试器实施手册
 
-动态重构按 [DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](DYNAMIC_SANDBOX_POSTURE_REDESIGN.md) 与 P0-21 执行。目标不是让所有接口完整 2xx，而是让系统在 Docker 沙箱中尽最大努力记录每个入口失败前真实经过的业务路径、参数流、sink/effect 和退出原因，并将结构化证据反馈给 AI。
+动态路径以 [AGENT_SENSOR_FLOW.md](AGENT_SENSOR_FLOW.md)、[AUDIT_PIPELINE_ASBUILT.md](AUDIT_PIPELINE_ASBUILT.md) 与 [ADR-0004](adr/0004-sandbox-posture-vs-agent-bypass.md) 为准；历史设计简报见 [archive/DYNAMIC_SANDBOX_POSTURE_REDESIGN.md](archive/DYNAMIC_SANDBOX_POSTURE_REDESIGN.md)。目标不是让所有接口完整 2xx，而是让系统在 Docker 沙箱中尽最大努力记录每个入口失败前真实经过的业务路径、参数流、sink/effect 和退出原因，并将结构化证据反馈给 AI。
 
 目标模块边界：
 
@@ -355,8 +355,11 @@ AI 遇到以下情况不得猜测后继续写：
 
 ## 10. 文档维护
 
-- 产品行为变化更新 PRD；组件/协议/信任边界更新技术架构；执行阶段更新 AUDIT_FLOW。
-- IR/Provider/语言框架扩展更新 EXTENSIBLE_ANALYSIS；动态证据更新 PATH_EXPERIMENT_MODEL。
-- 实现状态和验收证据只更新 MVP_BACKLOG；稳定决策摘要才进入 PROJECT_MEMORY。
-- 架构取舍写 ADR；AI 的一次任务输入不写入长期文档。
-- 本手册只维护通用开发规则。任何具体任务的允许文件和验收条件写在任务包中。
+- 文档索引与阅读顺序：[README.md](README.md)。
+- **执行真相**更新 [CURRENT_SYSTEM](CURRENT_SYSTEM.md) / [AUDIT_PIPELINE_ASBUILT](AUDIT_PIPELINE_ASBUILT.md) / [AI_ROLES](AI_ROLES.md) / [AGENT_SENSOR_FLOW](AGENT_SENSOR_FLOW.md)；勿把理想模型写进 as-built。
+- 产品意图模型入口：[AUDIT_FLOW.md](AUDIT_FLOW.md)（全文在 archive）；不得静默改写意图以迁就代码。
+- 产品行为变化更新 PRD；组件/协议/信任边界更新技术架构。
+- IR/Provider 扩展更新 EXTENSIBLE_ANALYSIS；姿态/验证合同摘要更新 PATH_EXPERIMENT_MODEL。
+- 开放差距更新 [OPEN_GAPS](OPEN_GAPS.md)；Backlog 只保留开放工作与基线。
+- 稳定决策摘要才进入 PROJECT_MEMORY；架构取舍写 ADR。
+- 本手册只维护通用开发规则。具体任务的允许文件和验收写在任务包中。

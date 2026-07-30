@@ -1,24 +1,82 @@
 # Java/Maven
 target/
 .m2/
-\ .m2/
+*.class
+hs_err_pid*
+replay_pid*
 
 # Node/Vite
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/*.tsbuildinfo
+frontend/coverage/
+frontend/.nyc_output/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm/
+
+# Env / secrets (keep committed *.env.example)
+.env
+.env.*
+!.env.example
+!**/.env.example
 frontend/.env*
 !frontend/.env.example
+deploy/compose.env
+compose.env
 
-# Local/editor files
+# Local/editor / OS
 .agents/
 .idea/
+.vscode/
+.cursor/
+.codex/
 *.iml
 *.log
+Thumbs.db
+.DS_Store
+Desktop.ini
 .tmp-*/
 .flood-*.json
 
-# Local Veyrion databases and encryption keys
+# Local docs (kept on disk; not committed)
+docs/
+
+# Personal / non-canonical notes
+JAVA checklist.md
+
+# Local Veyrion runtime data, SQLite, encryption keys
 .veyrion/
+samples/.veyrion/
 sandbox-pack/.runtime/
+*.db
+*.db-wal
+*.db-shm
+*-wal
+*-shm
+
+# Downloaded OSS sample trees (fetch via scripts/fetch-practical-samples.ps1; not vendored)
+samples/practical-oss/
+samples/**/*.jar
+samples/**/target/
+
+# Ad-hoc root scratch / inspect scripts and outputs
+/tmp_*.py
+/tmp_*_out.txt
+/tmp_scan_inspect*
+
+# Coverage / test junk
+coverage/
+.nyc_output/
+*.lcov
+surefire-reports/
+failsafe-reports/
+
+# Docker / local compose state (named volumes live outside repo; keep compose files)
+docker-compose.override.yml
+
+# Local extracted sample JARs (do not commit)
+tmp-blade-extract/
+

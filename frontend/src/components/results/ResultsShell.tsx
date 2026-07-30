@@ -5,7 +5,7 @@ import { EvidenceInspector } from './EvidenceInspector'
 import { EvidenceSummaryStrip } from './EvidenceSummaryStrip'
 import { ResultsSubnav, type ViewMeta } from './ResultsSubnav'
 import { ScanContextBand } from './ScanContextBand'
-import type { EvidenceSelection, SummaryCounts } from './resultsUtils'
+import { selectionMatchesView, type EvidenceSelection, type SummaryCounts } from './resultsUtils'
 
 export function ResultsShell({
   snapshot,
@@ -32,6 +32,8 @@ export function ResultsShell({
   hypothesisById: Map<string, SecurityHypothesisDto>
   children: ReactNode
 }) {
+  const showInspector = selectionMatchesView(selection, activeView)
+
   return (
     <section className="results-shell">
       <ScanContextBand
@@ -47,9 +49,9 @@ export function ResultsShell({
         viewMeta={viewMeta}
         english={english}
       />
-      <div className={`results-shell__body${activeView === 'report' ? ' results-shell__body--report' : ''}`}>
+      <div className={`results-shell__body${showInspector ? '' : ' results-shell__body--report'}`}>
         <main className="results-shell__main">{children}</main>
-        {activeView !== 'report' && (
+        {showInspector && (
           <EvidenceInspector
             selection={selection}
             english={english}

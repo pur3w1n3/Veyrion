@@ -111,6 +111,16 @@ public final class PathExplorationContractAcceptanceTest {
                 "ZH PATH roleInstruction requires track/objective/coverageGapRef");
         check(zh.contains("命令") || zh.contains("镜像") || zh.contains("挂载"),
                 "ZH PATH roleInstruction forbids command/image/mount");
+        check(zh.contains("有运行时路径材料") && zh.contains("无运行时确认")
+                        && zh.contains("INSTRUMENTATION_REACHABILITY"),
+                "ZH PATH FORCED 2xx+ENTRY_HIT is runtime path material; forbids 无运行时确认");
+        check(zh.contains("findingBindings") && zh.contains("api:{method,route,entryRef}")
+                        && zh.contains("poc:{kind,steps[],provenance}")
+                        && zh.contains("STATIC_INFERRED"),
+                "ZH PATH requires findingBindings with API+PoC for REPORT");
+        check(zh.contains("FORCED") && zh.contains("ADR-0004")
+                        && zh.contains("DYNAMIC_CONFIRMED") && zh.contains("VERIFIED"),
+                "ZH PATH forbids FORCED-only DYNAMIC_CONFIRMED/VERIFIED (ADR-0004)");
         check(en.toLowerCase(Locale.ROOT).contains("sandbox_probe"),
                 "EN PATH roleInstruction mentions sandbox_probe");
         check(en.contains("track") && en.contains("objective") && en.contains("coverageGapRef"),
@@ -119,6 +129,44 @@ public final class PathExplorationContractAcceptanceTest {
                         && en.toLowerCase(Locale.ROOT).contains("image")
                         && en.toLowerCase(Locale.ROOT).contains("budget"),
                 "EN PATH roleInstruction forbids command/image/budget");
+        check(en.contains("runtime path material")
+                        && en.contains("no runtime confirmation")
+                        && en.contains("INSTRUMENTATION_REACHABILITY"),
+                "EN PATH FORCED 2xx+ENTRY_HIT is runtime path material");
+        check(en.contains("findingBindings") && en.contains("api:{method,route,entryRef}")
+                        && en.contains("poc:{kind,steps[],provenance}")
+                        && en.contains("STATIC_INFERRED"),
+                "EN PATH requires findingBindings with API+PoC for REPORT");
+        check(en.contains("FORCED") && en.contains("ADR-0004")
+                        && en.contains("DYNAMIC_CONFIRMED") && en.contains("VERIFIED"),
+                "EN PATH forbids FORCED-only DYNAMIC_CONFIRMED/VERIFIED (ADR-0004)");
+
+        String reportZh = (String) roleInstruction.invoke(
+                null, AgentRole.REPORT_GENERATION, AiOutputLanguage.ZH_CN);
+        String reportEn = (String) roleInstruction.invoke(
+                null, AgentRole.REPORT_GENERATION, AiOutputLanguage.EN);
+        check(reportZh.contains("## 漏洞相关") && reportZh.contains("findingBindings"),
+                "ZH REPORT Markdown leads with ## 漏洞相关 from PATH findingBindings");
+        check(reportZh.contains("FINDING_BINDINGS_FACTS") || reportZh.contains("findingBindings"),
+                "ZH REPORT consumes FINDING_BINDINGS_FACTS");
+        check(reportZh.contains("locale-pure") || reportZh.contains("禁止英文专章"),
+                "ZH REPORT requires locale-pure Chinese");
+        check(reportZh.contains("ADR-0004") && reportZh.contains("FORCED"),
+                "ZH REPORT forbids FORCED-only elevation (ADR-0004)");
+        check(reportZh.contains("【必填章节】") && reportZh.contains("【选填章节】")
+                        && reportZh.contains("【Markdown 骨架"),
+                "ZH REPORT has required/optional outline + Markdown skeleton");
+        check(reportEn.contains("## Vulnerabilities") && reportEn.contains("findingBindings"),
+                "EN REPORT Markdown leads with ## Vulnerabilities from PATH findingBindings");
+        check(reportEn.contains("FINDING_BINDINGS_FACTS") || reportEn.contains("findingBindings"),
+                "EN REPORT consumes FINDING_BINDINGS_FACTS");
+        check(reportEn.contains("locale-pure") || reportEn.contains("must not mix"),
+                "EN REPORT requires locale-pure English");
+        check(reportEn.contains("ADR-0004") && reportEn.contains("FORCED"),
+                "EN REPORT forbids FORCED-only elevation (ADR-0004)");
+        check(reportEn.contains("[Required sections]") && reportEn.contains("[Optional sections]")
+                        && reportEn.contains("[Markdown skeleton"),
+                "EN REPORT has required/optional outline + Markdown skeleton");
 
         Field systemPrompt = AiJobOrchestrator.class.getDeclaredField("SYSTEM_PROMPT");
         systemPrompt.setAccessible(true);

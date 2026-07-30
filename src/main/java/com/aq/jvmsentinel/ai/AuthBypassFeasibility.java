@@ -310,6 +310,40 @@ public final class AuthBypassFeasibility {
     }
 
     /**
+     * Whether AUTH_BYPASS_CONFIRM should be scheduled (AUDIT_FLOW: only after AUTH_CHALLENGE
+     * or pass-gate PathRun evidence). FORCED/COVERAGE 2xx with entryHit counts as 过闸 for
+     * <em>scheduling</em> only — confirmation status still uses {@link #isPassGate} (BYPASS/ADMIN)
+     * so FORCED alone cannot become DYNAMIC_CONTRAST bypass confirmation.
+     */
+    public static boolean hasConfirmableDynamicAuthEvidence(List<ApiDtos.PathRunDto> pathRuns) {
+        if (pathRuns == null || pathRuns.isEmpty()) {
+            return false;
+        }
+        for (ApiDtos.PathRunDto run : pathRuns) {
+            if (run == null) {
+                continue;
+            }
+            if (isAuthChallenge(run) || isPassGate(run) || isCoverageOrForcedPass(run)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** COVERAGE / FORCED HTTP 2xx–3xx with entry hit — gate-pass signal for confirm scheduling. */
+    static boolean isCoverageOrForcedPass(ApiDtos.PathRunDto run) {
+        if (run == null || !Boolean.TRUE.equals(run.entryHit())) {
+            return false;
+        }
+        String track = run.track() == null ? "" : run.track().trim().toUpperCase(Locale.ROOT);
+        if (!track.contains("FORCED") && !track.contains("COVERAGE") && !"ADMIN".equals(track)) {
+            return false;
+        }
+        int status = run.httpStatus();
+        return status >= 200 && status < 400;
+    }
+
+    /**
      * PathRuns that can support dynamic contrast: AUTH_CHALLENGE, or 2xx/3xx on
      * BYPASS_CANDIDATE / ADMIN tracks for claimed entries (when claims are present).
      */

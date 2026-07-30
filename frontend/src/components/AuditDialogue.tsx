@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { api, type AiJobDto, type AiJobEventDto, type DynamicTaskDto } from '../api'
+import { api, type AiJobDto, type AiJobEventDto, type DynamicTaskDto, type OutputLanguage } from '../api'
+import { formatDisplayDateTime } from '../datetime'
 import { jobStatusLabel, roleLabel } from '../labels'
 import { errorMessage, Notice } from './Common'
+
+const EVENT_POLL_MS = 1200
 
 type ChatBubble = {
   id: string
@@ -124,14 +127,17 @@ export function AuditDialogue({
   scanId,
   jobs,
   dynamicTask,
-  activityLines
+  activityLines,
+  language = 'ZH_CN'
 }: {
   projectId: string
   scanId?: string
   jobs: AiJobDto[]
   dynamicTask?: DynamicTaskDto
   activityLines: string[]
+  language?: OutputLanguage
 }) {
+  const english = language === 'EN'
   const [eventsByJob, setEventsByJob] = useState<Record<string, AiJobEventDto[]>>({})
   const [error, setError] = useState<string>()
   const [loading, setLoading] = useState(false)
@@ -142,28 +148,48 @@ export function AuditDialogue({
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
     [jobs, scanId]
   )
+  const jobKey = scanJobs.map((job) => `${job.aiJobId}:${job.status}:${job.updatedAt ?? ''}`).join('|')
+  const hasActiveJobs = scanJobs.some((job) => job.status === 'QUEUED' || job.status === 'RUNNING')
+    || (dynamicTask != null && (dynamicTask.status === 'QUEUED' || dynamicTask.status === 'RUNNING' || dynamicTask.status === 'LEASED'))
+  const scanJobsRef = useRef(scanJobs)
+  scanJobsRef.current = scanJobs
 
   useEffect(() => {
     let active = true
-    if (!projectId || !scanId || scanJobs.length === 0) {
+    let timer: number | undefined
+    if (!projectId || !scanId || scanJobsRef.current.length === 0) {
       setEventsByJob({})
       return () => { active = false }
     }
-    setLoading(true)
-    void Promise.all(scanJobs.map(async (job) => {
-      const events = await api.listAiJobEvents(job.aiJobId)
-      return [job.aiJobId, events] as const
-    })).then((entries) => {
-      if (!active) return
-      setEventsByJob(Object.fromEntries(entries))
-      setError(undefined)
-    }).catch((cause) => {
-      if (active) setError(errorMessage(cause))
-    }).finally(() => {
-      if (active) setLoading(false)
-    })
-    return () => { active = false }
-  }, [projectId, scanId, scanJobs.map((job) => `${job.aiJobId}:${job.status}:${job.updatedAt ?? ''}`).join('|')])
+
+    const loadEvents = (showLoading: boolean) => {
+      const currentJobs = scanJobsRef.current
+      if (currentJobs.length === 0) return
+      if (showLoading) setLoading(true)
+      void Promise.all(currentJobs.map(async (job) => {
+        const events = await api.listAiJobEvents(job.aiJobId)
+        return [job.aiJobId, events] as const
+      })).then((entries) => {
+        if (!active) return
+        setEventsByJob(Object.fromEntries(entries))
+        setError(undefined)
+      }).catch((cause) => {
+        if (active) setError(errorMessage(cause))
+      }).finally(() => {
+        if (!active) return
+        setLoading(false)
+        if (hasActiveJobs) {
+          timer = window.setTimeout(() => loadEvents(false), EVENT_POLL_MS)
+        }
+      })
+    }
+
+    loadEvents(true)
+    return () => {
+      active = false
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [projectId, scanId, jobKey, hasActiveJobs])
 
   const bubbles = useMemo(
     () => scanJobs.flatMap((job) => toBubbles(job, eventsByJob[job.aiJobId] ?? [])),
@@ -188,7 +214,7 @@ export function AuditDialogue({
         <small>{job.aiJobId} · {jobStatusLabel(job.status)}{job.model ? ` · ${job.model}` : ''}</small>
       </div>)}
       {bubbles.map((bubble) => <div className={`chat-bubble chat-${bubble.kind}`} key={bubble.id}>
-        <header><span>{bubble.roleTitle}</span><strong>{bubble.title}</strong><small>{bubble.createdAt}</small></header>
+        <header><span>{bubble.roleTitle}</span><strong>{bubble.title}</strong><small>{formatDisplayDateTime(bubble.createdAt, { english })}</small></header>
         {bubble.kind === 'assistant' || bubble.kind === 'user'
           ? <div className="chat-markdown"><ReactMarkdown skipHtml remarkPlugins={[remarkGfm]}>{bubble.body}</ReactMarkdown></div>
           : <pre>{bubble.body}</pre>}

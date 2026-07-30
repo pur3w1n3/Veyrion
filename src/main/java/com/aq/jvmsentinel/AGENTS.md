@@ -4,9 +4,11 @@
 
 ## 必读
 
+- [当前系统逻辑](../../../../../../docs/CURRENT_SYSTEM.md)（as-built 主入口）
 - [技术架构](../../../../../../docs/TECHNICAL_ARCHITECTURE.md)
 - [开发与 AI 实施手册](../../../../../../docs/DEVELOPMENT_PLAYBOOK.md)
-- 涉及动态证据时阅读 [Path 实验模型](../../../../../../docs/PATH_EXPERIMENT_MODEL.md)
+- 涉及审计流水线时阅读 [AUDIT_PIPELINE_ASBUILT](../../../../../../docs/AUDIT_PIPELINE_ASBUILT.md)
+- 涉及动态证据时阅读 [Path 实验模型](../../../../../../docs/PATH_EXPERIMENT_MODEL.md) 与 [AGENT_SENSOR_FLOW](../../../../../../docs/AGENT_SENSOR_FLOW.md)
 - 涉及分析扩展时阅读 [可扩展分析](../../../../../../docs/EXTENSIBLE_ANALYSIS.md)
 
 ## 依赖与边界

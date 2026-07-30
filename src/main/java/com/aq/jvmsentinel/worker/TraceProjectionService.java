@@ -149,7 +149,7 @@ public final class TraceProjectionService {
                 case "AGENT_STARTED", "HTTP" -> "entry";
                 case "CLASS_LOAD", "INSTRUMENTATION_CAPABILITY", "INSTRUMENTATION_ERROR",
                         "BRANCH_COVERAGE" -> "transform";
-                case "HTTP_CLIENT", "FILE", "JDBC" -> "dependency";
+                case "HTTP_CLIENT", "FILE", "JDBC", "JNDI" -> "dependency";
                 case "PROCESS" -> "sink";
                 default -> throw new IllegalArgumentException("unsupported Agent event type");
             };
@@ -303,7 +303,7 @@ public final class TraceProjectionService {
             }
         }
         return switch (event.eventType()) {
-            case "PROCESS", "FILE", "HTTP_CLIENT" -> true;
+            case "PROCESS", "FILE", "HTTP_CLIENT", "JNDI" -> true;
             default -> false;
         };
     }
@@ -338,6 +338,18 @@ public final class TraceProjectionService {
                 .sorted(Comparator.comparing(Projection::completedAt).thenComparing(x -> x.scope().taskId()))
                 .flatMap(value -> value.pathRuns().stream())
                 .toList();
+    }
+
+    /** Drops projected paths/evidence for one task after durable scan history deletion. */
+    public void forget(TaskScope scope) {
+        Objects.requireNonNull(scope, "scope");
+        Projection prior = projections.remove(scope);
+        if (prior != null) {
+            for (String id : prior.evidence().keySet()) {
+                evidence.remove(id, prior.evidence().get(id));
+            }
+        }
+        taskExperimentPlanIds.remove(scope.taskId());
     }
 
     public List<ApiDtos.PathRunDto> pathRunsForTask(TaskScope scope) {
