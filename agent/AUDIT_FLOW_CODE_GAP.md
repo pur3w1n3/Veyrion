@@ -116,6 +116,21 @@ POST …/audit-runs
 | 模型 §6 | 代码 |
 |---------|------|
 | 新观察成功投影并触发受影响 detector 重算后才进入下一轮 | 投影 + Contrast / enrichment；**无** detector 重算门闩；多轮主要靠 AI tool 循环与服务端 re-ask，不是 IR 闭环 |
+| `ObservationKindRef` / incremental subjects | 存在「最小重算提示」记录，**主路径未驱动** `DetectorRegistry.analyzeAll` |
+
+### 4.6 Stage 0「detector ≠ Finding」字面
+
+| 模型 §0 | 代码 |
+|---------|------|
+| 检测器输出是 `SecurityHypothesis` 与 coverage gap，**不是 Finding** | 同时经 `SecurityHypothesisProjector.mergeFindingsWithDetectorHypotheses` 产出 `FindingDto`（常为 `STATIC_INFERRED`） |
+| 并行 Dataflow / Guard / State / Typestate / … | `DetectorRegistry.defaults()` **无独立 Dataflow detector**；taint/dataflow 主要靠 projector + bytecode sink 路径 |
+
+### 4.7 沙箱不可用与延迟组链
+
+| 模型 | 代码 |
+|------|------|
+| 沙箱否 → `DYNAMIC_DISABLED`，保留静态结果并继续可用叙事 | Worker 不可用常走 reclaim / `WORKER_UNAVAILABLE`；动态 task **非 COMPLETED 时 pipeline 可能 disarm**，不保证后续 AI 阶段按「仅静态」完整续跑 |
+| TRIAGE「延迟组链」为服务端确定性门禁（PATH_EXPERIMENT_MODEL §3.2） | 多为 **prompt + `FindingBindings` / `nextExperiments` 闸门**；未见独立「绕过确认 + COVERAGE sink → 利用链」装配状态机 |
 
 ---
 
@@ -127,6 +142,7 @@ POST …/audit-runs
 4. **完整 World Pack**（license / schema / seed / 真实业务状态）：仍 MOCK/stub 语义为主。
 5. **Hypothesis Pool 作为一等运行时对象被 Experiment Planner 持续驱动**：有 hypothesis 投影与 nextExperiments 过滤，但不是 mermaid 级「池 → 计划 → 观测 → 重算」状态机。
 6. **Typestate / 完整 dataflow detector 套件**：`DetectorRegistry.defaults()` 覆盖 guard/ownership/config/JWT/依赖/资源/状态/并发等；模型列举的完整 dataflow/typestate/API misuse 深度仍依赖轻量 `analysis.kernel` + sink 投影，非完整 IFDS/SSA。
+7. **`DYNAMIC_DISABLED` 后静态-only 完整续跑保证**：与 disarm / 非 COMPLETED 动态终态行为不完全同构。
 
 ---
 
@@ -142,7 +158,10 @@ POST …/audit-runs
 | `ProbeParameterHeuristics.preferHonestQuery` 等参数启发式 | 模型写「0-n 参数 / 禁止盲发」，未点名启发式类 |
 | `FindingBindings`（`PRIMARY` / `RISK_POINT`）+ REPORT 分区强制 | 模型 REPORT 节要求分开展示静态/动态/反证/未覆盖，但未点名 bindings 合同 |
 | `FindingRuntimeEnricher` 读时 enrichment | 模型未点名；是 IR2 重算的弱替代之一 |
-| `ContrastLedger.enforceReport` / `EVENT_INCOMPLETE` | 模型有 ContrastLedger，未写 REPORT 强制 enforce |
+| `ContrastLedger.enforceReport` / `EVENT_INCOMPLETE` / `MAX_FORCED_STATIC_ONLY` | 模型有 ContrastLedger，未写 REPORT 强制 enforce |
+| `DYNAMIC_POC_ATTEMPT_REQUIRED` / 自动入队焦点探针 | DYNAMIC 零 `sandbox_probe` 时的服务端补写（`AiJobOrchestrator`） |
+| 高信号 detector hyp → Finding（`STATIC_INFERRED`） | 与模型「detector≠Finding」字面冲突；见 §4.6 |
+| `VerifiedStatusGate` scaffolding（如 `VERIFIED_GATE_NOT_OPEN`） | 模型只写 fail-closed / TRUSTED_DOCKER 永不 VERIFIED |
 | 手工 `POST …/scans` 仅静态；`POST …/dynamic-tasks` 可单独入队 | 模型聚焦完整审计流水线 |
 | Agent 模块独立文档与 ADR-0004 红线细节 | 模型仅一行指向 Sandbox+Sensor |
 
@@ -156,7 +175,7 @@ POST …/audit-runs
 | ② | AUTH_ANALYSIS | `AUTH_ANALYSIS` + 阶段 `AUTH_BYPASS_CONFIRM` | 角色吻合；阶段是否「有证据才启动」见 §4.4 |
 | ③ | DYNAMIC_VERIFICATION | 同名阶段 | 吻合；PoC 零探测时服务端可 re-ask / 自动入队 |
 | ④ | PATH_EXPLORATION | 同名；可 `sandbox_probe` | 无阶段回 OBS / 无 detector 重算门闩 |
-| ⑤ | VULNERABILITY_TRIAGE | 同名；延迟组链在提示词 + PATH_EXPERIMENT_MODEL | 无 family 实验阶段回环 |
+| ⑤ | VULNERABILITY_TRIAGE | 同名；延迟组链在提示词 + FindingBindings | 无 family 实验阶段回环；缺确定性组链状态机（§4.7） |
 | ⑥ | REPORT_GENERATION | 同名 + ContrastLedger / FindingBindings enforce | bindings 为代码增补 |
 
 ---
@@ -181,7 +200,8 @@ POST …/audit-runs
 2. **无 PATH/TRIAGE → OBS 阶段回环**：mermaid 双闭环 vs 线性八阶段 + job 内 `sandbox_probe`。
 3. **TracePlan / World Pack 编排位置与完整度偏移**：模型放在 PRE 前；代码侧重动态入队时 ProbePlan，World Pack 仍 MOCK 向。
 4. **AUTH 确认阶段总是调度**：模型「有证据才续跑」vs 代码「总是 `AUTH_BYPASS_CONFIRM`，门禁只降结论」。
-5. **模型未收录的代码合同**：`GuardSurfaceCatalog` / `ForceRewriteMode` / `FindingBindings` / `FindingRuntimeEnricher` —— 实现已有，产品模型文档保持原样，差距记在此。
+5. **Stage 0 输出形态**：模型「detector≠Finding」vs 代码同时投影 `FindingDto`；无独立 Dataflow detector。
+6. **模型未收录的代码合同**：`GuardSurfaceCatalog` / `ForceRewriteMode` / `FindingBindings` / `FindingRuntimeEnricher` / `DYNAMIC_POC_ATTEMPT_REQUIRED` —— 实现已有，产品模型文档保持原样，差距记在此。
 
 ---
 
