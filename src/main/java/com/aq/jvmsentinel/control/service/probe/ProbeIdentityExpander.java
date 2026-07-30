@@ -199,8 +199,7 @@ public final class ProbeIdentityExpander {
         ExternalArtifactTaskExecutor.ProbeTarget probe = expansion.probe();
         if (!synth.available()) {
             if (synth.track() == IdentityTrack.UNAUTH) {
-                expanded.add(new ExternalArtifactTaskExecutor.ProbeTarget(
-                        probe.method(), probe.route(), probe.query(), "UNAUTH", "", ""));
+                expanded.add(probe.withAuth("UNAUTH", "", "", ""));
                 return;
             }
             ApiDtos.EntryDto entry = expansion.entry();
@@ -226,8 +225,6 @@ public final class ProbeIdentityExpander {
             secondary = SyntheticIdentityService.secondaryAuthHeaderValue(token);
         }
         String cookie = synth.cookieHeader() == null ? "" : synth.cookieHeader();
-        expanded.add(new ExternalArtifactTaskExecutor.ProbeTarget(
-                probe.method(), probe.route(), probe.query(),
-                synth.track().name(), token, secondary, "", cookie));
+        expanded.add(probe.withAuth(synth.track().name(), token, secondary, cookie));
     }
 }

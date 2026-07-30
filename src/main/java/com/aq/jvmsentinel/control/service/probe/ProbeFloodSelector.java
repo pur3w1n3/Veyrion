@@ -46,10 +46,17 @@ public final class ProbeFloodSelector {
                     || value.chars().anyMatch(character -> character < 0x20 || character == 0x7f)
                     || parameterNames.isEmpty() || !parameterNames.contains(name)) continue;
             String encoded = java.net.URLEncoder.encode(value, StandardCharsets.UTF_8);
+            ExternalArtifactTaskExecutor.ProbeTarget surface = ProbeWireHelpers.probeTargetFor(entry);
             result.add(new ExternalArtifactTaskExecutor.ProbeTarget(
-                    entry.method() == null || "UNKNOWN".equalsIgnoreCase(entry.method())
-                            ? "GET" : entry.method().toUpperCase(Locale.ROOT),
-                    ProbeWireHelpers.materializeRoute(entry.route()), name + "=" + encoded));
+                    surface.method(),
+                    surface.route(),
+                    name + "=" + encoded,
+                    "UNAUTH",
+                    "",
+                    "",
+                    "",
+                    "",
+                    surface.listenPort()));
         }
         return List.copyOf(result);
     }

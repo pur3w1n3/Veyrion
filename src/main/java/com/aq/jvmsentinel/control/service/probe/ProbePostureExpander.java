@@ -141,15 +141,28 @@ public final class ProbePostureExpander {
                     }
                 }
             }
+            ExternalArtifactTaskExecutor.ProbeTarget surface =
+                    ProbeWireHelpers.probeTargetFor(entry);
+            String route = surface.route();
+            if (plan.route() != null && !plan.route().isBlank()) {
+                // posture 计划 route 优先，但仍保留 entry 合成的 context/port 元数据
+                String planned = ProbeWireHelpers.materializeRoute(plan.route());
+                if (surface.listenPort() <= 0) {
+                    route = planned;
+                } else {
+                    route = planned.startsWith("/") ? planned : surface.route();
+                }
+            }
             expanded.add(new ExternalArtifactTaskExecutor.ProbeTarget(
                     method,
-                    ProbeWireHelpers.materializeRoute(plan.route()),
+                    route,
                     ProbeWireHelpers.sanitizeQuery(query),
                     track,
                     auth,
                     secondary,
                     safePlanId,
-                    cookie));
+                    cookie,
+                    surface.listenPort()));
         }
         expanded = ProbeWireHelpers.rejectEmptyCoverageWithoutPlan(expanded);
         return new PostureExpansionResult(List.copyOf(expanded), List.copyOf(unreached));

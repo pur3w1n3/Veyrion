@@ -45,9 +45,7 @@ public final class ProbeExperimentStamper {
             }
             String key = probe.method().toUpperCase(Locale.ROOT) + " " + probe.route();
             String planId = planByKey.getOrDefault(key, "");
-            stamped.add(new ExternalArtifactTaskExecutor.ProbeTarget(
-                    probe.method(), probe.route(), probe.query(), probe.track(),
-                    probe.authHeader(), probe.bladeAuthHeader(), planId, probe.cookieHeader()));
+            stamped.add(probe.withExperimentPlanId(planId));
         }
         return List.copyOf(stamped);
     }

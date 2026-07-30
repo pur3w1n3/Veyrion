@@ -72,7 +72,7 @@ React GUI + Java Control Plane + SQLite 服务当前 JVM 切片。多语言 = �
 | 范围 | 能力 | 诚实边界 |
 |------|------|----------|
 | 制品 | JAR/WAR/CLASS 有界；分块上传 | 动态主路径仅 Boot JAR |
-| 静态 | Spring 入口/边/sink/GuardSurface/detectors；通用 executor 回调入口（XXL 完整，Actuator/ElasticJob 骨架） | 反射/代理/完整 IFDS 不保证；非 MVC 回调仍证据驱动扩展 |
+| 静态 | Spring 入口/边/sink/GuardSurface/detectors；通用 executor 回调入口（XXL+EmbedServer 字节码、Actuator exposure/port、ElasticJob 证据 HTTP、Netty/gRPC） | 反射/代理/完整 IFDS 不保证；gRPC 方法级与实战 live 召回仍薄 |
 | 控制面 | REST/SSE、SQLite、PAT、AI Job、hypothesis/EG | 单节点；非企业多租户 |
 | 动态 | Agent + 四姿态 + PathTrace；IR2 重算；有界 OBS 回环 | TRUSTED_DOCKER；World Pack 弱 |
 | AI | 六角色、共享记忆 v1、双语 prompt snapshot | 外网 Provider 未验收 |
@@ -97,6 +97,7 @@ React GUI + Java Control Plane + SQLite 服务当前 JVM 切片。多语言 = �
 - **2026-07-30**：本地 Docker worker / 保留沙箱按 UI 工作区（`projectId`）配额——默认全局并发 3、每 project 并发 1；保留会话全局 8、每 project 2。驱逐只在同 project 内 LRU；全局硬顶无法腾挪则拒绝新保留（不跨 project 踢会话）。配置：`VEYRION_WORKER_GLOBAL_CONCURRENCY` / `VEYRION_WORKER_PER_PROJECT_CONCURRENCY` / `VEYRION_RETAINED_SANDBOX_GLOBAL_MAX` / `VEYRION_RETAINED_SANDBOX_PER_PROJECT_MAX`（或对应 `veyrion.worker.*` / `veyrion.sandbox.*` 系统属性）。
 - **2026-07-30**：通用 executor / 运行时回调入口——`ExecutorEntryAdapter` 注册表（非仅 XXL）；静态写入 EntryCatalog，HTTP 回调可进 TracePlan/探针；XXL-JOB 为首个完整适配器，Actuator/ElasticJob 为证据驱动骨架（见 OPEN_GAPS P0-I）。
 - **2026-07-30**：`ArtifactMetadataReader` 完整运行类路径——外层 `.class` + `BOOT-INF/classes`/`WEB-INF/classes`，并一层流式展开 `BOOT-INF/lib`/`WEB-INF/lib` 内 `.class`（不递归 fat-in-fat）；同 FQCN 先到优先（应用类优先于 lib）；嵌套预算软停。
+- **2026-07-30**：P0-I 加深——嵌套 lib `EmbedServer` 字节码确认；Actuator `management.server.port`/`base-path`/`exposure`；ElasticJob 无 HTTP 证据不硬造；`NettyGrpcExecutorEntryAdapter`；entry `listenPort`/`contextPath` + `ProbeTarget.listenPort` 使探针可打独立 executor/management 端口（见 OPEN_GAPS P0-I）。
 
 ## 6. 文档职责
 

@@ -30,7 +30,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * 固定 {@code @planFile#port} 参数将 plan 与 port 保持在一个 shell token；
  * 单独 {@code @planFile} 回退到固定 property 或同级 {@code http-port.txt}。
  * 每行 plan 为
- * {@code METHOD\troute[\tquery[\ttrack[\tauthHeader[\tbladeAuthHeader[\texperimentPlanId[\tcookieHeader]]]]]]}。
+ * {@code METHOD\troute[\tquery[\ttrack[\tauthHeader[\tbladeAuthHeader[\texperimentPlanId[\tcookieHeader[\tlistenPort]]]]]]]]}。
+ * {@code listenPort} 非空且 &gt;0 时覆盖批量默认 HTTP_PORT（executor/management 独立端口）。
  * 独立通道：Authorization、Blade-Auth 与 Cookie — 非空
  * {@code authHeader} 不隐含 {@code Blade-Auth} 或 Cookie，反之亦然。</p>
  *
@@ -142,6 +143,19 @@ public final class LoopbackHttpProbe {
         return port;
     }
 
+    /** Plan 可选 listenPort；非法值 fail-closed 为 0（回退批量默认端口）。 */
+    private static int parseOptionalListenPort(String value) {
+        if (value == null || value.isBlank() || !value.matches("[0-9]{1,5}")) {
+            return 0;
+        }
+        try {
+            int port = Integer.parseInt(value);
+            return port >= 1 && port <= 65_535 ? port : 0;
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
+    }
+
     /**
      * 批量探测入口。返回进程风格退出码：0 成功，2 全部失败，3 零事件。
      */
@@ -156,10 +170,14 @@ public final class LoopbackHttpProbe {
         for (String line : lines) {
             if (line == null || line.isBlank() || line.startsWith("#")) continue;
             String[] parts = line.split("\t", -1);
-            if (parts.length < 2 || parts.length > 8) {
+            if (parts.length < 2 || parts.length > 9) {
                 throw new IllegalArgumentException("probe plan line is invalid");
             }
             ordinal++;
+            int listenPort = 0;
+            if (parts.length >= 9 && !parts[8].isBlank()) {
+                listenPort = parseOptionalListenPort(parts[8].trim());
+            }
             targets.add(new ProbeTarget(
                     parts[0].trim(),
                     parts[1].trim(),
@@ -169,6 +187,7 @@ public final class LoopbackHttpProbe {
                     parts.length >= 6 ? parts[5].trim() : "",
                     parts.length >= 7 ? parts[6].trim() : "",
                     parts.length >= 8 ? parts[7].trim() : "",
+                    listenPort,
                     ordinal));
         }
         if (targets.isEmpty()) throw new IllegalArgumentException("probe plan is empty");
@@ -256,7 +275,8 @@ public final class LoopbackHttpProbe {
                 writeProgress(waveLabel + "探测 " + target.ordinal + ": " + target.method + " "
                         + target.route + " [" + target.track + "]"
                         + (target.query.isEmpty() ? "" : "?" + target.query));
-                return probeOne(target.method, target.route, port, target.query, target.track,
+                int effectivePort = target.listenPort > 0 ? target.listenPort : port;
+                return probeOne(target.method, target.route, effectivePort, target.query, target.track,
                         target.authHeader, target.bladeAuthHeader, target.experimentPlanId,
                         target.cookieHeader,
                         connectTimeoutMs, readTimeoutMs, target.ordinal);
@@ -939,26 +959,35 @@ public final class LoopbackHttpProbe {
         final String bladeAuthHeader;
         final String experimentPlanId;
         final String cookieHeader;
+        /** 0 = 使用批量默认 HTTP_PORT。 */
+        final int listenPort;
         final int ordinal;
 
         ProbeTarget(String method, String route, String query, String track,
                     String authHeader, int ordinal) {
-            this(method, route, query, track, authHeader, "", "", "", ordinal);
+            this(method, route, query, track, authHeader, "", "", "", 0, ordinal);
         }
 
         ProbeTarget(String method, String route, String query, String track,
                     String authHeader, String bladeAuthHeader, int ordinal) {
-            this(method, route, query, track, authHeader, bladeAuthHeader, "", "", ordinal);
+            this(method, route, query, track, authHeader, bladeAuthHeader, "", "", 0, ordinal);
         }
 
         ProbeTarget(String method, String route, String query, String track,
                     String authHeader, String bladeAuthHeader, String experimentPlanId, int ordinal) {
-            this(method, route, query, track, authHeader, bladeAuthHeader, experimentPlanId, "", ordinal);
+            this(method, route, query, track, authHeader, bladeAuthHeader, experimentPlanId, "", 0, ordinal);
         }
 
         ProbeTarget(String method, String route, String query, String track,
                     String authHeader, String bladeAuthHeader, String experimentPlanId,
                     String cookieHeader, int ordinal) {
+            this(method, route, query, track, authHeader, bladeAuthHeader, experimentPlanId,
+                    cookieHeader, 0, ordinal);
+        }
+
+        ProbeTarget(String method, String route, String query, String track,
+                    String authHeader, String bladeAuthHeader, String experimentPlanId,
+                    String cookieHeader, int listenPort, int ordinal) {
             this.method = method;
             this.route = route;
             this.query = query;
@@ -967,6 +996,7 @@ public final class LoopbackHttpProbe {
             this.bladeAuthHeader = bladeAuthHeader == null ? "" : bladeAuthHeader;
             this.experimentPlanId = experimentPlanId == null ? "" : experimentPlanId;
             this.cookieHeader = cookieHeader == null ? "" : cookieHeader;
+            this.listenPort = listenPort < 0 || listenPort > 65_535 ? 0 : listenPort;
             this.ordinal = ordinal;
         }
     }

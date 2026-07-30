@@ -79,7 +79,7 @@ public final class ProbePlanPayloadCodec {
                 validated.add(new ExternalArtifactTaskExecutor.ProbeTarget(
                         probe.method(), probe.route(), probe.query(), probe.track(),
                         probe.authHeader(), probe.bladeAuthHeader(), probe.experimentPlanId(),
-                        probe.cookieHeader()));
+                        probe.cookieHeader(), probe.listenPort()));
             }
             List<ApiDtos.PathDto> unreached = stored.unreachedPaths() == null
                     ? List.of() : List.copyOf(stored.unreachedPaths());

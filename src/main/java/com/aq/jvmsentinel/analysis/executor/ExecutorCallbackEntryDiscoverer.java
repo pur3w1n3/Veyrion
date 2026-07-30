@@ -134,7 +134,9 @@ public final class ExecutorCallbackEntryDiscoverer {
                         || lower.contains("elastic-job")
                         || lower.contains("elasticjob")
                         || lower.contains("actuator")
-                        || lower.contains("quartz")) {
+                        || lower.contains("quartz")
+                        || lower.contains("netty")
+                        || lower.contains("grpc")) {
                     names.add(name);
                 }
             }

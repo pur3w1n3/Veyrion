@@ -11,7 +11,7 @@ import java.util.Set;
 public final class NonHttpEntryProtocol {
     private static final Set<String> HTTP_FAMILY = Set.of("HTTP", "HTTPS");
     private static final Set<String> KNOWN_NON_HTTP = Set.of(
-            "WEBSOCKET", "WS", "WSS", "GRPC", "RMI", "JMS", "AMQP", "TCP", "UDP",
+            "WEBSOCKET", "WS", "WSS", "GRPC", "RPC", "RMI", "JMS", "AMQP", "TCP", "UDP",
             "JOB", "SCHEDULED", "CRON");
 
     private NonHttpEntryProtocol() { }

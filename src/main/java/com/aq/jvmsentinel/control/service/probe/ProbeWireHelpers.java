@@ -1,5 +1,6 @@
 package com.aq.jvmsentinel.control.service.probe;
 
+import com.aq.jvmsentinel.analysis.executor.ExecutorSurfaceConfig;
 import com.aq.jvmsentinel.analysis.experiment.ProbeParameterHeuristics;
 import com.aq.jvmsentinel.analysis.framework.FrameworkAdapterRegistry;
 import com.aq.jvmsentinel.control.ApiDtos;
@@ -117,8 +118,17 @@ public final class ProbeWireHelpers {
     public static ExternalArtifactTaskExecutor.ProbeTarget probeTargetFor(ApiDtos.EntryDto entry) {
         String method = entry.method() == null ? "GET" : entry.method().toUpperCase(Locale.ROOT);
         if ("UNKNOWN".equals(method)) method = "GET";
+        List<String> preconditions = entry.preconditions() == null ? List.of() : entry.preconditions();
+        int listenPort = ExecutorSurfaceConfig.listenPortOf(preconditions);
+        if (listenPort <= 0) {
+            listenPort = ExecutorSurfaceConfig.executorPortOf(preconditions);
+        }
+        String contextPath = ExecutorSurfaceConfig.contextPathOf(preconditions);
+        String logicalRoute = materializeRoute(entry.route());
+        String wireRoute = materializeRoute(
+                ExecutorSurfaceConfig.composeProbeRoute(contextPath, logicalRoute));
         return new ExternalArtifactTaskExecutor.ProbeTarget(
-                method, materializeRoute(entry.route()), syntheticQuery(entry), "UNAUTH", "");
+                method, wireRoute, syntheticQuery(entry), "UNAUTH", "", "", "", "", listenPort);
     }
 
     /** 拒绝无 experimentPlanId 的空 GET/POST 探针作为主覆盖（P0-18/P0-21）。 */

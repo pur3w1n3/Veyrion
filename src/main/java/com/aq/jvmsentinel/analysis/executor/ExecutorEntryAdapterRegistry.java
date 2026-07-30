@@ -10,14 +10,15 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * {@link ExecutorEntryAdapter} 注册表（对齐 {@code FrameworkAdapterRegistry}）。
- * 默认安装 XXL-JOB（完整）+ Actuator / ElasticJob（轻量启发式骨架）。
+ * 默认安装 XXL-JOB、Actuator、ElasticJob、Netty/gRPC reflection。
  */
 public final class ExecutorEntryAdapterRegistry {
     private static final CopyOnWriteArrayList<ExecutorEntryAdapter> ADAPTERS =
             new CopyOnWriteArrayList<>(List.of(
                     new XxlJobExecutorEntryAdapter(),
                     new SpringActuatorEntryAdapter(),
-                    new ElasticJobHttpEntryAdapter()));
+                    new ElasticJobHttpEntryAdapter(),
+                    new NettyGrpcExecutorEntryAdapter()));
 
     private ExecutorEntryAdapterRegistry() {
     }

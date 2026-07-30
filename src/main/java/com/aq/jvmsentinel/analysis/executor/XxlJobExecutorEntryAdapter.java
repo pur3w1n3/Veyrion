@@ -1,10 +1,12 @@
 package com.aq.jvmsentinel.analysis.executor;
 
 import com.aq.jvmsentinel.analysis.ClassMetadata;
+import com.aq.jvmsentinel.model.BytecodeFactIndex;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -13,12 +15,13 @@ import java.util.Set;
  * <p>证据：
  * <ul>
  *   <li>方法注解 {@code @XxlJob} / JobHandler 接口实现 → FACT handler + 框架回调口</li>
- *   <li>配置 {@code xxl.job.*}、类名/嵌套 jar {@code xxl-job-core} → 框架 EmbedServer 回调口</li>
+ *   <li>嵌套 lib 内 {@code EmbedServer} 类/方法/调用边字节码确认 → 强化 matches/discover</li>
+ *   <li>配置 {@code xxl.job.*}、类名/嵌套 jar {@code xxl-job-core} → 框架回调口</li>
  * </ul>
  *
  * <p>已知 HTTP 回调（xxl-job-core EmbedServer）：{@code /run} {@code /kill}
  * {@code /log} {@code /beat} {@code /idleBeat}。探针走 HTTP，不假设 MVC
- * {@code @RequestMapping}。
+ * {@code @RequestMapping}。独立 {@code xxl.job.executor.port} 写入 listenPort 元数据。
  */
 public final class XxlJobExecutorEntryAdapter implements ExecutorEntryAdapter {
     public static final String ID = "xxl-job-executor";
@@ -27,6 +30,8 @@ public final class XxlJobExecutorEntryAdapter implements ExecutorEntryAdapter {
     private static final String XXL_JOB_ANN = "com.xxl.job.core.handler.annotation.XxlJob";
     private static final String JOB_HANDLER = "com.xxl.job.core.handler.IJobHandler";
     private static final String JOB_HANDLER_SLASH = "com/xxl/job/core/handler/IJobHandler";
+    private static final String EMBED_SERVER = "com.xxl.job.core.server.EmbedServer";
+    private static final String EMBED_SERVER_SLASH = "com/xxl/job/core/server/EmbedServer";
 
     private static final List<CallbackSurface> SURFACES = List.of(
             new CallbackSurface("POST", "/run", List.of("body:jobHandler", "body:executorParams"),
@@ -65,7 +70,12 @@ public final class XxlJobExecutorEntryAdapter implements ExecutorEntryAdapter {
             return true;
         }
         if (context.classNameContains("com.xxl.job")
-                || context.classNameContains("XxlJob")) {
+                || context.classNameContains("XxlJob")
+                || context.classNameContains("EmbedServer")) {
+            return true;
+        }
+        EmbedServerEvidence embed = detectEmbedServer(context);
+        if (embed.confirmed()) {
             return true;
         }
         return !annotatedHandlers(context).isEmpty() || !jobHandlerImpls(context).isEmpty();
@@ -77,27 +87,51 @@ public final class XxlJobExecutorEntryAdapter implements ExecutorEntryAdapter {
             return List.of();
         }
         List<RuntimeCallbackEntry> out = new ArrayList<>();
-        List<String> frameworkPre = List.of("framework:" + FRAMEWORK, "callbackKind:executor-http");
+        ExecutorSurfaceConfig.Surface surface = ExecutorSurfaceConfig.parse(context.configurationLines());
+        EmbedServerEvidence embed = detectEmbedServer(context);
+        Presence presence = detectPresence(context, embed);
 
-        Presence presence = detectPresence(context);
-        String surfaceProvenance = presence.annotationOrImpl ? "FACT" : "INFERENCE";
-        double surfaceConfidence = presence.annotationOrImpl ? 0.92 : 0.78;
+        List<String> frameworkPre = new ArrayList<>();
+        frameworkPre.add("framework:" + FRAMEWORK);
+        frameworkPre.add("callbackKind:executor-http");
+        if (embed.confirmed()) {
+            frameworkPre.add("embedServer:bytecode-confirmed");
+            frameworkPre.add("embedServerSignal:" + embed.signal());
+        }
+        int listenPort = surface.xxlExecutorPort();
+        if (listenPort > 0) {
+            frameworkPre = new ArrayList<>(ExecutorSurfaceConfig.withListenPort(frameworkPre, listenPort));
+            frameworkPre.add("executorPort=" + listenPort);
+            if (surface.serverPort() > 0 && surface.serverPort() != listenPort) {
+                frameworkPre.add("portRole=executor-distinct");
+                frameworkPre.add("serverPort=" + surface.serverPort());
+            }
+        }
+        // EmbedServer 为独立 Netty HTTP，不挂 servlet context-path（故意不写 contextPath）
+
+        String surfaceProvenance = presence.annotationOrImpl || embed.confirmed() ? "FACT" : "INFERENCE";
+        double surfaceConfidence = presence.annotationOrImpl ? 0.92
+                : embed.confirmed() ? 0.90 : 0.78;
         String surfaceSummary = "XXL-JOB executor HTTP callback surface; presence="
                 + presence.signal
-                + "; EmbedServer routes are adapter-known; runtime reachability not proven";
+                + (embed.confirmed()
+                ? "; EmbedServer bytecode-confirmed (" + embed.signal() + ")"
+                : "; EmbedServer routes are adapter-known")
+                + (listenPort > 0 ? "; listenPort=" + listenPort : "")
+                + "; runtime reachability not proven";
 
-        for (CallbackSurface surface : SURFACES) {
+        for (CallbackSurface callback : SURFACES) {
             out.add(new RuntimeCallbackEntry(
                     ID,
                     FRAMEWORK,
                     "HTTP",
-                    surface.method(),
-                    surface.route(),
-                    "com.xxl.job.core.server.EmbedServer",
-                    surface.inputs(),
-                    frameworkPre,
-                    "executor-adapter:" + ID + ":surface:" + surface.route(),
-                    surface.summary() + "; " + surfaceSummary,
+                    callback.method(),
+                    callback.route(),
+                    EMBED_SERVER,
+                    callback.inputs(),
+                    List.copyOf(frameworkPre),
+                    "executor-adapter:" + ID + ":surface:" + callback.route(),
+                    callback.summary() + "; " + surfaceSummary,
                     surfaceProvenance,
                     surfaceConfidence));
         }
@@ -106,6 +140,9 @@ public final class XxlJobExecutorEntryAdapter implements ExecutorEntryAdapter {
             List<String> inputs = new ArrayList<>();
             inputs.add("body:jobHandler=" + hit.jobHandler());
             inputs.add("annotation:@XxlJob");
+            List<String> pre = new ArrayList<>(frameworkPre);
+            pre.add("callbackKind:job-handler");
+            pre.add("jobHandler:" + hit.jobHandler());
             out.add(new RuntimeCallbackEntry(
                     ID,
                     FRAMEWORK,
@@ -114,8 +151,7 @@ public final class XxlJobExecutorEntryAdapter implements ExecutorEntryAdapter {
                     "/run",
                     hit.symbol(),
                     inputs,
-                    List.of("framework:" + FRAMEWORK, "callbackKind:job-handler",
-                            "jobHandler:" + hit.jobHandler()),
+                    List.copyOf(pre),
                     "classfile-annotation:" + hit.symbol(),
                     "@XxlJob handler bound to executor /run callback; jobHandler="
                             + hit.jobHandler()
@@ -125,6 +161,8 @@ public final class XxlJobExecutorEntryAdapter implements ExecutorEntryAdapter {
         }
 
         for (String symbol : jobHandlerImpls(context)) {
+            List<String> pre = new ArrayList<>(frameworkPre);
+            pre.add("callbackKind:job-handler");
             out.add(new RuntimeCallbackEntry(
                     ID,
                     FRAMEWORK,
@@ -133,7 +171,7 @@ public final class XxlJobExecutorEntryAdapter implements ExecutorEntryAdapter {
                     "/run",
                     symbol,
                     List.of("body:jobHandler", "implements:IJobHandler"),
-                    List.of("framework:" + FRAMEWORK, "callbackKind:job-handler"),
+                    List.copyOf(pre),
                     "classfile-type:" + symbol,
                     "IJobHandler implementation present; executor /run may dispatch; "
                             + "handler name registration not fully resolved",
@@ -151,15 +189,97 @@ public final class XxlJobExecutorEntryAdapter implements ExecutorEntryAdapter {
 
     @Override
     public Set<String> highValueClassSignals() {
-        return Set.of("xxl.job", "xxljob", "ijobhandler");
+        return Set.of("xxl.job", "xxljob", "ijobhandler", "embedserver");
     }
 
-    private static Presence detectPresence(ExecutorEntryContext context) {
+    /**
+     * 在已扫到的（含 BOOT-INF/lib 一层展开）类上确认 EmbedServer / 回调服务器实现。
+     */
+    static EmbedServerEvidence detectEmbedServer(ExecutorEntryContext context) {
+        if (context == null) {
+            return EmbedServerEvidence.none();
+        }
+        for (String name : context.classNames()) {
+            if (name == null) {
+                continue;
+            }
+            String dotted = name.replace('/', '.');
+            if (EMBED_SERVER.equals(dotted)
+                    || dotted.endsWith(".EmbedServer")
+                    || name.equals(EMBED_SERVER_SLASH)) {
+                return new EmbedServerEvidence(true, "class-name:" + dotted);
+            }
+        }
+        for (ClassMetadata metadata : context.classMetadata()) {
+            if (metadata == null) {
+                continue;
+            }
+            String className = metadata.className() == null ? "" : metadata.className().replace('/', '.');
+            if (EMBED_SERVER.equals(className) || className.endsWith(".EmbedServer")) {
+                boolean hasStart = false;
+                if (metadata.methodFacts() != null) {
+                    for (BytecodeFactIndex.MethodFact method : metadata.methodFacts()) {
+                        if (method != null && method.name() != null) {
+                            String n = method.name().toLowerCase(Locale.ROOT);
+                            if (n.equals("start") || n.equals("bind") || n.contains("start")) {
+                                hasStart = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!hasStart && metadata.methods() != null) {
+                    for (ClassMetadata.MethodMetadata method : metadata.methods()) {
+                        if (method != null && method.name() != null) {
+                            String n = method.name().toLowerCase(Locale.ROOT);
+                            if (n.equals("start") || n.equals("bind") || n.contains("start")) {
+                                hasStart = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                return new EmbedServerEvidence(true,
+                        hasStart ? "classfile:EmbedServer+start" : "classfile:EmbedServer");
+            }
+            // 调用边指向 EmbedServer
+            if (metadata.callEdges() != null) {
+                for (BytecodeFactIndex.CallEdge edge : metadata.callEdges()) {
+                    if (edge == null || edge.targetOwner() == null) {
+                        continue;
+                    }
+                    String owner = edge.targetOwner().replace('/', '.');
+                    if (EMBED_SERVER.equals(owner) || owner.endsWith(".EmbedServer")) {
+                        return new EmbedServerEvidence(true,
+                                "call-edge:" + owner + "#" + edge.targetName());
+                    }
+                }
+            }
+            if (metadata.memberAccessFacts() != null) {
+                for (BytecodeFactIndex.MemberAccessFact access : metadata.memberAccessFacts()) {
+                    if (access == null || access.targetOwner() == null) {
+                        continue;
+                    }
+                    String owner = access.targetOwner().replace('/', '.');
+                    if (EMBED_SERVER.equals(owner) || owner.endsWith(".EmbedServer")) {
+                        return new EmbedServerEvidence(true,
+                                "member-access:" + owner + "#" + access.targetName());
+                    }
+                }
+            }
+        }
+        return EmbedServerEvidence.none();
+    }
+
+    private static Presence detectPresence(ExecutorEntryContext context, EmbedServerEvidence embed) {
         if (!annotatedHandlers(context).isEmpty()) {
             return new Presence(true, "annotation:@XxlJob");
         }
         if (!jobHandlerImpls(context).isEmpty()) {
             return new Presence(true, "implements:IJobHandler");
+        }
+        if (embed.confirmed()) {
+            return new Presence(false, "bytecode:" + embed.signal());
         }
         if (context.configContains("xxl.job") || context.configContains("xxl-job")) {
             return new Presence(false, "config:xxl.job");
@@ -294,5 +414,11 @@ public final class XxlJobExecutorEntryAdapter implements ExecutorEntryAdapter {
     }
 
     private record Presence(boolean annotationOrImpl, String signal) {
+    }
+
+    record EmbedServerEvidence(boolean confirmed, String signal) {
+        static EmbedServerEvidence none() {
+            return new EmbedServerEvidence(false, "");
+        }
     }
 }

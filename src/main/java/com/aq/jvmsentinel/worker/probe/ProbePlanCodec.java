@@ -33,11 +33,15 @@ public final class ProbePlanCodec {
                     .append(target.bladeAuthHeader() == null ? "" : target.bladeAuthHeader());
             boolean hasCookie = target.cookieHeader() != null && !target.cookieHeader().isBlank();
             boolean hasPlan = target.experimentPlanId() != null && !target.experimentPlanId().isBlank();
-            if (hasPlan || hasCookie) {
+            boolean hasListenPort = target.listenPort() > 0;
+            if (hasPlan || hasCookie || hasListenPort) {
                 text.append('\t').append(hasPlan ? target.experimentPlanId() : "");
             }
-            if (hasCookie) {
-                text.append('\t').append(target.cookieHeader());
+            if (hasCookie || hasListenPort) {
+                text.append('\t').append(hasCookie ? target.cookieHeader() : "");
+            }
+            if (hasListenPort) {
+                text.append('\t').append(target.listenPort());
             }
             text.append('\n');
         }
@@ -68,12 +72,17 @@ public final class ProbePlanCodec {
             total += blade.getBytes(StandardCharsets.UTF_8).length + 1;
             boolean hasCookie = target.cookieHeader() != null && !target.cookieHeader().isBlank();
             boolean hasPlan = target.experimentPlanId() != null && !target.experimentPlanId().isBlank();
-            if (hasPlan || hasCookie) {
+            boolean hasListenPort = target.listenPort() > 0;
+            if (hasPlan || hasCookie || hasListenPort) {
                 String planId = hasPlan ? target.experimentPlanId() : "";
                 total += planId.getBytes(StandardCharsets.UTF_8).length + 1;
             }
-            if (hasCookie) {
-                total += target.cookieHeader().getBytes(StandardCharsets.UTF_8).length + 1;
+            if (hasCookie || hasListenPort) {
+                String cookie = hasCookie ? target.cookieHeader() : "";
+                total += cookie.getBytes(StandardCharsets.UTF_8).length + 1;
+            }
+            if (hasListenPort) {
+                total += Integer.toString(target.listenPort()).getBytes(StandardCharsets.UTF_8).length + 1;
             }
         }
         return total;

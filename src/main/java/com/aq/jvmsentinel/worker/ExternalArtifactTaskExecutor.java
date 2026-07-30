@@ -515,31 +515,43 @@ public final class ExternalArtifactTaskExecutor {
         ArtifactRegistration require(TaskScope scope);
     }
 
-    /** deny-all 容器内的一条有界 HTTP 刺激。 */
+    /**
+     * deny-all 容器内的一条有界 HTTP 刺激。
+     *
+     * <p>{@code listenPort}：0 表示使用批量默认 HTTP_PORT（主站）；
+     * 非 0 时打到 executor / management 独立端口（见 OPEN_GAPS P0-I）。
+     */
     public record ProbeTarget(String method, String route, String query, String track,
                               String authHeader, String bladeAuthHeader, String experimentPlanId,
-                              String cookieHeader) {
+                              String cookieHeader, int listenPort) {
         public ProbeTarget(String method, String route) {
-            this(method, route, "", "UNAUTH", "", "", "", "");
+            this(method, route, "", "UNAUTH", "", "", "", "", 0);
         }
 
         public ProbeTarget(String method, String route, String query) {
-            this(method, route, query, "UNAUTH", "", "", "", "");
+            this(method, route, query, "UNAUTH", "", "", "", "", 0);
         }
 
         /** 仅 Auth 构造；Blade-Auth / Cookie 保持空（通道独立）。 */
         public ProbeTarget(String method, String route, String query, String track, String authHeader) {
-            this(method, route, query, track, authHeader, "", "", "");
+            this(method, route, query, track, authHeader, "", "", "", 0);
         }
 
         public ProbeTarget(String method, String route, String query, String track,
                            String authHeader, String bladeAuthHeader) {
-            this(method, route, query, track, authHeader, bladeAuthHeader, "", "");
+            this(method, route, query, track, authHeader, bladeAuthHeader, "", "", 0);
         }
 
         public ProbeTarget(String method, String route, String query, String track,
                            String authHeader, String bladeAuthHeader, String experimentPlanId) {
-            this(method, route, query, track, authHeader, bladeAuthHeader, experimentPlanId, "");
+            this(method, route, query, track, authHeader, bladeAuthHeader, experimentPlanId, "", 0);
+        }
+
+        public ProbeTarget(String method, String route, String query, String track,
+                           String authHeader, String bladeAuthHeader, String experimentPlanId,
+                           String cookieHeader) {
+            this(method, route, query, track, authHeader, bladeAuthHeader, experimentPlanId,
+                    cookieHeader, 0);
         }
 
         public ProbeTarget {
@@ -550,6 +562,9 @@ public final class ExternalArtifactTaskExecutor {
             bladeAuthHeader = bladeAuthHeader == null ? "" : bladeAuthHeader;
             experimentPlanId = experimentPlanId == null ? "" : experimentPlanId.trim();
             cookieHeader = cookieHeader == null ? "" : cookieHeader;
+            if (listenPort < 0 || listenPort > 65_535) {
+                throw new IllegalArgumentException("artifact probe listenPort is invalid");
+            }
             if (!Set.of("GET", "POST", "PUT", "PATCH", "DELETE").contains(method)
                     || route == null
                     || !route.matches("/[A-Za-z0-9_./{}:-]{0,1023}")
@@ -566,6 +581,17 @@ public final class ExternalArtifactTaskExecutor {
                     && !experimentPlanId.matches("[A-Za-z0-9_.:/-]{1,128}"))) {
                 throw new IllegalArgumentException("artifact probe target is invalid");
             }
+        }
+
+        /** 复制并保留 listenPort（扩姿态 / stamp 时使用）。 */
+        public ProbeTarget withAuth(String newTrack, String newAuth, String newBlade, String newCookie) {
+            return new ProbeTarget(method, route, query, newTrack, newAuth, newBlade,
+                    experimentPlanId, newCookie, listenPort);
+        }
+
+        public ProbeTarget withExperimentPlanId(String planId) {
+            return new ProbeTarget(method, route, query, track, authHeader, bladeAuthHeader,
+                    planId, cookieHeader, listenPort);
         }
     }
 
